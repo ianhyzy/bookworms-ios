@@ -26,7 +26,7 @@ struct YearStackCard: View {
                 header(isSquare: isSquare)
                 ZStack(alignment: .topLeading) {
                     ForEach(layout.slabs) { slab in
-                        SpineView(book: slab.book, look: input.look(for: slab.book))
+                        ShareSpine(book: slab.book, look: input.look(for: slab.book))
                             .frame(width: slab.size.width, height: slab.size.height)
                             .shadow(color: .black.opacity(0.4), radius: 5, y: 3)
                             .rotationEffect(.degrees(slab.tilt))
@@ -83,10 +83,11 @@ struct StackLayout {
             0.8 + 0.45 * min(1, max(0, (CGFloat(book.pages ?? 320) - 150) / 650))
         }
         func total(_ books: [CloudBook]) -> CGFloat { books.reduce(0) { $0 + weight($1) } }
-        // Thickness per unit of weight: SpineView letters titles at half the thickness.
+        // Thickness per unit of weight. The thinnest spine, at 0.8 units, stays thick enough
+        // for `ShareSpine`'s 30-pixel lettering.
         let largest: CGFloat = 104
         let smallestSingle: CGFloat = 60
-        let smallestDouble: CGFloat = 50
+        let smallestDouble: CGFloat = 58
         let gap: CGFloat = 36
 
         var columns = [books]
@@ -137,6 +138,38 @@ struct StackLayout {
                         center: CGPoint(x: centerX + shift, y: bottom - thickness / 2),
                         size: CGSize(width: length, height: thickness), tilt: tilt))
                 bottom -= thickness
+            }
+        }
+    }
+}
+
+/// A `SpineView` lettered for a share image: the title alone, never below 30 pixels.
+///
+/// `SpineView` sizes its lettering from the thickness and shrinks long titles, which leaves
+/// stacked spines with text too small to read on a phone. This view draws the spine blank and
+/// letters it here instead, truncating a title that does not fit.
+struct ShareSpine: View {
+    let book: CloudBook
+    let look: SpineLook
+
+    var body: some View {
+        SpineView(
+            book: CloudBook(
+                id: book.id, title: "", author: "", coverURL: nil, detailCoverURL: nil),
+            look: look
+        )
+        .overlay {
+            GeometryReader { proxy in
+                let (length, thickness) = (proxy.size.width, proxy.size.height)
+                let size = max(30, thickness * 0.5)
+                Text(look.text(book.spineTitle))
+                    .font(look.font(size: size))
+                    .lineLimit(1)
+                    .minimumScaleFactor(30 / size)
+                    .foregroundStyle(look.foreground.color)
+                    // Clears SpineView's accent bands at the head and tail.
+                    .padding(.horizontal, max(14, length * 0.035) + thickness * 0.3)
+                    .frame(width: length, height: thickness, alignment: .leading)
             }
         }
     }
@@ -346,7 +379,11 @@ struct TopFiveCard: View {
         let middle = used.reduce(0, +) / CGFloat(max(1, used.count))
         return GeometryReader { proxy in
             let size = proxy.size
-            let leadHeight = min(size.height * 0.78, size.width * 0.62)
+            let leadHeight = min(size.height * 0.78, size.width * 0.55)
+            // An outer book, at 0.82 of the lead height and turned about 15 degrees, reaches up
+            // to 0.47 lead heights from its center with the widest cover Book3DView allows. This
+            // spacing keeps the outermost slot (2) inside the fan's width, and so in the gutters.
+            let spacing = min(size.width * 0.16, (size.width / 2 - 0.47 * leadHeight) / 2)
             ZStack {
                 // The first-ranked book is drawn last, in front.
                 ForEach(Array(books.enumerated().reversed()), id: \.element.id) { index, book in
@@ -360,7 +397,7 @@ struct TopFiveCard: View {
                     .shadow(color: .black.opacity(0.45), radius: 24, y: 18)
                     .rotationEffect(.degrees(Double(slot) * 7 + jitter * 2))
                     .position(
-                        x: size.width / 2 + slot * size.width * 0.16,
+                        x: size.width / 2 + slot * spacing,
                         y: size.height / 2 + slot * slot * 14 + (index == 0 ? 0 : leadHeight * 0.06)
                     )
                 }

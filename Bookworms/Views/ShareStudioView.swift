@@ -18,7 +18,11 @@ struct ShareStudioView: View {
     @State private var showsRatings = true
     @State private var seed: UInt64 = 0
     @State private var image: ShareImage?
+    /// The request that drew `image`. While it differs from the current request, a newer image
+    /// is on its way, so the preview shows progress and sharing waits.
+    @State private var renderedRequest: RenderRequest?
     @State private var hasNoBooks = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init() {
         #if DEBUG
@@ -39,27 +43,50 @@ struct ShareStudioView: View {
         #endif
     }
 
-    var body: some View {
-        let years = Set(model.books.compactMap(\.finishedYear)).sorted(by: >)
+    /// The years books were finished in, newest first.
+    private var years: [Int] { Set(model.books.compactMap(\.finishedYear)).sorted(by: >) }
+
+    /// The image the current options and library call for.
+    private var request: RenderRequest {
         let shownYear = template == .spectrum ? year : year ?? years.first
-        let request = RenderRequest(
+        return RenderRequest(
             template: template, aspect: aspect,
             year: template == .justFinished ? nil : shownYear,
             bookID: template == .justFinished ? bookID : nil,
             showsRatings: showsRatings, seed: seed, syncedAt: model.library?.syncedAt,
-            designCount: model.library?.designs.count ?? 0, fontCount: model.fonts.faces.count)
+            designs: model.library?.designs,
+            // Spine Spectrum draws no lettering, so a newly loaded face cannot change it.
+            fontCount: template == .spectrum ? 0 : model.fonts.faces.count)
+    }
+
+    var body: some View {
+        let request = request
+        let isPending = renderedRequest != request
         NavigationStack {
             Form {
                 Section {
-                    preview
+                    preview(isPending: isPending)
                     Picker("Size", selection: $aspect) {
                         ForEach(ShareAspect.allCases) { Text($0.title).tag($0) }
                     }
                     .pickerStyle(.segmented)
                     .listRowBackground(Color.clear)
                 }
-                Section("Template") { templatePicker }
-                Section("Options") { options(years: years, shownYear: shownYear) }
+                Section("Template") {
+                    if dynamicTypeSize.isAccessibilitySize {
+                        // Four names side by side truncate at accessibility sizes.
+                        Picker("Template", selection: $template) {
+                            ForEach(ShareTemplate.allCases) { option in
+                                Label(option.title, systemImage: option.systemImage).tag(option)
+                            }
+                        }
+                        .pickerStyle(.inline)
+                        .labelsHidden()
+                    } else {
+                        templatePicker
+                    }
+                }
+                Section("Options") { options(shownYear: request.year) }
             }
             .navigationTitle("Share")
             .toolbar {
@@ -67,12 +94,14 @@ struct ShareStudioView: View {
                     ToolbarItem(placement: .topBarTrailing) {
                         ShareLink(
                             item: image,
-                            preview: SharePreview(image.name, image: Image(uiImage: image.image)))
+                            preview: SharePreview(image.name, image: Image(uiImage: image.image))
+                        )
+                        .disabled(isPending)
                     }
                 }
             }
         }
-        .task(id: request) { await render(request) }
+        .task(id: request) { await render() }
         .onChange(of: model.shareBookID, initial: true) { _, id in
             guard let id else { return }
             bookID = id
@@ -81,7 +110,7 @@ struct ShareStudioView: View {
         }
     }
 
-    private var preview: some View {
+    private func preview(isPending: Bool) -> some View {
         let size = aspect.size
         return ZStack {
             if let image {
@@ -89,9 +118,15 @@ struct ShareStudioView: View {
                     .resizable()
                     .scaledToFit()
                     .accessibilityLabel("\(image.name) preview")
+                if isPending {
+                    ProgressView()
+                        .padding(12)
+                        .background(.regularMaterial, in: .circle)
+                        .accessibilityLabel("Updating preview")
+                }
             } else if hasNoBooks && !model.isLoading {
                 ContentUnavailableView(
-                    "No Finished Books", systemImage: "books.vertical",
+                    "No finished books", systemImage: "books.vertical",
                     description: Text("Books you finish appear here after the Apple TV syncs."))
             } else {
                 ProgressView()
@@ -138,14 +173,16 @@ struct ShareStudioView: View {
     }
 
     @ViewBuilder
-    private func options(years: [Int], shownYear: Int?) -> some View {
+    private func options(shownYear: Int?) -> some View {
         if template == .justFinished {
-            let current = bookID ?? model.books.first { $0.finishedYear != nil }?.id
+            // The same choice the render makes, so the row names the book the image shows.
+            let shown = ShareTemplate.justFinished
+                .books(from: model.books, year: nil, bookID: bookID)
+                .first
             NavigationLink {
-                ShareBookPicker(books: model.books, current: current, selection: $bookID)
+                ShareBookPicker(books: model.books, current: shown?.id, selection: $bookID)
             } label: {
-                LabeledContent(
-                    "Book", value: model.books.first { $0.id == current }?.spineTitle ?? "None")
+                LabeledContent("Book", value: shown?.spineTitle ?? "None")
             }
         } else {
             Picker("Year", selection: Binding(get: { shownYear }, set: { year = $0 })) {
@@ -160,18 +197,35 @@ struct ShareStudioView: View {
         }
     }
 
-    private func render(_ request: RenderRequest) async {
+    /// Renders until the image matches the latest request.
+    ///
+    /// SwiftUI skips a `task(id:)` restart when the ID changes more than once in a frame, as it
+    /// does while cached fonts load in a burst. Each pass therefore reads the latest request,
+    /// and the loop checks it again after drawing.
+    private func render() async {
         // A short pause folds quick option changes into one render.
         try? await Task.sleep(for: .milliseconds(150))
-        guard !Task.isCancelled else { return }
+        while !Task.isCancelled, renderedRequest != request {
+            await render(request)
+        }
+    }
+
+    /// Draws one request, unless the task is cancelled first. Sets `renderedRequest` otherwise.
+    private func render(_ request: RenderRequest) async {
         let books = request.template.books(
             from: model.books, year: request.year, bookID: request.bookID)
         hasNoBooks = books.isEmpty
         guard !books.isEmpty else {
             image = nil
+            renderedRequest = request
             return
         }
-        await model.fonts.load(books.compactMap { model.library?.designs[$0.id] })
+        if request.template != .spectrum {
+            // The download runs in its own task, because an option change cancels this one and
+            // `SpineFonts` never retries a face whose download failed, cancelled ones included.
+            let designs = books.compactMap { model.library?.designs[$0.id] }
+            await Task { await model.fonts.load(designs) }.value
+        }
         let covers: [Int: UIImage] =
             switch request.template {
             case .justFinished: await loadCovers(books, maximumPixelSize: 1200)
@@ -184,10 +238,16 @@ struct ShareStudioView: View {
             looks: Dictionary(books.map { ($0.id, model.look(for: $0)) }) { first, _ in first },
             covers: covers, year: request.year, showsRatings: request.showsRatings,
             seed: request.seed)
-        guard let rendered = input.render() else { return }
+        guard let rendered = input.render() else {
+            // Not expected; clearing the image keeps a stale one from being shared.
+            image = nil
+            renderedRequest = request
+            return
+        }
         var name = request.template.title
         if request.template != .justFinished { name += " " + input.period }
         image = ShareImage(image: rendered, name: name)
+        renderedRequest = request
         #if DEBUG
             ShareDebug.write(rendered)
         #endif
@@ -217,7 +277,7 @@ private struct RenderRequest: Equatable {
     var showsRatings: Bool
     var seed: UInt64
     var syncedAt: Date?
-    var designCount: Int
+    var designs: [Int: SpineDesignV1]?
     var fontCount: Int
 }
 
