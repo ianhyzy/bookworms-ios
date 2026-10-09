@@ -16,6 +16,10 @@ final class AppModel {
     private(set) var books: [CloudBook] = []
     private(set) var isLoading = false
     private(set) var loadError: String?
+    /// The visible tab. Other features switch it, such as **Share** from a book's details.
+    var selectedTab = AppTab.shelf
+    /// A book that a share request named; the Share tab shows it, then clears this.
+    var shareBookID: Int?
     let fonts = SpineFonts()
     @ObservationIgnored let covers = CoverStore()
     @ObservationIgnored let store: any SpineStore
@@ -44,6 +48,12 @@ final class AppModel {
                 setLibrary(cached)
             }
         }
+    }
+
+    /// Opens the Share tab with `book` as the featured book.
+    func share(_ book: CloudBook) {
+        shareBookID = book.id
+        selectedTab = .share
     }
 
     func look(for book: CloudBook) -> SpineLook {
@@ -86,7 +96,7 @@ final class AppModel {
         guard previousBooks != snapshot.books else { return }
         books = snapshot.books.sorted { lhs, rhs in
             switch (lhs.finished, rhs.finished) {
-            case let (left?, right?) where left != right: left > right
+            case (let left?, let right?) where left != right: left > right
             case (.some, nil): true
             case (nil, .some): false
             default: lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
@@ -102,4 +112,8 @@ final class AppModel {
             at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: cacheURL, options: .atomic)
     }
+}
+
+enum AppTab: Hashable {
+    case shelf, share, spines
 }

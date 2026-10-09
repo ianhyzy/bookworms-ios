@@ -174,8 +174,9 @@ actor CloudSpineStore: SpineStore {
         else { throw CompanionError.invalidCloudData }
         let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
         guard size > 0, size <= 50 * 1024 * 1024 else { throw CompanionError.invalidCloudData }
-        let archive = try JSONDecoder().decode(
-            CloudLibraryArchive.self, from: Data(contentsOf: url))
+        let archive = try JSONDecoder()
+            .decode(
+                CloudLibraryArchive.self, from: Data(contentsOf: url))
         guard archive.version == 1 else { throw CompanionError.unsupportedCloudData }
         return archive
     }

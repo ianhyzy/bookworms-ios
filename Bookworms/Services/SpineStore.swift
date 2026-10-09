@@ -68,8 +68,9 @@ actor LocalSpineStore: SpineStore {
             design
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
-        try encoder.encode(all).write(
-            to: folder.appending(path: "spine-designs-v1.json"), options: .atomic)
+        try encoder.encode(all)
+            .write(
+                to: folder.appending(path: "spine-designs-v1.json"), options: .atomic)
     }
 
     func loadLibrary() async throws -> LibrarySnapshot? {

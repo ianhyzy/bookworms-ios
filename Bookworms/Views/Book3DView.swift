@@ -97,17 +97,22 @@ private struct PageEdgeView: View {
                     ? CGRect(x: 0, y: position, width: along, height: 0.5)
                     : CGRect(x: position, y: 0, width: 0.5, height: along)
                 context.fill(
-                    Path(rect), with: .color(Color(red: 0.45, green: 0.38, blue: 0.28, opacity: alpha)))
+                    Path(rect),
+                    with: .color(Color(red: 0.45, green: 0.38, blue: 0.28, opacity: alpha)))
                 position += 1.25
             }
             // The boards: the covers' edges at the front and back of the page block.
             let board = max(1, across * 0.07)
             let edges =
                 linesRunHorizontally
-                ? [CGRect(x: 0, y: 0, width: along, height: board),
-                    CGRect(x: 0, y: size.height - board, width: along, height: board)]
-                : [CGRect(x: 0, y: 0, width: board, height: along),
-                    CGRect(x: size.width - board, y: 0, width: board, height: along)]
+                ? [
+                    CGRect(x: 0, y: 0, width: along, height: board),
+                    CGRect(x: 0, y: size.height - board, width: along, height: board),
+                ]
+                : [
+                    CGRect(x: 0, y: 0, width: board, height: along),
+                    CGRect(x: size.width - board, y: 0, width: board, height: along),
+                ]
             for edge in edges { context.fill(Path(edge), with: .color(self.board)) }
         }
     }
@@ -144,9 +149,10 @@ struct BookProjection {
             return SIMD2(p.x * scale, p.y * scale)
         }
         let (x, y, z) = (Double(w) / 2, Double(h) / 2, Double(t) / 2)
-        let corners = [-x, x].flatMap { cx in
-            [-y, y].flatMap { cy in [-z, z].map { cz in project(SIMD3(cx, cy, cz)) } }
-        }
+        let corners = [-x, x]
+            .flatMap { cx in
+                [-y, y].flatMap { cy in [-z, z].map { cz in project(SIMD3(cx, cy, cz)) } }
+            }
         let minimum = corners.reduce(corners[0]) { simd_min($0, $1) }
         let maximum = corners.reduce(corners[0]) { simd_max($0, $1) }
         bounds = CGSize(width: maximum.x - minimum.x, height: maximum.y - minimum.y)

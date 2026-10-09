@@ -112,8 +112,9 @@ actor CoverDownloader {
             if data.count > maximumBytes { throw CompanionError.coverTooLarge }
         }
         // Some CDNs label images as octet streams; decoding decides instead of the MIME type.
-        guard !data.isEmpty, CGImageSourceCreateWithData(data as CFData, nil)
-            .flatMap(CGImageSourceGetType) != nil
+        guard !data.isEmpty,
+            CGImageSourceCreateWithData(data as CFData, nil)
+                .flatMap(CGImageSourceGetType) != nil
         else { throw CompanionError.invalidCover }
         return data
     }

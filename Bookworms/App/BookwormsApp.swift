@@ -50,10 +50,11 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        TabView {
-            Tab("Shelf", systemImage: "books.vertical") { ShelfView() }
-            Tab("Share", systemImage: "square.and.arrow.up") { ShareStudioView() }
-            Tab("Spines", systemImage: "wand.and.sparkles") { GenerationView() }
+        @Bindable var model = model
+        TabView(selection: $model.selectedTab) {
+            Tab("Shelf", systemImage: "books.vertical", value: .shelf) { ShelfView() }
+            Tab("Share", systemImage: "square.and.arrow.up", value: .share) { ShareStudioView() }
+            Tab("Spines", systemImage: "wand.and.sparkles", value: .spines) { GenerationView() }
         }
         .task { await model.reload() }
         .onChange(of: scenePhase) { _, phase in
