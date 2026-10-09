@@ -1,0 +1,69 @@
+name: Bookworms
+options:
+  bundleIdPrefix: gay.ian
+  deploymentTarget:
+    iOS: '27.0'
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    DEVELOPMENT_TEAM: KSZ7QR8Y88
+    CODE_SIGN_STYLE: Automatic
+    GENERATE_INFOPLIST_FILE: YES
+    MARKETING_VERSION: '1.0.0'
+    CURRENT_PROJECT_VERSION: '1'
+    SWIFT_STRICT_CONCURRENCY: complete
+    TARGETED_DEVICE_FAMILY: '1'
+targets:
+  Bookworms:
+    type: application
+    platform: iOS
+    sources:
+      - path: Bookworms
+        type: syncedFolder
+    entitlements:
+      path: Bookworms/Bookworms.entitlements
+      properties:
+        com.apple.developer.icloud-container-identifiers: [iCloud.gay.ian.Bookworms]
+        com.apple.developer.icloud-services: [CloudKit]
+        aps-environment: development
+        # Managed capability: request it for the team before signing a device build.
+        com.apple.developer.private-cloud-compute: true
+    info:
+      path: Bookworms/Info.plist
+      properties:
+        CFBundleDisplayName: Bookworms
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UIBackgroundModes: [processing, fetch, remote-notification]
+        BGTaskSchedulerPermittedIdentifiers:
+          - gay.ian.Bookworms.iOS.spines
+          - gay.ian.Bookworms.iOS.generate.*
+        NSPhotoLibraryAddUsageDescription: Bookworms saves the share images you create to your photo library.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: gay.ian.Bookworms.iOS
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+  BookwormsTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: BookwormsTests
+        type: syncedFolder
+    dependencies:
+      - target: Bookworms
+schemes:
+  Bookworms:
+    build:
+      targets:
+        Bookworms: all
+    run:
+      config: Debug
+    test:
+      targets:
+        - BookwormsTests
+      gatherCoverageData: false
