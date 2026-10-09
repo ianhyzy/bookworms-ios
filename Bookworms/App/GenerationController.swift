@@ -18,10 +18,9 @@ final class GenerationController {
     private static let chargingKey = "GeneratesWhileCharging"
     private static let lastRunKey = "LastGenerationRun"
 
-    private(set) var status = WorkerSnapshot()
-    /// When a run last finished, kept across launches because the charging task runs unseen.
-    private(set) var lastRunAt =
-        UserDefaults.standard.object(forKey: GenerationController.lastRunKey) as? Date
+    /// The current run's progress, or the last run's saved outcome, because the charging task
+    /// runs unseen.
+    private(set) var status: WorkerSnapshot
     /// Whether a user-started run is in progress, which **Stop** cancels.
     private(set) var isGenerating = false
     var generatesWhileCharging: Bool {
@@ -31,7 +30,7 @@ final class GenerationController {
         }
     }
 
-    @ObservationIgnored private let worker = SpineWorker(store: AppModel.shared.store)
+    @ObservationIgnored private let worker: SpineWorker
     @ObservationIgnored private var userRun: Task<Void, Never>?
     @ObservationIgnored private var continuedTask: BGContinuedProcessingTask?
     @ObservationIgnored private var installedSubscription = false
@@ -44,6 +43,13 @@ final class GenerationController {
     private init() {
         generatesWhileCharging =
             UserDefaults.standard.object(forKey: Self.chargingKey) as? Bool ?? true
+        var lastRun =
+            UserDefaults.standard.data(forKey: Self.lastRunKey)
+            .flatMap { try? JSONDecoder().decode(WorkerSnapshot.self, from: $0) }
+            ?? WorkerSnapshot()
+        lastRun.dropExpiredStop()
+        worker = SpineWorker(store: AppModel.shared.store, lastRun: lastRun)
+        status = lastRun
         // One consumer applies updates in the order the worker made them.
         let updates = worker.updates
         Task {
@@ -146,11 +152,13 @@ final class GenerationController {
     private func handle(_ update: WorkerUpdate) {
         switch update {
         case .status(let snapshot):
-            status = snapshot
-            if let date = snapshot.lastRunAt, date != lastRunAt {
-                lastRunAt = date
-                UserDefaults.standard.set(date, forKey: Self.lastRunKey)
+            // A new finish date marks the end of a run, which is the outcome worth saving.
+            if snapshot.lastRunAt != status.lastRunAt,
+                let data = try? JSONEncoder().encode(snapshot)
+            {
+                UserDefaults.standard.set(data, forKey: Self.lastRunKey)
             }
+            status = snapshot
             if let continuedTask { report(snapshot, to: continuedTask) }
         case .saved(let design):
             AppModel.shared.apply(design)

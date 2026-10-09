@@ -14,7 +14,10 @@ enum RunMode: Sendable {
 }
 
 /// The generator's progress, as the Spines tab and the continued-processing activity show it.
-struct WorkerSnapshot: Sendable {
+///
+/// The last run's outcome is saved across launches, because the charging task usually runs in a
+/// process that iOS ends before the user opens the app.
+struct WorkerSnapshot: Sendable, Codable {
     var isRunning = false
     var phase = "Not run yet"
     /// Books left in the current or last run's queue.
@@ -27,6 +30,20 @@ struct WorkerSnapshot: Sendable {
     /// When a stopped run should resume: the quota reset or a service's retry delay.
     var retryAfter: Date?
     var lastRunAt: Date?
+
+    // The model status is read fresh, and a saved snapshot describes a finished run.
+    private enum CodingKeys: String, CodingKey {
+        case phase, queue, completed, failed, error, retryAfter, lastRunAt
+    }
+
+    /// Clears a stop reason whose retry date has passed, such as a quota that has since reset,
+    /// so the Spines tab does not report it as current.
+    mutating func dropExpiredStop(now: Date = Date()) {
+        guard !isRunning, let retryAfter, retryAfter <= now else { return }
+        phase = "Ready to continue"
+        error = nil
+        self.retryAfter = nil
+    }
 }
 
 enum WorkerUpdate: Sendable {
@@ -45,6 +62,10 @@ actor SpineWorker {
         case stopRun(retryAfter: Date?)
         /// Record a failure for this book, which then waits out the ledger's backoff, and continue.
         case skipBook
+        /// Record a failure for this book, then stop the run. The cause may be this book's host
+        /// or the network, so the next run moves past the book, and a failing network costs one
+        /// book's backoff instead of the whole queue's.
+        case skipBookAndStop
     }
 
     nonisolated let updates: AsyncStream<WorkerUpdate>
@@ -52,7 +73,11 @@ actor SpineWorker {
     private let store: any SpineStore
     private let ledger = WorkLedger()
     private let analyzer = BookAnalyzer()
-    private var snapshot = WorkerSnapshot()
+    // One session per network policy for the worker's lifetime: a URLSession lives until it is
+    // invalidated, so a downloader per run would leak one.
+    private let covers = CoverDownloader()
+    private let backgroundCovers = CoverDownloader(allowsExpensiveNetwork: false)
+    private var snapshot: WorkerSnapshot
     private var isRunning = false
     // Series designs found or made during the current pass, so siblings are looked up once.
     private var seriesDesigns: [Int: SpineDesignV1] = [:]
@@ -60,14 +85,17 @@ actor SpineWorker {
 
     static let busyRetryDelay: TimeInterval = 15 * 60
 
-    init(store: any SpineStore) {
+    /// Creates a worker that starts from `lastRun`, the saved outcome of the previous run.
+    init(store: any SpineStore, lastRun: WorkerSnapshot = WorkerSnapshot()) {
         self.store = store
+        snapshot = lastRun
         (updates, continuation) = AsyncStream.makeStream()
     }
 
     /// Reads and publishes Private Cloud Compute's availability and quota.
     func refreshModelStatus() async {
         snapshot.model = await analyzer.status()
+        snapshot.dropExpiredStop()
         publish()
     }
 
@@ -135,7 +163,7 @@ actor SpineWorker {
                     "Run started with \(queue.count) books; covers read by \(String(describing: model.coverReader), privacy: .public); quota \(String(describing: model.quota), privacy: .public)"
                 )
             }
-            let covers = CoverDownloader(allowsExpensiveNetwork: mode == .foreground)
+            let covers = mode == .foreground ? self.covers : backgroundCovers
             for book in queue {
                 try Task.checkCancellation()
                 snapshot.phase = "Designing spines"
@@ -158,7 +186,7 @@ actor SpineWorker {
                             seriesDesigns[seriesID] = design
                         }
                         generationLog.info(
-                            "Book \(book.id) designed in \(start.duration(to: .now), privacy: .public)"
+                            "Book \(book.id, privacy: .private(mask: .hash)) designed in \(start.duration(to: .now), privacy: .public)"
                         )
                     }
                     try await ledger.recordSuccess(
@@ -166,20 +194,25 @@ actor SpineWorker {
                     snapshot.completed += 1
                 } catch {
                     try Task.checkCancellation()
+                    // Error descriptions can carry a cover URL or quoted book content, which
+                    // identify what the user reads, so only the domain and code are public.
+                    let nsError = error as NSError
                     generationLog.error(
-                        "Book \(book.id) failed after \(start.duration(to: .now), privacy: .public): \(String(describing: error), privacy: .public)"
+                        "Book \(book.id, privacy: .private(mask: .hash)) failed after \(start.duration(to: .now), privacy: .public): \(nsError.domain, privacy: .public) \(nsError.code, privacy: .public) \(String(describing: error), privacy: .private)"
                     )
-                    switch Self.disposition(of: error) {
-                    case .stopRun(let retryAfter):
+                    let disposition = Self.disposition(of: error)
+                    if case .stopRun(let retryAfter) = disposition {
                         stop(Self.message(for: error), retryAfter: retryAfter)
                         return false
-                    case .skipBook:
-                        try await ledger.recordFailure(
-                            recordName: recordName, workItemHash: workHash)
-                        snapshot.failed += 1
-                        snapshot.error =
-                            "Some books could not be designed. Bookworms tries them again tomorrow."
                     }
+                    try await ledger.recordFailure(recordName: recordName, workItemHash: workHash)
+                    snapshot.failed += 1
+                    guard disposition == .skipBook else {
+                        stop(Self.message(for: error), retryAfter: nil)
+                        return false
+                    }
+                    snapshot.error =
+                        "Some books could not be designed. Bookworms tries them again tomorrow."
                 }
                 snapshot.queue -= 1
                 if await stopForModel(mode: mode) { return false }
@@ -288,14 +321,16 @@ actor SpineWorker {
     /// Quota, model service, iCloud, and connectivity errors stop the run so later books are not
     /// spent on a request that cannot succeed now. Errors tied to one book's cover, font, or
     /// design fail that book. A cover host that is unreachable while the network works fails
-    /// the book, so one dead link cannot block the queue on every run.
+    /// the book, so one dead link cannot block the queue on every run. A timeout or a dropped
+    /// connection can come from either, so it fails the book and stops the run.
     static func disposition(of error: any Error, now: Date = Date()) -> Disposition {
         switch error {
         case let error as CompanionError:
             switch error {
             case .invalidCover, .coverTooLarge, .invalidDesign: return .skipBook
             case .quotaReached(let resetDate): return .stopRun(retryAfter: resetDate)
-            case .modelBusy: return .stopRun(retryAfter: now.addingTimeInterval(busyRetryDelay))
+            case .modelBusy(let retryAfter):
+                return .stopRun(retryAfter: retryAfter ?? now.addingTimeInterval(busyRetryDelay))
             default: return .stopRun(retryAfter: nil)
             }
         case let error as CKError:
@@ -308,10 +343,12 @@ actor SpineWorker {
             return .stopRun(retryAfter: error.retryAfterSeconds.map { now.addingTimeInterval($0) })
         case let error as URLError:
             let offline: Set<URLError.Code> = [
-                .notConnectedToInternet, .networkConnectionLost, .timedOut, .dataNotAllowed,
-                .internationalRoamingOff, .callIsActive, .cancelled,
+                .notConnectedToInternet, .dataNotAllowed, .internationalRoamingOff, .callIsActive,
+                .cancelled,
             ]
-            return offline.contains(error.code) ? .stopRun(retryAfter: nil) : .skipBook
+            if offline.contains(error.code) { return .stopRun(retryAfter: nil) }
+            if [.timedOut, .networkConnectionLost].contains(error.code) { return .skipBookAndStop }
+            return .skipBook
         case is CancellationError:
             return .stopRun(retryAfter: nil)
         default:

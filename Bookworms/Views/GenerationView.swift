@@ -59,7 +59,7 @@ struct GenerationView: View {
             } else {
                 LabeledContent("Status", value: status.phase)
             }
-            if let lastRun = generation.lastRunAt {
+            if let lastRun = status.lastRunAt {
                 LabeledContent(
                     "Last run", value: lastRun.formatted(.relative(presentation: .named)))
             }
@@ -91,7 +91,9 @@ struct GenerationView: View {
         } header: {
             Text("Private Cloud Compute")
         } footer: {
-            Text("Each new design uses two requests from your daily limit.")
+            Text(
+                "Most new designs use two or three requests from your daily limit. Books in a series often reuse a design without a request."
+            )
         }
     }
 

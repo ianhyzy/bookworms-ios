@@ -136,10 +136,12 @@ actor BookAnalyzer {
             return try await makeDesign(
                 book: book, accountID: accountID, workItemHash: workItemHash, cover: cover)
         } catch {
-            // The mapped error loses the framework's detail, which diagnoses device failures.
+            // The mapped error loses the framework's detail, which diagnoses device failures. The
+            // detail can quote book content, so only its domain and code are public.
             if let mapped = Self.modelFailure(error) {
+                let nsError = error as NSError
                 generationLog.error(
-                    "Book \(book.id) model request failed: \(String(describing: error), privacy: .public)"
+                    "Book \(book.id, privacy: .private(mask: .hash)) model request failed: \(nsError.domain, privacy: .public) \(nsError.code, privacy: .public) \(String(describing: error), privacy: .private)"
                 )
                 throw mapped
             }
@@ -225,10 +227,11 @@ actor BookAnalyzer {
         switch error {
         case let error as PrivateCloudComputeLanguageModel.Error:
             if case .quotaLimitReached(let info) = error { return .quotaReached(info.resetDate) }
-            return .modelBusy
+            return .modelBusy(nil)
         case let error as LanguageModelError:
             switch error {
-            case .rateLimited, .timeout: return .modelBusy
+            case .rateLimited(let info): return .modelBusy(info.resetDate)
+            case .timeout: return .modelBusy(nil)
             default: return .invalidDesign
             }
         case is GeneratedContent.ParsingError: return .invalidDesign
@@ -305,10 +308,12 @@ actor BookAnalyzer {
 
     /// The owner's standing type rules, enforced in code as well as in the prompt: never
     /// Impact, and never an italic or oblique family. `GoogleFonts` skips faces with the italic
-    /// trait; Bangers is slanted by design without declaring it, so it is listed by name.
+    /// trait; Bangers and Shrikhand are slanted by design without declaring it, so they are
+    /// listed by name.
     static func allowsFamily(_ name: String) -> Bool {
         let name = name.lowercased()
-        return !["impact", "italic", "oblique", "bangers"].contains { name.contains($0) }
+        let blocked = ["impact", "italic", "oblique", "bangers", "shrikhand"]
+        return !blocked.contains { name.contains($0) }
     }
 
     /// What decorative families look like. Their names alone lead the model to strongly themed
@@ -320,7 +325,7 @@ actor BookAnalyzer {
         .orbitron: "geometric futuristic capitals", .audiowide: "rounded techno display",
         .michroma: "wide square sci-fi capitals", .pressStart2p: "8-bit pixel lettering",
         .bungee: "bold signage capitals", .righteous: "rounded retro display",
-        .monoton: "neon multi-line outline", .shrikhand: "slanted retro display",
+        .monoton: "neon multi-line outline",
         .changaOne: "heavy rounded display", .chakraPetch: "angular tech sans",
         .russoOne: "heavy sporty sans", .blackOpsOne: "military stencil",
         .limelight: "art deco display", .fascinate: "ornate art deco display",

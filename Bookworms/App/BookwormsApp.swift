@@ -14,7 +14,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             Task { await GenerationController.shared.installWorklistSubscription() }
         }
         #if DEBUG
-            // `-BookwormsGenerateOnLaunch YES` starts a run for Simulator checks.
+            // `-BookwormsGenerateOnLaunch YES` starts a run for Simulator checks, and
+            // `-BookwormsShowSpines YES` opens the Spines tab without one.
+            if !testing && UserDefaults.standard.bool(forKey: "BookwormsShowSpines") {
+                AppModel.shared.selectedTab = .spines
+            }
             if !testing && UserDefaults.standard.bool(forKey: "BookwormsGenerateOnLaunch") {
                 AppModel.shared.selectedTab = .spines
                 GenerationController.shared.generateNow()

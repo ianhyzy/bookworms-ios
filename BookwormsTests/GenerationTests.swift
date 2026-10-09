@@ -26,9 +26,14 @@ final class GenerationTests: XCTestCase {
             LanguageModelError.timeout(.init(debugDescription: "")),
         ]
         for error in busy {
-            guard case .modelBusy = BookAnalyzer.modelFailure(error) else {
+            guard case .modelBusy(nil) = BookAnalyzer.modelFailure(error) else {
                 return XCTFail("\(error) should mean the model is busy")
             }
+        }
+        // A rate limit's reset date becomes the retry date instead of the default delay.
+        let limited = LanguageModelError.rateLimited(.init(resetDate: reset, debugDescription: ""))
+        guard case .modelBusy(reset) = BookAnalyzer.modelFailure(limited) else {
+            return XCTFail("A rate limit should keep its reset date")
         }
 
         let perBook: [any Error] = [
@@ -54,8 +59,12 @@ final class GenerationTests: XCTestCase {
             SpineWorker.disposition(of: CompanionError.quotaReached(now), now: now),
             .stopRun(retryAfter: now))
         XCTAssertEqual(
-            SpineWorker.disposition(of: CompanionError.modelBusy, now: now),
+            SpineWorker.disposition(of: CompanionError.modelBusy(nil), now: now),
             .stopRun(retryAfter: now.addingTimeInterval(SpineWorker.busyRetryDelay)))
+        XCTAssertEqual(
+            SpineWorker.disposition(
+                of: CompanionError.modelBusy(now.addingTimeInterval(7_200)), now: now),
+            .stopRun(retryAfter: now.addingTimeInterval(7_200)))
         XCTAssertEqual(
             SpineWorker.disposition(
                 of: CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 30.0]), now: now),
@@ -78,6 +87,36 @@ final class GenerationTests: XCTestCase {
         ] {
             XCTAssertEqual(SpineWorker.disposition(of: error, now: now), .skipBook, "\(error)")
         }
+        // A slow cover host and a failing network look alike: the book backs off and the run
+        // stops, so the next run moves past the book.
+        for code in [URLError.Code.timedOut, .networkConnectionLost] {
+            XCTAssertEqual(
+                SpineWorker.disposition(of: URLError(code), now: now), .skipBookAndStop, "\(code)")
+        }
+    }
+
+    func testSavedRunOutcomeSurvivesRelaunchUntilItsRetryDatePasses() throws {
+        var snapshot = WorkerSnapshot()
+        snapshot.isRunning = true
+        snapshot.phase = "Paused"
+        snapshot.error = "Limit reached"
+        snapshot.failed = 2
+        snapshot.retryAfter = now
+        snapshot.lastRunAt = now
+        var saved = try JSONDecoder()
+            .decode(
+                WorkerSnapshot.self, from: JSONEncoder().encode(snapshot))
+        XCTAssertFalse(saved.isRunning)
+        XCTAssertEqual(saved.phase, "Paused")
+        XCTAssertEqual(saved.failed, 2)
+        XCTAssertEqual(saved.lastRunAt, now)
+
+        saved.dropExpiredStop(now: now.addingTimeInterval(-1))
+        XCTAssertEqual(saved.error, "Limit reached")
+        saved.dropExpiredStop(now: now)
+        XCTAssertNil(saved.error)
+        XCTAssertNil(saved.retryAfter)
+        XCTAssertEqual(saved.phase, "Ready to continue")
     }
 
     func testBackgroundRunsLeaveQuotaHeadroomAndForegroundRunsUseIt() {
@@ -173,6 +212,11 @@ final class GenerationTests: XCTestCase {
             observedText: "", palette: palette, inks: inks)
         XCTAssertTrue(decorative.contains("Creepster (dripping horror lettering)"))
         XCTAssertFalse(decorative.contains("Eater"))
+        // Slanted faces that do not declare an italic trait are blocked by name.
         XCTAssertFalse(BookAnalyzer.allowsFamily("Bangers"))
+        XCTAssertFalse(BookAnalyzer.allowsFamily("Shrikhand"))
+        var generator = BookAnalyzer.SeededGenerator(seed: 1)
+        let offered = BookAnalyzer.candidateFamilies(for: .decorative, generator: &generator)
+        XCTAssertFalse(offered.contains("Shrikhand") || offered.contains("Bangers"))
     }
 }
