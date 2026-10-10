@@ -14,8 +14,9 @@ struct PileViewport: Equatable {
 /// motion. With Reduce Motion on, books appear in tidy stacks instead of falling, and tilt is
 /// off. The table fills the screen, but walls keep the books between the bars.
 ///
-/// The scene keeps the pile while this view exists, so returning from a book's details finds it
-/// as the reader left it. Switching to Stack or Shelf removes the view and frees its textures.
+/// Returning from a book's details finds the pile as the reader left it. Leaving it any other
+/// way, such as for another tab, frees its books and textures, and the books drop again on the
+/// reader's return.
 struct BookPileView: View {
     let books: [CloudBook]
     let open: (CloudBook) -> Void
@@ -27,6 +28,11 @@ struct BookPileView: View {
     @State private var viewport: PileViewport?
     /// Counts **Drop again** presses; each starts a new drop with new poses.
     @State private var generation = 0
+    /// Set while a book's details cover the pile.
+    @State private var showsBook = false
+    /// Set while a finger holds a book. SwiftUI resets it when the drag ends or is cancelled,
+    /// so the book is let go either way.
+    @GestureState private var holdsBook = false
 
     private struct DropRequest: Equatable {
         let ids: [Int]
@@ -67,9 +73,17 @@ struct BookPileView: View {
                 books, tidy: reduceMotion, generation: generation, viewport: viewport,
                 model: model)
         }
-        .onAppear { scene.setTilt(tiltIsOn) }
-        .onDisappear { scene.setTilt(false) }
+        .onAppear {
+            showsBook = false
+            scene.setTilt(tiltIsOn)
+        }
+        .onDisappear {
+            scene.endDrag()
+            scene.setTilt(false)
+            if !showsBook { scene.release() }
+        }
         .onChange(of: tiltIsOn) { scene.setTilt(tiltIsOn) }
+        .onChange(of: holdsBook) { if !holdsBook { scene.endDrag() } }
         .toolbar {
             ToolbarItemGroup(placement: .topBarLeading) {
                 Button(dropTitle, systemImage: "arrow.counterclockwise") { generation += 1 }
@@ -80,7 +94,7 @@ struct BookPileView: View {
             }
         }
         .accessibilityElement()
-        .accessibilityLabel("Pile of \(books.count) books")
+        .accessibilityLabel(books.count == 1 ? "Pile of 1 book" : "Pile of \(books.count) books")
         .accessibilityHint(
             "Drag a book to throw it, or tap one for its details. To go through books one at a time, choose Stack or Shelf."
         )
@@ -93,11 +107,11 @@ struct BookPileView: View {
     private var throwBook: some Gesture {
         DragGesture(minimumDistance: 6)
             .targetedToAnyEntity()
+            .updating($holdsBook) { _, holds, _ in holds = true }
             .onChanged { value in
                 scene.drag(
                     value.entity, along: value.ray(through: value.location, in: .local, to: .scene))
             }
-            .onEnded { _ in scene.endDrag() }
     }
 
     private var openBook: some Gesture {
@@ -107,6 +121,7 @@ struct BookPileView: View {
                 guard let id = scene.bookID(for: value.entity),
                     let book = books.first(where: { $0.id == id })
                 else { return }
+                showsBook = true
                 open(book)
             }
     }

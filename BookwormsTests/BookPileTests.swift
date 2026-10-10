@@ -68,8 +68,8 @@ final class BookPileTests: XCTestCase {
         let safeTop: Float = 1 - 2 * 116.0 / 874
         let safeBottom: Float = -1 + 2 * 83.0 / 874
         for corner in tray.corners {
-            // On the table, and with a pile three units high against the wall.
-            for height in [0, 3] as [Float] {
+            // On the table, and with a pile 4.5 units high against the wall.
+            for height in [0, 4.5] as [Float] {
                 let ndc = project(corner + [0, height, 0])
                 XCTAssertLessThanOrEqual(abs(ndc.x), 1)
                 XCTAssertLessThanOrEqual(ndc.y, safeTop)
@@ -164,25 +164,51 @@ final class BookPileTests: XCTestCase {
     func testTiltGravityFollowsTheChangeAndStaysOnTheTable() {
         let upright = SIMD3<Double>(0, -1, 0)
         let down = SIMD3<Float>(0, -PileLayout.gravity, 0)
-        XCTAssertEqual(PileLayout.gravity(device: upright, reference: upright), down)
+        XCTAssertEqual(PileLayout.gravity(device: upright, reference: upright, yaw: 0), down)
         // A steady hand stays in the dead zone.
         XCTAssertEqual(
-            PileLayout.gravity(device: [0.02, -1, 0], reference: upright), down)
+            PileLayout.gravity(device: [0.02, -1, 0], reference: upright, yaw: 0), down)
 
         // Right edge down slides books right; top edge down slides them up the screen.
-        let right = PileLayout.gravity(device: [0.2, -1, 0], reference: upright)
+        let right = PileLayout.gravity(device: [0.2, -1, 0], reference: upright, yaw: 0)
         XCTAssertGreaterThan(right.x, 0)
         XCTAssertEqual(right.z, 0, accuracy: 0.0001)
         XCTAssertEqual(right.y, -PileLayout.gravity)
         let flat = SIMD3<Double>(0, 0, -1)
-        let away = PileLayout.gravity(device: [0, 0.2, -0.98], reference: flat)
+        let away = PileLayout.gravity(device: [0, 0.2, -0.98], reference: flat, yaw: 0)
         XCTAssertLessThan(away.z, 0)
 
         // A hard tilt is clamped, so books slide but keep pressing on the table.
-        let hard = PileLayout.gravity(device: [1, 0, 0], reference: upright)
+        let hard = PileLayout.gravity(device: [1, 0, 0], reference: upright, yaw: 0)
         XCTAssertEqual(
             simd_length(SIMD2(hard.x, hard.z)), PileLayout.maximumTilt * PileLayout.gravity,
             accuracy: 0.001)
         XCTAssertEqual(hard.y, -PileLayout.gravity)
+
+        // Turned a quarter, the camera's right is -z, and tipping the right edge down still
+        // slides books toward the screen's right.
+        var camera = PileCamera()
+        camera.yaw = .pi / 2
+        let turned = PileLayout.gravity(device: [0.2, -1, 0], reference: upright, yaw: camera.yaw)
+        let screenRight = camera.rotation.act([1, 0, 0])
+        XCTAssertEqual(
+            simd_dot(SIMD2(turned.x, turned.z), SIMD2(screenRight.x, screenRight.z)),
+            simd_length(SIMD2(right.x, right.z)), accuracy: 0.001)
+        XCTAssertEqual(turned.y, -PileLayout.gravity, accuracy: 0.001)
+    }
+
+    func testCoversAreCroppedToTheBoxLikeTheDetailsView() {
+        // A square cover on a box clamped to 0.85 keeps its middle 85 percent of width.
+        XCTAssertEqual(
+            PileLayout.crop(CGSize(width: 200, height: 200), to: 0.85),
+            CGRect(x: 15, y: 0, width: 170, height: 200))
+        // A narrow cover keeps its middle height.
+        XCTAssertEqual(
+            PileLayout.crop(CGSize(width: 100, height: 250), to: 0.5),
+            CGRect(x: 0, y: 25, width: 100, height: 200))
+        // A cover that already fits is untouched.
+        XCTAssertEqual(
+            PileLayout.crop(CGSize(width: 150, height: 225), to: 2 / 3),
+            CGRect(x: 0, y: 0, width: 150, height: 225))
     }
 }

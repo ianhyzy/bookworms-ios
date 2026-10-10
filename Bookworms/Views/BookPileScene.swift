@@ -82,10 +82,11 @@ extension PileTray {
     /// as normalized device y coordinates, in a view of width-to-height `aspect`.
     ///
     /// A pile against the far or side walls rises toward the top or sides of the screen, so
-    /// those walls stand where the view's edges meet a pile `pileHeight` high. A pile against
-    /// the near wall rises toward the middle of the screen, so that wall stands where the
-    /// bottom edge meets the table.
-    init?(aspect: Float, safeTop: Float, safeBottom: Float, pileHeight: Float = 3) {
+    /// those walls stand where the view's edges meet a pile `pileHeight` high: room for a
+    /// 2.4-unit book standing on end on a 2-unit pile. A pile against the near wall rises
+    /// toward the middle of the screen, so that wall stands where the bottom edge meets the
+    /// table.
+    init?(aspect: Float, safeTop: Float, safeBottom: Float, pileHeight: Float = 4.5) {
         let camera = PileCamera()
         let top = camera.ray(ndc: [1, safeTop], aspect: aspect)
         let bottom = camera.ray(ndc: [1, safeBottom], aspect: aspect)
@@ -213,14 +214,17 @@ enum PileLayout {
         return slots
     }
 
-    /// The scene's gravity for a device gravity reading, both in the device's axes and in g.
+    /// The scene's gravity for a device gravity reading, both in the device's axes and in g,
+    /// with the camera turned by `yaw` about the vertical axis.
     ///
     /// Only the change from `reference`, the reading when tilting began, counts, so the pile
-    /// rests however the phone is held. Tipping the right edge down slides books right (+x),
-    /// and tipping the top edge down slides them up the screen (-z). Gravity always presses
-    /// books onto the table, with at most `maximumTilt` of it sideways and a small dead zone so
-    /// a steady hand leaves the pile asleep.
-    static func gravity(device: SIMD3<Double>, reference: SIMD3<Double>) -> SIMD3<Float> {
+    /// rests however the phone is held. Tipping the right edge down slides books toward the
+    /// screen's right, and tipping the top edge down slides them up the screen, however the
+    /// camera has turned. Gravity always presses books onto the table, with at most
+    /// `maximumTilt` of it sideways and a small dead zone so a steady hand leaves the pile asleep.
+    static func gravity(
+        device: SIMD3<Double>, reference: SIMD3<Double>, yaw: Float
+    ) -> SIMD3<Float> {
         let change = SIMD3<Float>(device - reference)
         var sideways = SIMD2(change.x, -change.y) * 1.4
         let length = simd_length(sideways)
@@ -229,21 +233,38 @@ enum PileLayout {
         } else if length > maximumTilt {
             sideways *= maximumTilt / length
         }
-        return SIMD3(sideways.x, -1, sideways.y) * gravity
+        // The unturned camera's right is +x and its up the table is -z.
+        return simd_quatf(angle: yaw, axis: [0, 1, 0]).act(
+            SIMD3(sideways.x, -1, sideways.y) * gravity)
+    }
+
+    /// The middle of an image of `size` at the width-to-height `aspect`, as `Book3DView` fills
+    /// and clips its front, so a cover outside a box's aspect range is trimmed, not stretched.
+    static func crop(_ size: CGSize, to aspect: CGFloat) -> CGRect {
+        let rect =
+            size.width > size.height * aspect
+            ? CGRect(
+                x: (size.width - size.height * aspect) / 2, y: 0, width: size.height * aspect,
+                height: size.height)
+            : CGRect(
+                x: 0, y: (size.height - size.width / aspect) / 2, width: size.width,
+                height: size.width / aspect)
+        return rect.integral
     }
 }
 
 /// The pile's RealityKit content: a wooden table, invisible walls and ceiling, warm lights, and
 /// one rigid body per book.
 ///
-/// Books arrive a wave at a time. Each wave waits only for its own covers, fonts, and textures,
-/// so the first books fall within a second or two while later covers download. A new drop
-/// reuses the textures of books it already built.
+/// Books arrive a wave at a time. Each wave waits for its own fonts and textures, and at most
+/// `coverWait` for its covers, so the first books fall within a second or two while later
+/// covers download. A new drop reuses the textures of books whose look has not changed.
 ///
-/// GPU memory stays bounded by the texture sizes. A cover is at most 256 pixels on its long
-/// side (about 171 × 256 × 4 bytes, 233 KB with mipmaps), and a spine is 384 pixels long and 5
-/// to 20 percent as thick (39 to 158 KB with mipmaps). Three hundred books therefore need about
-/// 90 MB, and at most 117 MB, plus 6 MB for the table. Each texture has one material, and books
+/// GPU memory stays bounded by the texture sizes. A cover is at most 224 pixels on its long
+/// side, cropped to its box's 0.55 to 0.85 aspect: 149 × 224 × 4 bytes (178 KB with mipmaps)
+/// for a 2:3 cover, and at most 190 × 224 (227 KB). A spine is 384 pixels long and 5 to 20
+/// percent as thick (39 to 158 KB with mipmaps). Three hundred books therefore need about
+/// 75 MB, and at most 116 MB, plus 6 MB for the table. Each texture has one material, and books
 /// share the page and cloth materials, so materials add nothing per book beyond their textures.
 @MainActor
 final class BookPileScene {
@@ -251,7 +272,8 @@ final class BookPileScene {
     let root = Entity()
     var canTilt: Bool { motion.isDeviceMotionAvailable }
 
-    private static let coverPixels = 256
+    private static let coverPixels = 224
+    private static let coverWait = Duration.seconds(1.5)
     private static let spineLength: CGFloat = 384
     private static let paper = PhysicsMaterialResource.generate(
         staticFriction: 0.6, dynamicFriction: 0.45, restitution: 0)
@@ -276,9 +298,10 @@ final class BookPileScene {
     private lazy var pages = Self.surface(
         nil, tint: UIColor(red: 0.93, green: 0.90, blue: 0.82, alpha: 1), roughness: 0.85)
     private var drag: Drag?
-    /// Whether the books stand still in tidy stacks, as kinematic bodies, until the reader
-    /// picks one up. Tall stacks of uneven books can slip as the simulation settles them, and
-    /// Reduce Motion asks for no motion the reader did not start.
+    /// Whether the books stand still in tidy stacks, as kinematic bodies. Picking up a book
+    /// frees only that book and the books resting on it. Tall stacks of uneven books can slip
+    /// as the simulation settles them, and Reduce Motion asks for no motion the reader did not
+    /// start.
     private var holdsStill = false
     private var tiltReference: SIMD3<Double>?
     private var gravity = SIMD3<Float>(0, -PileLayout.gravity, 0)
@@ -290,10 +313,12 @@ final class BookPileScene {
         let generation: Int
     }
 
-    /// A book's size and materials, in `bookMesh` slot order: cover, spine, pages, cloth.
+    /// A book's size and materials, in `bookMesh` slot order: cover, spine, pages, cloth, and
+    /// the look they were drawn with, so a changed design or a newly loaded font redraws them.
     private struct BookParts {
         let size: SIMD3<Float>
-        let materials: [any RealityKit.Material]
+        var materials: [any RealityKit.Material]
+        let look: SpineLook
     }
 
     /// A book held under a finger. It is kinematic, steered toward `target` on a plane above
@@ -486,34 +511,74 @@ final class BookPileScene {
         setGravity([0, -PileLayout.gravity, 0])
     }
 
-    /// Builds the parts of the books that lack them. Covers download in parallel; spines render
-    /// on the main actor once their fonts load, because `ImageRenderer` draws synchronously.
+    /// Removes the books and their textures while the pile is out of sight. The next `fill`
+    /// drops the books again.
+    func release() {
+        reset(keeping: [])
+        cloths = [:]
+        plan = []
+        planKey = nil
+    }
+
+    /// Builds the parts of the books that lack them or whose look changed. Covers download in
+    /// parallel; spines render on the main actor once their fonts load, because
+    /// `ImageRenderer` draws synchronously.
     ///
-    /// Once this wave's covers arrive, the covers of `upcoming` books start downloading, so the
-    /// next wave finds them in the cover store while this one builds and falls. The cover store
-    /// shares those downloads with the next wave's requests.
+    /// A book whose cover takes longer than `coverWait` is built with its title on the cloth,
+    /// and its cover replaces the title when the download finishes. Once this wave's covers
+    /// arrive or time out, the covers of `upcoming` books start downloading, so the next wave
+    /// finds them in the cover store while this one builds and falls. The cover store shares
+    /// downloads still in flight with later requests.
     private func prepare(
         _ books: [CloudBook], prefetching upcoming: [CloudBook], model: AppModel
     ) async {
-        let missing = books.filter { parts[$0.id] == nil }
+        let missing = books.filter { parts[$0.id]?.look != model.look(for: $0) }
         guard !missing.isEmpty else { return }
         await model.fonts.load(missing.compactMap { model.library?.designs[$0.id] })
         let covers = model.covers
         let pixels = Self.coverPixels
-        let images = await withTaskGroup(of: (Int, UIImage?).self) { group in
-            for book in missing {
-                group.addTask { (book.id, await covers.image(for: book, maximumPixelSize: pixels)) }
-            }
-            var images: [Int: UIImage] = [:]
-            for await (id, image) in group { images[id] = image }
-            return images
+        let (arrivals, delivery) = AsyncStream.makeStream(of: (Int, UIImage?).self)
+        for book in missing {
+            Task { delivery.yield((book.id, await covers.image(for: book, maximumPixelSize: pixels))) }
         }
+        let deadline = Task {
+            try? await Task.sleep(for: Self.coverWait)
+            delivery.finish()
+        }
+        var arrived = Set<Int>()
+        var images: [Int: UIImage] = [:]
+        for await (id, image) in arrivals {
+            arrived.insert(id)
+            images[id] = image
+            if arrived.count == missing.count { break }
+        }
+        deadline.cancel()
         for book in upcoming where parts[book.id] == nil {
             Task { _ = await covers.image(for: book, maximumPixelSize: pixels) }
         }
         for book in missing where !Task.isCancelled {
             parts[book.id] = await makeParts(
                 book, cover: images[book.id], look: model.look(for: book))
+            if !arrived.contains(book.id) {
+                Task { [weak self] in
+                    guard let cover = await covers.image(for: book, maximumPixelSize: pixels)
+                    else { return }
+                    await self?.addCover(cover, to: book.id)
+                }
+            }
+        }
+    }
+
+    /// Puts a cover that arrived after its book was built onto the book's front, cropped to
+    /// the book's box, and onto the book in the pile.
+    private func addCover(_ cover: UIImage, to id: Int) async {
+        guard let size = parts[id]?.size, let image = Self.crop(cover, to: size),
+            let texture = await Self.texture(image)
+        else { return }
+        let material = Self.coverSurface(texture)
+        parts[id]?.materials[0] = material
+        for case let book as ModelEntity in shelf.children where bookIDs[book.id] == id {
+            book.children.first?.components[ModelComponent.self]?.materials[0] = material
         }
     }
 
@@ -527,7 +592,7 @@ final class BookPileScene {
         // Facing the camera, `Book3DView` draws only its front: the cover, or the title on the
         // spine's cloth when there is none.
         let front =
-            cover?.cgImage
+            cover.flatMap { Self.crop($0, to: size) }
             ?? Self.render(
                 Book3DView(
                     book: book, look: look, cover: nil, height: CGFloat(Self.coverPixels), yaw: 0,
@@ -543,10 +608,11 @@ final class BookPileScene {
         return BookParts(
             size: size,
             materials: [
-                coverTexture.map { Self.surface($0, roughness: 0.5, specular: 0.25) } ?? cloth,
+                coverTexture.map(Self.coverSurface) ?? cloth,
                 spineTexture.map { Self.surface($0, roughness: 0.56) } ?? cloth,
                 pages, cloth,
-            ])
+            ],
+            look: look)
     }
 
     private func spawn(_ slot: PileSlot, mode: PhysicsBodyMode) {
@@ -593,7 +659,9 @@ final class BookPileScene {
         if motion.isDeviceMotionActive, let reading = motion.deviceMotion?.gravity {
             let device = SIMD3(reading.x, reading.y, reading.z)
             if tiltReference == nil { tiltReference = device }
-            setGravity(PileLayout.gravity(device: device, reference: tiltReference ?? device))
+            setGravity(
+                PileLayout.gravity(
+                    device: device, reference: tiltReference ?? device, yaw: view.yaw))
         }
     }
 
@@ -605,9 +673,17 @@ final class BookPileScene {
             let position = book.position(relativeTo: root)
             guard let grabbed = PileCamera.intersect(ray, height: position.y) else { return }
             if holdsStill {
-                // Lets the stacks respond to the book leaving them.
-                holdsStill = false
-                for case let other as ModelEntity in shelf.children { setMode(.dynamic, of: other) }
+                // Lets the books resting on this one settle into its place. Stacks stand at
+                // least 2.3 units apart, so other stacks hold still.
+                for case let other as ModelEntity in shelf.children {
+                    let resting = other.position(relativeTo: root)
+                    if resting.y > position.y,
+                        simd_distance(SIMD2(resting.x, resting.z), SIMD2(position.x, position.z))
+                            < 0.5
+                    {
+                        setMode(.dynamic, of: other)
+                    }
+                }
             }
             setMode(.kinematic, of: book)
             let height = min(position.y + 1.2, PileLayout.ceiling - 2)
@@ -692,6 +768,18 @@ final class BookPileScene {
     private static func texture(_ image: CGImage?) async -> TextureResource? {
         guard let image else { return nil }
         return try? await TextureResource(image: image, options: .init(semantic: .color))
+    }
+
+    /// The middle of `cover` at the width-to-height aspect of a box of `size`.
+    private static func crop(_ cover: UIImage, to size: SIMD3<Float>) -> CGImage? {
+        guard let image = cover.cgImage else { return nil }
+        return image.cropping(
+            to: PileLayout.crop(
+                CGSize(width: image.width, height: image.height), to: CGFloat(size.x / size.y)))
+    }
+
+    private static func coverSurface(_ texture: TextureResource) -> PhysicallyBasedMaterial {
+        surface(texture, roughness: 0.5, specular: 0.25)
     }
 
     private static func render(_ content: some View) -> CGImage? {
@@ -804,7 +892,8 @@ final class BookPileScene {
             try? await Task.sleep(for: .seconds(4))
             if let tilt, tilt.count == 2 {
                 setGravity(
-                    PileLayout.gravity(device: [tilt[0], tilt[1] - 1, 0], reference: [0, -1, 0]))
+                    PileLayout.gravity(
+                        device: [tilt[0], tilt[1] - 1, 0], reference: [0, -1, 0], yaw: view.yaw))
             }
             guard throwsBook, let book = Array(shelf.children).last else { return }
             let start = book.position(relativeTo: root)
