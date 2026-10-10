@@ -234,8 +234,9 @@ enum PileLayout {
             sideways *= maximumTilt / length
         }
         // The unturned camera's right is +x and its up the table is -z.
-        return simd_quatf(angle: yaw, axis: [0, 1, 0]).act(
-            SIMD3(sideways.x, -1, sideways.y) * gravity)
+        return simd_quatf(angle: yaw, axis: [0, 1, 0])
+            .act(
+                SIMD3(sideways.x, -1, sideways.y) * gravity)
     }
 
     /// The middle of an image of `size` at the width-to-height `aspect`, as `Book3DView` fills
@@ -539,7 +540,9 @@ final class BookPileScene {
         let pixels = Self.coverPixels
         let (arrivals, delivery) = AsyncStream.makeStream(of: (Int, UIImage?).self)
         for book in missing {
-            Task { delivery.yield((book.id, await covers.image(for: book, maximumPixelSize: pixels))) }
+            Task {
+                delivery.yield((book.id, await covers.image(for: book, maximumPixelSize: pixels)))
+            }
         }
         let deadline = Task {
             try? await Task.sleep(for: Self.coverWait)
