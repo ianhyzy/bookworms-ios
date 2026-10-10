@@ -22,3 +22,5 @@ Every tab depends on the library that the Apple TV app uploads to the reviewer's
 ## Signed device checks
 
 Check these on a signed iPhone with the Apple TV on the same iCloud account: the library loads; **Generate now** saves designs and continues after leaving the app; the charging task runs overnight; a worklist push schedules it; the Spines tab shows the daily limit; and the Apple TV caches the new designs.
+
+Check the Shelf tab's **Pile** on a recent iPhone with the full library, in an optimized build: frame rate and memory during and after the drop, shadows, tilt, throwing, and whether the Reduce Motion stacks stay standing after a book is picked up. The Simulator does not report motion, and its physics and rendering timing differ from a device.

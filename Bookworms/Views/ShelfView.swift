@@ -1,15 +1,16 @@
 import SwiftUI
 
-/// The library as a 3D carousel of spines, with a caption for the centered book.
+/// The library as a 3D carousel of spines, with a caption for the centered book, or as a pile of
+/// books on a table (`BookPileView`).
 ///
-/// The carousel shows the library snapshot that `AppModel` holds; sorting and filtering happen
-/// here when the snapshot or the options change, never while scrolling.
+/// Both show the library snapshot that `AppModel` holds; sorting and filtering happen here when
+/// the snapshot or the options change, never while scrolling.
 struct ShelfView: View {
     @Environment(AppModel.self) private var model
-    @AppStorage("BookwormsShelfMode") private var mode = ShelfMode.stack
+    @AppStorage("BookwormsShelfMode") private var mode = ShelfPresentation.stack
     @AppStorage("BookwormsShelfSort") private var sort = ShelfSort.finished
     @AppStorage("BookwormsShelfDesignedOnly") private var designedOnly = false
-    /// The centered book, shared by both presentations so switching keeps the reader's place.
+    /// The centered book, shared by both carousel modes so switching keeps the reader's place.
     @State private var centeredID: Int?
     @State private var path: [Int] = []
     @Namespace private var namespace
@@ -58,16 +59,18 @@ struct ShelfView: View {
                 } actions: {
                     Button("Show all books") { designedOnly = false }
                 }
-            } else {
+            } else if let carousel = mode.carousel {
                 VStack(spacing: 0) {
                     SpineCarousel(
-                        books: books, mode: mode, centeredID: $centeredID, namespace: namespace
+                        books: books, mode: carousel, centeredID: $centeredID, namespace: namespace
                     ) { path.append($0.id) }
                     ShelfCaption(books: books, designs: library.designs, centeredID: $centeredID)
                         // Larger sizes overflow the caption's fixed height; the book's details
                         // show the same record at any size.
                         .dynamicTypeSize(...DynamicTypeSize.accessibility3)
                 }
+            } else {
+                BookPileView(books: books) { path.append($0.id) }
             }
         } else if model.isLoading {
             ProgressView("Loading your library")
@@ -90,7 +93,7 @@ struct ShelfView: View {
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .principal) {
             Picker("Presentation", selection: $mode) {
-                ForEach(ShelfMode.allCases) { Text($0.title).tag($0) }
+                ForEach(ShelfPresentation.allCases) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)
             .fixedSize()
@@ -234,6 +237,17 @@ enum ShelfPalette {
     static let lamp = Color(red: 1, green: 0.8, blue: 0.56)
     static let paper = Color(red: 0.95, green: 0.9, blue: 0.82)
     static let gold = Color(red: 0.98, green: 0.76, blue: 0.36)
+}
+
+/// The shelf's presentations: the carousel's two modes and the physics pile. The raw values
+/// match `ShelfMode`, so a saved carousel mode carries over.
+enum ShelfPresentation: String, CaseIterable, Identifiable {
+    case stack, shelf, pile
+
+    var id: Self { self }
+    /// The carousel mode, or `nil` for the pile.
+    var carousel: ShelfMode? { ShelfMode(rawValue: rawValue) }
+    var title: String { carousel?.title ?? "Pile" }
 }
 
 /// How the shelf orders books.

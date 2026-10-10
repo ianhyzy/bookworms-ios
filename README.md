@@ -32,8 +32,22 @@ The **Shelf** tab shows every book as a spine in its saved design, or in a plain
 
 - **Stack** (default) lays the spines flat and scrolls them vertically as a 3D wheel.
 - **Shelf** stands the spines upright, as on the Apple TV, and scrolls them horizontally like Cover Flow.
+- **Pile** drops every book onto a wooden table as a physics toy. See [Pile](#pile).
 - The caption shows the centered book's title, author, finish date, your rating, and who designed the spine. Sort by finish date, title, author, or rating, or show designed books only.
 - Tap the centered spine for details: a 3D book you can turn with a drag, its reading details, the design's font and colors, and **Share**.
+
+### Pile
+
+**Pile** shows the books in the shelf's sort and filter order as RealityKit rigid bodies that fall onto a table in waves of 16 and pile up.
+
+- Each book is a box the size of a real book: 21 to 24 cm tall, as wide as its cover's aspect ratio allows (2:3 without a cover), and as thick as its page count suggests. The front shows the cover, cropped to the book's shape as on its details screen, the spine shows the saved design rendered by `SpineView`, the page edges are cream, and the back is the spine's cloth color.
+- Drag a book to pick it up and throw it, tap one for its details, pinch to zoom toward a point, and turn two fingers to look around the pile. **Drop again** starts a new drop and redraws books whose design or font changed since the last one.
+- On an iPhone that reports motion, tilting the phone tips the table. The pile responds to the change from how you held the phone when tilting began, up to about 27 degrees, and books slide toward the edge of the screen you tip down, however you have turned the view. Turn **Tilt to move books** off in the toolbar to keep the table level.
+- With **Reduce Motion** on, the books appear in tidy stacks, spines toward you, and tilt is off. The stacks hold still: picking up a book frees only that book and the books resting on it. **Stack again** replaces **Drop again**.
+- Invisible walls keep the books between the navigation bar and the tab bar. The view keeps its pile while you open a book and come back. Switching to another tab, **Stack**, or **Shelf** releases the books and their textures, and the books drop again when you return.
+- Each wave waits at most 1.5 seconds for its own covers, and the next wave's covers download while it falls. A book whose cover arrives later falls with its title on its cloth color, and the cover replaces the title when it arrives. Textures stay small: covers are at most 224 pixels and spines 384 pixels long, an estimated 75 MB of GPU memory for 300 books and at most 116 MB.
+
+VoiceOver reads the pile as one element with its book count and a **Drop again** action; choose **Stack** or **Shelf** to go through books one at a time. RealityKit shadows, frame rate, and the stability of tall stacks have been checked only in the Simulator; check them on a device.
 
 ### Share
 
@@ -67,7 +81,7 @@ The Simulator usually has no iCloud library. `script/load-preview-data.py` conve
 
 The preview data contains real reading history. It stays in ignored `.local/` folders and the Simulator; do not publish screenshots made from it.
 
-Debug builds accept more launch arguments for checks that cannot tap the Simulator, such as `-BookwormsGenerateOnLaunch YES`, `-BookwormsShelfMode shelf`, `-BookwormsOpenBook <book ID>`, and `-BookwormsShareTemplate <yearStack|justFinished|topFive|spectrum|yearInBooks>`. Search the source for `"Bookworms` to find them all.
+Debug builds accept more launch arguments for checks that cannot tap the Simulator, such as `-BookwormsGenerateOnLaunch YES`, `-BookwormsShelfMode <stack|shelf|pile>`, `-BookwormsOpenBook <book ID>`, and `-BookwormsShareTemplate <yearStack|justFinished|topFive|spectrum|yearInBooks>`. For the pile, `-BookwormsPileZoom <1...2.5>` and `-BookwormsPileYaw <radians>` set the camera, and once a drop finishes, `-BookwormsPileTilt <x,y>` applies a tilt and `-BookwormsPileThrow YES` throws the top book. Search the source for `"Bookworms` to find them all.
 
 ## iCloud contract
 
@@ -95,3 +109,5 @@ The tests use fictional books and need no iCloud account, network, or model. Sim
 ## Credits
 
 Spine fonts are open-source Google Fonts families (SIL Open Font License or Apache License), downloaded at runtime with their license files. The app icon uses the Bookworms Apple TV artwork.
+
+The pile's table (`TableWood`) is [White Oak Veneer](https://polyhaven.com/a/white_oak_veneer) by Jenelle van Heerden from Poly Haven, under [CC0](https://polyhaven.com/license). The bundled file is the 2K diffuse map scaled to 1024 pixels; the app tints it a darker brown.
