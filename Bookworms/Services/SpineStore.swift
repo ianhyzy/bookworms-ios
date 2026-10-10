@@ -1,11 +1,13 @@
 import Foundation
 
-/// Where the companion reads the Apple TV library and saves spine designs.
+/// Where the companion reads the library and saves spine designs.
 ///
-/// `CloudSpineStore` is the private iCloud database the Apple TV shares. `LocalSpineStore` reads
-/// a folder of the same JSON for Simulator previews and tests, so no iCloud account is needed.
+/// `CloudSpineStore` is the private iCloud database the Apple TV shares, combined with this
+/// iPhone's own Hardcover library when it is signed in (see `WorkSource`). `LocalSpineStore`
+/// reads a folder of the same JSON for Simulator previews and tests, so no iCloud account is
+/// needed; it ignores the Hardcover sign-in.
 protocol SpineStore: Sendable {
-    /// Returns the books to design, or `nil` when the Apple TV has listed no work.
+    /// Returns the books to design, or `nil` when there is no work.
     func loadWork() async throws -> WorkContext?
     /// Returns the book's saved design when it is valid and made by this app's generator.
     func currentDesign(accountID: String, bookID: Int) async throws -> SpineDesignV1?
@@ -14,11 +16,36 @@ protocol SpineStore: Sendable {
     func isStillCurrent(_ context: WorkContext, bookID: Int) async throws -> Bool
     /// Saves `design` unless an equal or newer design for the same work already exists.
     func save(_ design: SpineDesignV1) async throws
-    /// Returns the active account's books and every valid saved design, or `nil` before the
-    /// Apple TV uploads a library.
+    /// Returns the active account's books and every valid saved design, or `nil` before there
+    /// is a library.
     func loadLibrary() async throws -> LibrarySnapshot?
     /// Subscribes to worklist changes so a silent push can schedule generation.
     func installWorklistSubscription() async throws
+}
+
+/// Where a generation run finds its account and books.
+enum WorkSource: Equatable {
+    /// The Apple TV's worklist chose the account and books from its archive.
+    case worklist
+    /// This iPhone's own Hardcover library.
+    case phone(PhoneLibrary)
+    /// The newest Hardcover snapshot in the Apple TV archive.
+    case archive
+    /// The Apple TV paused generation, and this iPhone is not signed in.
+    case none
+
+    /// A worklist that lists books decides. Without one, this iPhone's own library comes before
+    /// the archive. An empty worklist means the Apple TV turned Hardcover off, which pauses only
+    /// the archive: a signed-in iPhone still designs its own library.
+    init(worklist: SpineWorklistV1?, phone: PhoneLibrary?) {
+        if let worklist, !worklist.bookIDs.isEmpty {
+            self = .worklist
+        } else if let phone {
+            self = .phone(phone)
+        } else {
+            self = worklist == nil ? .archive : .none
+        }
+    }
 }
 
 /// Reads and writes the iCloud JSON shapes in a local folder.

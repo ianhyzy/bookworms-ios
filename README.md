@@ -2,7 +2,12 @@
 
 Bookworms for iPhone is a companion to the [Bookworms Apple TV app](../tvos/README.md). It designs book spines with Apple's Private Cloud Compute model and shares them with the Apple TV through iCloud, shows your spines as a 3D carousel, and makes share images for social media. It never asks for a Hardcover or AI API key.
 
-The app targets iOS 27 and iPhone. It reads the library that the Apple TV app uploads to the private iCloud container `iCloud.gay.ian.Bookworms`, so the Apple TV app needs **iCloud storage** turned on.
+The app targets iOS 27 and iPhone. It gets your library in one of two ways:
+
+- **From Hardcover.** Sign in to Hardcover on the iPhone, and the app reads your Hardcover library, including your reviews, directly. It then works without an Apple TV. See [Hardcover sign-in](#hardcover-sign-in).
+- **From the Apple TV.** Without a sign-in, the app reads the library that the Apple TV app uploads to the private iCloud container `iCloud.gay.ian.Bookworms`, so the Apple TV app needs **iCloud storage** turned on.
+
+Either way, designs are saved to that iCloud container, where the Apple TV picks them up.
 
 ## Features
 
@@ -16,7 +21,7 @@ The **Spines** tab shows how many books have designs, the current run, Private C
 
 Each run designs the books that need it, one at a time:
 
-1. The worklist from the Apple TV lists the active Hardcover account and its books. Apple TV builds without the worklist upload only the library; the iPhone then designs the newest Hardcover snapshot, preferring a real account ID over the legacy `hardcover` placeholder.
+1. The run picks its account and books. A worklist from the Apple TV that lists books decides, even when the iPhone is signed in to Hardcover. Without one, a signed-in iPhone designs its own Hardcover library. Otherwise the iPhone designs the newest Hardcover snapshot that the Apple TV uploaded, preferring a real account ID over the legacy `hardcover` placeholder; Apple TV builds without the worklist upload only that library. An empty worklist means the Apple TV turned Hardcover off, which stops runs unless the iPhone is signed in.
 2. The app downloads the cover over HTTPS, reads its lettering with Vision, and samples its colors.
 3. The first model request asks only which of 12 letterform styles the cover's title uses, with the cover attached and the styles in a different order for each book. If Private Cloud Compute cannot read images, the on-device model answers this question.
 4. The second request picks cloth, ink, and accent colors from the sampled palette, a weight, and up to four families from that style's open-source Google Fonts families.
@@ -25,6 +30,31 @@ Each run designs the books that need it, one at a time:
 7. The app saves a `SpineDesignV1` record with generator version `ios-pcc-v1`.
 
 A new design usually uses two or three requests. The app rechecks a book when its metadata or the generator changes, or after seven days. A book that fails waits 24 hours. Quota, network, service, and iCloud save errors stop the run and schedule the next attempt for the reset or retry time.
+
+### Hardcover sign-in
+
+The account button in the **Spines** tab's toolbar opens the Hardcover sheet. Signed out, it explains what signing in adds and offers **Connect Hardcover**. Sign-in uses the same OAuth 2.0 Device Authorization Grant, client ID, and read-only scopes as the Apple TV app (see the [Apple TV authentication guide](../tvos/docs/HARDCOVER_AUTHENTICATION.md)):
+
+1. The app requests a code from Hardcover and shows it with **Copy code**.
+2. **Open Hardcover** opens Hardcover's approval page in Safari inside the app: the link with the code filled in when Hardcover provides one, otherwise `hardcover.app/link`. Sign in to Hardcover if asked, enter the code, and allow Bookworms.
+3. The app polls Hardcover at the interval it asks for, waits 5 seconds longer after each `slow_down`, and stops when the code expires or the request is declined; **Get a new code** starts over.
+4. Once approved, the app checks the account with a `me` query, then saves the token.
+
+The signed-in sheet shows the Hardcover username, when the library last synced, **Sync now**, and **Sign out**. When Hardcover rejects the saved login (HTTP 401, or HTTP 403 with `insufficient_scope`), the sheet says so and offers **Reconnect**; the copy of the library stays until then. Other 403 responses are reported as denied requests, not as an expired login.
+
+While signed in:
+
+- The Shelf and Share tabs show the Hardcover account's own library: every book on its shelves, with the same covers, page counts, finish and start dates, ratings, community ratings, formats, genres, series, and progress as the Apple TV builds. Each book also carries your review as plain text (`CloudBook.review`, from Hardcover's `review_raw` with HTML and Markdown removed). Designs for these books still come from iCloud, matched by the same account ID the Apple TV uses (the Hardcover user ID).
+- The app downloads the library when it launches or becomes active if the copy on the iPhone is missing or more than four hours old, and when you choose **Sync now**. Any reload the app or the Shelf starts also checks this.
+- Until the first download finishes, the app shows the Apple TV's library, if there is one.
+
+**Sign out** deletes the token and the copy of the library from the iPhone and returns to the Apple TV's library. Preview mode (`-BookwormsPreviewFolder`) ignores the sign-in.
+
+#### Data on the iPhone
+
+- The access token is a Keychain item that is readable after the first unlock, never synchronizable, and limited to this device. The app sends it only to Hardcover.
+- The library, including reviews, is a file in `Caches/Bookworms`, which iOS does not back up and may delete; the app then downloads it again. The username, account ID, and last sync date are in the app's user defaults so the sheet can show them without reading the library.
+- The app only reads from Hardcover. It sends no mutations.
 
 ### Shelf
 
@@ -73,9 +103,9 @@ Images show only your own library. They include no account name or ID. Ratings a
 2. Set up signing for `gay.ian.Bookworms.iOS` with the `iCloud.gay.ian.Bookworms` container, push notifications, and the managed Private Cloud Compute capability (`com.apple.developer.private-cloud-compute`). Request that capability for the team before signing a device build; Apple grants it to members of the App Store Small Business Program.
 3. Run `script/build_and_run.sh` to build, install, and launch on a Simulator.
 
-To test on an iPhone before Apple grants the Private Cloud Compute capability, run `script/install_on_device.sh`. It signs an optimized build with `config/NoPCC.entitlements`, compiles it with `NO_PCC` so the app never creates the model, registers the iPhone with the team if needed, and installs it. Generation then reports Private Cloud Compute as unavailable; the Shelf, Pile, and Share tabs work with the iCloud library. A development-signed build reads the CloudKit Development environment, the same one development builds of the Apple TV app and the Mac companion use.
+To test on an iPhone before Apple grants the Private Cloud Compute capability, run `script/install_on_device.sh`. It signs an optimized build with `config/NoPCC.entitlements`, compiles it with `NO_PCC` so the app never creates the model, registers the iPhone with the team if needed, and installs it. Generation then reports Private Cloud Compute as unavailable; the Shelf, Pile, and Share tabs work with the iCloud or Hardcover library. A development-signed build reads the CloudKit Development environment, the same one development builds of the Apple TV app and the Mac companion use.
 
-The app shows the library it loaded last while it reloads. It reloads when it becomes active (at most every five minutes) and after a generation run that saved designs for books it had not loaded. Signing out of iCloud, or switching to an account without a library, clears the shown and cached library.
+The app shows the library it loaded last while it reloads. It reloads when it becomes active (at most every five minutes) and after a generation run that saved designs for books it had not loaded. Without a Hardcover sign-in, signing out of iCloud, or switching to an account without a library, clears the shown and cached library. Signing out of Hardcover, or signing in to another Hardcover account, also clears it before the reload.
 
 ### Preview with a local library
 
@@ -83,7 +113,18 @@ The Simulator usually has no iCloud library. `script/load-preview-data.py` conve
 
 The preview data contains real reading history. It stays in ignored `.local/` folders and the Simulator; do not publish screenshots made from it.
 
-Debug builds accept more launch arguments for checks that cannot tap the Simulator, such as `-BookwormsGenerateOnLaunch YES`, `-BookwormsShelfMode <stack|shelf|pile>`, `-BookwormsOpenBook <book ID>`, and `-BookwormsShareTemplate <yearStack|justFinished|topFive|spectrum|yearInBooks>`. For the pile, `-BookwormsPileZoom <1...2.5>` and `-BookwormsPileYaw <radians>` set the camera, and once a drop finishes, `-BookwormsPileTilt <x,y>` applies a tilt and `-BookwormsPileThrow YES` throws the top book. Search the source for `"Bookworms` to find them all.
+Debug builds accept more launch arguments for checks that cannot tap the Simulator, such as `-BookwormsGenerateOnLaunch YES`, `-BookwormsShelfMode <stack|shelf|pile>`, `-BookwormsOpenBook <book ID>`, and `-BookwormsShareTemplate <yearStack|justFinished|topFive|spectrum|yearInBooks>`. For the pile, `-BookwormsPileZoom <1...2.5>` and `-BookwormsPileYaw <radians>` set the camera, and once a drop finishes, `-BookwormsPileTilt <x,y>` applies a tilt and `-BookwormsPileThrow YES` throws the top book. With `-BookwormsShowSpines YES`, `-BookwormsShowAccount YES` opens the Hardcover sheet, and `-BookwormsStubSignIn YES` answers sign-in with the fictional code `WORM-2611` that is never approved, without contacting Hardcover. Search the source for `"Bookworms` to find them all.
+
+### Test Hardcover sign-in
+
+A real sign-in needs a person to approve it in a browser, so the unit tests use canned responses. To check it on a Simulator or iPhone:
+
+1. Launch without `-BookwormsPreviewFolder` or `-BookwormsStubSignIn`, open **Spines**, and tap the account button.
+2. Tap **Connect Hardcover**, then **Open Hardcover**. Sign in to Hardcover in the sheet, check that the code is filled in or paste it with **Copy code**, and allow Bookworms.
+3. Tap **Done** to close Safari. Within a few seconds the sheet shows your username and a sync in progress, and the Shelf tab then shows your Hardcover library.
+4. Tap **Sync now** and check that **Last synced** updates. Tap **Sign out** and check that the Shelf returns to the Apple TV library or its empty state.
+
+To check **Reconnect**, revoke Bookworms in Hardcover's account settings, then tap **Sync now**.
 
 ## iCloud contract
 
@@ -106,7 +147,7 @@ xcodebuild -project Bookworms.xcodeproj -scheme Bookworms \
   OTHER_SWIFT_FLAGS='-disable-sandbox' test
 ```
 
-The tests use fictional books and need no iCloud account, network, or model. Simulator runs check rendering and the generation flow against the preview folder; the Simulator does not run background tasks. Check a signed device build for iCloud access, push delivery, the charging task, continued processing, and Private Cloud Compute quotas, and confirm that the Apple TV caches the designs.
+The tests use fictional books and canned Hardcover responses, and need no iCloud account, network, Hardcover login, or model. The Hardcover Keychain test uses its own service name. Simulator runs check rendering and the generation flow against the preview folder; the Simulator does not run background tasks. Check a signed device build for iCloud access, push delivery, the charging task, continued processing, and Private Cloud Compute quotas, and confirm that the Apple TV caches the designs.
 
 ## Credits
 

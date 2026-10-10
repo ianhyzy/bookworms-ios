@@ -2,10 +2,12 @@ import FoundationModels
 import SwiftUI
 
 /// The **Spines** tab: design coverage, generator progress, the Private Cloud Compute quota,
-/// and the charging preference.
+/// the charging preference, and where the library comes from. The toolbar opens the Hardcover
+/// account sheet.
 struct GenerationView: View {
     @Environment(AppModel.self) private var model
     @Environment(GenerationController.self) private var generation
+    @State private var showsAccount = false
 
     var body: some View {
         @Bindable var generation = generation
@@ -21,10 +23,26 @@ struct GenerationView: View {
                         "iOS runs generation when this iPhone is charging and idle on a network, typically overnight. The Apple TV picks up new designs through iCloud."
                     )
                 }
-                appleTV
+                librarySource
             }
             .navigationTitle("Spines")
+            .toolbar {
+                Button(
+                    "Hardcover account",
+                    systemImage: model.account.isSignedIn
+                        ? "person.crop.circle.fill" : "person.crop.circle"
+                ) { showsAccount = true }
+            }
+            .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
             .task { await generation.refreshModelStatus() }
+            #if DEBUG
+                // `-BookwormsShowAccount YES` opens the account sheet for Simulator checks.
+                .onAppear {
+                    if UserDefaults.standard.bool(forKey: "BookwormsShowAccount") {
+                        showsAccount = true
+                    }
+                }
+            #endif
         }
     }
 
@@ -94,7 +112,9 @@ struct GenerationView: View {
         }
     }
 
-    @ViewBuilder private var appleTV: some View {
+    /// The library's source: this iPhone's Hardcover sign-in, or the Apple TV's iCloud upload.
+    @ViewBuilder private var librarySource: some View {
+        let fromHardcover = model.account.isSignedIn && !model.isPreview
         Section {
             if let library = model.library {
                 LabeledContent(
@@ -102,14 +122,21 @@ struct GenerationView: View {
                     value: library.syncedAt.formatted(.relative(presentation: .named)))
             } else if let error = model.loadError {
                 Text(error)
+            } else if fromHardcover {
+                Text("Loading your Hardcover library.")
             } else {
                 Text("Waiting for the Apple TV to upload its library to iCloud.")
+                Button("Connect Hardcover instead") { showsAccount = true }
             }
         } header: {
-            Text("Apple TV")
+            Text(fromHardcover ? "Hardcover" : "Apple TV")
         } footer: {
             if model.isPreview {
                 Text("Preview mode reads a local library. Designs stay on this iPhone.")
+            } else if fromHardcover {
+                Text(
+                    "Your books come from your Hardcover account on this iPhone. When your Apple TV lists books to design, Bookworms designs those instead."
+                )
             }
         }
     }

@@ -3,9 +3,11 @@ import Observation
 
 /// The library the app shows: the active Hardcover account's books and their saved designs.
 ///
-/// Reads iCloud through `CloudSpineStore`. Launching with `-BookwormsPreviewFolder <path>` reads
-/// a local folder instead (see `script/load-preview-data.py`); a relative path resolves inside
-/// the app's `Caches/Bookworms` folder. The last iCloud library is cached so launch shows it immediately.
+/// Signed in to Hardcover on this iPhone, the books come from that account (`HardcoverAccount`);
+/// otherwise from the Apple TV's iCloud archive. Either way `CloudSpineStore` adds the designs
+/// from iCloud. Launching with `-BookwormsPreviewFolder <path>` reads a local folder instead and
+/// ignores the sign-in (see `script/load-preview-data.py`); a relative path resolves inside the
+/// app's `Caches/Bookworms` folder. The last library is cached so launch shows it immediately.
 @MainActor
 @Observable
 final class AppModel {
@@ -21,6 +23,8 @@ final class AppModel {
     /// A book that a share request named; the Share tab shows it, then clears this.
     var shareBookID: Int?
     let fonts = SpineFonts()
+    /// This iPhone's own Hardcover sign-in and library.
+    let account = HardcoverAccount()
     @ObservationIgnored let covers = CoverStore()
     @ObservationIgnored let store: any SpineStore
     /// Whether the app reads a local preview folder instead of iCloud.
@@ -50,6 +54,7 @@ final class AppModel {
                 setLibrary(cached)
             }
         }
+        account.onLibraryChange = { [unowned self] in self.accountLibraryChanged() }
     }
 
     /// Opens the Share tab with `book` as the featured book.
@@ -65,24 +70,32 @@ final class AppModel {
 
     /// Reloads the library and designs, then loads the fonts the designs name.
     ///
+    /// When signed in to Hardcover, first downloads the account's library if the copy on this
+    /// iPhone is missing or a few hours old; a failed download keeps that copy and is reported.
     /// An iCloud account without a library, or no iCloud account, clears the shown and cached
-    /// library, so another account's reading history never stays visible. Other errors keep the
-    /// cached library and report the error.
+    /// Apple TV library, so another account's reading history never stays visible. Other errors
+    /// keep the cached library and report the error.
     func reload() async {
         guard !isLoading else { return }
         isLoading = true
         appliedDuringLoad = []
+        if !isPreview { await account.syncIfStale() }
+        let revision = account.libraryRevision
         do {
-            if var snapshot = try await store.loadLibrary() {
-                snapshot.designs = LibrarySnapshot.latestDesigns(
-                    Array(snapshot.designs.values) + appliedDuringLoad,
-                    accountID: snapshot.accountID, books: snapshot.books)
-                setLibrary(snapshot)
-                persist()
-            } else {
-                clearLibrary()
+            let loaded = try await store.loadLibrary()
+            // A sign-in, sync, or sign-out during the load replaces this result below.
+            if revision == account.libraryRevision {
+                if var snapshot = loaded {
+                    snapshot.designs = LibrarySnapshot.latestDesigns(
+                        Array(snapshot.designs.values) + appliedDuringLoad,
+                        accountID: snapshot.accountID, books: snapshot.books)
+                    setLibrary(snapshot)
+                    persist()
+                } else {
+                    clearLibrary()
+                }
+                loadError = isPreview ? nil : account.syncError
             }
-            loadError = nil
         } catch CompanionError.noICloudAccount, CompanionError.iCloudRestricted {
             clearLibrary()
             loadError = "Sign in to iCloud with the account your Apple TV uses."
@@ -93,8 +106,19 @@ final class AppModel {
         isLoading = false
         lastReload = .now
         needsReload = false
+        // The change's own reload returned early because this one was running.
+        if revision != account.libraryRevision { return await reload() }
         // Fonts load after `isLoading` clears, so a slow download never blocks the next reload.
         if let designs = library?.designs.values { await fonts.load(Array(designs)) }
+    }
+
+    /// Shows the new phone library after a Hardcover sign-in, sync, or sign-out. The shown
+    /// library clears first when it belongs to another account or the reader signed out, so
+    /// neither another account's books nor the signed-out account's reviews stay visible.
+    private func accountLibraryChanged() {
+        guard !isPreview else { return }
+        if library?.accountID != account.summary?.accountID { clearLibrary() }
+        Task { await reload() }
     }
 
     /// Reloads when the library is more than five minutes old or a saved design named a book

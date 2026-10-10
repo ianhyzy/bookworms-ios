@@ -1,8 +1,9 @@
 import CloudKit
 import Foundation
 
-/// Reads the Apple TV archive and publishes one portable design per Hardcover book in the
-/// private database of the shared iCloud container.
+/// Reads the Apple TV archive, or this iPhone's own Hardcover library when it is signed in, and
+/// publishes one portable design per Hardcover book in the private database of the shared iCloud
+/// container.
 actor CloudSpineStore: SpineStore {
     private let container = CKContainer(identifier: CloudContract.containerID)
     private var database: CKDatabase { container.privateCloudDatabase }
@@ -28,16 +29,23 @@ actor CloudSpineStore: SpineStore {
     func loadWork() async throws -> WorkContext? {
         let cloudUserRecordName = try await checkedUserRecordName()
         let worklist = try await fetchWorklist()
-        // An empty worklist means the Apple TV turned Hardcover off: there is no work.
-        if let worklist, worklist.bookIDs.isEmpty { return nil }
-        guard let archive = try await fetchArchive() else {
-            if worklist != nil { throw CompanionError.waitingForLibrary }
+        switch WorkSource(worklist: worklist, phone: PhoneLibrary.load()) {
+        case .none:
             return nil
+        case .phone(let phone):
+            return WorkContext(
+                accountID: phone.accountID, syncedAt: phone.syncedAt, books: phone.books,
+                followsWorklist: false, cloudUserRecordName: cloudUserRecordName)
+        case .worklist, .archive:
+            guard let archive = try await fetchArchive() else {
+                if worklist != nil { throw CompanionError.waitingForLibrary }
+                return nil
+            }
+            let (snapshot, books) = try archive.workSource(for: worklist)
+            return WorkContext(
+                accountID: snapshot.accountID, syncedAt: snapshot.syncedAt, books: books,
+                followsWorklist: worklist != nil, cloudUserRecordName: cloudUserRecordName)
         }
-        let (snapshot, books) = try archive.workSource(for: worklist)
-        return WorkContext(
-            accountID: snapshot.accountID, syncedAt: snapshot.syncedAt, books: books,
-            followsWorklist: worklist != nil, cloudUserRecordName: cloudUserRecordName)
     }
 
     func currentDesign(accountID: String, bookID: Int) async throws -> SpineDesignV1? {
@@ -57,8 +65,15 @@ actor CloudSpineStore: SpineStore {
     func isStillCurrent(_ context: WorkContext, bookID: Int) async throws -> Bool {
         let worklist = try await fetchWorklist()
         guard context.followsWorklist else {
-            // A worklist that appeared since the run started takes over on the next run.
-            return worklist == nil
+            // A worklist, or a sign-in to another account, that appeared since the run started
+            // takes over on the next run.
+            switch WorkSource(worklist: worklist, phone: PhoneLibrary.load()) {
+            case .phone(let phone):
+                return phone.accountID == context.accountID
+                    && phone.books.contains { $0.id == bookID }
+            case .archive: return true
+            case .worklist, .none: return false
+            }
         }
         guard let worklist else { return false }
         return worklist.accountID == context.accountID
@@ -107,18 +122,39 @@ actor CloudSpineStore: SpineStore {
         throw CompanionError.cloudConflict
     }
 
+    /// Returns this iPhone's own Hardcover library when it is signed in, otherwise the Apple TV
+    /// archive, with each book's newest design.
+    ///
+    /// The phone library shows without an iCloud account, just without designs.
     func loadLibrary() async throws -> LibrarySnapshot? {
+        if let phone = PhoneLibrary.load() {
+            var snapshot = LibrarySnapshot(
+                accountID: phone.accountID, syncedAt: phone.syncedAt, books: phone.books,
+                designs: [:])
+            do {
+                _ = try await checkedUserRecordName()
+                snapshot.designs = try await designs(accountID: phone.accountID, books: phone.books)
+            } catch CompanionError.noICloudAccount, CompanionError.iCloudRestricted {}
+            return snapshot
+        }
         _ = try await checkedUserRecordName()
         guard let archive = try await fetchArchive() else { return nil }
         // An empty worklist pauses generation only; the library still shows every book.
         let shown = (try? await fetchWorklist()).flatMap { $0.bookIDs.isEmpty ? nil : $0 }
         let (snapshot, books) =
             try (try? archive.workSource(for: shown)) ?? archive.workSource(for: nil)
+        return LibrarySnapshot(
+            accountID: snapshot.accountID, syncedAt: snapshot.syncedAt, books: books,
+            designs: try await designs(accountID: snapshot.accountID, books: books))
+    }
+
+    private func designs(accountID: String, books: [CloudBook]) async throws -> [Int:
+        SpineDesignV1]
+    {
         var designs: [SpineDesignV1] = []
         let names = books.map {
             CKRecord.ID(
-                recordName: CloudContract.designRecordName(
-                    accountID: snapshot.accountID, bookID: $0.id))
+                recordName: CloudContract.designRecordName(accountID: accountID, bookID: $0.id))
         }
         // CloudKit limits one fetch to a few hundred IDs; batches of 100 match the Apple TV.
         for start in stride(from: 0, to: names.count, by: 100) {
@@ -130,10 +166,7 @@ actor CloudSpineStore: SpineStore {
                 }
             }
         }
-        return LibrarySnapshot(
-            accountID: snapshot.accountID, syncedAt: snapshot.syncedAt, books: books,
-            designs: LibrarySnapshot.latestDesigns(
-                designs, accountID: snapshot.accountID, books: books))
+        return LibrarySnapshot.latestDesigns(designs, accountID: accountID, books: books)
     }
 
     private func checkedUserRecordName() async throws -> String {
