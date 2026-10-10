@@ -151,12 +151,11 @@ final class HardcoverTests: XCTestCase {
 
     @MainActor
     func testRejectedLoginAsksToReconnectAndKeepsTheLogin() async throws {
-        let tokens = HardcoverTokenStore(
-            service: "gay.ian.Bookworms.iOS.tests.\(UUID().uuidString)")
-        try tokens.save("expired-token")
+        let (tokens, defaults) = try Self.signedInStores()
         defer { tokens.delete() }
         let account = HardcoverAccount(
-            tokens: tokens, client: HardcoverClient(transport: Self.reply(401, "")))
+            tokens: tokens, client: HardcoverClient(transport: Self.reply(401, "")),
+            defaults: defaults)
         let revision = account.libraryRevision
         XCTAssertTrue(account.isSignedIn)
 
@@ -167,6 +166,17 @@ final class HardcoverTests: XCTestCase {
         XCTAssertEqual(account.libraryRevision, revision, "A failed sync keeps the cached library")
     }
 
+    @MainActor
+    func testLoginWithoutItsAccountSummaryIsSignedOut() throws {
+        // The Keychain keeps a login after the app is deleted; user defaults do not.
+        let (tokens, defaults) = try Self.signedInStores()
+        defer { tokens.delete() }
+        defaults.removeObject(forKey: HardcoverAccount.summaryKey)
+        let account = HardcoverAccount(tokens: tokens, defaults: defaults)
+        XCTAssertFalse(account.isSignedIn)
+        XCTAssertNil(tokens.read(), "A leftover login is deleted")
+    }
+
     // MARK: - Library
 
     func testLibraryNormalizesFixturePage() async throws {
@@ -175,7 +185,9 @@ final class HardcoverTests: XCTestCase {
             XCTAssertFalse(body.contains("mutation"))
             if body.contains("query Account") { return Self.respond(200, Self.me, to: request) }
             XCTAssertTrue(body.contains(#""user":4242"#))
-            XCTAssertTrue(body.contains("review_raw"))
+            // The Apple TV reads `review` with the same scopes; `review_raw` is unproven.
+            XCTAssertTrue(body.contains("status_id review"))
+            XCTAssertFalse(body.contains("review_raw"))
             return Self.respond(200, Self.libraryPage, to: request)
         }
         let library = try await client.library(token: "fictional-token")
@@ -228,12 +240,21 @@ final class HardcoverTests: XCTestCase {
             version: 1, accountID: "4242", syncedAt: .distantPast, bookIDs: [1])
         let paused = SpineWorklistV1(
             version: 1, accountID: "4242", syncedAt: .distantPast, bookIDs: [])
-        XCTAssertEqual(WorkSource(worklist: listing, phone: phone), .worklist)
-        XCTAssertEqual(WorkSource(worklist: listing, phone: nil), .worklist)
-        XCTAssertEqual(WorkSource(worklist: nil, phone: phone), .phone(phone))
-        XCTAssertEqual(WorkSource(worklist: paused, phone: phone), .phone(phone))
-        XCTAssertEqual(WorkSource(worklist: nil, phone: nil), .archive)
-        XCTAssertEqual(WorkSource(worklist: paused, phone: nil), .none)
+        func source(_ worklist: SpineWorklistV1?, _ signedIn: String?, _ phone: PhoneLibrary?)
+            -> WorkSource
+        {
+            WorkSource(worklist: worklist, signedInAccountID: signedIn, phone: phone)
+        }
+        XCTAssertEqual(source(listing, "4242", phone), .worklist)
+        XCTAssertEqual(source(listing, nil, nil), .worklist)
+        XCTAssertEqual(source(nil, "4242", phone), .phone(phone))
+        XCTAssertEqual(source(paused, "4242", phone), .phone(phone))
+        XCTAssertEqual(source(nil, nil, nil), .archive)
+        XCTAssertEqual(source(paused, nil, nil), .none)
+        // Signed in without the account's own copy, such as before the first download or after
+        // iOS evicts it, nothing is designed: the archive may belong to another account.
+        XCTAssertEqual(source(nil, "4242", nil), .none)
+        XCTAssertEqual(source(nil, "7", phone), .none)
     }
 
     // MARK: - Keychain
@@ -273,6 +294,23 @@ final class HardcoverTests: XCTestCase {
             verificationURIComplete: nil, expiresIn: expiresIn, interval: interval)
     }
 
+    /// A saved login and its account summary, in a Keychain service and a user defaults suite
+    /// that only these tests use.
+    @MainActor
+    private static func signedInStores() throws -> (HardcoverTokenStore, UserDefaults) {
+        let tokens = HardcoverTokenStore(
+            service: "gay.ian.Bookworms.iOS.tests.\(UUID().uuidString)")
+        try tokens.save("fictional-token")
+        let suite = "gay.ian.Bookworms.iOS.tests.HardcoverAccount"
+        UserDefaults.standard.removePersistentDomain(forName: suite)
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.set(
+            try JSONEncoder().encode(
+                HardcoverAccount.Summary(accountID: "4242", username: "fictional_reader")),
+            forKey: HardcoverAccount.summaryKey)
+        return (tokens, defaults)
+    }
+
     /// A transport that answers every request with `status` and `body`.
     private static func reply(_ status: Int, _ body: String) -> HardcoverClient.Transport {
         { respond(status, body, to: $0) }
@@ -293,7 +331,7 @@ final class HardcoverTests: XCTestCase {
     private static let libraryPage = """
         {"data":{"user_books":[
           {"status_id":3,"last_read_date":"2025-03-02","rating":4.5,
-           "review_raw":"<p>A <strong>quiet</strong> triumph &amp; a joy.</p><p>Would reread.</p>",
+           "review":"<p>A <strong>quiet</strong> triumph &amp; a joy.</p><p>Would reread.</p>",
            "book":{"id":101,"title":"The Lantern Keeper: A Novel","pages":320,"release_year":2021,
              "cached_contributors":[{"author":{"name":"Mara Quill"},"contribution":null},
                {"author":{"name":"Theo Vance"},"contribution":"Translator"}],
@@ -311,7 +349,7 @@ final class HardcoverTests: XCTestCase {
              "image":{"url":"https://covers.example.com/reader-101.jpg","width":800,"height":1200},
              "reading_format":{"format":"Ebook"},"language":null}}],
            "current_read":[]},
-          {"status_id":2,"last_read_date":null,"rating":null,"review_raw":null,
+          {"status_id":2,"last_read_date":null,"rating":null,"review":null,
            "book":{"id":202,"title":"Salt and Static","pages":400,"release_year":2024,
              "cached_contributors":[{"author":{"name":"Iris Okafor"},"contribution":"Author"}],
              "cached_tags":null,"rating":null,"ratings_count":0,"image":null,"book_series":[],"editions":[]},
@@ -319,7 +357,7 @@ final class HardcoverTests: XCTestCase {
            "user_book_reads":[],
            "current_read":[{"started_at":"2025-04-10","progress":null,"progress_pages":50,
              "progress_seconds":null,"edition":{"pages":null,"audio_seconds":null}}]},
-          {"status_id":3,"last_read_date":"2023-01-05","rating":3,"review_raw":"Older read.",
+          {"status_id":3,"last_read_date":"2023-01-05","rating":3,"review":"Older read.",
            "book":{"id":101,"title":"The Lantern Keeper: A Novel","pages":320,"release_year":2021,
              "cached_contributors":[],"cached_tags":null,"rating":4.12,"ratings_count":250,
              "image":null,"book_series":[],"editions":[]},

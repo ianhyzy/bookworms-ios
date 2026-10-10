@@ -21,7 +21,7 @@ The **Spines** tab shows how many books have designs, the current run, Private C
 
 Each run designs the books that need it, one at a time:
 
-1. The run picks its account and books. A worklist from the Apple TV that lists books decides, even when the iPhone is signed in to Hardcover. Without one, a signed-in iPhone designs its own Hardcover library. Otherwise the iPhone designs the newest Hardcover snapshot that the Apple TV uploaded, preferring a real account ID over the legacy `hardcover` placeholder; Apple TV builds without the worklist upload only that library. An empty worklist means the Apple TV turned Hardcover off, which stops runs unless the iPhone is signed in.
+1. The run picks its account and books. A worklist from the Apple TV that lists books decides, even when the iPhone is signed in to Hardcover. Without one, a signed-in iPhone designs its own Hardcover library, and nothing until it has downloaded that library; it never designs the Apple TV's library, which may belong to another account. Signing out stops a run that designs the iPhone's library. Otherwise the iPhone designs the newest Hardcover snapshot that the Apple TV uploaded, preferring a real account ID over the legacy `hardcover` placeholder; Apple TV builds without the worklist upload only that library. An empty worklist means the Apple TV turned Hardcover off, which stops runs unless the iPhone is signed in.
 2. The app downloads the cover over HTTPS, reads its lettering with Vision, and samples its colors.
 3. The first model request asks only which of 12 letterform styles the cover's title uses, with the cover attached and the styles in a different order for each book. If Private Cloud Compute cannot read images, the on-device model answers this question.
 4. The second request picks cloth, ink, and accent colors from the sampled palette, a weight, and up to four families from that style's open-source Google Fonts families.
@@ -40,20 +40,21 @@ The account button in the **Spines** tab's toolbar opens the Hardcover sheet. Si
 3. The app polls Hardcover at the interval it asks for, waits 5 seconds longer after each `slow_down`, and stops when the code expires or the request is declined; **Get a new code** starts over.
 4. Once approved, the app checks the account with a `me` query, then saves the token.
 
-The signed-in sheet shows the Hardcover username, when the library last synced, **Sync now**, and **Sign out**. When Hardcover rejects the saved login (HTTP 401, or HTTP 403 with `insufficient_scope`), the sheet says so and offers **Reconnect**; the copy of the library stays until then. Other 403 responses are reported as denied requests, not as an expired login.
+The signed-in sheet shows the Hardcover username, when the library last synced, **Sync now**, and **Sign out**. When Hardcover rejects the saved login (HTTP 401, or HTTP 403 with `insufficient_scope`), the sheet and the **Spines** tab say so and offer **Reconnect**, and the toolbar button shows a warning badge; the copy of the library stays until then. Other 403 responses are reported as denied requests, not as an expired login. The **Spines** tab also shows other download and load errors, even while it shows an older copy of the library.
 
 While signed in:
 
-- The Shelf and Share tabs show the Hardcover account's own library: every book on its shelves, with the same covers, page counts, finish and start dates, ratings, community ratings, formats, genres, series, and progress as the Apple TV builds. Each book also carries your review as plain text (`CloudBook.review`, from Hardcover's `review_raw` with HTML and Markdown removed). Designs for these books still come from iCloud, matched by the same account ID the Apple TV uses (the Hardcover user ID).
+- The Shelf and Share tabs show the Hardcover account's own library: every book on its shelves, with the same covers, page counts, finish and start dates, ratings, community ratings, formats, genres, series, and progress as the Apple TV builds. Each book also carries your review as plain text (`CloudBook.review`, from Hardcover's `user_books.review` with HTML and Markdown removed). Designs for these books still come from iCloud, matched by the same account ID the Apple TV uses (the Hardcover user ID).
 - The app downloads the library when it launches or becomes active if the copy on the iPhone is missing or more than four hours old, and when you choose **Sync now**. Any reload the app or the Shelf starts also checks this.
-- Until the first download finishes, the app shows the Apple TV's library, if there is one.
+- The Apple TV's library never stands in for the signed-in account, which may differ. Until the first download finishes, the app shows no library, or an earlier copy only when it belongs to the same account. If the download fails, or iOS deleted the copy and the iPhone is offline, the library stays empty and the **Spines** tab shows the error.
 
 **Sign out** deletes the token and the copy of the library from the iPhone and returns to the Apple TV's library. Preview mode (`-BookwormsPreviewFolder`) ignores the sign-in.
 
 #### Data on the iPhone
 
 - The access token is a Keychain item that is readable after the first unlock, never synchronizable, and limited to this device. The app sends it only to Hardcover.
-- The library, including reviews, is a file in `Caches/Bookworms`, which iOS does not back up and may delete; the app then downloads it again. The username, account ID, and last sync date are in the app's user defaults so the sheet can show them without reading the library.
+- The library, including reviews, is a file in `Caches/Bookworms`, which iOS does not back up and may delete; the app then downloads it again. The username, account ID, and last sync date are in the app's user defaults. They mark the sign-in, so the sheet and the library source never depend on the cached file.
+- A reinstalled app, or a backup restored to another iPhone, starts signed out. The Keychain keeps the login after the app is deleted, and a backup carries the user defaults but not the device-only login, so at launch the app deletes either half without the other.
 - The app only reads from Hardcover. It sends no mutations.
 
 ### Shelf

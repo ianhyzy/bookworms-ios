@@ -318,11 +318,13 @@ actor HardcoverClient {
 
     // MARK: - Library normalization
 
-    // Ported from the Apple TV app's library query, plus the reader's review.
+    // Ported from the Apple TV app's library query, plus the reader's review. `review` is the
+    // field the Apple TV's social client reads with the same client and scopes; Hardcover's
+    // documentation also lists `review_raw`, which no Bookworms client has used yet.
     private static let libraryQuery = """
         query PhoneLibrary($user: Int!, $offset: Int!, $language: String!) {
           user_books(where: {user_id: {_eq: $user}}, order_by: {id: asc}, limit: 100, offset: $offset) {
-            last_read_date rating status_id review_raw
+            last_read_date rating status_id review
             book { id title pages release_year cached_contributors cached_tags rating ratings_count
               image { url width height }
               book_series { featured position series { id } }
@@ -398,7 +400,7 @@ actor HardcoverClient {
                     : nil,
                 started: isReading ? current?.startedAt : nil, audioSeconds: edition?.audioSeconds,
                 communityRating: source.rating, ratingsCount: source.ratingsCount,
-                review: plainText(fromReview: row.reviewRaw))
+                review: plainText(fromReview: row.review))
             if let previous = unique[book.id], !recentFirst(book, previous) { continue }
             unique[book.id] = book
         }
@@ -523,18 +525,17 @@ private struct LibraryPage: Decodable {
         let statusID: Int?
         let lastReadDate: String?
         let rating: Double?
-        /// The reader's review as entered, which may hold Markdown or HTML.
-        let reviewRaw: String?
+        /// The reader's review, which may hold Markdown or HTML.
+        let review: String?
         let book: Book
         let edition: Edition?
         let finishedReads: [Read]?
         let currentReads: [Read]?
 
         enum CodingKeys: String, CodingKey {
-            case rating, book, edition
+            case rating, review, book, edition
             case statusID = "status_id"
             case lastReadDate = "last_read_date"
-            case reviewRaw = "review_raw"
             case finishedReads = "user_book_reads"
             case currentReads = "current_read"
         }

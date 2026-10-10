@@ -31,17 +31,23 @@ enum WorkSource: Equatable {
     case phone(PhoneLibrary)
     /// The newest Hardcover snapshot in the Apple TV archive.
     case archive
-    /// The Apple TV paused generation, and this iPhone is not signed in.
+    /// Nothing to design: the Apple TV paused generation and this iPhone is signed out, or
+    /// this iPhone is signed in but has no copy of the account's library.
     case none
 
-    /// A worklist that lists books decides. Without one, this iPhone's own library comes before
-    /// the archive. An empty worklist means the Apple TV turned Hardcover off, which pauses only
-    /// the archive: a signed-in iPhone still designs its own library.
-    init(worklist: SpineWorklistV1?, phone: PhoneLibrary?) {
+    /// A worklist that lists books decides. Without one, a signed-in iPhone designs only its
+    /// own library (`phone`, when it belongs to `signedInAccountID`): the archive may belong to
+    /// another account, so it never stands in, even before the first download. Signed out, the
+    /// archive is used unless an empty worklist says the Apple TV turned Hardcover off.
+    init(worklist: SpineWorklistV1?, signedInAccountID: String?, phone: PhoneLibrary?) {
         if let worklist, !worklist.bookIDs.isEmpty {
             self = .worklist
-        } else if let phone {
-            self = .phone(phone)
+        } else if let signedInAccountID {
+            if let phone, phone.accountID == signedInAccountID {
+                self = .phone(phone)
+            } else {
+                self = .none
+            }
         } else {
             self = worklist == nil ? .archive : .none
         }

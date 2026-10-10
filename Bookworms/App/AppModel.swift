@@ -72,9 +72,10 @@ final class AppModel {
     ///
     /// When signed in to Hardcover, first downloads the account's library if the copy on this
     /// iPhone is missing or a few hours old; a failed download keeps that copy and is reported.
-    /// An iCloud account without a library, or no iCloud account, clears the shown and cached
-    /// Apple TV library, so another account's reading history never stays visible. Other errors
-    /// keep the cached library and report the error.
+    /// No library (an iCloud account without an Apple TV upload, or a sign-in without a
+    /// downloaded copy) clears the shown and cached library, and so does a missing iCloud
+    /// account when signed out, so another account's reading history never stays visible.
+    /// Other errors keep the cached library and report the error.
     func reload() async {
         guard !isLoading else { return }
         isLoading = true

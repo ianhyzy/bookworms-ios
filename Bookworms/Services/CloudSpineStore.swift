@@ -7,6 +7,9 @@ import Foundation
 actor CloudSpineStore: SpineStore {
     private let container = CKContainer(identifier: CloudContract.containerID)
     private var database: CKDatabase { container.privateCloudDatabase }
+    /// The account and sync date of the phone library that the last `loadWork` returned, so a
+    /// run that designs it stops once the reader signs out.
+    private var phoneWork: (accountID: String, syncedAt: Date)?
 
     func installWorklistSubscription() async throws {
         let subscriptionID = CloudContract.worklistSubscriptionID
@@ -29,10 +32,12 @@ actor CloudSpineStore: SpineStore {
     func loadWork() async throws -> WorkContext? {
         let cloudUserRecordName = try await checkedUserRecordName()
         let worklist = try await fetchWorklist()
-        switch WorkSource(worklist: worklist, phone: PhoneLibrary.load()) {
+        phoneWork = nil
+        switch workSource(worklist) {
         case .none:
             return nil
         case .phone(let phone):
+            phoneWork = (phone.accountID, phone.syncedAt)
             return WorkContext(
                 accountID: phone.accountID, syncedAt: phone.syncedAt, books: phone.books,
                 followsWorklist: false, cloudUserRecordName: cloudUserRecordName)
@@ -65,13 +70,14 @@ actor CloudSpineStore: SpineStore {
     func isStillCurrent(_ context: WorkContext, bookID: Int) async throws -> Bool {
         let worklist = try await fetchWorklist()
         guard context.followsWorklist else {
-            // A worklist, or a sign-in to another account, that appeared since the run started
-            // takes over on the next run.
-            switch WorkSource(worklist: worklist, phone: PhoneLibrary.load()) {
+            // A worklist, sign-in, or sign-out since the run started takes over on the next run.
+            switch workSource(worklist) {
             case .phone(let phone):
                 return phone.accountID == context.accountID
                     && phone.books.contains { $0.id == bookID }
-            case .archive: return true
+            case .archive:
+                // Signed out now: only a run that started on the archive continues.
+                return phoneWork.map { $0 != (context.accountID, context.syncedAt) } ?? true
             case .worklist, .none: return false
             }
         }
@@ -125,9 +131,12 @@ actor CloudSpineStore: SpineStore {
     /// Returns this iPhone's own Hardcover library when it is signed in, otherwise the Apple TV
     /// archive, with each book's newest design.
     ///
-    /// The phone library shows without an iCloud account, just without designs.
+    /// Signed in, the result is `nil` until the account's library is downloaded, because the
+    /// archive may belong to another account. The phone library shows without an iCloud
+    /// account, just without designs.
     func loadLibrary() async throws -> LibrarySnapshot? {
-        if let phone = PhoneLibrary.load() {
+        if let accountID = HardcoverAccount.signedInAccountID {
+            guard let phone = PhoneLibrary.load(), phone.accountID == accountID else { return nil }
             var snapshot = LibrarySnapshot(
                 accountID: phone.accountID, syncedAt: phone.syncedAt, books: phone.books,
                 designs: [:])
@@ -167,6 +176,14 @@ actor CloudSpineStore: SpineStore {
             }
         }
         return LibrarySnapshot.latestDesigns(designs, accountID: accountID, books: books)
+    }
+
+    /// Where a run would find its work now, given `worklist`.
+    private func workSource(_ worklist: SpineWorklistV1?) -> WorkSource {
+        let accountID = HardcoverAccount.signedInAccountID
+        return WorkSource(
+            worklist: worklist, signedInAccountID: accountID,
+            phone: accountID == nil ? nil : PhoneLibrary.load())
     }
 
     private func checkedUserRecordName() async throws -> String {

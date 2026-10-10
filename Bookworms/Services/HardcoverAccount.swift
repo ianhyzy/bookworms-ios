@@ -6,9 +6,9 @@ import Security
 /// it syncs.
 ///
 /// The access token stays in this device's Keychain. The library goes to the `PhoneLibrary`
-/// cache, which `CloudSpineStore` reads to show and design the account's books. After a
-/// sign-in, sync, or sign-out changes that cache, `libraryRevision` increases and
-/// `onLibraryChange` runs.
+/// cache, which `CloudSpineStore` reads to show and design the account's books. The saved
+/// `Summary` marks the sign-in for the store (`signedInAccountID`). After a sign-in, sync, or
+/// sign-out changes that cache, `libraryRevision` increases and `onLibraryChange` runs.
 @MainActor
 @Observable
 final class HardcoverAccount {
@@ -48,11 +48,28 @@ final class HardcoverAccount {
 
     @ObservationIgnored private let tokens: HardcoverTokenStore
     @ObservationIgnored private let client: HardcoverClient
+    @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private var signInTask: Task<Void, Never>?
-    private static let summaryKey = "HardcoverAccount"
+    nonisolated static let summaryKey = "HardcoverAccount"
 
-    init(tokens: HardcoverTokenStore = HardcoverTokenStore(), client: HardcoverClient? = nil) {
+    /// The signed-in account's ID, or `nil` when signed out. Readable from any isolation.
+    ///
+    /// `CloudSpineStore` chooses the library source from this rather than from the library
+    /// cache, which iOS may evict, so a signed-in iPhone never falls back to the Apple TV
+    /// archive, which may belong to another account.
+    nonisolated static var signedInAccountID: String? {
+        UserDefaults.standard.data(forKey: summaryKey)
+            .flatMap { try? JSONDecoder().decode(Summary.self, from: $0) }?
+            .accountID
+    }
+
+    /// Tests pass their own token service and user defaults.
+    init(
+        tokens: HardcoverTokenStore = HardcoverTokenStore(), client: HardcoverClient? = nil,
+        defaults: UserDefaults = .standard
+    ) {
         self.tokens = tokens
+        self.defaults = defaults
         #if DEBUG
             let stub = UserDefaults.standard.bool(forKey: "BookwormsStubSignIn")
             self.client =
@@ -60,11 +77,17 @@ final class HardcoverAccount {
         #else
             self.client = client ?? HardcoverClient()
         #endif
-        isSignedIn = tokens.read() != nil
-        summary = UserDefaults.standard.data(forKey: Self.summaryKey)
+        let saved = defaults.data(forKey: Self.summaryKey)
             .flatMap { try? JSONDecoder().decode(Summary.self, from: $0) }
-        // A library without a login, such as after restoring a backup, belongs to nobody.
-        if !isSignedIn { forgetLibrary() }
+        // The Keychain keeps a login after the app is deleted, and a backup restores the summary
+        // and library without the device-only login. Either half alone counts as signed out, so
+        // the sheet and `signedInAccountID` agree.
+        isSignedIn = tokens.read() != nil && saved != nil
+        summary = saved
+        if !isSignedIn {
+            tokens.delete()
+            forgetLibrary()
+        }
     }
 
     /// Requests a code, waits for the reader to approve it on Hardcover, and saves the login.
@@ -116,12 +139,21 @@ final class HardcoverAccount {
         guard isSignedIn, !isSyncing, let token = tokens.read() else { return }
         isSyncing = true
         syncError = nil
-        defer { isSyncing = false }
         let revision = libraryRevision
+        let download: Result<PhoneLibrary, any Error>
         do {
-            let library = try await client.library(token: token)
-            // A sign-out or another sign-in during the download owns the cache now.
-            guard revision == libraryRevision else { return }
+            download = .success(try await client.library(token: token))
+        } catch {
+            download = .failure(error)
+        }
+        isSyncing = false
+        guard revision == libraryRevision else {
+            // A sign-in or sign-out during the download owns the cache now, and the new
+            // account's own sync was skipped while this one ran.
+            return await syncIfStale()
+        }
+        do {
+            let library = try download.get()
             try library.save()
             save(
                 Summary(
@@ -129,7 +161,6 @@ final class HardcoverAccount {
                     syncedAt: library.syncedAt))
             libraryChanged()
         } catch {
-            guard revision == libraryRevision else { return }
             syncError = Self.message(for: error)
             if [.invalidToken, .insufficientScope].contains(error as? HardcoverError) {
                 needsReconnect = true
@@ -162,12 +193,12 @@ final class HardcoverAccount {
     private func forgetLibrary() {
         PhoneLibrary.delete()
         summary = nil
-        UserDefaults.standard.removeObject(forKey: Self.summaryKey)
+        defaults.removeObject(forKey: Self.summaryKey)
     }
 
     private func save(_ summary: Summary) {
         self.summary = summary
-        UserDefaults.standard.set(try? JSONEncoder().encode(summary), forKey: Self.summaryKey)
+        defaults.set(try? JSONEncoder().encode(summary), forKey: Self.summaryKey)
     }
 
     private func libraryChanged() {

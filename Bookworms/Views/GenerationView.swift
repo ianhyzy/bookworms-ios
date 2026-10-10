@@ -27,11 +27,7 @@ struct GenerationView: View {
             }
             .navigationTitle("Spines")
             .toolbar {
-                Button(
-                    "Hardcover account",
-                    systemImage: model.account.isSignedIn
-                        ? "person.crop.circle.fill" : "person.crop.circle"
-                ) { showsAccount = true }
+                Button("Hardcover account", systemImage: accountSymbol) { showsAccount = true }
             }
             .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
             .task { await generation.refreshModelStatus() }
@@ -112,20 +108,42 @@ struct GenerationView: View {
         }
     }
 
+    /// The toolbar's account symbol, badged when Hardcover rejected the saved login.
+    private var accountSymbol: String {
+        let account = model.account
+        if account.needsReconnect { return "person.crop.circle.badge.exclamationmark.fill" }
+        return account.isSignedIn ? "person.crop.circle.fill" : "person.crop.circle"
+    }
+
     /// The library's source: this iPhone's Hardcover sign-in, or the Apple TV's iCloud upload.
+    ///
+    /// A signed-in iPhone never shows the Apple TV's library (see `CloudSpineStore`), so the
+    /// sign-in decides the label. Load and sync errors show even while an older copy is shown.
     @ViewBuilder private var librarySource: some View {
-        let fromHardcover = model.account.isSignedIn && !model.isPreview
+        let account = model.account
+        let fromHardcover = account.isSignedIn && !model.isPreview
         Section {
             if let library = model.library {
                 LabeledContent(
                     "Library synced",
                     value: library.syncedAt.formatted(.relative(presentation: .named)))
-            } else if let error = model.loadError {
-                Text(error)
-            } else if fromHardcover {
-                Text("Loading your Hardcover library.")
-            } else {
-                Text("Waiting for the Apple TV to upload its library to iCloud.")
+            } else if model.loadError == nil {
+                Text(
+                    fromHardcover
+                        ? "Loading your Hardcover library."
+                        : "Waiting for the Apple TV to upload its library to iCloud.")
+            }
+            if let error = model.loadError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.secondary)
+            }
+            // Preview mode ignores the sign-in.
+            if !model.isPreview, account.needsReconnect {
+                Button("Reconnect") {
+                    account.startSignIn()
+                    showsAccount = true
+                }
+            } else if !model.isPreview, !account.isSignedIn, model.library == nil {
                 Button("Connect Hardcover instead") { showsAccount = true }
             }
         } header: {
