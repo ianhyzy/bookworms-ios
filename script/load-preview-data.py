@@ -89,7 +89,7 @@ def main():
     parser.add_argument("--source", type=Path, default=ROOT.parent / ".local",
                         help="folder with device-library-refined.json, ai-styles.json, device-fonts")
     parser.add_argument("--simulator", default="booted", help="Simulator UDID or 'booted'")
-    parser.add_argument("--account", default="8696", help="Hardcover account ID for the snapshot")
+    parser.add_argument("--account", default="preview", help="account ID to give the snapshot")
     args = parser.parse_args()
 
     out = ROOT / ".local/preview"
