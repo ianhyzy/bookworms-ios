@@ -17,6 +17,8 @@ struct PileViewport: Equatable {
 /// Returning from a book's details finds the pile as the reader left it. Leaving it any other
 /// way, such as for another tab, frees its books and textures, and the books drop again on the
 /// reader's return. **Share** makes an image of the same books in a new pile, headed `title`.
+/// While its sheet is open, the pile leaves the screen and keeps its books, because RealityKit
+/// can crash when this view and the share image's offscreen renderer draw at the same time.
 struct BookPileView: View {
     let books: [CloudBook]
     /// The name of the books' time frame, which heads the share image.
@@ -45,14 +47,20 @@ struct BookPileView: View {
     }
 
     var body: some View {
-        RealityView { content in
-            content.camera = .virtual
-            content.renderingEffects.antialiasing = .multisample4X
-            scene.attach(to: &content)
+        ZStack {
+            if sharesPile {
+                Color.clear
+            } else {
+                RealityView { content in
+                    content.camera = .virtual
+                    content.renderingEffects.antialiasing = .multisample4X
+                    scene.attach(to: &content)
+                }
+                .gesture(throwBook)
+                .gesture(openBook)
+                .simultaneousGesture(moveCamera)
+            }
         }
-        .gesture(throwBook)
-        .gesture(openBook)
-        .simultaneousGesture(moveCamera)
         .ignoresSafeArea()
         // Outside `ignoresSafeArea`, the proxy reports the safe area's size and the insets the
         // view extends past.
@@ -100,6 +108,10 @@ struct BookPileView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Share", systemImage: "square.and.arrow.up") { sharesPile = true }
+            }
+            // Names the time frame, which the toolbar's menu saves across launches.
+            ToolbarItem(placement: .subtitle) {
+                Text(books.count == 1 ? "\(title) · 1 book" : "\(title) · \(books.count) books")
             }
         }
         .sheet(isPresented: $sharesPile) { PileSnapshotSheet(books: books, title: title) }

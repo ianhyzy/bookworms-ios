@@ -4,9 +4,9 @@ import UIKit
 /// Shares the pile as an image: the pile's books dropped into a new pile under the name of its
 /// time frame, in a share size the reader picks.
 ///
-/// Each size change or shuffle renders a new image and cancels one in progress. The previous
-/// image stays in view under a progress indicator until the new one is ready, and sharing waits
-/// for it.
+/// Each size change, shuffle, or library change renders a new image and cancels one in
+/// progress. The previous image stays in view under a progress indicator until the new one is
+/// ready, and sharing waits for it.
 struct PileSnapshotSheet: View {
     let books: [CloudBook]
     let title: String
@@ -23,6 +23,9 @@ struct PileSnapshotSheet: View {
     private struct Options: Equatable {
         var aspect: ShareAspect
         var seed: UInt64
+        /// The books and heading, so a new library never leaves an image of the old one.
+        var ids: [Int]
+        var title: String
     }
 
     init(books: [CloudBook], title: String) {
@@ -38,7 +41,7 @@ struct PileSnapshotSheet: View {
     }
 
     var body: some View {
-        let options = Options(aspect: aspect, seed: seed)
+        let options = Options(aspect: aspect, seed: seed, ids: books.map(\.id), title: title)
         let isPending = rendered != options
         NavigationStack {
             VStack(spacing: 20) {
@@ -50,7 +53,7 @@ struct PileSnapshotSheet: View {
                 Button("Shuffle", systemImage: "shuffle") { seed = .random(in: 1 ... .max) }
             }
             .padding()
-            .navigationTitle("Share Pile")
+            .navigationTitle("Share pile")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

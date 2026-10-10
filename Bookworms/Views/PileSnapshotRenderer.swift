@@ -19,10 +19,14 @@ enum PileSnapshotRenderer {
     ///
     /// The books drop in reverse order, so the first books land on top; past `maximumBooks`,
     /// only the first ones drop, and the heading still counts every book. Fewer books are
-    /// framed closer, with sharper textures. `seed` picks their starting poses. Covers and
-    /// spine fonts load first, for up to 10 seconds, and the simulation then runs on the main
-    /// actor between short pauses. The renderer, the scene, and their textures are released
-    /// when this returns.
+    /// framed closer, with sharper textures, and the camera then fits the settled pile between
+    /// the heading and the bottom margin. `seed` picks their starting poses. Covers and spine
+    /// fonts load first, for up to 10 seconds, and the simulation then runs on the main actor
+    /// between short pauses. The renderer, the scene, and their textures are released when
+    /// this returns.
+    ///
+    /// Do not call this while a `RealityView` draws: RealityKit's render thread can crash when
+    /// a view and this renderer draw at the same time.
     ///
     /// - Throws: `CancellationError` when the task is cancelled, and `PileSnapshotError` when
     ///   Metal fails or the rendered frame is one flat color.
@@ -74,6 +78,10 @@ enum PileSnapshotRenderer {
         try await scene.settle(
             books, on: layout.tray, camera: layout.camera, seed: seed, model: model
         ) { try renderer.update(1.0 / 60) }
+        scene.look(
+            through: layout.camera.framing(
+                scene.bookCorners, in: layout.pileRect, of: layout.aspect.size,
+                zoomRange: 0.25...layout.camera.zoom * 1.25))
         try renderer.updateAndRender(
             deltaTime: 1.0 / 60,
             cameraOutput: RealityRenderer.CameraOutput(.singleProjection(colorTexture: texture)),
@@ -143,7 +151,8 @@ struct PileSnapshotLayout: Equatable {
     /// The bottom of the heading. The tray lies below it and above the bottom margin, which the
     /// platforms' bars and the credit use.
     let pileTop: CGFloat
-    /// The default camera, zoomed until the tray gives each book about `areaPerBook`.
+    /// The default camera, zoomed within `zoomRange` until the tray gives each book about
+    /// `areaPerBook`.
     let camera: PileCamera
     let tray: PileTray
 
@@ -153,10 +162,24 @@ struct PileSnapshotLayout: Equatable {
     /// The pile height the walls make room for. A share image's pile is lower than the view's,
     /// and its walls go before it settles, so the tray can reach closer to the heading.
     static let pileHeight: Float = 2
+    /// The camera's zoom for the drop. It reaches closer than the view's, so a month of one
+    /// or two books still fills the image.
+    static let zoomRange: ClosedRange<Float> = 1...4
 
     /// The scale of each book's textures: closer books need more pixels. Memory stays bounded,
     /// because the zoom that doubles the scale fits about a quarter as many books.
     var textureScale: CGFloat { CGFloat(camera.zoom) }
+
+    /// The part of the image the settled books are framed in: below the heading and the
+    /// steepest part of its fade, above the bottom margin, and within half the side margins.
+    var pileRect: CGRect {
+        let size = aspect.size
+        let side = aspect.insets.leading / 2
+        let top = pileTop + 30
+        return CGRect(
+            x: side, y: top, width: size.width - 2 * side,
+            height: size.height - aspect.insets.bottom - top)
+    }
 
     /// Fits `count` books into an image of `aspect`, or returns `nil` if the camera cannot see
     /// a tray between the heading and the bottom margin.
@@ -173,12 +196,48 @@ struct PileSnapshotLayout: Equatable {
         func tray() -> PileTray? {
             PileTray(viewport: viewport, pileHeight: Self.pileHeight, camera: camera)
         }
-        while camera.zoom < PileCamera.zoomRange.upperBound, let tray = tray(), tray.area > wanted {
-            camera.zoom = min(camera.zoom + 0.05, PileCamera.zoomRange.upperBound)
+        while camera.zoom < Self.zoomRange.upperBound, let tray = tray(), tray.area > wanted {
+            camera.zoom = min(camera.zoom + 0.05, Self.zoomRange.upperBound)
         }
         guard let tray = tray() else { return nil }
         self.camera = camera
         self.tray = tray
+    }
+}
+
+extension PileCamera {
+    /// This camera, moved across the table and zoomed within `zoomRange`, so that `points` fill
+    /// as much of `rect` as they can while staying inside it. `rect` is in the pixels of an
+    /// image of `size`, with y growing downward.
+    ///
+    /// Each pass zooms by how much the points over- or underfill `rect` and slides the target
+    /// to center them, since their projection grows about in proportion to zoom and moves with
+    /// the target. Perspective makes each pass inexact, so the passes aim for 97 percent of
+    /// `rect`.
+    func framing(
+        _ points: [SIMD3<Float>], in rect: CGRect, of size: CGSize,
+        zoomRange: ClosedRange<Float>
+    ) -> PileCamera {
+        let aspect = Float(size.width / size.height)
+        // `rect` in normalized device coordinates, whose y grows upward.
+        let low = SIMD2(Float(2 * rect.minX / size.width - 1), Float(1 - 2 * rect.maxY / size.height))
+        let high = SIMD2(Float(2 * rect.maxX / size.width - 1), Float(1 - 2 * rect.minY / size.height))
+        let turn = simd_quatf(angle: yaw, axis: [0, 1, 0])
+        var camera = self
+        for _ in 0..<16 {
+            let projected = points.map { camera.project($0, aspect: aspect) }
+            guard let first = projected.first else { break }
+            let lowest = projected.reduce(first, pointwiseMin)
+            let highest = projected.reduce(first, pointwiseMax)
+            let fill = ((highest - lowest) / (high - low)).max()
+            let offset = (lowest + highest - low - high) / 2
+            // Table units per normalized device unit at the target.
+            let reach = Self.distance / camera.zoom * tan(Self.fieldOfView / 2)
+            camera.target += turn.act(
+                [offset.x * reach * aspect, 0, -offset.y * reach / sin(Self.pitch)])
+            camera.zoom = min(max(camera.zoom / fill * 0.97, zoomRange.lowerBound), zoomRange.upperBound)
+        }
+        return camera
     }
 }
 

@@ -55,12 +55,21 @@ struct ShelfView: View {
                     "No books yet", systemImage: "books.vertical",
                     description: Text("Books you finish appear here after your Apple TV syncs."))
             } else if books.isEmpty {
+                // Only Designed only empties the shelf: a pile's time frame always has books.
                 ContentUnavailableView {
-                    Label("No designed spines yet", systemImage: "wand.and.sparkles")
+                    Label(
+                        frame.map { "No designed spines in \($0.title)" }
+                            ?? "No designed spines yet", systemImage: "wand.and.sparkles")
                 } description: {
                     Text("Spines appear here once they are designed.")
                 } actions: {
-                    Button("Show all books") { designedOnly = false }
+                    if let frame {
+                        Button("Show all books from \(frame.title)") { designedOnly = false }
+                    }
+                    Button("Show all books") {
+                        designedOnly = false
+                        if frame != nil { pileFrameSetting = "" }
+                    }
                 }
             } else if let carousel = mode.carousel {
                 VStack(spacing: 0) {
