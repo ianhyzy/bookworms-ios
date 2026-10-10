@@ -308,6 +308,7 @@ enum CompanionError: LocalizedError, Sendable {
     case invalidCloudData
     case unsupportedCloudData
     case waitingForLibrary
+    case bookNotInLibrary
     case invalidCover
     case coverTooLarge
     case modelUnavailable
@@ -327,6 +328,7 @@ enum CompanionError: LocalizedError, Sendable {
         case .invalidCloudData: "Bookworms iCloud data could not be read."
         case .unsupportedCloudData: "Update this app to read the iCloud data."
         case .waitingForLibrary: "Waiting for the Apple TV to upload its library to iCloud."
+        case .bookNotInLibrary: "This book is not in the library Bookworms shows now."
         case .invalidCover: "A book cover could not be read securely."
         case .coverTooLarge: "A book cover exceeds the image limit."
         case .modelUnavailable: "Private Cloud Compute is unavailable on this iPhone."

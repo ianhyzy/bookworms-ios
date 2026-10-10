@@ -160,6 +160,7 @@ final class AppModel {
     /// iPhone's Hardcover sign-in.
     func editionCovers(for book: CloudBook) async throws -> [EditionCover] {
         #if DEBUG
+            if CoverPickerDebug.stubsExpiredLogin { throw HardcoverError.invalidToken }
             if CoverPickerDebug.stubsCovers { return CoverPickerDebug.covers(for: book) }
         #endif
         guard account.isSignedIn, let token = HardcoverTokenStore().read() else {
@@ -172,9 +173,13 @@ final class AppModel {
     /// is `nil` or the default cover, then shows the result without a reload.
     ///
     /// The choice goes to iCloud, so other devices and generation runs use it too. Throws when
-    /// it cannot be saved, and then nothing changes. Does nothing while no library is shown.
+    /// it cannot be saved, and then nothing changes. Throws `CompanionError.bookNotInLibrary`
+    /// unless the shown library includes `book`, for example after a sign-in to another account.
     func chooseCover(_ cover: EditionCover?, for book: CloudBook) async throws {
-        guard let accountID = library?.accountID else { return }
+        guard let shown = library, shown.books.contains(where: { $0.id == book.id }) else {
+            throw CompanionError.bookNotInLibrary
+        }
+        let accountID = shown.accountID
         let chosen = cover?.url == (book.detailCoverURL ?? book.coverURL) ? nil : cover
         if let chosen {
             try await store.save(

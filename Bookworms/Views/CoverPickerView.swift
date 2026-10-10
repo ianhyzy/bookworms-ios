@@ -6,7 +6,7 @@ import UIKit
 ///
 /// The choice is saved to iCloud as a `CoverChoiceV1` record, and every view, share image, and
 /// generation run then uses it. Finding covers needs this iPhone's Hardcover sign-in; signed
-/// out, the sheet explains that and offers to connect.
+/// out or with a rejected login, the sheet explains that and offers to connect or reconnect.
 struct CoverPickerView: View {
     let book: CloudBook
     /// Called after the book's cover changes.
@@ -41,10 +41,10 @@ struct CoverPickerView: View {
                     }
                 }
         }
-        // Runs again after a sign-in from this sheet.
-        .task(id: canFindCovers) { await load() }
-        // Inherits this sheet's color scheme, as this sheet inherits the shelf's.
-        .sheet(isPresented: $showsAccount) {
+        .task { await load() }
+        // Inherits this sheet's color scheme, as this sheet inherits the shelf's. Closing it
+        // loads again, because a sign-in or reconnect there can make covers available.
+        .sheet(isPresented: $showsAccount, onDismiss: { Task { await load() } }) {
             HardcoverAccountView().preferredColorScheme(colorScheme)
         }
         .alert(
@@ -62,33 +62,61 @@ struct CoverPickerView: View {
 
     @ViewBuilder private var content: some View {
         if !canFindCovers {
-            ContentUnavailableView {
-                Label("Choose covers with Hardcover", systemImage: "books.vertical")
-            } description: {
-                Text(
+            unavailable(
+                "Choose covers with Hardcover", systemImage: "books.vertical",
+                description: Text(
                     "Bookworms finds other covers in the editions Hardcover lists for this book. Connect your Hardcover account to choose one."
                 )
-            } actions: {
+            ) {
                 Button("Connect Hardcover") { showsAccount = true }
                     .buttonStyle(.bordered)
-                if book.chosenCoverURL != nil {
-                    Button("Use default cover") { choose(nil) }
-                }
             }
         } else {
             switch covers {
             case nil:
                 ProgressView("Finding covers")
+            case .failure(let error)
+            where [.invalidToken, .insufficientScope].contains(error as? HardcoverError):
+                // Retrying repeats the rejection, so this offers the sign-in instead.
+                unavailable(
+                    "Reconnect Hardcover", systemImage: "person.crop.circle.badge.exclamationmark",
+                    description: Text(
+                        "Your Hardcover login expired, was revoked, or lacks a permission Bookworms needs. Reconnect to find other covers."
+                    )
+                ) {
+                    Button("Reconnect Hardcover") {
+                        model.account.startSignIn()
+                        showsAccount = true
+                    }
+                    .buttonStyle(.bordered)
+                }
             case .failure(let error):
-                ContentUnavailableView {
-                    Label("Covers unavailable", systemImage: "exclamationmark.triangle")
-                } description: {
-                    Text(error.localizedDescription)
-                } actions: {
+                unavailable(
+                    "Covers unavailable", systemImage: "exclamationmark.triangle",
+                    description: Text(error.localizedDescription)
+                ) {
                     Button("Try again") { Task { await load() } }
                 }
             case .success(let covers):
                 grid(covers)
+            }
+        }
+    }
+
+    /// A state without covers to choose. Returning to the default cover needs only iCloud, so
+    /// it stays available here.
+    private func unavailable(
+        _ title: LocalizedStringKey, systemImage: String, description: Text,
+        @ViewBuilder actions: () -> some View
+    ) -> some View {
+        ContentUnavailableView {
+            Label(title, systemImage: systemImage)
+        } description: {
+            description
+        } actions: {
+            actions()
+            if book.chosenCoverURL != nil {
+                Button("Use default cover") { choose(nil) }
             }
         }
     }
@@ -199,7 +227,6 @@ private struct CoverCell: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .lineLimit(2)
             }
             .contentShape(.rect)
         }
@@ -250,6 +277,9 @@ private struct CoverCell: View {
                 if isCurrent {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.title2)
+                        // Larger, the badge would hide the art it marks; the tint border and
+                        // VoiceOver's selected trait also mark the current cover.
+                        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                         .symbolRenderingMode(.palette)
                         .foregroundStyle(.black, .tint)
                         .padding(6)
@@ -264,10 +294,15 @@ private struct CoverCell: View {
     /// `-BookwormsCoverPicker YES` opens the picker on the details of the book that
     /// `-BookwormsOpenBook` opens. `-BookwormsStubCovers YES` answers the editions query with six
     /// fictional covers drawn on this device and placed in the cover cache, so neither Hardcover
-    /// nor an image host is contacted. `-BookwormsChooseCover <index>` then chooses one of them.
+    /// nor an image host is contacted; `-BookwormsStubCovers expired` answers as Hardcover does
+    /// for a revoked login. `-BookwormsChooseCover <index>` then chooses one of the covers.
     enum CoverPickerDebug {
         static var opensPicker: Bool { UserDefaults.standard.bool(forKey: "BookwormsCoverPicker") }
-        static var stubsCovers: Bool { UserDefaults.standard.bool(forKey: "BookwormsStubCovers") }
+        static var stubsCovers: Bool { stub == "YES" || stubsExpiredLogin }
+        static var stubsExpiredLogin: Bool { stub == "expired" }
+        private static var stub: String? {
+            UserDefaults.standard.string(forKey: "BookwormsStubCovers")
+        }
         static var choice: Int? {
             UserDefaults.standard.string(forKey: "BookwormsChooseCover").flatMap { Int($0) }
         }

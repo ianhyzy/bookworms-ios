@@ -11,11 +11,15 @@ struct BookDetailView: View {
     @Environment(GenerationController.self) private var generation
     @State private var cover: UIImage?
     @State private var choosesCover = false
-    /// When the reader changed the cover here, which makes the spine worth redesigning.
+    /// When the reader last changed the cover here.
     @State private var coverChangedAt: Date?
+    /// The chosen cover the shown spine design comes from, as far as this screen knows: the
+    /// cover when the details opened, then the cover when a new design arrives.
+    @State private var designedCover: URL?
 
     init(book: CloudBook) {
         opened = book
+        _designedCover = State(initialValue: book.chosenCoverURL)
     }
 
     private var book: CloudBook { model.books.first { $0.id == opened.id } ?? opened }
@@ -30,7 +34,7 @@ struct BookDetailView: View {
                 header
                 Button("Change cover", systemImage: "photo.on.rectangle") { choosesCover = true }
                     .buttonStyle(.bordered)
-                if let coverChangedAt, let design, design.generatedAt < coverChangedAt {
+                if design != nil, book.chosenCoverURL != designedCover {
                     redesignCard
                 }
                 record
@@ -47,6 +51,7 @@ struct BookDetailView: View {
         }
         // A new cover choice changes the first candidate; the old cover shows until it loads.
         .task(id: book.coverCandidates.first) { cover = await model.covers.image(for: book) }
+        .onChange(of: design?.generatedAt) { designedCover = book.chosenCoverURL }
         .sheet(isPresented: $choosesCover) {
             // The shelf sets a dark scheme for its walnut backdrop, which the sheet's content
             // inherits; the sheet's own background must match it to keep text readable.
@@ -73,6 +78,18 @@ struct BookDetailView: View {
                     generation.generateNow()
                 }
                 .buttonStyle(.bordered)
+                // A run since the change left the old design, for example after a quota stop or
+                // when the new cover did not load.
+                if let lastRunAt = generation.status.lastRunAt, let coverChangedAt,
+                    lastRunAt > coverChangedAt
+                {
+                    Label(
+                        generation.status.error ?? "The last run did not redesign this spine.",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                }
             }
         }
     }
