@@ -72,6 +72,16 @@ final class YearInBooksTests: XCTestCase {
         XCTAssertEqual(stats.columns.map(\.books.count), [1, 0, 2])
         XCTAssertEqual(stats.busiest?.span, .year(2021))
         XCTAssertTrue(YearInBooks(frame: .lifetime, library: []).columns.isEmpty)
+
+        let mistyped = YearInBooks(
+            frame: .lifetime,
+            library: [
+                book(1, finished: "2021-05-01"), book(2, finished: "0202-05-01"),
+                book(3, finished: "2019-09-01"),
+            ])
+        XCTAssertEqual(
+            mistyped.columns.map(\.span), [.year(202), .year(2019), .year(2021)],
+            "A span past \(YearInBooks.maximumYearSpan) years charts only the years with books")
     }
 
     func testTotalsIgnoreMissingValues() throws {

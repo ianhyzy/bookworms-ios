@@ -53,21 +53,21 @@ VoiceOver reads the pile as one element with its book count and a **Drop again**
 
 The **Share** tab renders a 1080-pixel-wide PNG in Story (9:16), Portrait (4:5), or Square format and shares it through the share sheet, which can also save it to Photos. Choose a template from the grid, then set its options:
 
-- **Time frame**: **Year** (the newest year by default), **Month**, or **Lifetime**, with a menu of the years or months that have finished books. Templates about several books draw the books finished in the frame, and headings follow it, such as "2025 in books", "My top 5 of August 2025", or "My lifetime in books". Just Finished and Review list the frame's books in their book picker. Currently Reading has no time frame.
+- **Time frame**: **Year** (the newest year by default), **Month**, or **Lifetime**, with a menu of the years or months that have finished books. Templates about several books draw the books finished in the frame, and headings follow it, such as "2025 in books", "My top 5 of August 2025", or "My lifetime in books". Just Finished and Review list the frame's books in their book picker; Review's **Lifetime** also lists reviewed books without a finish date. Currently Reading has no time frame.
 - **Book**: the featured book of Just Finished, Review, and Currently Reading. It defaults to the newest choice.
-- **Cover**: **3D** (default), a lit 3D book with its spine, or **Flat**, the cover alone with rounded corners and a soft shadow. Every template that shows covers has it.
-- **Options**: **Loved more** or **Loved less** for Hot Takes, **Show ratings**, and **Shuffle**, which varies tilts and lengths.
+- **Cover**: **3D** (default), a lit 3D book with its spine, or **Flat**, the whole cover with rounded corners and a soft shadow. Every template that shows covers has it, except Year in Books on Square, which shows no records.
+- **Options**: **Loved more** or **Loved less** for Hot Takes, **Show ratings**, and **Shuffle**, which varies the spine stacks, the Top Five fan, and the angle of 3D books. Templates that the seed cannot change hide it.
 
 | Template | Shows |
 | --- | --- |
 | Year Stack | The frame's finished books as a stack of spines, with the book and page counts. |
-| Year in Books | The frame's totals (books, pages, average rating, and the busiest month, week, or year), a chart of its books as stacks of spines (by month for a year, by week for a month, and by year for a lifetime), top genres, most-read author, and formats. The longest, shortest, and favorite books appear on Story, and on Portrait when they fit. Totals, highlights, and records without data are left out. |
+| Year in Books | The frame's totals (books, pages, average rating, and the busiest month, week, or year), a chart of its books as stacks of spines (by month for a year, by week for a month, and by year for a lifetime, leaving out empty years when the books span more than 50), top genres, most-read author, and formats. The longest, shortest, and favorite books appear on Story, and on Portrait when they fit. Totals, highlights, and records without data are left out. |
 | Top Five | The frame's five highest-rated books, fanned, with a ranked list. |
 | Hot Takes | Up to three of the frame's books whose rating is furthest from Hardcover's average, with your stars, the readers' stars, and the difference. **Loved more** shows books you rated at least half a star above the average, and **Loved less** at least half a star below. Only books with 50 or more Hardcover ratings count. |
 | Spine Spectrum | Every book finished in the frame as a stripe of its spine color, in reading order. A lifetime marks where each year starts. It shows no titles. |
 | Just Finished | One book with your rating and its format, finish date, and length. |
 | Review | Your review of one book under its cover, title, and rating. A long review shows as an excerpt that ends with an ellipsis, and the text takes the largest size that fits. Only books with a review are offered. The Apple TV library carries no reviews, so without the iPhone's own Hardcover sign-in the template shows how to add them. |
-| Currently Reading | A book you are reading, with its progress and its start date when known. |
+| Currently Reading | A book you are reading, with its progress and its start date when known. A reread shows its new start date, not its last finish. |
 
 Text on every image is set in New York for headings and San Francisco for other text, in each book's own capitalization. Spines keep their designed fonts and colors: Year Stack's spines, the spine of a 3D book, and Spine Spectrum's stripes. A 3D book without a downloaded cover shows its title on the front in the spine's font.
 

@@ -120,15 +120,11 @@ struct HotTakesCard: View {
                         .font(ShareStyle.serif(aspect == .story ? 84 : 68, .semibold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.6)
-                    Text(
-                        input.direction == .lovedMore
-                            ? "Books I loved more than Hardcover readers did"
-                            : "Books I liked less than Hardcover readers did"
-                    )
-                    .font(.system(size: 32, weight: .medium))
-                    .opacity(0.75)
-                    .lineLimit(1)
-                    .minimumScaleFactor(30 / 32)
+                    Text(subtitle)
+                        .font(.system(size: 32, weight: .medium))
+                        .opacity(0.75)
+                        .lineLimit(1)
+                        .minimumScaleFactor(30 / 32)
                 }
                 if isHero, let book = input.books.first {
                     hero(book)
@@ -144,6 +140,13 @@ struct HotTakesCard: View {
     /// "Hot takes of 2025", "Hot takes of August 2025", or "My all-time hot takes".
     private var heading: String {
         input.frame == .lifetime ? "My all-time hot takes" : "Hot takes of \(input.period)"
+    }
+
+    /// "Books I loved more than Hardcover readers did", in the picker's words, or "A book I…"
+    /// for a single take.
+    private var subtitle: String {
+        let subject = input.books.count == 1 ? "A book" : "Books"
+        return "\(subject) I \(input.direction.title.lowercased()) than Hardcover readers did"
     }
 
     /// One take: a large cover with the title, the gap, and both ratings below it, or beside

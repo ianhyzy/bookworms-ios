@@ -1,3 +1,4 @@
+import NaturalLanguage
 import SwiftUI
 import UIKit
 
@@ -51,15 +52,16 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
 
     /// The books a single-book card can feature, newest first: the books finished in `frame`,
     /// only reviewed ones for Review, and for Currently Reading every current read, latest start
-    /// first.
+    /// first. A review needs no finish date, so Review's lifetime also offers reviewed books that
+    /// have none, last.
     func choices(from library: [CloudBook], in frame: TimeFrame) -> [CloudBook] {
         if self == .currentlyReading {
             return library.filter { $0.isReading == true }
                 .sorted { ($0.started ?? "") > ($1.started ?? "") }
         }
-        let finished = library.filter(frame.contains)
-            .sorted { ($0.finished ?? "", $0.id) > ($1.finished ?? "", $1.id) }
-        return self == .review ? finished.filter { $0.reviewText != nil } : finished
+        let pool = self == .review && frame == .lifetime ? library : library.filter(frame.contains)
+        let sorted = pool.sorted { ($0.finished ?? "", $0.id) > ($1.finished ?? "", $1.id) }
+        return self == .review ? sorted.filter { $0.reviewText != nil } : sorted
     }
 
     /// Returns the books the card draws, in the card's order.
@@ -340,6 +342,9 @@ enum ShareStyle {
     /// Shortens `text` to at most `limit` characters and ends it with an ellipsis: after the
     /// last full sentence when one ends in the final 40 percent, else at a word boundary. Line
     /// breaks fold into spaces, so an excerpt spends no lines on paragraph gaps.
+    ///
+    /// `NLTokenizer` finds the sentences, so a decimal such as "4.5", an abbreviation such as
+    /// "Mr.", or a closing quote does not end one early.
     static func excerpt(_ text: String, limit: Int) -> String {
         let words = text.split(whereSeparator: \.isWhitespace)
         let folded = words.joined(separator: " ")
@@ -352,24 +357,34 @@ enum ShareStyle {
             result = next
         }
         if result.isEmpty { return folded.prefix(limit - 1) + "…" }
-        if let end = result.lastIndex(where: { ".!?".contains($0) }),
-            result.distance(from: result.startIndex, to: end) >= limit * 6 / 10
-        {
-            return result[...end] + " …"
+        // Tokenizes the whole text, since a sentence's end depends on what follows it.
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = folded
+        let ends = tokenizer.tokens(for: folded.startIndex..<folded.endIndex).map { range in
+            folded.distance(from: folded.startIndex, to: range.upperBound)
+                - folded[range].reversed().prefix(while: \.isWhitespace).count
+        }
+        // `result` is a prefix of `folded`, so a sentence that ends within it ends the excerpt.
+        if let end = ends.last(where: { $0 <= result.count }), end >= limit * 6 / 10 {
+            return folded.prefix(end) + " …"
         }
         while let last = result.last, last.isPunctuation { result.removeLast() }
         return result + "…"
     }
 
-    /// The book's format when it is not print, its finish date (or start date, for a book not
-    /// yet finished), and its length, joined with middle dots. Missing parts are left out.
-    static func details(_ book: CloudBook) -> String {
+    /// The book's format when it is not print, its finish date (or start date, for a current
+    /// read or a book not yet finished), and its length, joined with middle dots. Missing parts
+    /// are left out.
+    ///
+    /// A reread keeps its previous finish date while it is a current read, so `isReading` shows
+    /// the start date instead.
+    static func details(_ book: CloudBook, isReading: Bool = false) -> String {
         let format = book.format?.lowercased()
         var parts: [String] = []
         if format == "listened" { parts.append("Audiobook") }
         if format == "ebook" { parts.append("Ebook") }
         // Dates are calendar days at noon UTC; the format keeps UTC so they show the recorded day.
-        if let date = book.finishedDate {
+        if !isReading, let date = book.finishedDate {
             parts.append(date.formatted(ShelfLabels.finishedFormat))
         } else if let started = book.started, started.count >= 10,
             let date = try? Date(String(started.prefix(10)) + "T12:00:00Z", strategy: .iso8601)
@@ -427,6 +442,15 @@ struct ShareStars: View {
 ///
 /// A book without a downloaded cover gets one in its spine colors, titled in the share serif.
 struct ShareCover: View {
+    /// The drawn width over the height. A flat cover keeps the image's own ratio, within 0.5...1
+    /// so an unusual image cannot upset a layout; a 3D book uses `Book3DView`'s narrower range.
+    static func aspect(of cover: UIImage?, style: ShareCoverStyle) -> CGFloat {
+        guard style == .flat, let cover, cover.size.height > 0 else {
+            return Book3DView.aspect(of: cover)
+        }
+        return min(1, max(0.5, cover.size.width / cover.size.height))
+    }
+
     let book: CloudBook
     let look: SpineLook
     let cover: UIImage?
@@ -441,7 +465,7 @@ struct ShareCover: View {
             Book3DView(
                 book: book, look: look, cover: cover, height: height, yaw: yaw, pitch: pitch)
         case .flat:
-            let width = height * Book3DView.aspect(of: cover)
+            let width = height * Self.aspect(of: cover, style: .flat)
             let shape = RoundedRectangle(cornerRadius: max(4, height * 0.025))
             Group {
                 if let cover {

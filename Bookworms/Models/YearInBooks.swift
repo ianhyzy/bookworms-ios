@@ -33,7 +33,8 @@ struct YearInBooks: Equatable {
     let books: [CloudBook]
     /// The chart's columns, earliest first: the twelve months of a year, a month's weeks (days
     /// 1–7, 8–14, and so on, the last one shorter), or every year from the first finish to the
-    /// last.
+    /// last. Past `maximumYearSpan` years, as a mistyped date can make it, a lifetime charts only
+    /// the years with books.
     let columns: [Column]
     /// The column with the most books, when it has at least two; the earliest wins a tie.
     let busiest: Column?
@@ -54,6 +55,9 @@ struct YearInBooks: Equatable {
     let shortest: CloudBook?
     /// The highest-rated book; the latest finish wins a tie.
     let favorite: CloudBook?
+
+    /// The most years a lifetime chart spans with empty years included.
+    static let maximumYearSpan = 50
 
     /// Genres counted per book; Hardcover lists a book's most-tagged genres first.
     static let genresPerBook = 3
@@ -136,9 +140,9 @@ struct YearInBooks: Equatable {
                         books: books.filter { range.contains(part($0, 8, 2)) })
                 }
         case .lifetime:
-            let years = books.map { part($0, 0, 4) }
+            let years = Set(books.map { part($0, 0, 4) })
             guard let first = years.min(), let last = years.max() else { return [] }
-            return (first...last)
+            return (last - first < maximumYearSpan ? Array(first...last) : years.sorted())
                 .map { year in
                     Column(span: .year(year), books: books.filter { part($0, 0, 4) == year })
                 }

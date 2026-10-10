@@ -125,15 +125,22 @@ struct ShareStudioView: View {
                 if template.isSingleBook {
                     Section("Book") { bookRow }
                 }
-                if template.showsCovers {
-                    Section("Cover") {
+                // Year in Books draws covers only for its records, which Square leaves out.
+                if template.showsCovers && !(template == .yearInBooks && aspect == .square) {
+                    Section {
                         Picker("Cover style", selection: $coverStyle) {
                             ForEach(ShareCoverStyle.allCases) { Text($0.title).tag($0) }
                         }
                         .pickerStyle(.segmented)
+                    } header: {
+                        Text("Cover")
+                    } footer: {
+                        if template == .yearInBooks {
+                            Text("Applies to the records, which appear when they fit.")
+                        }
                     }
                 }
-                if template != .spectrum {
+                if template == .hotTakes || template.hasRatingOption || showsShuffle {
                     Section("Options") { options }
                 }
             }
@@ -199,35 +206,41 @@ struct ShareStudioView: View {
         }
     #endif
 
+    @ViewBuilder
     private func preview(isPending: Bool) -> some View {
         let size = aspect.size
-        return ZStack {
-            if let image {
-                Image(uiImage: image.image)
-                    .resizable()
-                    .scaledToFit()
-                    .accessibilityLabel("\(image.name) preview")
-                if isPending {
+        if image == nil && hasNoBooks && !model.isLoading {
+            // Outside the image's box, which would clip the message at large text sizes.
+            let empty = emptyState
+            ContentUnavailableView(
+                empty.title, systemImage: template.systemImage, description: Text(empty.message)
+            )
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        } else {
+            ZStack {
+                if let image {
+                    Image(uiImage: image.image)
+                        .resizable()
+                        .scaledToFit()
+                        .accessibilityLabel("\(image.name) preview")
+                    if isPending {
+                        ProgressView()
+                            .padding(12)
+                            .background(.regularMaterial, in: .circle)
+                            .accessibilityLabel("Updating preview")
+                    }
+                } else {
                     ProgressView()
-                        .padding(12)
-                        .background(.regularMaterial, in: .circle)
-                        .accessibilityLabel("Updating preview")
                 }
-            } else if hasNoBooks && !model.isLoading {
-                let empty = emptyState
-                ContentUnavailableView(
-                    empty.title, systemImage: template.systemImage,
-                    description: Text(empty.message))
-            } else {
-                ProgressView()
             }
+            .aspectRatio(size.width / size.height, contentMode: .fit)
+            .background(.quaternary)
+            .clipShape(.rect(cornerRadius: 12))
+            .frame(maxWidth: .infinity, maxHeight: 380)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
         }
-        .aspectRatio(size.width / size.height, contentMode: .fit)
-        .background(.quaternary)
-        .clipShape(.rect(cornerRadius: 12))
-        .frame(maxWidth: .infinity, maxHeight: 380)
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
     }
 
     /// Why the template has nothing to draw, and what would give it something.
@@ -250,8 +263,8 @@ struct ShareStudioView: View {
             let side = direction == .lovedMore ? "above" : "below"
             return (
                 "No hot takes\(suffix)",
-                "Hot Takes shows books you rated at least half a star \(side) the Hardcover "
-                    + "average, among books with \(HotTakeDirection.minimumRatings) or more ratings."
+                "Rate a book at least half a star \(side) its Hardcover average. Only books with "
+                    + "\(HotTakeDirection.minimumRatings) or more ratings count."
             )
         default:
             return periods.years.isEmpty
@@ -273,6 +286,8 @@ struct ShareStudioView: View {
                         Image(systemName: option.systemImage)
                             .font(.title3)
                             .frame(height: 28)
+                            // VoiceOver reads the template's name alone.
+                            .accessibilityHidden(true)
                         Text(option.title)
                             .font(.caption)
                             .multilineTextAlignment(.center)
@@ -397,7 +412,19 @@ struct ShareStudioView: View {
         if template.hasRatingOption {
             Toggle("Show ratings", isOn: $showsRatings)
         }
-        Button("Shuffle", systemImage: "shuffle") { seed = .random(in: 1 ... .max) }
+        if showsShuffle {
+            Button("Shuffle", systemImage: "shuffle") { seed = .random(in: 1 ... .max) }
+        }
+    }
+
+    /// Whether the seed changes the image. It varies spine stacks, the Top Five fan, and the
+    /// angle of 3D books; flat single covers and Spine Spectrum ignore it.
+    private var showsShuffle: Bool {
+        switch template {
+        case .yearStack, .yearInBooks, .topFive: true
+        case .spectrum: false
+        case .hotTakes, .justFinished, .review, .currentlyReading: coverStyle == .threeD
+        }
     }
 
     // MARK: - Rendering

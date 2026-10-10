@@ -426,7 +426,7 @@ struct YearInBooksCard: View {
     /// height allows.
     private func recordCover(_ book: CloudBook) -> some View {
         let cover = input.covers[book.id]
-        let ratio = Book3DView.aspect(of: cover)
+        let ratio = ShareCover.aspect(of: cover, style: input.coverStyle)
         return GeometryReader { proxy in
             ShareCover(
                 book: book, look: input.look(for: book), cover: cover, style: input.coverStyle,

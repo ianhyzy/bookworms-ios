@@ -191,11 +191,33 @@ final class ShareRenderTests: XCTestCase {
             review.books(from: Self.books, in: .year(2025), bookID: 2).map(\.id), [10],
             "A book without a review falls back to the newest review")
         XCTAssertTrue(review.books(from: Self.books, in: .month(year: 2025, month: 3)).isEmpty)
+        let undated = CloudBook(
+            id: 50, title: "Fictional Undated Book", author: "Author", coverURL: nil,
+            detailCoverURL: nil, review: "Invented praise.")
+        XCTAssertEqual(
+            review.choices(from: Self.books + [undated], in: .lifetime).last?.id, 50,
+            "A lifetime offers a reviewed book without a finish date, last")
+        XCTAssertFalse(
+            review.choices(from: Self.books + [undated], in: .year(2025)).contains(undated))
 
         let reading = ShareTemplate.currentlyReading
         XCTAssertEqual(reading.choices(from: Self.books, in: .year(2019)).map(\.id), [15, 16])
         XCTAssertEqual(reading.books(from: Self.books, in: .lifetime, bookID: 16).map(\.id), [16])
         XCTAssertEqual(reading.books(from: Self.books, in: .lifetime, bookID: 4).map(\.id), [15])
+    }
+
+    /// A reread is a current read that keeps its previous finish date; Currently Reading shows
+    /// its start date instead.
+    func testCurrentReadDetailsShowTheStartDate() {
+        let reread = CloudBook(
+            id: 60, title: "Fictional Reread", author: "Author", coverURL: nil,
+            detailCoverURL: nil, pages: 412, finished: "2021-03-03", isReading: true,
+            started: "2026-10-01")
+        let reading = ShareStyle.details(reread, isReading: true)
+        XCTAssertTrue(reading.hasPrefix("Started "), reading)
+        XCTAssertTrue(reading.contains("2026"), reading)
+        XCTAssertFalse(reading.contains("2021"), reading)
+        XCTAssertTrue(ShareStyle.details(reread).contains("2021"), "Just Finished shows the finish")
     }
 
     /// Ratings in 2025 differ from the fixture's community averages by +3.26 (book 4), +2.22 (8),
@@ -223,6 +245,19 @@ final class ShareRenderTests: XCTestCase {
         XCTAssertEqual(
             ShareStyle.excerpt("First sentence here. Second one goes on and on.", limit: 30),
             "First sentence here. …", "A sentence ending late in the excerpt ends it")
+        XCTAssertEqual(
+            ShareStyle.excerpt(
+                "Solid. I would give it 4.5 stars overall even though the last act drags.",
+                limit: 40),
+            "Solid. I would give it 4.5 stars…", "A decimal point doesn't end a sentence")
+        XCTAssertEqual(
+            ShareStyle.excerpt(
+                "Loved it. Then I met Mr. Darcy and everything changed for the better.", limit: 36),
+            "Loved it. Then I met Mr. Darcy and…", "An abbreviation doesn't end a sentence")
+        XCTAssertEqual(
+            ShareStyle.excerpt(
+                "He paused. She said \"Stop.\" Then she walked away from all of it.", limit: 40),
+            "He paused. She said \"Stop.\" …", "A closing quote stays with its sentence")
     }
 
     func testStackLayoutLeavesOutLowestRatedBooksWhenCrowded() {
