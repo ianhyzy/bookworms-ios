@@ -85,11 +85,6 @@ struct BookDetailView: View {
                 }
                 Divider()
             }
-            Label(
-                ShelfLabels.provenance(of: design),
-                systemImage: design == nil ? "circle.dashed" : "sparkles"
-            )
-            .font(.subheadline)
             if let design {
                 Text("Created \(design.generatedAt, format: .dateTime.year().month().day())")
                     .font(.footnote)

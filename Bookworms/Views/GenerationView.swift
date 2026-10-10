@@ -31,13 +31,10 @@ struct GenerationView: View {
     private var summary: some View {
         let total = model.library?.books.count ?? 0
         let designs = model.library?.designs.values.map(\.generatorVersion) ?? []
-        let byPCC = designs.filter { $0 == CloudContract.generatorVersion }.count
         return Section {
             VStack(alignment: .leading, spacing: 4) {
                 Text("\(designs.count) of \(total) books designed")
                     .font(.headline)
-                Text("\(byPCC) by Private Cloud Compute")
-                    .foregroundStyle(.secondary)
             }
             .accessibilityElement(children: .combine)
             ProgressView(value: Double(designs.count), total: Double(max(total, 1)))

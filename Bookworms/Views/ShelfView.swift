@@ -192,13 +192,6 @@ private struct ShelfCaption: View {
             }
             .font(.footnote)
             .foregroundStyle(.secondary)
-            Label(
-                ShelfLabels.provenance(of: designs[book.id]),
-                systemImage: designs[book.id] == nil ? "circle.dashed" : "sparkles"
-            )
-            .font(.caption)
-            .foregroundStyle(.tertiary)
-            .lineLimit(1)
         }
         .multilineTextAlignment(.center)
         .minimumScaleFactor(0.8)
@@ -283,15 +276,6 @@ enum ShelfSort: String, CaseIterable, Identifiable {
 enum ShelfLabels {
     /// Finish dates are calendar days stored at noon UTC, so they format in UTC to keep the day.
     static let finishedFormat = Date.FormatStyle(date: .abbreviated, time: .omitted, timeZone: .gmt)
-
-    /// Where a spine design came from, by its generator version.
-    static func provenance(of design: SpineDesignV1?) -> String {
-        guard let design else { return "Not designed yet" }
-        if design.generatorVersion == CloudContract.generatorVersion {
-            return "Designed with Private Cloud Compute"
-        }
-        return design.generatorVersion.hasPrefix("mac-") ? "Designed on Mac" : "Designed"
-    }
 
     /// The reading format as the Apple TV labels it, such as "Audiobook" for "Listened".
     static func format(_ format: String?) -> String? {

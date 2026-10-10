@@ -33,7 +33,7 @@ The **Shelf** tab shows every book as a spine in its saved design, or in a plain
 - **Stack** (default) lays the spines flat and scrolls them vertically as a 3D wheel.
 - **Shelf** stands the spines upright, as on the Apple TV, and scrolls them horizontally like Cover Flow.
 - **Pile** drops every book onto a wooden table as a physics toy. See [Pile](#pile).
-- The caption shows the centered book's title, author, finish date, your rating, and who designed the spine. Sort by finish date, title, author, or rating, or show designed books only.
+- The caption shows the centered book's title, author, finish date, and your rating. Sort by finish date, title, author, or rating, or show designed books only.
 - Tap the centered spine for details: a 3D book you can turn with a drag, its reading details, the design's font and colors, and **Share**.
 
 ### Pile
@@ -61,7 +61,7 @@ The **Share** tab renders a 1080-pixel-wide PNG in Story (9:16), Portrait (4:5),
 | Spine Spectrum | Every finished book in a year, or all time, as a stripe of its spine color in reading order. It shows no titles. |
 | Year in Books | A year's totals (books, pages, average rating, and busiest month), each month's books as a stack of spines, and its top genres, most-read author, and formats. Story also shows the longest, shortest, and favorite books as 3D books. Totals and highlights without data are left out. |
 
-Images show only your own library. They include no account name or ID. Ratings are optional.
+Images show only your own library. They include no account name or ID. Ratings are optional. A small "Created with Bookworms for iPhone" credit sits in the bottom margin of every image.
 
 ## How the 3D books work
 

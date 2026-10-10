@@ -152,6 +152,14 @@ struct ShareCanvas: View {
             }
         }
         .frame(width: input.aspect.size.width, height: input.aspect.size.height)
+        // A quiet credit in the bottom margin, which every card keeps free of content.
+        .overlay(alignment: .bottom) {
+            Text("Created with Bookworms for iPhone")
+                .font(.system(size: 24, weight: .medium))
+                .foregroundStyle(ShareStyle.cream.color.opacity(0.45))
+                .shadow(color: .black.opacity(0.35), radius: 3)
+                .padding(.bottom, 18)
+        }
         .clipped()
         // Exports keep one appearance whatever the system setting.
         .environment(\.colorScheme, .dark)

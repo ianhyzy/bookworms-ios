@@ -29,25 +29,6 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(ShelfSort.rating.sorted(books).map(\.id), [3, 1, 4, 2])
     }
 
-    func testProvenanceNamesTheGenerator() {
-        func design(_ generator: String) -> SpineDesignV1 {
-            SpineDesignV1(
-                version: 1, accountID: "42", bookID: 1,
-                workItemHash: String(repeating: "a", count: 64),
-                coverHash: String(repeating: "b", count: 64), generatorVersion: generator,
-                generatedAt: Date(timeIntervalSince1970: 0), backgroundHex: "#101010",
-                foregroundHex: "#F0F0F0", accentHex: "#808080", typeface: "serif", weight: 600,
-                uppercase: false)
-        }
-        XCTAssertEqual(ShelfLabels.provenance(of: nil), "Not designed yet")
-        XCTAssertEqual(
-            ShelfLabels.provenance(of: design(CloudContract.generatorVersion)),
-            "Designed with Private Cloud Compute")
-        XCTAssertEqual(
-            ShelfLabels.provenance(of: design("mac-foundation-models-v2")), "Designed on Mac")
-        XCTAssertEqual(ShelfLabels.provenance(of: design("fixture-ai-styles-v1")), "Designed")
-    }
-
     func testFormatLabelsMatchTheAppleTV() {
         XCTAssertEqual(ShelfLabels.format("Read"), "Physical")
         XCTAssertEqual(ShelfLabels.format("Listened"), "Audiobook")
