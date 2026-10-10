@@ -7,7 +7,7 @@ The app targets iOS 27 and iPhone. It gets your library in one of two ways:
 - **From Hardcover.** Sign in to Hardcover on the iPhone, and the app reads your Hardcover library, including your reviews, directly. It then works without an Apple TV. See [Hardcover sign-in](#hardcover-sign-in).
 - **From the Apple TV.** Without a sign-in, the app reads the library that the Apple TV app uploads to the private iCloud container `iCloud.gay.ian.Bookworms`, so the Apple TV app needs **iCloud storage** turned on.
 
-Either way, designs are saved to that iCloud container, where the Apple TV picks them up.
+Either way, designs are saved to that iCloud container, where the Apple TV picks them up. Until there is a library, the **Shelf** and **Share** tabs explain both ways to get one and offer **Connect Hardcover** (see [No library yet](#no-library-yet)).
 
 ## Features
 
@@ -33,7 +33,7 @@ A new design usually uses two or three requests. The app rechecks a book when it
 
 ### Hardcover sign-in
 
-The account button in the **Spines** tab's toolbar opens the Hardcover sheet. Signed out, it explains what signing in adds and offers **Connect Hardcover**. Sign-in uses the same OAuth 2.0 Device Authorization Grant, client ID, and read-only scopes as the Apple TV app (see the [Apple TV authentication guide](../tvos/docs/HARDCOVER_AUTHENTICATION.md)):
+The account button in the **Spines** tab's toolbar opens the Hardcover sheet, and so does **Connect Hardcover** on the **Shelf** and **Share** tabs when there is no library. Signed out, it explains what signing in adds and offers **Connect Hardcover**. Sign-in uses the same OAuth 2.0 Device Authorization Grant, client ID, and read-only scopes as the Apple TV app (see the [Apple TV authentication guide](../tvos/docs/HARDCOVER_AUTHENTICATION.md)):
 
 1. The app requests a code from Hardcover and shows it with **Copy code**.
 2. **Open Hardcover** opens Hardcover's approval page in Safari inside the app: the link with the code filled in when Hardcover provides one, otherwise `hardcover.app/link`. Sign in to Hardcover if asked, enter the code, and allow Bookworms.
@@ -46,7 +46,7 @@ While signed in:
 
 - The Shelf and Share tabs show the Hardcover account's own library: every book on its shelves, with the same covers, page counts, finish and start dates, ratings, community ratings, formats, genres, series, and progress as the Apple TV builds. Each book also carries your review as plain text (`CloudBook.review`, from Hardcover's `user_books.review` with HTML and Markdown removed). Designs for these books still come from iCloud, matched by the same account ID the Apple TV uses (the Hardcover user ID).
 - The app downloads the library when it launches or becomes active if the copy on the iPhone is missing or more than four hours old, and when you choose **Sync now**. Any reload the app or the Shelf starts also checks this.
-- The Apple TV's library never stands in for the signed-in account, which may differ. Until the first download finishes, the app shows no library, or an earlier copy only when it belongs to the same account. If the download fails, or iOS deleted the copy and the iPhone is offline, the library stays empty and the **Spines** tab shows the error.
+- The Apple TV's library never stands in for the signed-in account, which may differ. Until the first download finishes, the app shows no library, or an earlier copy only when it belongs to the same account. If the download fails, or iOS deleted the copy and the iPhone is offline, the library stays empty and the **Shelf**, **Share**, and **Spines** tabs show the error (see [No library yet](#no-library-yet)).
 
 **Sign out** deletes the token and the copy of the library from the iPhone and returns to the Apple TV's library. Preview mode (`-BookwormsPreviewFolder`) ignores the sign-in.
 
@@ -56,6 +56,17 @@ While signed in:
 - The library, including reviews, is a file in `Caches/Bookworms`, which iOS does not back up and may delete; the app then downloads it again. The username, account ID, and last sync date are in the app's user defaults. They mark the sign-in, so the sheet and the library source never depend on the cached file.
 - A reinstalled app, or a backup restored to another iPhone, starts signed out. The Keychain keeps the login after the app is deleted, and a backup carries the user defaults but not the device-only login, so at launch the app deletes either half without the other.
 - The app only reads from Hardcover. It sends no mutations.
+
+### No library yet
+
+Without a library, the **Shelf** and **Share** tabs say why, from the Hardcover sign-in and the last load (`LibraryStatus`):
+
+- **Signed out:** **No library yet** explains both ways to get one: turn on **iCloud storage** in the Bookworms app on the Apple TV, or connect Hardcover on this iPhone. It adds the load error, such as a missing iCloud account, and offers **Connect Hardcover**, which opens the Hardcover sheet, and **Try again**, which reloads.
+- **Signed in, downloading:** a progress indicator says the Hardcover library is downloading.
+- **Signed in, download failed:** the error, such as Hardcover being unavailable, with **Try again**.
+- **Signed in, login rejected:** **Reconnect Hardcover** with the error and **Reconnect**, which starts a new sign-in in the Hardcover sheet.
+
+The sheet stays open when the library arrives. Preview mode ignores the sign-in, so it offers only **Try again**. A library without books says that books appear after the Apple TV's next sync, or after the next sync with Hardcover when signed in.
 
 ### Shelf
 
@@ -88,9 +99,10 @@ VoiceOver reads the pile as one element with its book count, its time frame, and
 
 - The heading names the time frame, such as "2025" or "November 2025", in New York. For **All books**, it shows the years the books were finished, such as "2014–2026". Below it is the book count, and the bottom margin holds the same credit as the Share tab's images.
 - Up to 150 books drop, last book first, so the first books in the shelf's order land on top. Fewer books are framed closer, with sharper textures. Books start over the middle of the table, just above the pile so far, tilted only a little and without spin, so few land face down. Invisible walls keep the pile together while it settles and are removed for the last half second, so no book stays propped against one. The camera then fits every book between the heading and the bottom margin.
-- While the sheet is open, the live pile leaves the screen and keeps its books. RealityKit can crash when a `RealityView` and the offscreen renderer draw at the same time. Closing the sheet shows the pile as you left it.
+- While the sheet is open, the live pile leaves the screen and keeps its books. Closing the sheet shows the pile as you left it.
 - `ImageRenderer` cannot capture a `RealityView`, so `PileSnapshotRenderer` builds a `BookPileScene` that no view shows. It runs the physics with RealityKit's `RealityRenderer` for a fixed number of 60 Hz steps, renders one frame into a Metal texture, and copies the frame to memory. If that frame is one flat color, the sheet reports that the pile could not be drawn instead of sharing it. The renderer and its textures are released after each image.
-- Covers get up to 10 seconds to load. The simulation runs on the main actor between short pauses while the sheet shows progress. `PileSnapshotRenderer.render(books:title:aspect:seed:model:)` is the entry point other features can use.
+- Covers get up to 10 seconds to load. The simulation runs on the main actor between short pauses while the sheet shows progress. `PileSnapshotRenderer.render(books:title:aspect:seed:model:)` is the entry point; the Share tab's [Pile template](#share) uses it too.
+- One pile image renders at a time, and a render waits for one that is still finishing after its task was cancelled. `RealityRenderer` steps the same RealityKit engine that draws the live pile, and RealityKit's render thread can crash drawing the pile's meshes meanwhile. While any pile image renders, from the sheet or the Share tab, the live pile's table and books therefore leave its scene, and the simulation starts 100 milliseconds later, so the view can react first. The pile's `RealityView` puts them back when the render ends. RealityKit keeps updating a `RealityView` in a tab that is not selected, so this matters when the Shelf tab was left in **Pile**. The view itself stays: one removed while its tab is hidden lingers until the tab shows again and then takes its scene along.
 
 Offscreen rendering, physics stepping, and the image itself have been checked only in the Simulator. Check them on a device.
 
@@ -100,8 +112,8 @@ The **Share** tab renders a 1080-pixel-wide PNG in Story (9:16), Portrait (4:5),
 
 - **Time frame**: **Year** (the newest year by default), **Month**, or **Lifetime**, with a menu of the years or months that have finished books. Templates about several books draw the books finished in the frame, and headings follow it, such as "2025 in books", "My top 5 of August 2025", or "My lifetime in books". Just Finished and Review list the frame's books in their book picker; Review's **Lifetime** also lists reviewed books without a finish date. Currently Reading has no time frame.
 - **Book**: the featured book of Just Finished, Review, and Currently Reading. It defaults to the newest choice.
-- **Cover**: **3D** (default), a lit 3D book with its spine, or **Flat**, the whole cover with rounded corners and a soft shadow. Every template that shows covers has it, except Year in Books on Square, which shows no records.
-- **Options**: **Loved more** or **Loved less** for Hot Takes, **Show ratings**, and **Shuffle**, which varies the spine stacks, the Top Five fan, and the angle of 3D books. Templates that the seed cannot change hide it.
+- **Cover**: **3D** (default), a lit 3D book with its spine, or **Flat**, the whole cover with rounded corners and a soft shadow. Every template that shows covers has it, except Year in Books on Square, which shows no records, and Pile, whose books are always 3D.
+- **Options**: **Loved more** or **Loved less** for Hot Takes, **Show ratings**, and **Shuffle**, which varies the spine stacks, the Top Five fan, a pile's drop, and the angle of 3D books. Templates that the seed cannot change hide it.
 
 | Template | Shows |
 | --- | --- |
@@ -110,17 +122,18 @@ The **Share** tab renders a 1080-pixel-wide PNG in Story (9:16), Portrait (4:5),
 | Top Five | The frame's five highest-rated books, fanned, with a ranked list. |
 | Hot Takes | Up to three of the frame's books whose rating is furthest from Hardcover's average, with your stars, the readers' stars, and the difference. **Loved more** shows books you rated at least half a star above the average, and **Loved less** at least half a star below. Only books with 50 or more Hardcover ratings count. |
 | Spine Spectrum | Every book finished in the frame as a stripe of its spine color, in reading order. A lifetime marks where each year starts. It shows no titles. |
+| Pile | The frame's finished books dropped onto the wooden table, newest on top, under the frame's name and book count, drawn as in [Share the pile](#share-the-pile). Up to 150 books drop. The preview shows **Dropping books** while the pile settles, which takes a few seconds. |
 | Just Finished | One book with your rating and its format, finish date, and length. |
-| Review | Your review of one book under its cover, title, and rating. A long review shows as an excerpt that ends with an ellipsis, and the text takes the largest size that fits. Only books with a review are offered. The Apple TV library carries no reviews, so without the iPhone's own Hardcover sign-in the template shows how to add them. |
+| Review | Your review of one book under its cover, title, and rating. A long review shows as an excerpt that ends with an ellipsis, and the text takes the largest size that fits. Only books with a review are offered. The Apple TV library carries no reviews, so without the iPhone's own Hardcover sign-in the template says so and offers **Connect Hardcover**. |
 | Currently Reading | A book you are reading, with its progress and its start date when known. A reread shows its new start date, not its last finish. |
 
 Text on every image is set in New York for headings and San Francisco for other text, in each book's own capitalization. Spines keep their designed fonts and colors: Year Stack's spines, the spine of a 3D book, and Spine Spectrum's stripes. A 3D book without a downloaded cover shows its title on the front in the spine's font.
 
-Images show only your own library. They include no account name or ID. Ratings are optional. A small "Created with Bookworms for iPhone" credit sits in the bottom margin of every image.
+Images show only your own library. They include no account name or ID. Ratings are optional. A small "Created with Bookworms for iPhone" credit sits in the bottom margin of every image. If an image cannot be drawn, such as a pile whose frame comes out one flat color, the preview says so and nothing is shared.
 
 ## How the 3D books work
 
-`Book3DView` draws each visible face of a book (cover, spine, page edges) as an ordinary SwiftUI view and maps it onto the screen with the perspective transform a pinhole camera gives that face. The faces share one camera, so their edges meet, and the result stays pure SwiftUI. `ImageRenderer` can therefore export it in share images, which it cannot do for RealityKit views. Pile share images are the exception: they render RealityKit offscreen (see [Share the pile](#share-the-pile)).
+`Book3DView` draws each visible face of a book (cover, spine, page edges) as an ordinary SwiftUI view and maps it onto the screen with the perspective transform a pinhole camera gives that face. The faces share one camera, so their edges meet, and the result stays pure SwiftUI. `ImageRenderer` can therefore export it in share images, which it cannot do for RealityKit views. Pile share images, from **Share pile** or the Share tab's Pile template, are the exception: they render RealityKit offscreen (see [Share the pile](#share-the-pile)).
 
 ## Run locally
 
@@ -138,7 +151,19 @@ The Simulator usually has no iCloud library. `script/load-preview-data.py` conve
 
 The preview data contains real reading history. It stays in ignored `.local/` folders and the Simulator; do not publish screenshots made from it.
 
-Debug builds accept more launch arguments for checks that cannot tap the Simulator, such as `-BookwormsGenerateOnLaunch YES`, `-BookwormsShelfMode <stack|shelf|pile>`, `-BookwormsOpenBook <book ID>`, and `-BookwormsShareTemplate <yearStack|yearInBooks|topFive|hotTakes|spectrum|justFinished|review|currentlyReading>` with `-BookwormsShareFrame <year:2025|month:2025-08|lifetime>` and `-BookwormsShareCover <threeD|flat>`. The preview library has no reviews or current reads; `-BookwormsShareSamples <n>` adds fictional ones to Debug builds. For the pile, `-BookwormsPileZoom <1...2.5>` and `-BookwormsPileYaw <radians>` set the camera, and once a drop finishes, `-BookwormsPileTilt <x,y>` applies a tilt and `-BookwormsPileThrow YES` throws the top book. `-BookwormsPileFrame <year:2025|month:2025-8>` sets the time frame. `-BookwormsPileShare YES` opens **Share pile** and writes each image to `Library/Caches/Bookworms/pile-share-debug.png`, and `-BookwormsPileShareAspect <story|portrait|square>` picks its size. With `-BookwormsShowSpines YES`, `-BookwormsShowAccount YES` opens the Hardcover sheet, and `-BookwormsStubSignIn YES` answers sign-in with the fictional code `WORM-2611` that is never approved, without contacting Hardcover. Search the source for `"Bookworms` to find them all.
+Debug builds accept more launch arguments for checks that cannot tap the Simulator, such as `-BookwormsGenerateOnLaunch YES`, `-BookwormsShelfMode <stack|shelf|pile>`, `-BookwormsOpenBook <book ID>`, and `-BookwormsShareTemplate <yearStack|yearInBooks|topFive|hotTakes|spectrum|pile|justFinished|review|currentlyReading>` with `-BookwormsShareFrame <year:2025|month:2025-08|lifetime>` and `-BookwormsShareCover <threeD|flat>`. The preview library has no reviews or current reads; `-BookwormsShareSamples <n>` adds fictional ones to Debug builds. For the pile, `-BookwormsPileZoom <1...2.5>` and `-BookwormsPileYaw <radians>` set the camera, and once a drop finishes, `-BookwormsPileTilt <x,y>` applies a tilt and `-BookwormsPileThrow YES` throws the top book. `-BookwormsPileFrame <year:2025|month:2025-8>` sets the time frame. `-BookwormsPileShare YES` opens **Share pile** and writes each image to `Library/Caches/Bookworms/pile-share-debug.png`, and `-BookwormsPileShareAspect <story|portrait|square>` picks its size. With `-BookwormsShowSpines YES`, `-BookwormsShowAccount YES` opens the Hardcover sheet, and `-BookwormsStubSignIn YES` answers sign-in with the fictional code `WORM-2611` that is never approved, without contacting Hardcover. `-BookwormsLibraryStatus <signedOut|downloading|failed|reconnect>` makes the empty Shelf and Share tabs show that state with a fictional error, and `-BookwormsShareTabs "shelf:0 share:8"` selects each tab once its seconds pass after the previous entry. Search the source for `"Bookworms` to find them all.
+
+### Check a pile image beside the live pile
+
+A script cannot tap tabs, so `-BookwormsShareTabs` switches them. To check that the Share tab's Pile template renders while the Shelf tab holds a pile, including when the reader leaves mid-render:
+
+1. Load the preview library, then launch with `-BookwormsPreviewFolder preview -BookwormsShelfMode pile -BookwormsShareTemplate pile -BookwormsShareFrame year:2025 -BookwormsShareTabs "shelf:0 share:8 shelf:0.8 share:4 shelf:6"`.
+2. The Shelf drops its pile, the Share tab starts a pile image, the Shelf returns 0.8 seconds into the render, and the Share tab renders again. Check that the app does not crash, that `Library/Caches/Bookworms/share-debug.png` holds the finished image, and that the Shelf drops its pile again at the end.
+
+### Check the empty states
+
+1. On a Simulator without an iCloud account, launch without `-BookwormsPreviewFolder`. The Shelf shows **No library yet** with the iCloud error, **Connect Hardcover**, and **Try again**; add `-BookwormsShareTemplate yearStack` to check the Share tab.
+2. Launch with `-BookwormsLibraryStatus downloading`, `failed`, or `reconnect` to check the signed-in states.
 
 ### Test Hardcover sign-in
 

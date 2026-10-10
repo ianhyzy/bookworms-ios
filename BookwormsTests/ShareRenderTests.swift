@@ -60,13 +60,13 @@ final class ShareRenderTests: XCTestCase {
         })
 
     /// Every template in every aspect, for a year with 3D covers and for a month and a lifetime
-    /// with flat ones.
+    /// with flat ones. Piles render with `PileSnapshotRenderer` instead.
     @MainActor
     func testEveryTemplateRendersAtExactPixelSizeWithContent() throws {
         let cases: [(frame: TimeFrame, style: ShareCoverStyle)] = [
             (.year(2025), .threeD), (.month(year: 2025, month: 5), .flat), (.lifetime, .flat),
         ]
-        for template in ShareTemplate.allCases {
+        for template in ShareTemplate.allCases where template != .pile {
             for (frame, style) in cases {
                 let books = template.books(from: Self.books, in: frame)
                 XCTAssertFalse(books.isEmpty, "\(template) \(frame)")
@@ -115,7 +115,8 @@ final class ShareRenderTests: XCTestCase {
 
     /// Card text uses the share typography, never the spine's: with flat covers, which draw no
     /// spines, a card looks the same whatever typeface and capitalization the spine has. Year
-    /// Stack is left out because its spines carry their lettering.
+    /// Stack is left out because its spines carry their lettering, and Pile because
+    /// `ImageRenderer` cannot draw it.
     @MainActor
     func testCardTextIgnoresSpineTypography() throws {
         let restyled = Self.looks.mapValues { look in
@@ -126,7 +127,7 @@ final class ShareRenderTests: XCTestCase {
             look.isCondensed.toggle()
             return look
         }
-        for template in ShareTemplate.allCases where template != .yearStack {
+        for template in ShareTemplate.allCases where template != .yearStack && template != .pile {
             let books = template.books(from: Self.books, in: .lifetime)
             for aspect in ShareAspect.allCases {
                 func pixels(_ looks: [Int: SpineLook]) throws -> Data {
@@ -159,6 +160,80 @@ final class ShareRenderTests: XCTestCase {
             XCTAssertEqual(try pixels(seed: 3), try pixels(seed: 3), "\(template)")
             XCTAssertNotEqual(try pixels(seed: 3), try pixels(seed: 4), "\(template)")
         }
+    }
+
+    /// The Pile template offers every time frame kind, draws the frame's finished books newest
+    /// first so they land on top, and heads the image with the frame's name.
+    func testPileTemplateDrawsEachTimeFrameNewestFirst() {
+        let pile = ShareTemplate.pile
+        XCTAssertTrue(ShareTemplate.allCases.contains(pile))
+        XCTAssertTrue(pile.usesTimeFrame)
+        XCTAssertFalse(pile.isSingleBook)
+        XCTAssertFalse(pile.hasCoverStyle, "A pile's books are always 3D")
+        for frame in [TimeFrame.year(2025), .month(year: 2025, month: 5), .lifetime] {
+            let books = pile.books(from: Self.books, in: frame)
+            XCTAssertFalse(books.isEmpty, frame.title)
+            XCTAssertEqual(
+                books.map(\.id),
+                ShareTemplate.yearStack.books(from: Self.books, in: frame).reversed().map(\.id),
+                frame.title)
+            let input = ShareInput(template: pile, aspect: .story, books: books, frame: frame)
+            XCTAssertEqual(input.period, frame == .lifetime ? "2024–2025" : frame.title)
+        }
+    }
+
+    /// A pile render marks itself until it ends, even when cancelled, so the live pile stays off
+    /// the screen, and a render that started meanwhile still finishes after it.
+    @MainActor
+    func testPileRendersOneAtATimeWhileMarked() async throws {
+        let books = ShareTemplate.pile.books(from: Self.books, in: .month(year: 2025, month: 5))
+        func render() -> Task<UIImage, any Error> {
+            Task {
+                try await PileSnapshotRenderer.render(
+                    books: books, title: "May", aspect: .square, seed: 1, model: .shared)
+            }
+        }
+        XCTAssertFalse(PileSnapshotRenderer.isRendering)
+        let first = render()
+        while !PileSnapshotRenderer.isRendering { await Task.yield() }
+        let second = render()
+        first.cancel()
+        do {
+            _ = try await first.value
+            XCTFail("A cancelled render returns no image")
+        } catch is CancellationError {}
+        let image = try await second.value
+        XCTAssertEqual(image.cgImage?.width, 1080)
+        XCTAssertFalse(PileSnapshotRenderer.isRendering)
+    }
+
+    /// Without a library, signed out explains both sources; signed in follows the download.
+    func testNoLibraryStatusFollowsTheSignInAndDownload() {
+        func status(
+            loading: Bool = false, signedIn: Bool = false, syncing: Bool = false,
+            reconnect: Bool = false, syncError: String? = nil, loadError: String? = nil
+        ) -> LibraryStatus {
+            LibraryStatus(
+                isLoading: loading, isSignedIn: signedIn, isSyncing: syncing,
+                needsReconnect: reconnect, syncError: syncError, loadError: loadError)
+        }
+        XCTAssertEqual(status(loading: true), .loading)
+        let signedOut = status(loadError: "Sign in to iCloud.")
+        XCTAssertEqual(signedOut, .signedOut(note: "Sign in to iCloud."))
+        XCTAssertTrue(signedOut.message.contains("Apple TV"), signedOut.message)
+        XCTAssertTrue(signedOut.message.contains("connect Hardcover"), signedOut.message)
+        XCTAssertTrue(signedOut.message.hasSuffix(" Sign in to iCloud."), signedOut.message)
+        XCTAssertEqual(status(signedIn: true, syncing: true), .downloading)
+        XCTAssertEqual(status(loading: true, signedIn: true), .downloading)
+        XCTAssertEqual(
+            status(signedIn: true, syncError: "Offline.", loadError: "Stale."),
+            .failed(error: "Offline."))
+        XCTAssertEqual(
+            status(signedIn: true, loadError: "Unreadable."), .failed(error: "Unreadable."))
+        XCTAssertFalse(status(signedIn: true).message.isEmpty)
+        XCTAssertEqual(
+            status(signedIn: true, syncing: true, reconnect: true, syncError: "Expired."),
+            .reconnect(error: "Expired."))
     }
 
     func testSelectionOrdersEachTemplate() {

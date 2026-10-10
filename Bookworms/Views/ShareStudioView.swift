@@ -6,7 +6,10 @@ import UniformTypeIdentifiers
 ///
 /// Each option change renders the image again after a short pause and cancels a render still in
 /// progress. Covers and spine fonts load before each render, because `ImageRenderer` draws
-/// synchronously and would capture anything still loading as a placeholder.
+/// synchronously and would capture anything still loading as a placeholder. The Pile template
+/// renders with `PileSnapshotRenderer`, which loads its own covers and fonts.
+///
+/// Without a library, the tab shows `NoLibraryView` instead, which can open the Hardcover sheet.
 struct ShareStudioView: View {
     @Environment(AppModel.self) private var model
     @State private var template = ShareTemplate.yearStack
@@ -27,6 +30,9 @@ struct ShareStudioView: View {
     /// is on its way, so the preview shows progress and sharing waits.
     @State private var renderedRequest: RenderRequest?
     @State private var hasNoBooks = false
+    /// Whether the last render failed, so no image is shown or shared.
+    @State private var failed = false
+    @State private var showsAccount = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init() {
@@ -78,10 +84,11 @@ struct ShareStudioView: View {
     private var request: RenderRequest {
         let frame = shownFrame
         let bookID = template.isSingleBook ? bookID : nil
-        // Spine Spectrum draws no lettering, so a newly loaded face cannot change it. Other
+        // Spine Spectrum draws no lettering, and the pile renderer waits for its own fonts, so a
+        // newly loaded face changes neither; restarting a pile would only delay it. Other
         // templates re-render only when a face for one of their own books arrives.
         let loadedFaces =
-            template == .spectrum
+            template == .spectrum || template == .pile
             ? 0
             : template.books(from: library, in: frame, bookID: bookID, direction: direction)
                 .count { model.fonts.face(for: model.library?.designs[$0.id]) != nil }
@@ -96,67 +103,14 @@ struct ShareStudioView: View {
         let request = request
         let isPending = renderedRequest != request
         NavigationStack {
-            Form {
-                Section {
-                    preview(isPending: isPending)
-                    Picker("Size", selection: $aspect) {
-                        ForEach(ShareAspect.allCases) { Text($0.title).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .listRowBackground(Color.clear)
-                }
-                Section("Template") {
-                    if dynamicTypeSize >= .xLarge {
-                        // Names in a grid truncate above the default text size.
-                        Picker("Template", selection: $template) {
-                            ForEach(ShareTemplate.allCases) { option in
-                                Label(option.title, systemImage: option.systemImage).tag(option)
-                            }
-                        }
-                        .pickerStyle(.inline)
-                        .labelsHidden()
-                    } else {
-                        templateGrid
-                    }
-                }
-                if template.usesTimeFrame && !periods.years.isEmpty {
-                    Section("Time frame") { frameControls }
-                }
-                if template.isSingleBook {
-                    Section("Book") { bookRow }
-                }
-                // Year in Books draws covers only for its records, which Square leaves out.
-                if template.showsCovers && !(template == .yearInBooks && aspect == .square) {
-                    Section {
-                        Picker("Cover style", selection: $coverStyle) {
-                            ForEach(ShareCoverStyle.allCases) { Text($0.title).tag($0) }
-                        }
-                        .pickerStyle(.segmented)
-                    } header: {
-                        Text("Cover")
-                    } footer: {
-                        if template == .yearInBooks {
-                            Text("Applies to the records, which appear when they fit.")
-                        }
-                    }
-                }
-                if template == .hotTakes || template.hasRatingOption || showsShuffle {
-                    Section("Options") { options }
-                }
-            }
-            .navigationTitle("Share")
-            .toolbar {
-                if let image {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        ShareLink(
-                            item: image,
-                            preview: SharePreview(image.name, image: Image(uiImage: image.image))
-                        )
-                        .disabled(isPending)
-                    }
-                }
+            if model.library == nil {
+                NoLibraryView(showsAccount: $showsAccount)
+                    .navigationTitle("Share")
+            } else {
+                form(isPending: isPending)
             }
         }
+        .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
         .task(id: request) { await render() }
         .onChange(of: model.books, initial: true) { _, books in
             periods = TimeFrame.periods(in: books)
@@ -175,7 +129,71 @@ struct ShareStudioView: View {
         }
         #if DEBUG
             .task(id: periods.years) { await renderBatch() }
+            .onAppear { ShareDebug.switchTabs(model) }
         #endif
+    }
+
+    private func form(isPending: Bool) -> some View {
+        Form {
+            Section {
+                preview(isPending: isPending)
+                Picker("Size", selection: $aspect) {
+                    ForEach(ShareAspect.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .listRowBackground(Color.clear)
+            }
+            Section("Template") {
+                if dynamicTypeSize >= .xLarge {
+                    // Names in a grid truncate above the default text size.
+                    Picker("Template", selection: $template) {
+                        ForEach(ShareTemplate.allCases) { option in
+                            Label(option.title, systemImage: option.systemImage).tag(option)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                } else {
+                    templateGrid
+                }
+            }
+            if template.usesTimeFrame && !periods.years.isEmpty {
+                Section("Time frame") { frameControls }
+            }
+            if template.isSingleBook {
+                Section("Book") { bookRow }
+            }
+            // Year in Books draws covers only for its records, which Square leaves out.
+            if template.hasCoverStyle && !(template == .yearInBooks && aspect == .square) {
+                Section {
+                    Picker("Cover style", selection: $coverStyle) {
+                        ForEach(ShareCoverStyle.allCases) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                } header: {
+                    Text("Cover")
+                } footer: {
+                    if template == .yearInBooks {
+                        Text("Applies to the records, which appear when they fit.")
+                    }
+                }
+            }
+            if template == .hotTakes || template.hasRatingOption || showsShuffle {
+                Section("Options") { options }
+            }
+        }
+        .navigationTitle("Share")
+        .toolbar {
+            if let image {
+                ToolbarItem(placement: .topBarTrailing) {
+                    ShareLink(
+                        item: image,
+                        preview: SharePreview(image.name, image: Image(uiImage: image.image))
+                    )
+                    .disabled(isPending)
+                }
+            }
+        }
     }
 
     #if DEBUG
@@ -209,29 +227,51 @@ struct ShareStudioView: View {
     @ViewBuilder
     private func preview(isPending: Bool) -> some View {
         let size = aspect.size
+        // Messages sit outside the image's box, which would clip them at large text sizes.
         if image == nil && hasNoBooks && !model.isLoading {
-            // Outside the image's box, which would clip the message at large text sizes.
             let empty = emptyState
+            ContentUnavailableView {
+                Label(empty.title, systemImage: template.systemImage)
+            } description: {
+                Text(empty.message)
+            } actions: {
+                // The Apple TV's library has no reviews; the iPhone's Hardcover sign-in adds them.
+                if template == .review && !usesHardcover && !model.isPreview {
+                    Button("Connect Hardcover") { showsAccount = true }
+                        .buttonStyle(.bordered)
+                }
+            }
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        } else if image == nil && failed && !isPending {
             ContentUnavailableView(
-                empty.title, systemImage: template.systemImage, description: Text(empty.message)
+                "Couldn't draw the image", systemImage: "exclamationmark.triangle",
+                description: Text("Try another size or template.")
             )
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
         } else {
             ZStack {
+                // Sizes the box as the image does, before there is one.
+                Color.clear.frame(idealWidth: size.width, idealHeight: size.height)
                 if let image {
                     Image(uiImage: image.image)
                         .resizable()
                         .scaledToFit()
                         .accessibilityLabel("\(image.name) preview")
-                    if isPending {
-                        ProgressView()
-                            .padding(12)
-                            .background(.regularMaterial, in: .circle)
-                            .accessibilityLabel("Updating preview")
-                    }
-                } else {
+                }
+                if template == .pile && isPending {
+                    // A pile takes seconds to drop and settle.
+                    ProgressView("Dropping books")
+                        .padding()
+                        .background(.regularMaterial, in: .rect(cornerRadius: 12))
+                } else if image == nil {
                     ProgressView()
+                } else if isPending {
+                    ProgressView()
+                        .padding(12)
+                        .background(.regularMaterial, in: .circle)
+                        .accessibilityLabel("Updating preview")
                 }
             }
             .aspectRatio(size.width / size.height, contentMode: .fit)
@@ -243,22 +283,27 @@ struct ShareStudioView: View {
         }
     }
 
+    /// Whether this iPhone's Hardcover sign-in provides the library, which preview mode ignores.
+    private var usesHardcover: Bool { model.account.isSignedIn && !model.isPreview }
+
     /// Why the template has nothing to draw, and what would give it something.
     private var emptyState: (title: String, message: String) {
         let frame = shownFrame
         let suffix = frame == .lifetime ? "" : " in \(frame.title)"
+        let nextSync =
+            usesHardcover ? "after the next sync with Hardcover" : "after the Apple TV syncs"
         switch template {
         case .review where !library.contains { $0.reviewText != nil }:
             return (
-                "No reviews yet", "Sign in to Hardcover on the Spines tab to share your reviews."
+                "No reviews yet",
+                usesHardcover
+                    ? "Reviews you write on Hardcover appear here \(nextSync)."
+                    : "The Apple TV's library has no reviews. Connect Hardcover on this iPhone to share yours."
             )
         case .review:
             return ("No reviews\(suffix)", "Choose another time frame to share a review.")
         case .currentlyReading:
-            return (
-                "Not reading anything",
-                "Books you're reading appear here after the Apple TV syncs."
-            )
+            return ("Not reading anything", "Books you're reading appear here \(nextSync).")
         case .hotTakes:
             let side = direction == .lovedMore ? "above" : "below"
             return (
@@ -268,14 +313,14 @@ struct ShareStudioView: View {
             )
         default:
             return periods.years.isEmpty
-                ? ("No finished books", "Books you finish appear here after the Apple TV syncs.")
+                ? ("No finished books", "Books you finish appear here \(nextSync).")
                 : ("No finished books\(suffix)", "Choose another time frame.")
         }
     }
 
     private var templateGrid: some View {
         LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6
+            columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 6
         ) {
             ForEach(ShareTemplate.allCases) { option in
                 let isSelected = option == template
@@ -417,11 +462,11 @@ struct ShareStudioView: View {
         }
     }
 
-    /// Whether the seed changes the image. It varies spine stacks, the Top Five fan, and the
-    /// angle of 3D books; flat single covers and Spine Spectrum ignore it.
+    /// Whether the seed changes the image. It varies spine stacks, the Top Five fan, a pile's
+    /// drop, and the angle of 3D books; flat single covers and Spine Spectrum ignore it.
     private var showsShuffle: Bool {
         switch template {
-        case .yearStack, .yearInBooks, .topFive: true
+        case .yearStack, .yearInBooks, .topFive, .pile: true
         case .spectrum: false
         case .hotTakes, .justFinished, .review, .currentlyReading: coverStyle == .threeD
         }
@@ -449,43 +494,57 @@ struct ShareStudioView: View {
             from: library, in: request.frame, bookID: request.bookID,
             direction: request.direction)
         hasNoBooks = books.isEmpty
-        guard !books.isEmpty else {
-            image = nil
-            renderedRequest = request
-            return
-        }
-        // The books drawn with covers. Year in Books draws covers only for its records.
-        let covered: [CloudBook] =
-            switch template {
-            case .yearStack, .spectrum: []
-            case .yearInBooks: YearInBooks(frame: request.frame, library: books).records
-            default: books
+        var input = ShareInput(
+            template: template, aspect: request.aspect, books: books, frame: request.frame,
+            coverStyle: request.coverStyle, direction: request.direction,
+            showsRatings: request.showsRatings, seed: request.seed)
+        let rendered: UIImage?
+        if books.isEmpty {
+            rendered = nil
+        } else if template == .pile {
+            do {
+                let pile = try await PileSnapshotRenderer.render(
+                    books: books, title: input.period, aspect: request.aspect,
+                    seed: request.seed, model: model)
+                // A render cancelled after its last check still returns; a newer one is coming.
+                try Task.checkCancellation()
+                rendered = pile
+            } catch is CancellationError {
+                return
+            } catch {
+                rendered = nil
             }
-        // Spines carry lettering on Year Stack and on 3D books, so their fonts load first. This
-        // waits for every face, including ones another feature is already downloading.
-        let lettered =
-            template == .yearStack ? books : request.coverStyle == .threeD ? covered : []
-        await model.fonts.load(lettered.compactMap { model.library?.designs[$0.id] })
-        let coverSize = template.isSingleBook ? 1200 : template == .topFive ? 900 : 700
-        let covers = await loadCovers(covered, maximumPixelSize: coverSize)
-        guard !Task.isCancelled else { return }
-        let input = ShareInput(
-            template: template, aspect: request.aspect, books: books,
-            looks: Dictionary(books.map { ($0.id, model.look(for: $0)) }) { first, _ in first },
-            covers: covers, frame: request.frame, coverStyle: request.coverStyle,
-            direction: request.direction, showsRatings: request.showsRatings, seed: request.seed)
-        guard let rendered = input.render() else {
-            // Not expected; clearing the image keeps a stale one from being shared.
-            image = nil
-            renderedRequest = request
-            return
+        } else {
+            // The books drawn with covers. Year in Books draws covers only for its records.
+            let covered: [CloudBook] =
+                switch template {
+                case .yearStack, .spectrum, .pile: []
+                case .yearInBooks: YearInBooks(frame: request.frame, library: books).records
+                default: books
+                }
+            // Spines carry lettering on Year Stack and on 3D books, so their fonts load first.
+            // This waits for every face, including ones another feature is already downloading.
+            let lettered =
+                template == .yearStack ? books : request.coverStyle == .threeD ? covered : []
+            await model.fonts.load(lettered.compactMap { model.library?.designs[$0.id] })
+            let coverSize = template.isSingleBook ? 1200 : template == .topFive ? 900 : 700
+            input.covers = await loadCovers(covered, maximumPixelSize: coverSize)
+            guard !Task.isCancelled else { return }
+            input.looks = Dictionary(books.map { ($0.id, model.look(for: $0)) }) { first, _ in
+                first
+            }
+            rendered = input.render()
         }
-        var name = template.title
-        if !template.isSingleBook { name += " " + input.period }
-        image = ShareImage(image: rendered, name: name)
+        // Without a new image, the old one must not stay to be shared.
+        image = rendered.map { rendered in
+            var name = template.title
+            if !template.isSingleBook { name += " " + input.period }
+            return ShareImage(image: rendered, name: name)
+        }
+        failed = !books.isEmpty && rendered == nil
         renderedRequest = request
         #if DEBUG
-            ShareDebug.write(rendered)
+            if let rendered { ShareDebug.write(rendered) }
         #endif
     }
 
@@ -580,7 +639,7 @@ private struct ShareBookPicker: View {
     /// Simulator hooks, since a script cannot tap the Share tab.
     ///
     /// Launching with `-BookwormsShareTemplate <name>` opens the Share tab with that template,
-    /// where the name is a `ShareTemplate` raw value such as `yearStack` or `hotTakes`.
+    /// where the name is a `ShareTemplate` raw value such as `yearStack`, `hotTakes`, or `pile`.
     /// `-BookwormsShareAspect <story|portrait|square>`,
     /// `-BookwormsShareFrame <year:2025|month:2025-08|lifetime>`, `-BookwormsShareBook <id>`,
     /// `-BookwormsShareCover <threeD|flat>`, `-BookwormsShareDirection <lovedMore|lovedLess>`,
@@ -597,6 +656,25 @@ private struct ShareBookPicker: View {
             try? FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try? image.pngData()?.write(to: url, options: .atomic)
+        }
+
+        @MainActor private static var switchesTabs = false
+
+        /// With `-BookwormsShareTabs "shelf:0 share:8"`, selects each tab once its seconds pass
+        /// after the previous entry. It checks the Shelf's pile while the Share tab renders one.
+        @MainActor static func switchTabs(_ model: AppModel) {
+            guard !switchesTabs,
+                let schedule = UserDefaults.standard.string(forKey: "BookwormsShareTabs")
+            else { return }
+            switchesTabs = true
+            // Unstructured, so leaving the Share tab does not cancel it.
+            Task {
+                for entry in schedule.split(separator: " ") {
+                    let parts = entry.split(separator: ":")
+                    try? await Task.sleep(for: .seconds(Double(parts.last ?? "") ?? 0))
+                    model.selectedTab = parts.first == "shelf" ? .shelf : .share
+                }
+            }
         }
 
         /// Parses `year:2025`, `month:2025-08`, or `lifetime`.

@@ -13,7 +13,7 @@ This checklist covers what a TestFlight or App Store build needs beyond a passin
 
 ## App Review
 
-Without a Hardcover sign-in, every tab depends on the library that the Apple TV app uploads to the reviewer's iCloud account. A reviewer can instead sign in to Hardcover on the iPhone from the **Spines** tab's account button. Provide review notes with:
+Without a Hardcover sign-in, every tab depends on the library that the Apple TV app uploads to the reviewer's iCloud account. A reviewer can instead sign in to Hardcover on the iPhone: with no library, the **Shelf** and **Share** tabs explain both options and offer **Connect Hardcover**, and the **Spines** tab's account button opens the same sheet. Provide review notes with:
 
 - that the iPhone app reads either the reader's Hardcover library or the Apple TV app's iCloud library;
 - the Hardcover demo account listed in the tvOS release workflow, and the sign-in steps: **Connect Hardcover**, **Open Hardcover**, sign in on Hardcover's page, enter the code, and allow Bookworms;
@@ -27,4 +27,6 @@ Check these on a signed iPhone with the Apple TV on the same iCloud account: the
 
 Check the Hardcover sign-in on a signed iPhone without an Apple TV library, following [Test Hardcover sign-in](../README.md#test-hardcover-sign-in): the code flow completes, the library and its designs load, generation designs the phone's library, **Reconnect** appears after the login is revoked, and **Sign out** removes the library.
 
-Check the Shelf tab's **Pile** on a recent iPhone with the full library, in an optimized build: frame rate and memory during and after the drop, shadows, tilt, throwing, and whether the Reduce Motion stacks stay standing after a book is picked up. Also check **Share pile** for **All books**, a year, and a month in each size: the time to the first image, memory while it renders, that the image is not blank, and that the pile returns as you left it when the sheet closes. The Simulator does not report motion, and its physics and rendering timing differ from a device.
+Check the Shelf tab's **Pile** on a recent iPhone with the full library, in an optimized build: frame rate and memory during and after the drop, shadows, tilt, throwing, and whether the Reduce Motion stacks stay standing after a book is picked up. Also check **Share pile** for **All books**, a year, and a month in each size: the time to the first image, memory while it renders, that the image is not blank, and that the pile returns as you left it when the sheet closes. Check the Share tab's **Pile** template the same way for a lifetime, a year, and a month, with the Shelf tab left in **Pile**: switch to the Shelf while an image renders and back, change options mid-render, and confirm the app does not crash and the Shelf's pile drops again. The Simulator does not report motion, and its physics and rendering timing differ from a device.
+
+On an iPhone without an Apple TV library or a Hardcover sign-in, check that the **Shelf** and **Share** tabs show **No library yet** with **Connect Hardcover**, that the sheet stays open while the library downloads, and that both tabs show the library once it arrives.
