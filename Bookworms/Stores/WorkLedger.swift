@@ -3,9 +3,10 @@ import Foundation
 /// Remembers which books were checked or failed, so a run spends cover downloads and Private
 /// Cloud Compute requests only on books that need them.
 ///
-/// A book is rechecked when it has no entry, its work-item hash or the generator changed, or its
-/// last check is seven days old. A failed book waits 24 hours unless its work-item hash changed. An Apple TV sync alone does not trigger a recheck: on a
-/// phone, re-downloading every cover after each sync costs too much time and data.
+/// A book is rechecked when it has no entry, its work-item hash, chosen cover, or the generator
+/// changed, or its last check is seven days old. A failed book waits 24 hours unless its work-item
+/// hash or chosen cover changed. An Apple TV sync alone does not trigger a recheck: on a phone,
+/// re-downloading every cover after each sync costs too much time and data.
 actor WorkLedger {
     private struct LedgerState: Codable {
         var cloudUserRecordName: String?
@@ -17,6 +18,9 @@ actor WorkLedger {
         /// The cover's hash after a successful check; `nil` after a failure.
         let coverHash: String?
         let generatorVersion: String
+        /// The reader's chosen cover (`CloudBook.chosenCoverURL`); `nil` for the default cover,
+        /// so entries written before cover choices existed still match.
+        var chosenCover: URL?
         let checkedAt: Date
         /// When the last attempt failed; `nil` after a success.
         var failedAt: Date?
@@ -51,9 +55,10 @@ actor WorkLedger {
     }
 
     func needsCheck(
-        recordName: String, workItemHash: String, now: Date = Date()
+        recordName: String, workItemHash: String, chosenCover: URL? = nil, now: Date = Date()
     ) -> Bool {
         guard let entry = entries[recordName], entry.workItemHash == workItemHash,
+            entry.chosenCover == chosenCover,
             entry.generatorVersion == CloudContract.generatorVersion
         else { return true }
         if let failedAt = entry.failedAt {
@@ -63,20 +68,25 @@ actor WorkLedger {
     }
 
     func recordSuccess(
-        recordName: String, workItemHash: String, coverHash: String, now: Date = Date()
+        recordName: String, workItemHash: String, coverHash: String, chosenCover: URL? = nil,
+        now: Date = Date()
     ) throws {
         entries[recordName] = Entry(
             workItemHash: workItemHash, coverHash: coverHash,
-            generatorVersion: CloudContract.generatorVersion, checkedAt: now)
+            generatorVersion: CloudContract.generatorVersion, chosenCover: chosenCover,
+            checkedAt: now)
         try persist()
     }
 
     /// Records a failure that retrying soon would repeat, such as an unreadable cover or a
     /// design the model could not produce.
-    func recordFailure(recordName: String, workItemHash: String, now: Date = Date()) throws {
+    func recordFailure(
+        recordName: String, workItemHash: String, chosenCover: URL? = nil, now: Date = Date()
+    ) throws {
         entries[recordName] = Entry(
             workItemHash: workItemHash, coverHash: nil,
-            generatorVersion: CloudContract.generatorVersion, checkedAt: now, failedAt: now)
+            generatorVersion: CloudContract.generatorVersion, chosenCover: chosenCover,
+            checkedAt: now, failedAt: now)
         try persist()
     }
 

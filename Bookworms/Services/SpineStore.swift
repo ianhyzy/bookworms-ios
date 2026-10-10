@@ -6,6 +6,9 @@ import Foundation
 /// iPhone's own Hardcover library when it is signed in (see `WorkSource`). `LocalSpineStore`
 /// reads a folder of the same JSON for Simulator previews and tests, so no iCloud account is
 /// needed; it ignores the Hardcover sign-in.
+///
+/// Both stores set each book's `chosenCoverURL` from the reader's `CoverChoiceV1` records when
+/// they load work or the library.
 protocol SpineStore: Sendable {
     /// Returns the books to design, or `nil` when there is no work.
     func loadWork() async throws -> WorkContext?
@@ -16,6 +19,10 @@ protocol SpineStore: Sendable {
     func isStillCurrent(_ context: WorkContext, bookID: Int) async throws -> Bool
     /// Saves `design` unless an equal or newer design for the same work already exists.
     func save(_ design: SpineDesignV1) async throws
+    /// Saves the reader's cover for a book, replacing an earlier choice.
+    func save(_ choice: CoverChoiceV1) async throws
+    /// Deletes the reader's cover choice for a book, which restores its default cover.
+    func deleteCoverChoice(accountID: String, bookID: Int) async throws
     /// Returns the active account's books and every valid saved design, or `nil` before there
     /// is a library.
     func loadLibrary() async throws -> LibrarySnapshot?
@@ -56,8 +63,9 @@ enum WorkSource: Equatable {
 
 /// Reads and writes the iCloud JSON shapes in a local folder.
 ///
-/// The folder holds `library-v1.json` (the archive), an optional `spine-worklist-v1.json`, and
-/// `spine-designs-v1.json` (`[recordName: SpineDesignV1]`, the Apple TV cache shape).
+/// The folder holds `library-v1.json` (the archive), an optional `spine-worklist-v1.json`,
+/// `spine-designs-v1.json` (`[recordName: SpineDesignV1]`, the Apple TV cache shape), and
+/// `cover-choices-v1.json` (`[recordName: CoverChoiceV1]`).
 actor LocalSpineStore: SpineStore {
     private let folder: URL
 
@@ -73,7 +81,9 @@ actor LocalSpineStore: SpineStore {
         }
         let (snapshot, books) = try archive.workSource(for: worklist)
         return WorkContext(
-            accountID: snapshot.accountID, syncedAt: snapshot.syncedAt, books: books,
+            accountID: snapshot.accountID, syncedAt: snapshot.syncedAt,
+            books: CoverChoiceV1.apply(
+                try coverChoices(), accountID: snapshot.accountID, to: books),
             followsWorklist: worklist != nil, cloudUserRecordName: "local")
     }
 
@@ -99,11 +109,22 @@ actor LocalSpineStore: SpineStore {
         var all = try designs()
         all[CloudContract.designRecordName(accountID: design.accountID, bookID: design.bookID)] =
             design
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .sortedKeys
-        try encoder.encode(all)
-            .write(
-                to: folder.appending(path: "spine-designs-v1.json"), options: .atomic)
+        try write(all, "spine-designs-v1.json")
+    }
+
+    func save(_ choice: CoverChoiceV1) async throws {
+        try choice.validate()
+        var all = try coverChoices()
+        all[
+            CloudContract.coverChoiceRecordName(accountID: choice.accountID, bookID: choice.bookID)] =
+            choice
+        try write(all, "cover-choices-v1.json")
+    }
+
+    func deleteCoverChoice(accountID: String, bookID: Int) async throws {
+        var all = try coverChoices()
+        all[CloudContract.coverChoiceRecordName(accountID: accountID, bookID: bookID)] = nil
+        try write(all, "cover-choices-v1.json")
     }
 
     func loadLibrary() async throws -> LibrarySnapshot? {
@@ -116,7 +137,9 @@ actor LocalSpineStore: SpineStore {
         let (snapshot, books) =
             try (try? archive.workSource(for: shown)) ?? archive.workSource(for: nil)
         return LibrarySnapshot(
-            accountID: snapshot.accountID, syncedAt: snapshot.syncedAt, books: books,
+            accountID: snapshot.accountID, syncedAt: snapshot.syncedAt,
+            books: CoverChoiceV1.apply(
+                try coverChoices(), accountID: snapshot.accountID, to: books),
             designs: LibrarySnapshot.latestDesigns(
                 try designs().values, accountID: snapshot.accountID, books: books))
     }
@@ -125,6 +148,16 @@ actor LocalSpineStore: SpineStore {
 
     private func designs() throws -> [String: SpineDesignV1] {
         try decode([String: SpineDesignV1].self, "spine-designs-v1.json") ?? [:]
+    }
+
+    private func coverChoices() throws -> [String: CoverChoiceV1] {
+        try decode([String: CoverChoiceV1].self, "cover-choices-v1.json") ?? [:]
+    }
+
+    private func write(_ value: some Encodable, _ name: String) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        try encoder.encode(value).write(to: folder.appending(path: name), options: .atomic)
     }
 
     private func decode<T: Decodable>(_ type: T.Type, _ name: String) throws -> T? {

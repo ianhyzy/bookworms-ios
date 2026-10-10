@@ -14,6 +14,10 @@ enum CloudContract {
         "spine-design-v1-" + digest("\(accountID):\(bookID)")
     }
 
+    static func coverChoiceRecordName(accountID: String, bookID: Int) -> String {
+        "cover-choice-v1-" + digest("\(accountID):\(bookID)")
+    }
+
     static func workItemHash(accountID: String, book: CloudBook) -> String {
         digest(
             accountID + "\n" + String(book.id) + "\n" + book.title + "\n" + book.author
@@ -126,10 +130,15 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
     /// The reader's own review as plain text. The Apple TV archive does not carry reviews; the
     /// iPhone fills this in from its own Hardcover sign-in.
     var review: String? = nil
+    /// The cover the reader chose (`CoverChoiceV1`), which neither the archive nor
+    /// `workItemHash` includes, so designs keep matching the Apple TV's hash.
+    var chosenCoverURL: URL? = nil
 
+    /// The covers to try in order: the reader's choice, then the default covers.
     var coverCandidates: [URL] {
         var urls: [URL] = []
-        for url in [detailCoverURL, coverURL].compactMap(\.self) where !urls.contains(url) {
+        for url in [chosenCoverURL, detailCoverURL, coverURL].compactMap(\.self)
+        where !urls.contains(url) {
             urls.append(url)
         }
         return urls
@@ -200,6 +209,52 @@ struct SpineDesignV1: Codable, Sendable, Hashable {
             && value.utf8.allSatisfy { byte in
                 (48...57).contains(byte) || (97...102).contains(byte)
             }
+    }
+}
+
+/// The reader's choice of cover for one book, shared through iCloud so every device shows it.
+///
+/// A `CoverChoiceV1` record in the private database's default zone, named by
+/// `CloudContract.coverChoiceRecordName(accountID:bookID:)`, holds this JSON in its `payload`
+/// Bytes field. `chosenAt` uses `JSONEncoder`'s default date encoding (seconds since 2001), and
+/// `editionID` is absent when the cover belongs to no Hardcover edition. Choosing the default
+/// cover deletes the record. Readers ignore a record that fails `validate()` or names another
+/// account or book than its record name.
+struct CoverChoiceV1: Codable, Sendable, Hashable {
+    let version: Int
+    let accountID: String
+    let bookID: Int
+    let coverURL: URL
+    let editionID: Int?
+    let chosenAt: Date
+
+    func validate() throws {
+        guard version == 1, !accountID.isEmpty, accountID.count <= 512, bookID > 0,
+            CoverURLPolicy.allows(coverURL), editionID.map({ $0 > 0 }) ?? true,
+            chosenAt.timeIntervalSince1970.isFinite
+        else { throw CompanionError.invalidCloudData }
+    }
+
+    /// Returns `books` with each chosen cover set as `chosenCoverURL`. `choices` maps record
+    /// names to payloads; only valid choices for `accountID` stored under their own record name
+    /// count.
+    static func apply(
+        _ choices: [String: CoverChoiceV1], accountID: String, to books: [CloudBook]
+    ) -> [CloudBook] {
+        var covers: [Int: URL] = [:]
+        for (name, choice) in choices
+        where choice.accountID == accountID
+            && name
+                == CloudContract.coverChoiceRecordName(accountID: accountID, bookID: choice.bookID)
+            && (try? choice.validate()) != nil
+        {
+            covers[choice.bookID] = choice.coverURL
+        }
+        return books.map { book in
+            var book = book
+            book.chosenCoverURL = covers[book.id]
+            return book
+        }
     }
 }
 

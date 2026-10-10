@@ -22,14 +22,14 @@ The **Spines** tab shows how many books have designs, the current run, Private C
 Each run designs the books that need it, one at a time:
 
 1. The run picks its account and books. A worklist from the Apple TV that lists books decides, even when the iPhone is signed in to Hardcover. Without one, a signed-in iPhone designs its own Hardcover library, and nothing until it has downloaded that library; it never designs the Apple TV's library, which may belong to another account. Signing out stops a run that designs the iPhone's library. Otherwise the iPhone designs the newest Hardcover snapshot that the Apple TV uploaded, preferring a real account ID over the legacy `hardcover` placeholder; Apple TV builds without the worklist upload only that library. An empty worklist means the Apple TV turned Hardcover off, which stops runs unless the iPhone is signed in.
-2. The app downloads the cover over HTTPS, reads its lettering with Vision, and samples its colors.
+2. The app downloads the cover over HTTPS (the one you chose, if any; see [Cover choice](#cover-choice)), reads its lettering with Vision, and samples its colors.
 3. The first model request asks only which of 12 letterform styles the cover's title uses, with the cover attached and the styles in a different order for each book. If Private Cloud Compute cannot read images, the on-device model answers this question.
 4. The second request picks cloth, ink, and accent colors from the sampled palette, a weight, and up to four families from that style's open-source Google Fonts families.
 5. The app downloads the first family that has every letter of the title and author, rejects italic, oblique, and slanted faces and Impact, and adjusts the colors until the text reaches APCA Lc 75. If no ranked family works, one more ranking request runs without them.
 6. Books in the same series reuse the first saved series design without a request when its font covers the book's letters.
 7. The app saves a `SpineDesignV1` record with generator version `ios-pcc-v1`.
 
-A new design usually uses two or three requests. The app rechecks a book when its metadata or the generator changes, or after seven days. A book that fails waits 24 hours. Quota, network, service, and iCloud save errors stop the run and schedule the next attempt for the reset or retry time.
+A new design usually uses two or three requests. The app rechecks a book when its metadata, its chosen cover, or the generator changes, or after seven days. A book that fails waits 24 hours unless its metadata or chosen cover changes. Quota, network, service, and iCloud save errors stop the run and schedule the next attempt for the reset or retry time.
 
 ### Hardcover sign-in
 
@@ -46,7 +46,7 @@ While signed in:
 
 - The Shelf and Share tabs show the Hardcover account's own library: every book on its shelves, with the same covers, page counts, finish and start dates, ratings, community ratings, formats, genres, series, and progress as the Apple TV builds. Each book also carries your review as plain text (`CloudBook.review`, from Hardcover's `user_books.review` with HTML and Markdown removed). Designs for these books still come from iCloud, matched by the same account ID the Apple TV uses (the Hardcover user ID).
 - The app downloads the library when it launches or becomes active if the copy on the iPhone is missing or more than four hours old, and when you choose **Sync now**. Any reload the app or the Shelf starts also checks this.
-- The Apple TV's library never stands in for the signed-in account, which may differ. Until the first download finishes, the app shows no library, or an earlier copy only when it belongs to the same account. If the download fails, or iOS deleted the copy and the iPhone is offline, the library stays empty and the **Spines** tab shows the error.
+- The Apple TV's library never stands in for the signed-in account, which may differ. Until the first download finishes, the app shows no library, or an earlier copy only when it belongs to the same account, and a generation run reports "Waiting for your Hardcover library to download". If the download fails, or iOS deleted the copy and the iPhone is offline, the library stays empty and the **Spines** tab shows the error.
 
 **Sign out** deletes the token and the copy of the library from the iPhone and returns to the Apple TV's library. Preview mode (`-BookwormsPreviewFolder`) ignores the sign-in.
 
@@ -65,7 +65,17 @@ The **Shelf** tab shows every book as a spine in its saved design, or in a plain
 - **Shelf** stands the spines upright, as on the Apple TV, and scrolls them horizontally like Cover Flow.
 - **Pile** drops every book, or a year's or month's books, onto a wooden table as a physics toy, and shares the pile as an image. See [Pile](#pile).
 - The caption shows the centered book's title, author, finish date, and your rating. Sort by finish date, title, author, or rating, or show designed books only.
-- Tap the centered spine for details: a 3D book you can turn with a drag, its reading details, the design's font and colors, and **Share**.
+- Tap the centered spine for details: a 3D book you can turn with a drag, its reading details, the design's font and colors, **Change cover**, and **Share**.
+
+### Cover choice
+
+**Change cover** on a book's details opens the covers of the book's Hardcover editions, most-read edition first, with the current cover marked. Each cover shows its edition's format and year, and VoiceOver reads it as, for example, "Cover from 2019 Paperback edition". Choosing a cover saves it; **Use default cover** returns to the cover Bookworms picks from your library.
+
+- The picker lists up to 60 editions with images and leaves out repeated images, non-HTTPS links, images under 300 pixels on the shorter side, and nearly square art such as audiobook covers. A cover that does not load cannot be chosen.
+- Finding covers needs this iPhone's Hardcover sign-in, which reads the editions with the same read-only scopes as the library. Signed out, the sheet explains this and offers **Connect Hardcover**; **Use default cover** still works.
+- The choice is saved to iCloud as a `CoverChoiceV1` record for the shown account (see [iCloud contract](#icloud-contract)), so another iPhone on the same iCloud account shows it after its next reload. Choosing the default cover deletes the record. If iCloud rejects the change, the sheet says so and nothing changes.
+- The chosen cover replaces the default everywhere the iPhone shows the book: details, share images, the Pile, and spine generation. If the chosen image stops loading, the default cover shows instead. The Pile reuses a book's textures until its spine design changes or the pile is released, for example when you switch tabs or presentations, so a new cover appears there only after that.
+- The spine keeps its current design until the next run, which rechecks the book because its chosen cover changed. After a change, the details offer **Redesign spine**, which starts **Generate now**. A book in a series reuses the series design when one exists, so only its saved cover hash changes.
 
 ### Pile
 
@@ -138,7 +148,9 @@ The Simulator usually has no iCloud library. `script/load-preview-data.py` conve
 
 The preview data contains real reading history. It stays in ignored `.local/` folders and the Simulator; do not publish screenshots made from it.
 
-Debug builds accept more launch arguments for checks that cannot tap the Simulator, such as `-BookwormsGenerateOnLaunch YES`, `-BookwormsShelfMode <stack|shelf|pile>`, `-BookwormsOpenBook <book ID>`, and `-BookwormsShareTemplate <yearStack|yearInBooks|topFive|hotTakes|spectrum|justFinished|review|currentlyReading>` with `-BookwormsShareFrame <year:2025|month:2025-08|lifetime>` and `-BookwormsShareCover <threeD|flat>`. The preview library has no reviews or current reads; `-BookwormsShareSamples <n>` adds fictional ones to Debug builds. For the pile, `-BookwormsPileZoom <1...2.5>` and `-BookwormsPileYaw <radians>` set the camera, and once a drop finishes, `-BookwormsPileTilt <x,y>` applies a tilt and `-BookwormsPileThrow YES` throws the top book. `-BookwormsPileFrame <year:2025|month:2025-8>` sets the time frame. `-BookwormsPileShare YES` opens **Share pile** and writes each image to `Library/Caches/Bookworms/pile-share-debug.png`, and `-BookwormsPileShareAspect <story|portrait|square>` picks its size. With `-BookwormsShowSpines YES`, `-BookwormsShowAccount YES` opens the Hardcover sheet, and `-BookwormsStubSignIn YES` answers sign-in with the fictional code `WORM-2611` that is never approved, without contacting Hardcover. Search the source for `"Bookworms` to find them all.
+Preview mode keeps cover choices in `cover-choices-v1.json` in the preview folder. Loading the preview data again keeps that file; deleting it restores the default covers.
+
+Debug builds accept more launch arguments for checks that cannot tap the Simulator, such as `-BookwormsGenerateOnLaunch YES`, `-BookwormsShelfMode <stack|shelf|pile>`, `-BookwormsOpenBook <book ID>`, and `-BookwormsShareTemplate <yearStack|yearInBooks|topFive|hotTakes|spectrum|justFinished|review|currentlyReading>` with `-BookwormsShareFrame <year:2025|month:2025-08|lifetime>` and `-BookwormsShareCover <threeD|flat>`. The preview library has no reviews or current reads; `-BookwormsShareSamples <n>` adds fictional ones to Debug builds. For the pile, `-BookwormsPileZoom <1...2.5>` and `-BookwormsPileYaw <radians>` set the camera, and once a drop finishes, `-BookwormsPileTilt <x,y>` applies a tilt and `-BookwormsPileThrow YES` throws the top book. `-BookwormsPileFrame <year:2025|month:2025-8>` sets the time frame. `-BookwormsPileShare YES` opens **Share pile** and writes each image to `Library/Caches/Bookworms/pile-share-debug.png`, and `-BookwormsPileShareAspect <story|portrait|square>` picks its size. With `-BookwormsOpenBook <book ID>`, `-BookwormsCoverPicker YES` opens **Change cover**; `-BookwormsStubCovers YES` answers it with six fictional covers drawn on the device, without Hardcover or an image host, and `-BookwormsChooseCover <index>` chooses one of them. With `-BookwormsShowSpines YES`, `-BookwormsShowAccount YES` opens the Hardcover sheet, and `-BookwormsStubSignIn YES` answers sign-in with the fictional code `WORM-2611` that is never approved, without contacting Hardcover. Search the source for `"Bookworms` to find them all.
 
 ### Test Hardcover sign-in
 
@@ -155,10 +167,20 @@ To check **Reconnect**, revoke Bookworms in Hardcover's account settings, then t
 
 The Apple TV app owns the `library-v1` archive and, from builds that include the spine companion work, the `SpineWorklistV1` record. This app writes one `SpineDesignV1` record per book. Record names and JSON fields are defined in `Bookworms/Models/CloudContract.swift`, and the tests pin the same digests as the Apple TV and Mac companion tests. Designs add optional `fontFamily`, `fontPostScriptName`, `instanceWeight`, and `provenance` fields; older readers ignore them.
 
+This app also writes one `CoverChoiceV1` record for each book whose cover the reader changed:
+
+- **Location.** Record type `CoverChoiceV1` in the default zone of the private database of `iCloud.gay.ian.Bookworms`.
+- **Record name.** `cover-choice-v1-` followed by the lowercase hexadecimal SHA-256 of `<accountID>:<bookID>`, the same digest as design record names. For account `42` and book `7`, the name is `cover-choice-v1-755dac3729029e2e2976249c4e03b160c699ef71f296c346e22183dc23503c33`.
+- **Payload.** A `payload` field of type Bytes holds JSON: `version` (`1`), `accountID` (string), `bookID` (integer), `coverURL` (string, an HTTPS image URL), `editionID` (integer, the Hardcover edition; absent when the cover belongs to no edition), and `chosenAt` (number, `JSONEncoder`'s default date encoding: seconds since 1 January 2001, which can be fractional). For example: `{"accountID":"42","bookID":7,"chosenAt":800000000,"coverURL":"https://covers.example.com/7/2.jpg","editionID":31,"version":1}`.
+- **Validation.** Readers ignore a payload unless `version` is 1, `accountID` has 1 to 512 characters, `bookID` is positive, `coverURL` passes `CoverURLPolicy` (HTTPS, no credentials, port, or fragment, and no local or IP-address host), `editionID` is positive when present, and the account and book match the record name.
+- **Writes.** Choosing the default cover deletes the record. A save fetches the record, returns early when it already names the same cover and edition, and otherwise saves with `ifServerRecordUnchanged`, retrying up to three times on a conflict, like designs.
+- **Use.** The chosen cover goes first among the book's covers for display and generation, followed by the default covers as fallbacks. It never enters `workItemHash`, so designs keep matching the Apple TV's hash; a design's `coverHash` is the SHA-256 of the chosen cover's bytes.
+
 Current limits:
 
 - The Apple TV caches companion designs only on its `spine-companion` branch, and no Apple TV view displays them yet.
 - The Mac companion regenerates any design whose generator version is not its own, and this app does the same for Mac designs. Run only one companion per iCloud account until both accept each other's designs.
+- The Apple TV app and the Mac companion do not read `CoverChoiceV1` yet, so they show and design from the default covers.
 - A development-signed build uses the CloudKit Development environment. It does not see data that App Store or TestFlight Apple TV builds write to Production.
 - The [release workflow](docs/RELEASING.md) lists the production schema, capability, and App Review steps that remain before shipping.
 
@@ -172,7 +194,7 @@ xcodebuild -project Bookworms.xcodeproj -scheme Bookworms \
   OTHER_SWIFT_FLAGS='-disable-sandbox' test
 ```
 
-The tests use fictional books and canned Hardcover responses, and need no iCloud account, network, Hardcover login, or model. The Hardcover Keychain test uses its own service name. Simulator runs check rendering and the generation flow against the preview folder; the Simulator does not run background tasks. Check a signed device build for iCloud access, push delivery, the charging task, continued processing, and Private Cloud Compute quotas, and confirm that the Apple TV caches the designs.
+The tests use fictional books, covers, and canned Hardcover responses, and need no iCloud account, network, Hardcover login, or model. The Hardcover Keychain test uses its own service name. Simulator runs check rendering and the generation flow against the preview folder; the Simulator does not run background tasks. Check a signed device build for iCloud access, push delivery, the charging task, continued processing, and Private Cloud Compute quotas, and confirm that the Apple TV caches the designs.
 
 ## Credits
 

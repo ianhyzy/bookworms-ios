@@ -77,6 +77,19 @@ struct HardcoverUser: Decodable, Equatable, Sendable {
     let username: String?
 }
 
+/// A cover from one of a book's Hardcover editions, which the reader can choose instead of the
+/// default cover.
+struct EditionCover: Hashable, Sendable, Identifiable {
+    let editionID: Int
+    let url: URL
+    /// The edition's format as Hardcover records it, such as "Paperback", or its reading format,
+    /// such as "Listened", when it has none.
+    let format: String?
+    let year: Int?
+
+    var id: URL { url }
+}
+
 /// Signs this iPhone in to Hardcover with the OAuth 2.0 Device Authorization Grant and reads the
 /// account's library.
 ///
@@ -205,6 +218,26 @@ actor HardcoverClient {
             }
         }
         throw HardcoverError.incomplete
+    }
+
+    /// Returns the covers of the book's editions, most-read edition first, one per image URL.
+    /// Images that fail `CoverURLPolicy` or cannot be covers, such as square audiobook art, are
+    /// left out.
+    func editionCovers(bookID: Int, token: String) async throws -> [EditionCover] {
+        struct Variables: Encodable { let book: Int }
+        let page: EditionsPage = try await query(
+            Self.editionsQuery, variables: Variables(book: bookID), token: token)
+        var seen = Set<URL>()
+        return page.editions.compactMap { edition in
+            guard let image = edition.image, let url = image.url, CoverURLPolicy.allows(url),
+                Self.isCover(image), seen.insert(url).inserted
+            else { return nil }
+            let format = edition.editionFormat?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return EditionCover(
+                editionID: edition.id, url: url,
+                format: format?.isEmpty == false ? format : edition.readingFormat?.format,
+                year: edition.releaseYear)
+        }
     }
 
     /// Turns a review into plain text: HTML tags and Markdown markers are removed, entities are
@@ -343,6 +376,15 @@ actor HardcoverClient {
               order_by: [{id: desc}], limit: 1) {
               started_at progress progress_pages progress_seconds edition { pages audio_seconds }
             }
+          }
+        }
+        """
+
+    private static let editionsQuery = """
+        query EditionCovers($book: Int!) {
+          editions(where: {book_id: {_eq: $book}, image_id: {_is_null: false}},
+            order_by: [{users_count: desc}, {id: asc}], limit: 60) {
+            id edition_format release_year reading_format { format } image { url width height }
           }
         }
         """
@@ -512,6 +554,26 @@ private struct GraphQLReply<Result: Decodable>: Decodable {
     struct Failure: Decodable {
         let extensions: Extensions?
         struct Extensions: Decodable { let code: String? }
+    }
+}
+
+/// The editions query's reply.
+private struct EditionsPage: Decodable {
+    let editions: [Edition]
+
+    struct Edition: Decodable {
+        let id: Int
+        let editionFormat: String?
+        let releaseYear: Int?
+        let readingFormat: LibraryPage.Edition.ReadingFormat?
+        let image: LibraryPage.Image?
+
+        enum CodingKeys: String, CodingKey {
+            case id, image
+            case editionFormat = "edition_format"
+            case releaseYear = "release_year"
+            case readingFormat = "reading_format"
+        }
     }
 }
 

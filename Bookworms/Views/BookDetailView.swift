@@ -1,19 +1,38 @@
 import SwiftUI
 
-/// A book's details: a 3D model to turn with a drag, its reading record, and its spine design.
+/// A book's details: a 3D model to turn with a drag, its reading record, its spine design, and
+/// **Change cover**.
 struct BookDetailView: View {
-    let book: CloudBook
+    /// The book as the shelf opened it. The view shows the library's current copy, so a new
+    /// cover or design appears at once.
+    let opened: CloudBook
 
     @Environment(AppModel.self) private var model
+    @Environment(GenerationController.self) private var generation
     @State private var cover: UIImage?
+    @State private var choosesCover = false
+    /// When the reader changed the cover here, which makes the spine worth redesigning.
+    @State private var coverChangedAt: Date?
+
+    init(book: CloudBook) {
+        opened = book
+    }
+
+    private var book: CloudBook { model.books.first { $0.id == opened.id } ?? opened }
 
     var body: some View {
+        let book = book
         let look = model.look(for: book)
         let design = model.library?.designs[book.id]
         ScrollView {
             VStack(spacing: 24) {
                 TurningBook(book: book, look: look, cover: cover)
                 header
+                Button("Change cover", systemImage: "photo.on.rectangle") { choosesCover = true }
+                    .buttonStyle(.bordered)
+                if let coverChangedAt, let design, design.generatedAt < coverChangedAt {
+                    redesignCard
+                }
                 record
                 designCard(look: look, design: design)
             }
@@ -26,7 +45,36 @@ struct BookDetailView: View {
                 Button("Share", systemImage: "square.and.arrow.up") { model.share(book) }
             }
         }
-        .task(id: book.id) { cover = await model.covers.image(for: book) }
+        // A new cover choice changes the first candidate; the old cover shows until it loads.
+        .task(id: book.coverCandidates.first) { cover = await model.covers.image(for: book) }
+        .sheet(isPresented: $choosesCover) {
+            // The shelf sets a dark scheme for its walnut backdrop, which the sheet's content
+            // inherits; the sheet's own background must match it to keep text readable.
+            CoverPickerView(book: book) { coverChangedAt = .now }
+                .preferredColorScheme(.dark)
+        }
+        #if DEBUG
+            .onAppear { if CoverPickerDebug.opensPicker { choosesCover = true } }
+        #endif
+    }
+
+    /// Offers a run that redesigns the spine from the new cover. The ledger rechecks a book
+    /// whose chosen cover changed, so the next run includes this book.
+    private var redesignCard: some View {
+        Card {
+            Text("Redesign the spine?").font(.headline)
+            Text("The spine was designed from the previous cover.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            if generation.status.isRunning {
+                LabeledContent("Designing spines") { ProgressView() }
+            } else {
+                Button("Redesign spine", systemImage: "wand.and.sparkles") {
+                    generation.generateNow()
+                }
+                .buttonStyle(.bordered)
+            }
+        }
     }
 
     private var header: some View {

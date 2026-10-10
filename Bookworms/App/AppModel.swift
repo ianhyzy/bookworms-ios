@@ -1,7 +1,8 @@
 import Foundation
 import Observation
 
-/// The library the app shows: the active Hardcover account's books and their saved designs.
+/// The library the app shows: the active Hardcover account's books, their saved designs, and the
+/// covers the reader chose.
 ///
 /// Signed in to Hardcover on this iPhone, the books come from that account (`HardcoverAccount`);
 /// otherwise from the Apple TV's iCloud archive. Either way `CloudSpineStore` adds the designs
@@ -37,6 +38,9 @@ final class AppModel {
     @ObservationIgnored private var needsReload = false
     /// Designs saved while a reload's fetch runs, merged into its result so none are lost.
     @ObservationIgnored private var appliedDuringLoad: [SpineDesignV1] = []
+    /// Covers chosen while a reload's fetch runs, applied to its result for the same reason.
+    @ObservationIgnored private var coversChosenDuringLoad:
+        [(accountID: String, bookID: Int, url: URL?)] = []
 
     private init() {
         if let path = UserDefaults.standard.string(forKey: "BookwormsPreviewFolder") {
@@ -80,6 +84,7 @@ final class AppModel {
         guard !isLoading else { return }
         isLoading = true
         appliedDuringLoad = []
+        coversChosenDuringLoad = []
         if !isPreview { await account.syncIfStale() }
         let revision = account.libraryRevision
         do {
@@ -90,6 +95,10 @@ final class AppModel {
                     snapshot.designs = LibrarySnapshot.latestDesigns(
                         Array(snapshot.designs.values) + appliedDuringLoad,
                         accountID: snapshot.accountID, books: snapshot.books)
+                    for chosen in coversChosenDuringLoad
+                    where chosen.accountID == snapshot.accountID {
+                        snapshot.setChosenCover(chosen.url, bookID: chosen.bookID)
+                    }
                     setLibrary(snapshot)
                     persist()
                 } else {
@@ -147,6 +156,41 @@ final class AppModel {
         Task { await fonts.load([design]) }
     }
 
+    /// Returns the covers of `book`'s Hardcover editions for the cover picker. Needs this
+    /// iPhone's Hardcover sign-in.
+    func editionCovers(for book: CloudBook) async throws -> [EditionCover] {
+        #if DEBUG
+            if CoverPickerDebug.stubsCovers { return CoverPickerDebug.covers(for: book) }
+        #endif
+        guard account.isSignedIn, let token = HardcoverTokenStore().read() else {
+            throw HardcoverError.invalidToken
+        }
+        return try await HardcoverClient().editionCovers(bookID: book.id, token: token)
+    }
+
+    /// Saves `cover` as `book`'s cover for the shown account, or deletes the choice when `cover`
+    /// is `nil` or the default cover, then shows the result without a reload.
+    ///
+    /// The choice goes to iCloud, so other devices and generation runs use it too. Throws when
+    /// it cannot be saved, and then nothing changes. Does nothing while no library is shown.
+    func chooseCover(_ cover: EditionCover?, for book: CloudBook) async throws {
+        guard let accountID = library?.accountID else { return }
+        let chosen = cover?.url == (book.detailCoverURL ?? book.coverURL) ? nil : cover
+        if let chosen {
+            try await store.save(
+                CoverChoiceV1(
+                    version: 1, accountID: accountID, bookID: book.id, coverURL: chosen.url,
+                    editionID: chosen.editionID, chosenAt: .now))
+        } else {
+            try await store.deleteCoverChoice(accountID: accountID, bookID: book.id)
+        }
+        if isLoading { coversChosenDuringLoad.append((accountID, book.id, chosen?.url)) }
+        guard var library, library.accountID == accountID else { return }
+        library.setChosenCover(chosen?.url, bookID: book.id)
+        setLibrary(library)
+        persist()
+    }
+
     private func clearLibrary() {
         library = nil
         books = []
@@ -174,6 +218,13 @@ final class AppModel {
         try? FileManager.default.createDirectory(
             at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: cacheURL, options: .atomic)
+    }
+}
+
+extension LibrarySnapshot {
+    fileprivate mutating func setChosenCover(_ url: URL?, bookID: Int) {
+        guard let index = books.firstIndex(where: { $0.id == bookID }) else { return }
+        books[index].chosenCoverURL = url
     }
 }
 

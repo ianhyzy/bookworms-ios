@@ -3,7 +3,7 @@ import Foundation
 
 /// Reads the Apple TV archive, or this iPhone's own Hardcover library when it is signed in, and
 /// publishes one portable design per Hardcover book in the private database of the shared iCloud
-/// container.
+/// container. The reader's cover choices live in the same database.
 actor CloudSpineStore: SpineStore {
     private let container = CKContainer(identifier: CloudContract.containerID)
     private var database: CKDatabase { container.privateCloudDatabase }
@@ -39,7 +39,8 @@ actor CloudSpineStore: SpineStore {
         case .phone(let phone):
             phoneWork = (phone.accountID, phone.syncedAt)
             return WorkContext(
-                accountID: phone.accountID, syncedAt: phone.syncedAt, books: phone.books,
+                accountID: phone.accountID, syncedAt: phone.syncedAt,
+                books: try await choosingCovers(accountID: phone.accountID, books: phone.books),
                 followsWorklist: false, cloudUserRecordName: cloudUserRecordName)
         case .worklist, .archive:
             guard let archive = try await fetchArchive() else {
@@ -48,7 +49,8 @@ actor CloudSpineStore: SpineStore {
             }
             let (snapshot, books) = try archive.workSource(for: worklist)
             return WorkContext(
-                accountID: snapshot.accountID, syncedAt: snapshot.syncedAt, books: books,
+                accountID: snapshot.accountID, syncedAt: snapshot.syncedAt,
+                books: try await choosingCovers(accountID: snapshot.accountID, books: books),
                 followsWorklist: worklist != nil, cloudUserRecordName: cloudUserRecordName)
         }
     }
@@ -128,6 +130,53 @@ actor CloudSpineStore: SpineStore {
         throw CompanionError.cloudConflict
     }
 
+    /// Saves `choice` with the same conditional save and retries as designs, unless the record
+    /// already names this cover.
+    func save(_ choice: CoverChoiceV1) async throws {
+        try choice.validate()
+        let id = CKRecord.ID(
+            recordName: CloudContract.coverChoiceRecordName(
+                accountID: choice.accountID, bookID: choice.bookID))
+        let payload = try JSONEncoder().encode(choice)
+        for _ in 0..<3 {
+            let record: CKRecord
+            do { record = try await database.record(for: id) } catch let error as CKError
+                where error.code == .unknownItem
+            {
+                record = CKRecord(recordType: "CoverChoiceV1", recordID: id)
+            }
+            guard record.recordType == "CoverChoiceV1" else {
+                throw CompanionError.invalidCloudData
+            }
+            if let existing = Self.coverChoice(in: record), existing.coverURL == choice.coverURL,
+                existing.editionID == choice.editionID
+            {
+                return
+            }
+            record["payload"] = payload as CKRecordValue
+            do {
+                let result = try await database.modifyRecords(
+                    saving: [record], deleting: [], savePolicy: .ifServerRecordUnchanged)
+                guard let saved = result.saveResults[id] else {
+                    throw CompanionError.invalidCloudData
+                }
+                _ = try saved.get()
+                return
+            } catch let error as CKError where error.code == .serverRecordChanged {
+                continue
+            }
+        }
+        throw CompanionError.cloudConflict
+    }
+
+    func deleteCoverChoice(accountID: String, bookID: Int) async throws {
+        let id = CKRecord.ID(
+            recordName: CloudContract.coverChoiceRecordName(accountID: accountID, bookID: bookID))
+        do { _ = try await database.deleteRecord(withID: id) } catch let error as CKError
+            where error.code == .unknownItem
+        {}
+    }
+
     /// Returns this iPhone's own Hardcover library when it is signed in, otherwise the Apple TV
     /// archive, with each book's newest design.
     ///
@@ -143,6 +192,8 @@ actor CloudSpineStore: SpineStore {
             do {
                 _ = try await checkedUserRecordName()
                 snapshot.designs = try await designs(accountID: phone.accountID, books: phone.books)
+                snapshot.books = try await choosingCovers(
+                    accountID: phone.accountID, books: phone.books)
             } catch CompanionError.noICloudAccount, CompanionError.iCloudRestricted {}
             return snapshot
         }
@@ -153,29 +204,44 @@ actor CloudSpineStore: SpineStore {
         let (snapshot, books) =
             try (try? archive.workSource(for: shown)) ?? archive.workSource(for: nil)
         return LibrarySnapshot(
-            accountID: snapshot.accountID, syncedAt: snapshot.syncedAt, books: books,
+            accountID: snapshot.accountID, syncedAt: snapshot.syncedAt,
+            books: try await choosingCovers(accountID: snapshot.accountID, books: books),
             designs: try await designs(accountID: snapshot.accountID, books: books))
     }
 
     private func designs(accountID: String, books: [CloudBook]) async throws -> [Int:
         SpineDesignV1]
     {
-        var designs: [SpineDesignV1] = []
-        let names = books.map {
-            CKRecord.ID(
-                recordName: CloudContract.designRecordName(accountID: accountID, bookID: $0.id))
+        let records = try await records(
+            books.map { CloudContract.designRecordName(accountID: accountID, bookID: $0.id) })
+        return LibrarySnapshot.latestDesigns(
+            records.compactMap(Self.design(in:)), accountID: accountID, books: books)
+    }
+
+    /// Returns `books` with the reader's chosen covers.
+    private func choosingCovers(accountID: String, books: [CloudBook]) async throws -> [CloudBook] {
+        let records = try await records(
+            books.map { CloudContract.coverChoiceRecordName(accountID: accountID, bookID: $0.id) })
+        var choices: [String: CoverChoiceV1] = [:]
+        for record in records {
+            choices[record.recordID.recordName] = Self.coverChoice(in: record)
         }
+        return CoverChoiceV1.apply(choices, accountID: accountID, to: books)
+    }
+
+    /// Fetches the `payload` of the named records that exist.
+    private func records(_ names: [String]) async throws -> [CKRecord] {
+        var records: [CKRecord] = []
         // CloudKit limits one fetch to a few hundred IDs; batches of 100 match the Apple TV.
         for start in stride(from: 0, to: names.count, by: 100) {
-            let batch = Array(names[start..<min(start + 100, names.count)])
-            let results = try await database.records(for: batch, desiredKeys: ["payload"])
-            for result in results.values {
-                if let record = try? result.get(), let design = Self.design(in: record) {
-                    designs.append(design)
+            let batch = names[start..<min(start + 100, names.count)]
+                .map {
+                    CKRecord.ID(recordName: $0)
                 }
-            }
+            let results = try await database.records(for: batch, desiredKeys: ["payload"])
+            records += results.values.compactMap { try? $0.get() }
         }
-        return LibrarySnapshot.latestDesigns(designs, accountID: accountID, books: books)
+        return records
     }
 
     /// Where a run would find its work now, given `worklist`.
@@ -238,5 +304,12 @@ actor CloudSpineStore: SpineStore {
             (try? design.validate()) != nil
         else { return nil }
         return design
+    }
+
+    private static func coverChoice(in record: CKRecord) -> CoverChoiceV1? {
+        guard record.recordType == "CoverChoiceV1", let data = record["payload"] as? Data else {
+            return nil
+        }
+        return try? JSONDecoder().decode(CoverChoiceV1.self, from: data)
     }
 }

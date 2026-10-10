@@ -134,7 +134,11 @@ actor SpineWorker {
         publish()
         do {
             guard let context = try await store.loadWork() else {
-                snapshot.phase = "Waiting for the Apple TV library"
+                // Signed in, the store waits only for the account's first download.
+                snapshot.phase =
+                    HardcoverAccount.signedInAccountID == nil
+                    ? "Waiting for the Apple TV library"
+                    : "Waiting for your Hardcover library to download"
                 return false
             }
             let accountID = context.accountID
@@ -145,7 +149,8 @@ actor SpineWorker {
             for book in books {
                 let workHash = CloudContract.workItemHash(accountID: accountID, book: book)
                 if await ledger.needsCheck(
-                    recordName: Self.recordName(accountID, book), workItemHash: workHash)
+                    recordName: Self.recordName(accountID, book), workItemHash: workHash,
+                    chosenCover: book.chosenCoverURL)
                 {
                     queue.append(book)
                 }
@@ -189,7 +194,8 @@ actor SpineWorker {
                         )
                     }
                     try await ledger.recordSuccess(
-                        recordName: recordName, workItemHash: workHash, coverHash: cover.hash)
+                        recordName: recordName, workItemHash: workHash, coverHash: cover.hash,
+                        chosenCover: book.chosenCoverURL)
                     snapshot.completed += 1
                 } catch {
                     try Task.checkCancellation()
@@ -204,7 +210,9 @@ actor SpineWorker {
                         stop(Self.message(for: error), retryAfter: retryAfter)
                         return false
                     }
-                    try await ledger.recordFailure(recordName: recordName, workItemHash: workHash)
+                    try await ledger.recordFailure(
+                        recordName: recordName, workItemHash: workHash,
+                        chosenCover: book.chosenCoverURL)
                     snapshot.failed += 1
                     guard disposition == .skipBook else {
                         stop(Self.message(for: error), retryAfter: nil)
