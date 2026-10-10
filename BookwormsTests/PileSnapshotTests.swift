@@ -113,16 +113,18 @@ final class PileSnapshotTests: XCTestCase {
         // Book-sized boxes: a heap off to one side, a pile spread past the tray, and one book.
         func boxes(_ centers: [SIMD3<Float>]) -> [SIMD3<Float>] {
             centers.flatMap { center in
-                (0..<8).map { corner in
-                    center
-                        + SIMD3(
-                            corner & 1 == 0 ? -0.8 : 0.8, corner & 2 == 0 ? -0.2 : 0.2,
-                            corner & 4 == 0 ? -1.1 : 1.1)
-                }
+                (0..<8)
+                    .map { corner in
+                        center
+                            + SIMD3(
+                                corner & 1 == 0 ? -0.8 : 0.8, corner & 2 == 0 ? -0.2 : 0.2,
+                                corner & 4 == 0 ? -1.1 : 1.1)
+                    }
             }
         }
         let heap = (0..<12).map { SIMD3<Float>(3 + Float($0 % 3), 0.2 * Float($0 / 3), 2) }
-        let spread = (0..<12).map { SIMD3<Float>(Float($0 % 4) * 4 - 6, 0.2, Float($0 / 4) * 4 - 6) }
+        let spread = (0..<12)
+            .map { SIMD3<Float>(Float($0 % 4) * 4 - 6, 0.2, Float($0 / 4) * 4 - 6) }
         for points in [boxes(heap), boxes(spread), boxes([[2, 0.2, -1]])] {
             let camera = layout.camera.framing(
                 points, in: rect, of: layout.aspect.size, zoomRange: zoomRange)

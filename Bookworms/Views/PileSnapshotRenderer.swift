@@ -220,8 +220,10 @@ extension PileCamera {
     ) -> PileCamera {
         let aspect = Float(size.width / size.height)
         // `rect` in normalized device coordinates, whose y grows upward.
-        let low = SIMD2(Float(2 * rect.minX / size.width - 1), Float(1 - 2 * rect.maxY / size.height))
-        let high = SIMD2(Float(2 * rect.maxX / size.width - 1), Float(1 - 2 * rect.minY / size.height))
+        let low = SIMD2(
+            Float(2 * rect.minX / size.width - 1), Float(1 - 2 * rect.maxY / size.height))
+        let high = SIMD2(
+            Float(2 * rect.maxX / size.width - 1), Float(1 - 2 * rect.minY / size.height))
         let turn = simd_quatf(angle: yaw, axis: [0, 1, 0])
         var camera = self
         for _ in 0..<16 {
@@ -235,7 +237,8 @@ extension PileCamera {
             let reach = Self.distance / camera.zoom * tan(Self.fieldOfView / 2)
             camera.target += turn.act(
                 [offset.x * reach * aspect, 0, -offset.y * reach / sin(Self.pitch)])
-            camera.zoom = min(max(camera.zoom / fill * 0.97, zoomRange.lowerBound), zoomRange.upperBound)
+            camera.zoom = min(
+                max(camera.zoom / fill * 0.97, zoomRange.lowerBound), zoomRange.upperBound)
         }
         return camera
     }

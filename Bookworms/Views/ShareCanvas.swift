@@ -360,10 +360,11 @@ enum ShareStyle {
         // Tokenizes the whole text, since a sentence's end depends on what follows it.
         let tokenizer = NLTokenizer(unit: .sentence)
         tokenizer.string = folded
-        let ends = tokenizer.tokens(for: folded.startIndex..<folded.endIndex).map { range in
-            folded.distance(from: folded.startIndex, to: range.upperBound)
-                - folded[range].reversed().prefix(while: \.isWhitespace).count
-        }
+        let ends = tokenizer.tokens(for: folded.startIndex..<folded.endIndex)
+            .map { range in
+                folded.distance(from: folded.startIndex, to: range.upperBound)
+                    - folded[range].reversed().prefix(while: \.isWhitespace).count
+            }
         // `result` is a prefix of `folded`, so a sentence that ends within it ends the excerpt.
         if let end = ends.last(where: { $0 <= result.count }), end >= limit * 6 / 10 {
             return folded.prefix(end) + " …"

@@ -305,8 +305,9 @@ final class HardcoverTests: XCTestCase {
         UserDefaults.standard.removePersistentDomain(forName: suite)
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defaults.set(
-            try JSONEncoder().encode(
-                HardcoverAccount.Summary(accountID: "4242", username: "fictional_reader")),
+            try JSONEncoder()
+                .encode(
+                    HardcoverAccount.Summary(accountID: "4242", username: "fictional_reader")),
             forKey: HardcoverAccount.summaryKey)
         return (tokens, defaults)
     }

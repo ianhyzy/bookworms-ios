@@ -631,12 +631,13 @@ final class BookPileScene {
     var bookCorners: [SIMD3<Float>] {
         shelf.children.flatMap { book in
             let bounds = book.visualBounds(relativeTo: root)
-            return (0..<8).map { corner -> SIMD3<Float> in
-                SIMD3(
-                    corner & 1 == 0 ? bounds.min.x : bounds.max.x,
-                    corner & 2 == 0 ? bounds.min.y : bounds.max.y,
-                    corner & 4 == 0 ? bounds.min.z : bounds.max.z)
-            }
+            return (0..<8)
+                .map { corner -> SIMD3<Float> in
+                    SIMD3(
+                        corner & 1 == 0 ? bounds.min.x : bounds.max.x,
+                        corner & 2 == 0 ? bounds.min.y : bounds.max.y,
+                        corner & 4 == 0 ? bounds.min.z : bounds.max.z)
+                }
         }
     }
 
