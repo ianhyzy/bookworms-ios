@@ -1,6 +1,12 @@
 import Foundation
 
-/// Remembers published output and schedules cover checks after source changes or one day.
+/// Remembers which books were checked or failed, so a run spends cover downloads and Private
+/// Cloud Compute requests only on books that need them.
+///
+/// A book is rechecked when it has no entry, its work-item hash or the generator changed, the
+/// caller forces it, or its last check is seven days old. A failed book waits 24 hours unless
+/// forced or its work-item hash changed. An Apple TV sync alone does not trigger a recheck: on a
+/// phone, re-downloading every cover after each sync costs too much time and data.
 actor WorkLedger {
     private struct LedgerState: Codable {
         var cloudUserRecordName: String?
@@ -9,21 +15,23 @@ actor WorkLedger {
 
     struct Entry: Codable, Sendable {
         let workItemHash: String
-        let coverHash: String
+        /// The cover's hash after a successful check; `nil` after a failure.
+        let coverHash: String?
         let generatorVersion: String
-        let sourceSyncedAt: Date
         let checkedAt: Date
+        /// When the last attempt failed; `nil` after a success.
+        var failedAt: Date?
     }
+
+    static let recheckInterval: TimeInterval = 7 * 24 * 60 * 60
+    static let failureBackoff: TimeInterval = 24 * 60 * 60
 
     private let url: URL
     private var cloudUserRecordName: String?
     private var entries: [String: Entry]
 
     init(url: URL? = nil) {
-        self.url =
-            url
-            ?? URL.applicationSupportDirectory
-            .appending(path: "Bookworms Spine Companion/ledger.json")
+        self.url = url ?? URL.applicationSupportDirectory.appending(path: "Bookworms/ledger.json")
         if let data = try? Data(contentsOf: self.url),
             let decoded = try? JSONDecoder().decode(LedgerState.self, from: data)
         {
@@ -43,26 +51,33 @@ actor WorkLedger {
         try persist()
     }
 
-    func needsCoverCheck(
-        recordName: String, workItemHash: String, sourceSyncedAt: Date,
-        force: Bool, now: Date = Date()
+    func needsCheck(
+        recordName: String, workItemHash: String, force: Bool, now: Date = Date()
     ) -> Bool {
-        if force { return true }
-        guard let entry = entries[recordName] else { return true }
-        return entry.workItemHash != workItemHash
-            || entry.generatorVersion != CloudContract.generatorVersion
-            || abs(entry.sourceSyncedAt.timeIntervalSince(sourceSyncedAt)) >= 0.001
-            || now.timeIntervalSince(entry.checkedAt) >= 86_400
+        guard !force, let entry = entries[recordName], entry.workItemHash == workItemHash,
+            entry.generatorVersion == CloudContract.generatorVersion
+        else { return true }
+        if let failedAt = entry.failedAt {
+            return now.timeIntervalSince(failedAt) >= Self.failureBackoff
+        }
+        return now.timeIntervalSince(entry.checkedAt) >= Self.recheckInterval
     }
 
-    func record(
-        recordName: String, workItemHash: String, coverHash: String,
-        sourceSyncedAt: Date
+    func recordSuccess(
+        recordName: String, workItemHash: String, coverHash: String, now: Date = Date()
     ) throws {
         entries[recordName] = Entry(
             workItemHash: workItemHash, coverHash: coverHash,
-            generatorVersion: CloudContract.generatorVersion,
-            sourceSyncedAt: sourceSyncedAt, checkedAt: Date())
+            generatorVersion: CloudContract.generatorVersion, checkedAt: now)
+        try persist()
+    }
+
+    /// Records a failure that retrying soon would repeat, such as an unreadable cover or a
+    /// design the model could not produce.
+    func recordFailure(recordName: String, workItemHash: String, now: Date = Date()) throws {
+        entries[recordName] = Entry(
+            workItemHash: workItemHash, coverHash: nil,
+            generatorVersion: CloudContract.generatorVersion, checkedAt: now, failedAt: now)
         try persist()
     }
 
@@ -77,10 +92,7 @@ actor WorkLedger {
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
-        try encoder.encode(
-            LedgerState(
-                cloudUserRecordName: cloudUserRecordName, entries: entries)
-        )
-        .write(to: url, options: .atomic)
+        try encoder.encode(LedgerState(cloudUserRecordName: cloudUserRecordName, entries: entries))
+            .write(to: url, options: .atomic)
     }
 }

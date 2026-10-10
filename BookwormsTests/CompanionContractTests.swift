@@ -5,48 +5,120 @@ import XCTest
 @testable import Bookworms
 
 final class CompanionContractTests: XCTestCase {
-    func testNewBookNeedsCoverCheckAndSnapshotChangesRecheckIt() async throws {
+    func testLedgerRechecksChangedWorkAfterSevenDaysAndBacksOffFailures() async throws {
         let url = FileManager.default.temporaryDirectory
             .appending(path: "bookworms-ledger-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: url) }
         let ledger = WorkLedger(url: url)
         try await ledger.useCloudUser("first-icloud-user")
-        let date = Date(timeIntervalSince1970: 1_000)
-        let newBook = await ledger.needsCoverCheck(
-            recordName: "record", workItemHash: "work", sourceSyncedAt: date, force: false)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        func needsCheck(
+            _ ledger: WorkLedger, work: String = "work", force: Bool = false,
+            after interval: TimeInterval = 0
+        ) async -> Bool {
+            await ledger.needsCheck(
+                recordName: "record", workItemHash: work, force: force,
+                now: now.addingTimeInterval(interval))
+        }
+        let newBook = await needsCheck(ledger)
         XCTAssertTrue(newBook)
-        try await ledger.record(
-            recordName: "record", workItemHash: "work", coverHash: "cover",
-            sourceSyncedAt: date)
-        let unchanged = await ledger.needsCoverCheck(
-            recordName: "record", workItemHash: "work", sourceSyncedAt: date, force: false)
-        let changedSnapshot = await ledger.needsCoverCheck(
-            recordName: "record", workItemHash: "work",
-            sourceSyncedAt: date.addingTimeInterval(1), force: false)
-        let manualRetry = await ledger.needsCoverCheck(
-            recordName: "record", workItemHash: "work", sourceSyncedAt: date, force: true)
-        let dueAfterDay = await ledger.needsCoverCheck(
-            recordName: "record", workItemHash: "work", sourceSyncedAt: date,
-            force: false, now: Date().addingTimeInterval(86_401))
+        try await ledger.recordSuccess(
+            recordName: "record", workItemHash: "work", coverHash: "cover", now: now)
+        let unchanged = await needsCheck(ledger, after: 6 * 86_400)
+        let changedWork = await needsCheck(ledger, work: "edited")
+        let forced = await needsCheck(ledger, force: true)
+        let dueAfterWeek = await needsCheck(ledger, after: 7 * 86_400)
         XCTAssertFalse(unchanged)
-        XCTAssertTrue(changedSnapshot)
-        XCTAssertTrue(manualRetry)
-        XCTAssertTrue(dueAfterDay)
-        try await ledger.useCloudUser("second-icloud-user")
-        let switchedAccount = await ledger.needsCoverCheck(
-            recordName: "record", workItemHash: "work", sourceSyncedAt: date, force: false)
-        XCTAssertTrue(switchedAccount)
-        try await ledger.record(
-            recordName: "record", workItemHash: "work", coverHash: "cover",
-            sourceSyncedAt: date)
+        XCTAssertTrue(changedWork)
+        XCTAssertTrue(forced)
+        XCTAssertTrue(dueAfterWeek)
+
+        try await ledger.recordFailure(recordName: "record", workItemHash: "work", now: now)
+        let backingOff = await needsCheck(ledger, after: 23 * 3_600)
+        let failedAndEdited = await needsCheck(ledger, work: "edited", after: 60)
+        let failedAndForced = await needsCheck(ledger, force: true, after: 60)
+        let retryAfterDay = await needsCheck(ledger, after: 86_400)
+        XCTAssertFalse(backingOff)
+        XCTAssertTrue(failedAndEdited)
+        XCTAssertTrue(failedAndForced)
+        XCTAssertTrue(retryAfterDay)
+        try await ledger.recordSuccess(
+            recordName: "record", workItemHash: "work", coverHash: "cover", now: now)
+        let clearedFailure = await needsCheck(ledger, after: 2 * 86_400)
+        XCTAssertFalse(clearedFailure)
+
         let restarted = WorkLedger(url: url)
-        let persisted = await restarted.needsCoverCheck(
-            recordName: "record", workItemHash: "work", sourceSyncedAt: date, force: false)
+        let persisted = await needsCheck(restarted, after: 60)
         XCTAssertFalse(persisted)
+        try await restarted.useCloudUser("second-icloud-user")
+        let switchedAccount = await needsCheck(restarted)
+        XCTAssertTrue(switchedAccount)
         try await ledger.retain([])
-        let removedAccount = await ledger.needsCoverCheck(
-            recordName: "record", workItemHash: "work", sourceSyncedAt: date, force: false)
-        XCTAssertTrue(removedAccount)
+        let removedBook = await needsCheck(ledger)
+        XCTAssertTrue(removedBook)
+    }
+
+    func testWorkSourceFollowsWorklistAccountAndSyncDate() throws {
+        let synced = Date(timeIntervalSince1970: 2_000)
+        let one = CloudBook(
+            id: 1, title: "One", author: "Author", coverURL: nil, detailCoverURL: nil)
+        let two = CloudBook(
+            id: 2, title: "Two", author: "Author", coverURL: nil, detailCoverURL: nil)
+        let archive = CloudLibraryArchive(
+            version: 1,
+            sources: [
+                CloudSourceSnapshot(
+                    source: "hardcover", accountID: "42", books: [one, two], syncedAt: synced),
+                CloudSourceSnapshot(
+                    source: "hardcover", accountID: "77", books: [two],
+                    syncedAt: synced.addingTimeInterval(60)),
+                CloudSourceSnapshot(
+                    source: "cwa", accountID: "42", books: [one],
+                    syncedAt: synced.addingTimeInterval(120)),
+            ])
+        let worklist = SpineWorklistV1(version: 1, accountID: "42", syncedAt: synced, bookIDs: [2])
+        let work = try archive.workSource(for: worklist)
+        XCTAssertEqual(work.snapshot.accountID, "42")
+        XCTAssertEqual(work.books.map(\.id), [2])
+
+        // The Apple TV listed a newer sync than the archive holds: its upload is still pending.
+        let ahead = SpineWorklistV1(
+            version: 1, accountID: "42", syncedAt: synced.addingTimeInterval(1), bookIDs: [2])
+        XCTAssertThrowsError(try archive.workSource(for: ahead)) { error in
+            guard case CompanionError.waitingForLibrary = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+    }
+
+    func testWorkSourceWithoutWorklistPrefersNewestRealAccount() throws {
+        let book = CloudBook(
+            id: 3, title: "Three", author: "Author", coverURL: nil, detailCoverURL: nil)
+        let duplicate = CloudBook(
+            id: 3, title: "Copy", author: "Author", coverURL: nil, detailCoverURL: nil)
+        let older = Date(timeIntervalSince1970: 1_000)
+        let archive = CloudLibraryArchive(
+            version: 1,
+            sources: [
+                CloudSourceSnapshot(
+                    source: "hardcover", accountID: "hardcover", books: [book],
+                    syncedAt: older.addingTimeInterval(500)),
+                CloudSourceSnapshot(
+                    source: "hardcover", accountID: "42", books: [book, duplicate],
+                    syncedAt: older),
+                CloudSourceSnapshot(
+                    source: "hardcover", accountID: "41", books: [book],
+                    syncedAt: older.addingTimeInterval(-1)),
+            ])
+        let work = try archive.workSource(for: nil)
+        XCTAssertEqual(work.snapshot.accountID, "42")
+        XCTAssertEqual(work.books.map(\.title), ["Three"])
+
+        let legacyOnly = CloudLibraryArchive(
+            version: 1, sources: [archive.sources[0]])
+        XCTAssertEqual(try legacyOnly.workSource(for: nil).snapshot.accountID, "hardcover")
+        let empty = CloudLibraryArchive(version: 1, sources: [])
+        XCTAssertThrowsError(try empty.workSource(for: nil))
     }
 
     func testCoverCandidatesPreferDetailImageAndDeduplicate() {

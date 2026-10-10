@@ -261,8 +261,9 @@ enum CompanionError: LocalizedError, Sendable {
     case modelUnavailable
     /// The daily Private Cloud Compute quota is used up until the date, when known.
     case quotaReached(Date?)
-    /// Private Cloud Compute is unreachable or busy; retry later.
-    case modelBusy
+    /// Private Cloud Compute is unreachable or busy; retry after the date, when the system gives
+    /// one.
+    case modelBusy(Date?)
     case invalidDesign
     case cloudConflict
 
@@ -279,7 +280,7 @@ enum CompanionError: LocalizedError, Sendable {
         case .modelUnavailable: "Private Cloud Compute is unavailable on this iPhone."
         case .quotaReached(let date):
             if let date {
-                "Today's Private Cloud Compute limit is reached. It resets \(date.formatted(.relative(presentation: .named)))."
+                "Today's Private Cloud Compute limit is reached. It resets at \(date.formatted(date: .omitted, time: .shortened))."
             } else {
                 "Today's Private Cloud Compute limit is reached."
             }

@@ -1,0 +1,222 @@
+import CloudKit
+import Foundation
+import FoundationModels
+import XCTest
+
+@testable import Bookworms
+
+/// Covers generation's pure decisions: error handling, quota stops, and the design schema's
+/// answers. No test calls a model, the network, or iCloud.
+final class GenerationTests: XCTestCase {
+    private let now = Date(timeIntervalSince1970: 1_000_000)
+
+    func testModelErrorsMapToRunStopsOrBookFailures() {
+        let reset = now.addingTimeInterval(3_600)
+        let quota = PrivateCloudComputeLanguageModel.Error.quotaLimitReached(
+            .init(resetDate: reset, debugDescription: "quota"))
+        guard case .quotaReached(let date) = BookAnalyzer.modelFailure(quota) else {
+            return XCTFail("Quota errors must stop the run until the reset")
+        }
+        XCTAssertEqual(date, reset)
+
+        let busy: [any Error] = [
+            PrivateCloudComputeLanguageModel.Error.networkFailure(.init(debugDescription: "")),
+            PrivateCloudComputeLanguageModel.Error.serviceUnavailable(.init(debugDescription: "")),
+            LanguageModelError.rateLimited(.init(resetDate: nil, debugDescription: "")),
+            LanguageModelError.timeout(.init(debugDescription: "")),
+        ]
+        for error in busy {
+            guard case .modelBusy(nil) = BookAnalyzer.modelFailure(error) else {
+                return XCTFail("\(error) should mean the model is busy")
+            }
+        }
+        // A rate limit's reset date becomes the retry date instead of the default delay.
+        let limited = LanguageModelError.rateLimited(.init(resetDate: reset, debugDescription: ""))
+        guard case .modelBusy(reset) = BookAnalyzer.modelFailure(limited) else {
+            return XCTFail("A rate limit should keep its reset date")
+        }
+
+        let perBook: [any Error] = [
+            LanguageModelError.guardrailViolation(.init(debugDescription: "")),
+            LanguageModelError.refusal(.init(explanation: "", debugDescription: "")),
+            LanguageModelError.contextSizeExceeded(
+                .init(contextSize: 1, tokenCount: 2, debugDescription: "")),
+            LanguageModelError.unsupportedCapability(
+                .init(capability: .vision, debugDescription: "")),
+            LanguageModelError.unsupportedGenerationGuide(
+                .init(schemaName: nil, debugDescription: "")),
+        ]
+        for error in perBook {
+            guard case .invalidDesign = BookAnalyzer.modelFailure(error) else {
+                return XCTFail("\(error) should fail only the book")
+            }
+        }
+        XCTAssertNil(BookAnalyzer.modelFailure(URLError(.notConnectedToInternet)))
+    }
+
+    func testWorkerStopsOnServiceErrorsAndSkipsBookErrors() {
+        XCTAssertEqual(
+            SpineWorker.disposition(of: CompanionError.quotaReached(now), now: now),
+            .stopRun(retryAfter: now))
+        XCTAssertEqual(
+            SpineWorker.disposition(of: CompanionError.modelBusy(nil), now: now),
+            .stopRun(retryAfter: now.addingTimeInterval(SpineWorker.busyRetryDelay)))
+        XCTAssertEqual(
+            SpineWorker.disposition(
+                of: CompanionError.modelBusy(now.addingTimeInterval(7_200)), now: now),
+            .stopRun(retryAfter: now.addingTimeInterval(7_200)))
+        XCTAssertEqual(
+            SpineWorker.disposition(
+                of: CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 30.0]), now: now),
+            .stopRun(retryAfter: now.addingTimeInterval(30)))
+        for code in [CKError.Code.networkUnavailable, .zoneBusy, .serviceUnavailable] {
+            XCTAssertEqual(
+                SpineWorker.disposition(of: CKError(code), now: now), .stopRun(retryAfter: nil))
+        }
+        XCTAssertEqual(
+            SpineWorker.disposition(of: URLError(.notConnectedToInternet), now: now),
+            .stopRun(retryAfter: nil))
+        XCTAssertEqual(
+            SpineWorker.disposition(of: CompanionError.noICloudAccount, now: now),
+            .stopRun(retryAfter: nil))
+
+        // A dead cover link or an unusable cover fails the book, so it cannot block the queue.
+        for error: any Error in [
+            URLError(.cannotFindHost), CompanionError.invalidCover, CompanionError.invalidDesign,
+            CompanionError.coverTooLarge, CKError(.serverRejectedRequest),
+        ] {
+            XCTAssertEqual(SpineWorker.disposition(of: error, now: now), .skipBook, "\(error)")
+        }
+        // A slow cover host and a failing network look alike: the book backs off and the run
+        // stops, so the next run moves past the book.
+        for code in [URLError.Code.timedOut, .networkConnectionLost] {
+            XCTAssertEqual(
+                SpineWorker.disposition(of: URLError(code), now: now), .skipBookAndStop, "\(code)")
+        }
+    }
+
+    func testSavedRunOutcomeSurvivesRelaunchUntilItsRetryDatePasses() throws {
+        var snapshot = WorkerSnapshot()
+        snapshot.isRunning = true
+        snapshot.phase = "Paused"
+        snapshot.error = "Limit reached"
+        snapshot.failed = 2
+        snapshot.retryAfter = now
+        snapshot.lastRunAt = now
+        var saved = try JSONDecoder()
+            .decode(
+                WorkerSnapshot.self, from: JSONEncoder().encode(snapshot))
+        XCTAssertFalse(saved.isRunning)
+        XCTAssertEqual(saved.phase, "Paused")
+        XCTAssertEqual(saved.failed, 2)
+        XCTAssertEqual(saved.lastRunAt, now)
+
+        saved.dropExpiredStop(now: now.addingTimeInterval(-1))
+        XCTAssertEqual(saved.error, "Limit reached")
+        saved.dropExpiredStop(now: now)
+        XCTAssertNil(saved.error)
+        XCTAssertNil(saved.retryAfter)
+        XCTAssertEqual(saved.phase, "Ready to continue")
+    }
+
+    func testBackgroundRunsLeaveQuotaHeadroomAndForegroundRunsUseIt() {
+        func status(
+            available: Bool = true, reader: ModelStatus.CoverReader = .privateCloudCompute,
+            quota: ModelStatus.Quota
+        ) -> ModelStatus {
+            ModelStatus(
+                isAvailable: available, unavailableReason: available ? nil : "Unavailable",
+                coverReader: reader, quota: quota, quotaResetDate: now,
+                limitIncreaseSuggestion: nil)
+        }
+        XCTAssertNil(SpineWorker.modelStop(status(quota: .belowLimit), mode: .background))
+        XCTAssertNil(SpineWorker.modelStop(status(quota: .approachingLimit), mode: .foreground))
+        XCTAssertEqual(
+            SpineWorker.modelStop(status(quota: .approachingLimit), mode: .background)?
+                .retryAfter, now)
+        XCTAssertEqual(
+            SpineWorker.modelStop(status(quota: .limitReached), mode: .foreground)?.retryAfter,
+            now)
+        XCTAssertNotNil(
+            SpineWorker.modelStop(status(available: false, quota: .belowLimit), mode: .foreground))
+        XCTAssertNotNil(
+            SpineWorker.modelStop(status(reader: .none, quota: .belowLimit), mode: .foreground))
+        XCTAssertNil(
+            SpineWorker.modelStop(status(reader: .onDevice, quota: .belowLimit), mode: .foreground))
+    }
+
+    func testDesignAnswerMustUseOfferedChoices() throws {
+        let palette = ["#1F3A5A", "#D8CBB0"].compactMap(ColorValue.init(hex:))
+        let inks = ["#101820", "#F4EEE2"].compactMap(ColorValue.init(hex:))
+        let families = ["Lora", "Cardo", "EB Garamond"]
+        func answer(background: String = "#1F3A5A", weight: String = "semibold") throws
+            -> BookAnalyzer.DesignChoice
+        {
+            let json = """
+                {"background": "\(background)", "ink": "#F4EEE2", "accent": "#D8CBB0",
+                 "weight": "\(weight)", "rankedFamilies": ["Cardo", "Impact", "Cardo", "Lora"]}
+                """
+            return try BookAnalyzer.designChoice(
+                from: GeneratedContent(json: json), palette: palette, inks: inks,
+                families: families)
+        }
+        let choice = try answer()
+        XCTAssertEqual(choice.background.hex, "#1F3A5A")
+        XCTAssertEqual(choice.ink.hex, "#F4EEE2")
+        XCTAssertEqual(choice.accent.hex, "#D8CBB0")
+        XCTAssertEqual(choice.weight, 600)
+        XCTAssertEqual(choice.families, ["Cardo", "Lora"])
+        XCTAssertThrowsError(try answer(background: "#FF0000"))
+        XCTAssertThrowsError(try answer(weight: "black"))
+        XCTAssertNoThrow(
+            try BookAnalyzer.designSchema(palette: palette, inks: inks, families: families))
+    }
+
+    func testCandidateFamiliesAreOneStyleInAReproducibleOrderPerBook() {
+        func families(book: Int, style: SpineFontStyle) -> [String] {
+            var generator = BookAnalyzer.SeededGenerator(seed: UInt64(book))
+            return BookAnalyzer.candidateFamilies(for: style, generator: &generator)
+        }
+        let serif = SpineFamily.allCases.filter { $0.style == .bookSerif }.map(\.rawValue)
+        XCTAssertEqual(Set(families(book: 7, style: .bookSerif)), Set(serif))
+        XCTAssertEqual(families(book: 7, style: .bookSerif), families(book: 7, style: .bookSerif))
+        XCTAssertNotEqual(
+            families(book: 7, style: .bookSerif), families(book: 8, style: .bookSerif))
+        for style in SpineFontStyle.allCases {
+            XCTAssertFalse(families(book: 1, style: style).isEmpty, "\(style)")
+        }
+        XCTAssertFalse(BookAnalyzer.allowsFamily("Impact"))
+        XCTAssertFalse(BookAnalyzer.allowsFamily("Lora Italic"))
+        XCTAssertFalse(BookAnalyzer.allowsFamily("Noto Sans Oblique"))
+        XCTAssertTrue(BookAnalyzer.allowsFamily("EB Garamond"))
+    }
+
+    func testDesignPromptCarriesBookDataButNotTheFontCatalog() {
+        let book = CloudBook(
+            id: 9, title: String(repeating: "T", count: 400), author: "An Author",
+            coverURL: nil, detailCoverURL: nil, genres: ["Fantasy"])
+        let palette = [ColorValue(hex: "#1F3A5A")!]
+        let inks = [ColorValue(hex: "#F4EEE2")!]
+        let prompt = BookAnalyzer.designPrompt(
+            book: book, style: .slab, families: ["Arvo", "Bitter"], observedText: "A TITLE",
+            palette: palette, inks: inks)
+        XCTAssertTrue(prompt.contains("Title: " + String(repeating: "T", count: 250) + "\n"))
+        XCTAssertTrue(prompt.contains("#1F3A5A"))
+        XCTAssertTrue(prompt.contains("Never choose Impact"))
+        // Families travel in the schema, limited to the chosen style.
+        XCTAssertFalse(SpineFamily.allCases.contains { prompt.contains($0.rawValue) })
+
+        // Themed decorative families are described so their names do not mislead the model.
+        let decorative = BookAnalyzer.designPrompt(
+            book: book, style: .decorative, families: ["Creepster", "Limelight"],
+            observedText: "", palette: palette, inks: inks)
+        XCTAssertTrue(decorative.contains("Creepster (dripping horror lettering)"))
+        XCTAssertFalse(decorative.contains("Eater"))
+        // Slanted faces that do not declare an italic trait are blocked by name.
+        XCTAssertFalse(BookAnalyzer.allowsFamily("Bangers"))
+        XCTAssertFalse(BookAnalyzer.allowsFamily("Shrikhand"))
+        var generator = BookAnalyzer.SeededGenerator(seed: 1)
+        let offered = BookAnalyzer.candidateFamilies(for: .decorative, generator: &generator)
+        XCTAssertFalse(offered.contains("Shrikhand") || offered.contains("Bangers"))
+    }
+}
