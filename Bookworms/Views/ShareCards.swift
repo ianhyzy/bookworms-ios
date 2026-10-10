@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The year's books as spines stacked on a shelf, with the year and its totals.
+/// The time frame's books as spines stacked on a shelf, with the frame and its totals.
 struct YearStackCard: View {
     let input: ShareInput
 
@@ -210,8 +210,10 @@ struct ShelfPlank: View {
     }
 }
 
-/// One book as a lit 3D object on a backdrop from its spine colors, with its details.
-struct JustFinishedCard: View {
+/// One book, as a 3D book or a flat cover on a backdrop from its spine colors, with its
+/// details: the finish date, rating, and length for Just Finished, or the progress and start
+/// date for Currently Reading.
+struct FeaturedBookCard: View {
     let input: ShareInput
 
     var body: some View {
@@ -248,13 +250,13 @@ struct JustFinishedCard: View {
                 if isSquare {
                     HStack(spacing: 40) {
                         hero(book, look: look).frame(width: 470)
-                        details(book, look: look, edge: edge, alignment: .leading)
+                        details(book, alignment: .leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 } else {
                     VStack(spacing: 44) {
                         hero(book, look: look)
-                        details(book, look: look, edge: edge, alignment: .center)
+                        details(book, alignment: .center)
                     }
                 }
             }
@@ -264,10 +266,10 @@ struct JustFinishedCard: View {
 
     private func hero(_ book: CloudBook, look: SpineLook) -> some View {
         let cover = input.covers[book.id]
-        let ratio = Book3DView.aspect(of: cover)
+        let ratio = ShareCover.aspect(of: cover, style: input.coverStyle)
         return GeometryReader { proxy in
-            Book3DView(
-                book: book, look: look, cover: cover,
+            ShareCover(
+                book: book, look: look, cover: cover, style: input.coverStyle,
                 height: min(proxy.size.height * 0.88, proxy.size.width * 0.86 / ratio),
                 yaw: 0.6 + (ShareStyle.unit(input.seed, book.id, 4) - 0.5) * 0.12,
                 pitch: -0.1 + (ShareStyle.unit(input.seed, book.id, 5) - 0.5) * 0.06
@@ -277,35 +279,28 @@ struct JustFinishedCard: View {
         }
     }
 
-    private func details(
-        _ book: CloudBook, look: SpineLook, edge: ColorValue, alignment: HorizontalAlignment
-    ) -> some View {
-        let cream = ShareStyle.cream.color
+    private func details(_ book: CloudBook, alignment: HorizontalAlignment) -> some View {
         let isSquare = input.aspect == .square
-        let label =
-            book.finishedDate != nil ? "FINISHED" : book.isReading == true ? "READING NOW" : nil
-        // The spine's own ink and accent when they read well on the backdrop.
-        let titleColor = look.foreground.contrast(with: edge) >= 4.5 ? look.foreground.color : cream
-        let labelColor =
-            look.accent.contrast(with: edge) >= 4.5 ? look.accent.color : cream.opacity(0.75)
-        let details = ShareStyle.details(book)
+        let isReading = input.template == .currentlyReading
+        let label = isReading ? "Currently reading" : book.finishedDate != nil ? "Finished" : nil
+        let details = ShareStyle.details(book, isReading: isReading)
         return VStack(alignment: alignment, spacing: 18) {
             if let label {
-                Text(label)
-                    .font(.system(size: 30, weight: .semibold))
-                    .tracking(6)
-                    .foregroundStyle(labelColor)
+                ShareStyle.label(label).foregroundStyle(ShareStyle.gold)
             }
-            Text(look.text(book.spineTitle))
-                .font(look.font(size: isSquare ? 64 : 80))
-                .foregroundStyle(titleColor)
+            Text(book.spineTitle)
+                .font(ShareStyle.serif(isSquare ? 64 : 80, .semibold))
                 .lineLimit(isSquare ? 4 : 3)
                 .minimumScaleFactor(0.5)
             Text(SpineView.shortAuthor(book.author))
                 .font(ShareStyle.serif(40))
                 .lineLimit(2)
                 .minimumScaleFactor(0.75)
-            if input.showsRatings, let rating = book.rating, rating > 0 {
+            if isReading {
+                if let progress = book.progress {
+                    progressBar(progress, width: isSquare ? 250 : 440)
+                }
+            } else if input.showsRatings, let rating = book.rating, rating > 0 {
                 ShareStars(rating: rating, size: 44)
             }
             if !details.isEmpty {
@@ -316,8 +311,26 @@ struct JustFinishedCard: View {
             }
         }
         .multilineTextAlignment(alignment == .center ? .center : .leading)
-        .foregroundStyle(cream)
+        .foregroundStyle(ShareStyle.cream.color)
         .layoutPriority(1)
+    }
+
+    /// A gold bar filled to `progress` (0...1), with the percentage beside it.
+    private func progressBar(_ progress: Double, width: CGFloat) -> some View {
+        let value = min(1, max(0, progress))
+        return HStack(spacing: 20) {
+            Capsule()
+                .fill(ShareStyle.cream.color.opacity(0.2))
+                .overlay(alignment: .leading) {
+                    Capsule().fill(ShareStyle.gold).frame(width: max(18, width * value))
+                }
+                .frame(width: width, height: 18)
+            Text(value.formatted(.percent.precision(.fractionLength(0))))
+                .font(ShareStyle.serif(48, .semibold))
+                .foregroundStyle(ShareStyle.gold)
+                .fixedSize()
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -365,10 +378,10 @@ struct TopFiveCard: View {
         }
     }
 
+    /// "My top 5 of 2025", "My top book of August 2025", or "My all-time top 5".
     private var heading: String {
-        let year = input.period
-        return input.books.count == 1
-            ? "My top book of \(year)" : "My top \(input.books.count) of \(year)"
+        let top = input.books.count == 1 ? "top book" : "top \(input.books.count)"
+        return input.frame == .lifetime ? "My all-time \(top)" : "My \(top) of \(input.period)"
     }
 
     private func fan(_ books: [CloudBook]) -> some View {
@@ -379,17 +392,19 @@ struct TopFiveCard: View {
             let size = proxy.size
             let leadHeight = min(size.height * 0.78, size.width * 0.55)
             // An outer book, at 0.82 of the lead height and turned about 15 degrees, reaches up
-            // to 0.47 lead heights from its center with the widest cover Book3DView allows. This
-            // spacing keeps the outermost slot (2) inside the fan's width, and so in the gutters.
-            let spacing = min(size.width * 0.16, (size.width / 2 - 0.47 * leadHeight) / 2)
+            // to 0.47 lead heights from its center with the widest 3D book, or 0.5 with the
+            // widest flat cover (`ShareCover.aspect`). This spacing keeps the outermost slot (2)
+            // inside the fan's width, and so in the gutters.
+            let reach = input.coverStyle == .flat ? 0.5 : 0.47
+            let spacing = min(size.width * 0.16, (size.width / 2 - reach * leadHeight) / 2)
             ZStack {
                 // The first-ranked book is drawn last, in front.
                 ForEach(Array(books.enumerated().reversed()), id: \.element.id) { index, book in
                     let slot = Self.slots[index] - middle
                     let jitter = ShareStyle.unit(input.seed, book.id, 6) - 0.5
-                    Book3DView(
+                    ShareCover(
                         book: book, look: input.look(for: book), cover: input.covers[book.id],
-                        height: leadHeight * (index == 0 ? 1 : 0.82),
+                        style: input.coverStyle, height: leadHeight * (index == 0 ? 1 : 0.82),
                         yaw: 0.36 + jitter * 0.12, pitch: -0.1
                     )
                     .shadow(color: .black.opacity(0.45), radius: 24, y: 18)
@@ -404,15 +419,14 @@ struct TopFiveCard: View {
     }
 
     private func row(rank: Int, book: CloudBook, showsAuthor: Bool) -> some View {
-        let look = input.look(for: book)
-        return HStack(spacing: 20) {
+        HStack(spacing: 20) {
             Text(String(rank))
                 .font(ShareStyle.serif(46, .bold))
                 .foregroundStyle(ShareStyle.gold)
                 .frame(width: 44)
             VStack(alignment: .leading, spacing: 0) {
-                Text(look.text(book.spineTitle))
-                    .font(look.font(size: 38))
+                Text(book.spineTitle)
+                    .font(ShareStyle.serif(38, .semibold))
                     .minimumScaleFactor(0.8)
                 if showsAuthor {
                     Text(SpineView.shortAuthor(book.author))
@@ -430,7 +444,7 @@ struct TopFiveCard: View {
     }
 }
 
-/// Every finished book in the range as a stripe of its spine color, in reading order.
+/// Every book finished in the time frame as a stripe of its spine color, in reading order.
 ///
 /// The card shows no titles, so it suits sharing a whole library.
 struct SpectrumCard: View {
@@ -442,7 +456,7 @@ struct SpectrumCard: View {
         let years = input.books.map { $0.finishedYear ?? 0 }
         // Square images stand the spines upright; taller ones lay them flat.
         let isUpright = aspect == .square
-        let showsYears = input.year == nil && !isUpright && Set(years).count > 1
+        let showsYears = input.frame == .lifetime && !isUpright && Set(years).count > 1
         let count = input.books.count
         ZStack {
             ShareStyle.backdrop(ShareStyle.leadColor(looks.map(\.background)), 0.88).color
