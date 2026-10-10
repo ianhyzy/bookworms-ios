@@ -98,7 +98,8 @@ struct ShareStudioView: View {
         return RenderRequest(
             template: template, aspect: aspect, frame: frame, bookID: bookID,
             coverStyle: coverStyle, direction: direction, showsRatings: showsRatings, seed: seed,
-            syncedAt: model.library?.syncedAt, designs: designs, loadedFaces: loadedFaces)
+            syncedAt: model.library?.syncedAt, covers: books.map(\.coverCandidates.first),
+            designs: designs, loadedFaces: loadedFaces)
     }
 
     var body: some View {
@@ -583,6 +584,8 @@ private struct RenderRequest: Equatable {
     var showsRatings: Bool
     var seed: UInt64
     var syncedAt: Date?
+    /// The covers the image draws, so choosing another cover redraws it.
+    var covers: [URL?]
     /// The designs of the books the image draws, in their order.
     var designs: [SpineDesignV1?]
     var loadedFaces: Int
