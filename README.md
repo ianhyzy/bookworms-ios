@@ -61,7 +61,7 @@ While signed in:
 
 Without a library, the **Shelf** and **Share** tabs say why, from the Hardcover sign-in and the last load (`LibraryStatus`):
 
-- **Signed out:** **No library yet** explains both ways to get one: turn on **iCloud storage** in the Bookworms app on the Apple TV, or connect Hardcover on this iPhone. It adds the load error, such as a missing iCloud account, and offers **Connect Hardcover**, which opens the Hardcover sheet, and **Try again**, which reloads.
+- **Signed out:** **No library yet** explains both ways to get one: turn on **iCloud storage** in the Bookworms app on the Apple TV, or connect Hardcover on this iPhone. Below them, it shows any error from loading the Apple TV's library, such as a missing iCloud account, after **Apple TV library:**. It offers **Connect Hardcover**, which opens the Hardcover sheet, and **Try again**, which reloads.
 - **Signed in, downloading:** a progress indicator says the Hardcover library is downloading.
 - **Signed in, download failed:** the error, such as Hardcover being unavailable, with **Try again**.
 - **Signed in, login rejected:** **Reconnect Hardcover** with the error and **Reconnect**, which starts a new sign-in in the Hardcover sheet.
@@ -129,7 +129,9 @@ The **Share** tab renders a 1080-pixel-wide PNG in Story (9:16), Portrait (4:5),
 
 Text on every image is set in New York for headings and San Francisco for other text, in each book's own capitalization. Spines keep their designed fonts and colors: Year Stack's spines, the spine of a 3D book, and Spine Spectrum's stripes. A 3D book without a downloaded cover shows its title on the front in the spine's font.
 
-Images show only your own library. They include no account name or ID. Ratings are optional. A small "Created with Bookworms for iPhone" credit sits in the bottom margin of every image. If an image cannot be drawn, such as a pile whose frame comes out one flat color, the preview says so and nothing is shared.
+Images show only your own library. They include no account name or ID. Ratings are optional. A small "Created with Bookworms for iPhone" credit sits in the bottom margin of every image. If an image cannot be drawn, such as a pile whose frame comes out one flat color, the preview says so, suggesting **Shuffle** for a pile, and nothing is shared.
+
+A new option draws a new image and cancels the one in progress. A new design for a book in the image, such as one a generation run saves every few seconds, draws after the image in progress instead, and the shown image stays shareable meanwhile. Designs for other books change nothing.
 
 ## How the 3D books work
 

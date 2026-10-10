@@ -202,6 +202,13 @@ final class ShareRenderTests: XCTestCase {
             _ = try await first.value
             XCTFail("A cancelled render returns no image")
         } catch is CancellationError {}
+        // The second render starts only now, so the flag marks it again until it ends. Without
+        // the wait, the first render's end clears the flag while the second one runs.
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !PileSnapshotRenderer.isRendering, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(PileSnapshotRenderer.isRendering, "The second render is marked")
         let image = try await second.value
         XCTAssertEqual(image.cgImage?.width, 1080)
         XCTAssertFalse(PileSnapshotRenderer.isRendering)
@@ -222,7 +229,9 @@ final class ShareRenderTests: XCTestCase {
         XCTAssertEqual(signedOut, .signedOut(note: "Sign in to iCloud."))
         XCTAssertTrue(signedOut.message.contains("Apple TV"), signedOut.message)
         XCTAssertTrue(signedOut.message.contains("connect Hardcover"), signedOut.message)
-        XCTAssertTrue(signedOut.message.hasSuffix(" Sign in to iCloud."), signedOut.message)
+        XCTAssertTrue(
+            signedOut.message.hasSuffix("\n\nApple TV library: Sign in to iCloud."),
+            "The note belongs to the Apple TV option: \(signedOut.message)")
         XCTAssertEqual(status(signedIn: true, syncing: true), .downloading)
         XCTAssertEqual(status(loading: true, signedIn: true), .downloading)
         XCTAssertEqual(

@@ -5,9 +5,10 @@ import UniformTypeIdentifiers
 /// The Share tab: choose a template and its options, preview the exact export, and share it.
 ///
 /// Each option change renders the image again after a short pause and cancels a render still in
-/// progress. Covers and spine fonts load before each render, because `ImageRenderer` draws
-/// synchronously and would capture anything still loading as a placeholder. The Pile template
-/// renders with `PileSnapshotRenderer`, which loads its own covers and fonts.
+/// progress; a new design for a drawn book renders after it instead. Covers and spine fonts
+/// load before each render, because `ImageRenderer` draws synchronously and would capture
+/// anything still loading as a placeholder. The Pile template renders with
+/// `PileSnapshotRenderer`, which loads its own covers and fonts.
 ///
 /// Without a library, the tab shows `NoLibraryView` instead, which can open the Hardcover sheet.
 struct ShareStudioView: View {
@@ -84,24 +85,26 @@ struct ShareStudioView: View {
     private var request: RenderRequest {
         let frame = shownFrame
         let bookID = template.isSingleBook ? bookID : nil
+        var books = template.books(from: library, in: frame, bookID: bookID, direction: direction)
+        if template == .pile { books = Array(books.prefix(PileSnapshotRenderer.maximumBooks)) }
+        // Only the drawn books' designs, so a design saved for another book changes nothing.
+        let designs = books.map { model.library?.designs[$0.id] }
         // Spine Spectrum draws no lettering, and the pile renderer waits for its own fonts, so a
         // newly loaded face changes neither; restarting a pile would only delay it. Other
         // templates re-render only when a face for one of their own books arrives.
         let loadedFaces =
             template == .spectrum || template == .pile
-            ? 0
-            : template.books(from: library, in: frame, bookID: bookID, direction: direction)
-                .count { model.fonts.face(for: model.library?.designs[$0.id]) != nil }
+            ? 0 : designs.count { model.fonts.face(for: $0) != nil }
         return RenderRequest(
             template: template, aspect: aspect, frame: frame, bookID: bookID,
             coverStyle: coverStyle, direction: direction, showsRatings: showsRatings, seed: seed,
-            syncedAt: model.library?.syncedAt, designs: model.library?.designs,
-            loadedFaces: loadedFaces)
+            syncedAt: model.library?.syncedAt, designs: designs, loadedFaces: loadedFaces)
     }
 
     var body: some View {
         let request = request
-        let isPending = renderedRequest != request
+        // A newer design alone keeps the image shareable while the render loop draws it.
+        let isPending = renderedRequest?.options != request.options
         NavigationStack {
             if model.library == nil {
                 NoLibraryView(showsAccount: $showsAccount)
@@ -111,7 +114,10 @@ struct ShareStudioView: View {
             }
         }
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
-        .task(id: request) { await render() }
+        .task(id: request.options) {
+            // A saved design draws after the image in progress instead of restarting it.
+            for await _ in Observations({ [model] in model.library?.designs }) { await render() }
+        }
         .onChange(of: model.books, initial: true) { _, books in
             periods = TimeFrame.periods(in: books)
         }
@@ -246,7 +252,10 @@ struct ShareStudioView: View {
         } else if image == nil && failed && !isPending {
             ContentUnavailableView(
                 "Couldn't draw the image", systemImage: "exclamationmark.triangle",
-                description: Text("Try another size or template.")
+                // A pile's drop varies with the seed, so Shuffle can succeed where it failed.
+                description: Text(
+                    template == .pile
+                        ? "Try Shuffle or another size." : "Try another size or template.")
             )
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
@@ -574,8 +583,18 @@ private struct RenderRequest: Equatable {
     var showsRatings: Bool
     var seed: UInt64
     var syncedAt: Date?
-    var designs: [Int: SpineDesignV1]?
+    /// The designs of the books the image draws, in their order.
+    var designs: [SpineDesignV1?]
     var loadedFaces: Int
+
+    /// The request without its designs. The render task restarts only when these change: a
+    /// pile takes seconds to drop, and a generation run saves a design every few seconds, so a
+    /// new design waits for the image in progress and draws next.
+    var options: RenderRequest {
+        var options = self
+        options.designs = []
+        return options
+    }
 }
 
 /// A rendered share image, which the share sheet receives as PNG data.
