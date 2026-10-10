@@ -78,16 +78,19 @@ struct PileTray: Equatable {
 }
 
 extension PileTray {
-    /// Fits the tray to what the default camera sees between `safeTop` and `safeBottom`, given
-    /// as normalized device y coordinates, in a view of width-to-height `aspect`.
+    /// Fits the tray to what `camera` sees between `safeTop` and `safeBottom`, given as
+    /// normalized device y coordinates, in a view of width-to-height `aspect`. The camera must
+    /// look at the table's center without turning, as the default camera and a zoomed one do.
     ///
     /// A pile against the far or side walls rises toward the top or sides of the screen, so
     /// those walls stand where the view's edges meet a pile `pileHeight` high: room for a
     /// 2.4-unit book standing on end on a 2-unit pile. A pile against the near wall rises
     /// toward the middle of the screen, so that wall stands where the bottom edge meets the
     /// table.
-    init?(aspect: Float, safeTop: Float, safeBottom: Float, pileHeight: Float = 4.5) {
-        let camera = PileCamera()
+    init?(
+        aspect: Float, safeTop: Float, safeBottom: Float, pileHeight: Float = 4.5,
+        camera: PileCamera = PileCamera()
+    ) {
         let top = camera.ray(ndc: [1, safeTop], aspect: aspect)
         let bottom = camera.ray(ndc: [1, safeBottom], aspect: aspect)
         guard let far = PileCamera.intersect(top, height: pileHeight),
@@ -101,6 +104,28 @@ extension PileTray {
             farZ: far.z + margin, nearZ: near.z - margin,
             farHalfWidth: sides.halfWidth(at: far.z + margin) - margin,
             nearHalfWidth: sides.halfWidth(at: near.z - margin) - margin)
+    }
+
+    /// Fits the tray between the bars that cover `viewport`'s edges, as `camera` sees it.
+    init?(viewport: PileViewport, pileHeight: Float = 4.5, camera: PileCamera = PileCamera()) {
+        let height = Float(viewport.size.height)
+        guard viewport.size.width > 0, height > 0 else { return nil }
+        self.init(
+            aspect: Float(viewport.size.width) / height,
+            safeTop: 1 - 2 * Float(viewport.insets.top) / height,
+            safeBottom: -1 + 2 * Float(viewport.insets.bottom) / height, pileHeight: pileHeight,
+            camera: camera)
+    }
+
+    /// The tray's area on the table, in square units.
+    var area: Float { (farHalfWidth + nearHalfWidth) * (nearZ - farZ) }
+
+    /// The tray shrunk by `factor` toward its middle.
+    func scaled(by factor: Float) -> PileTray {
+        let middle = (farZ + nearZ) / 2
+        return PileTray(
+            farZ: middle + (farZ - middle) * factor, nearZ: middle + (nearZ - middle) * factor,
+            farHalfWidth: farHalfWidth * factor, nearHalfWidth: nearHalfWidth * factor)
     }
 }
 
@@ -273,7 +298,6 @@ final class BookPileScene {
     let root = Entity()
     var canTilt: Bool { motion.isDeviceMotionAvailable }
 
-    private static let coverPixels = 224
     private static let coverWait = Duration.seconds(1.5)
     private static let spineLength: CGFloat = 384
     private static let paper = PhysicsMaterialResource.generate(
@@ -281,8 +305,14 @@ final class BookPileScene {
     /// One unit box with a book's material slots, scaled to each book.
     private static let bookMesh = try? makeBookMesh()
 
-    private let camera = PerspectiveCamera()
+    /// The camera the pile is seen through, for a renderer that draws the scene without a view.
+    let camera = PerspectiveCamera()
+    /// The longest side of a cover texture, in pixels.
+    private let coverPixels: Int
+    /// The pixels per point of spine textures and of the fronts drawn for books without a cover.
+    private let textureScale: CGFloat
     private let shelf = Entity()
+    private let walls = Entity()
     private let environment = Entity()
     private lazy var motion = CMMotionManager()
     private var view = PileCamera()
@@ -332,7 +362,11 @@ final class BookPileScene {
         var velocity = SIMD3<Float>.zero
     }
 
-    init() {
+    /// Creates an empty pile. `textureScale` multiplies the texture sizes, for still images that
+    /// frame a few books closely; their GPU memory grows with its square.
+    init(textureScale: CGFloat = 1) {
+        self.textureScale = textureScale
+        coverPixels = Int((224 * textureScale).rounded())
         var simulation = PhysicsSimulationComponent()
         simulation.gravity = gravity
         simulation.solverIterations = .init(positionIterations: 12, velocityIterations: 2)
@@ -357,14 +391,12 @@ final class BookPileScene {
 
     /// Adds the table, walls, and lights the first time the view has a size.
     private func build(_ viewport: PileViewport) {
-        guard tray == nil, viewport.size.width > 0, viewport.size.height > 0 else { return }
-        let height = Float(viewport.size.height)
-        aspect = Float(viewport.size.width) / height
-        guard
-            let tray = PileTray(
-                aspect: aspect, safeTop: 1 - 2 * Float(viewport.insets.top) / height,
-                safeBottom: -1 + 2 * Float(viewport.insets.bottom) / height)
-        else { return }
+        guard tray == nil, let tray = PileTray(viewport: viewport) else { return }
+        aspect = Float(viewport.size.width / viewport.size.height)
+        build(tray)
+    }
+
+    private func build(_ tray: PileTray) {
         self.tray = tray
         if let image = Self.studioEnvironment(),
             let resource = try? EnvironmentResource(equirectangular: image, options: .init())
@@ -374,7 +406,8 @@ final class BookPileScene {
         }
         root.addChild(environment)
         root.addChild(makeTable())
-        root.addChild(Self.makeWalls(around: tray))
+        root.addChild(walls)
+        walls.addChild(Self.makeWalls(around: tray))
         // A warm lamp above and to the left of the reader, with soft shadows.
         let lamp = DirectionalLight()
         lamp.light = DirectionalLightComponent(
@@ -476,7 +509,9 @@ final class BookPileScene {
             let end = min(spawned + PileLayout.waveSize, plan.count)
             let wave = plan[spawned..<end]
             let next = plan[end..<min(end + PileLayout.waveSize, plan.count)]
-            await prepare(wave.map(\.book), prefetching: next.map(\.book), model: model)
+            await prepare(
+                wave.map(\.book), prefetching: next.map(\.book), coverWait: Self.coverWait,
+                model: model)
             if !tidy {
                 // Lets the previous wave fall clear of the spawn cells first.
                 try? await Task.sleep(until: lastWave + .milliseconds(350))
@@ -521,6 +556,43 @@ final class BookPileScene {
         planKey = nil
     }
 
+    /// Drops `books` onto `tray` for a still image seen through `camera`, without a view.
+    /// `step` advances the simulation by one 60 Hz frame, so the caller's renderer runs it.
+    ///
+    /// Unlike `fill`, every book is built before the first one falls, and covers get up to 10
+    /// seconds to load. Books start over the middle 70 percent of the tray and without spin, so
+    /// they heap toward the middle and few land face down, showing only their cloth. Each wave
+    /// falls for 0.4 seconds before the next one appears, as in the view, but waves are smaller
+    /// on a small tray. The walls then go, so no book stays propped against one, and the pile
+    /// settles for 3 seconds. Throws `CancellationError` between waves when the task is
+    /// cancelled.
+    func settle(
+        _ books: [CloudBook], on tray: PileTray, camera: PileCamera, seed: UInt64,
+        model: AppModel, step: () throws -> Void
+    ) async throws {
+        view = camera
+        self.camera.transform = camera.transform
+        build(tray)
+        await prepare(books, prefetching: [], coverWait: .seconds(10), model: model)
+        let area = tray.scaled(by: 0.7)
+        let plan = PileLayout.dropPlan(books, in: area, seed: seed)
+        // A small tray crowds the plan's cells until books start inside one another and the
+        // physics flings them away, so fewer books fall at once: one per 8 square units.
+        let perWave = min(PileLayout.waveSize, max(1, Int(area.area / 8)))
+        for start in stride(from: 0, to: plan.count, by: perWave) {
+            try Task.checkCancellation()
+            for var slot in plan[start..<min(start + perWave, plan.count)] {
+                slot.spin = .zero
+                spawn(slot, mode: .dynamic)
+            }
+            for _ in 0..<24 { try step() }
+            // Lets the interface update between waves.
+            await Task.yield()
+        }
+        walls.removeFromParent()
+        for _ in 0..<180 { try step() }
+    }
+
     /// Builds the parts of the books that lack them or whose look changed. Covers download in
     /// parallel; spines render on the main actor once their fonts load, because
     /// `ImageRenderer` draws synchronously.
@@ -531,13 +603,14 @@ final class BookPileScene {
     /// finds them in the cover store while this one builds and falls. The cover store shares
     /// downloads still in flight with later requests.
     private func prepare(
-        _ books: [CloudBook], prefetching upcoming: [CloudBook], model: AppModel
+        _ books: [CloudBook], prefetching upcoming: [CloudBook], coverWait: Duration,
+        model: AppModel
     ) async {
         let missing = books.filter { parts[$0.id]?.look != model.look(for: $0) }
         guard !missing.isEmpty else { return }
         await model.fonts.load(missing.compactMap { model.library?.designs[$0.id] })
         let covers = model.covers
-        let pixels = Self.coverPixels
+        let pixels = coverPixels
         let (arrivals, delivery) = AsyncStream.makeStream(of: (Int, UIImage?).self)
         for book in missing {
             Task {
@@ -545,7 +618,7 @@ final class BookPileScene {
             }
         }
         let deadline = Task {
-            try? await Task.sleep(for: Self.coverWait)
+            try? await Task.sleep(for: coverWait)
             delivery.finish()
         }
         var arrived = Set<Int>()
@@ -591,17 +664,14 @@ final class BookPileScene {
         let spine = Self.render(
             SpineView(book: book, look: look)
                 .frame(width: Self.spineLength, height: thickness)
-                .background(look.background.color))
+                .background(look.background.color), scale: textureScale)
         // Facing the camera, `Book3DView` draws only its front: the cover, or the title on the
         // spine's cloth when there is none.
         let front =
             cover.flatMap { Self.crop($0, to: size) }
             ?? Self.render(
-                Book3DView(
-                    book: book, look: look, cover: nil, height: CGFloat(Self.coverPixels), yaw: 0,
-                    pitch: 0
-                )
-                .background(look.background.color))
+                Book3DView(book: book, look: look, cover: nil, height: 224, yaw: 0, pitch: 0)
+                    .background(look.background.color), scale: textureScale)
         let coverTexture = await Self.texture(front)
         let spineTexture = await Self.texture(spine)
         let cloth =
@@ -785,9 +855,9 @@ final class BookPileScene {
         surface(texture, roughness: 0.5, specular: 0.25)
     }
 
-    private static func render(_ content: some View) -> CGImage? {
+    private static func render(_ content: some View, scale: CGFloat) -> CGImage? {
         let renderer = ImageRenderer(content: content)
-        renderer.scale = 1
+        renderer.scale = scale
         renderer.isOpaque = true
         return renderer.cgImage
     }

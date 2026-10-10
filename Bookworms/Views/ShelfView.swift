@@ -10,6 +10,8 @@ struct ShelfView: View {
     @AppStorage("BookwormsShelfMode") private var mode = ShelfPresentation.stack
     @AppStorage("BookwormsShelfSort") private var sort = ShelfSort.finished
     @AppStorage("BookwormsShelfDesignedOnly") private var designedOnly = false
+    /// The pile's time frame as `TimeFrame.setting` writes it; empty for every book.
+    @AppStorage("BookwormsPileFrame") private var pileFrameSetting = ""
     /// The centered book, shared by both carousel modes so switching keeps the reader's place.
     @State private var centeredID: Int?
     @State private var path: [Int] = []
@@ -46,7 +48,8 @@ struct ShelfView: View {
 
     @ViewBuilder private var content: some View {
         if let library = model.library {
-            let books = shownBooks(in: library)
+            let frame = mode == .pile ? pileFrame : nil
+            let books = shownBooks(in: library, frame: frame)
             if library.books.isEmpty {
                 ContentUnavailableView(
                     "No books yet", systemImage: "books.vertical",
@@ -70,7 +73,9 @@ struct ShelfView: View {
                         .dynamicTypeSize(...DynamicTypeSize.accessibility3)
                 }
             } else {
-                BookPileView(books: books) { path.append($0.id) }
+                BookPileView(books: books, title: frame?.title ?? Self.years(of: books)) {
+                    path.append($0.id)
+                }
             }
         } else if model.isLoading {
             ProgressView("Loading your library")
@@ -100,6 +105,9 @@ struct ShelfView: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu("Sort and filter", systemImage: "line.3.horizontal.decrease") {
+                // In the menu rather than beside it, so the pile's bar keeps room for its own
+                // buttons.
+                if mode == .pile { pileFrameOptions }
                 Picker("Sort by", selection: $sort) {
                     ForEach(ShelfSort.allCases) { Text($0.title).tag($0) }
                 }
@@ -108,9 +116,54 @@ struct ShelfView: View {
         }
     }
 
-    private func shownBooks(in library: LibrarySnapshot) -> [CloudBook] {
-        let books = sort.sorted(model.books)
-        return designedOnly ? books.filter { library.designs[$0.id] != nil } : books
+    /// Chooses the pile's books: every book, or the books finished in one year or month.
+    /// Choosing drops the chosen books in a new pile.
+    private var pileFrameOptions: some View {
+        let periods = TimeFrame.periods(in: model.books)
+        let frame = Binding {
+            pileFrame
+        } set: {
+            pileFrameSetting = $0?.setting ?? ""
+        }
+        return Section("Time frame") {
+            Picker("Books", selection: frame) {
+                Text("All books").tag(TimeFrame?.none)
+            }
+            if !periods.years.isEmpty {
+                Picker("Year", selection: frame) {
+                    ForEach(periods.years, id: \.self) { year in
+                        Text(String(year)).tag(TimeFrame?.some(.year(year)))
+                    }
+                }
+                .pickerStyle(.menu)
+                Picker("Month", selection: frame) {
+                    ForEach(periods.months, id: \.self) { month in
+                        Text(month.title).tag(TimeFrame?.some(month))
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+        }
+    }
+
+    /// The pile's time frame, or `nil` for every book.
+    private var pileFrame: TimeFrame? {
+        TimeFrame.pileFrame(setting: pileFrameSetting, in: model.books)
+    }
+
+    /// The years `books` were finished in, such as "2019–2026", for a pile of every book.
+    private static func years(of books: [CloudBook]) -> String {
+        let years = books.compactMap(\.finishedYear)
+        guard let first = years.min(), let last = years.max() else { return "My books" }
+        return first == last ? String(first) : "\(first)–\(last)"
+    }
+
+    /// The books in the chosen order and filter, and in `frame` when it is set.
+    private func shownBooks(in library: LibrarySnapshot, frame: TimeFrame? = nil) -> [CloudBook] {
+        var books = sort.sorted(model.books)
+        if designedOnly { books = books.filter { library.designs[$0.id] != nil } }
+        if let frame { books = books.filter(frame.contains) }
+        return books
     }
 
     /// Returns to the first book after the order or filter changes.

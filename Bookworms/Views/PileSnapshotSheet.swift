@@ -1,0 +1,140 @@
+import SwiftUI
+import UIKit
+
+/// Shares the pile as an image: the pile's books dropped into a new pile under the name of its
+/// time frame, in a share size the reader picks.
+///
+/// Each size change or shuffle renders a new image and cancels one in progress. The previous
+/// image stays in view under a progress indicator until the new one is ready, and sharing waits
+/// for it.
+struct PileSnapshotSheet: View {
+    let books: [CloudBook]
+    let title: String
+
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var aspect = ShareAspect.story
+    @State private var seed: UInt64 = 0
+    @State private var image: ShareImage?
+    /// The options of the last finished render, whether it drew `image` or failed.
+    @State private var rendered: Options?
+    @State private var failed = false
+
+    private struct Options: Equatable {
+        var aspect: ShareAspect
+        var seed: UInt64
+    }
+
+    init(books: [CloudBook], title: String) {
+        self.books = books
+        self.title = title
+        #if DEBUG
+            if let aspect = UserDefaults.standard.string(forKey: "BookwormsPileShareAspect")
+                .flatMap(ShareAspect.init(rawValue:))
+            {
+                _aspect = State(initialValue: aspect)
+            }
+        #endif
+    }
+
+    var body: some View {
+        let options = Options(aspect: aspect, seed: seed)
+        let isPending = rendered != options
+        NavigationStack {
+            VStack(spacing: 20) {
+                preview(isPending: isPending)
+                Picker("Size", selection: $aspect) {
+                    ForEach(ShareAspect.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                Button("Shuffle", systemImage: "shuffle") { seed = .random(in: 1 ... .max) }
+            }
+            .padding()
+            .navigationTitle("Share Pile")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(role: .close) { dismiss() }
+                }
+                if let image {
+                    ToolbarItem(placement: .primaryAction) {
+                        ShareLink(
+                            item: image,
+                            preview: SharePreview(image.name, image: Image(uiImage: image.image))
+                        )
+                        .disabled(isPending)
+                    }
+                }
+            }
+        }
+        .task(id: options) { await render(options) }
+        // The shelf's dark scheme reaches this content but not the sheet's own background.
+        .preferredColorScheme(.dark)
+    }
+
+    private func preview(isPending: Bool) -> some View {
+        ZStack {
+            // Fills the image's shape before there is an image.
+            Rectangle().fill(.quaternary)
+            if let image {
+                Image(uiImage: image.image)
+                    .resizable()
+                    .scaledToFit()
+                    .accessibilityLabel("\(image.name) preview")
+            } else if failed && !isPending {
+                ContentUnavailableView(
+                    "Couldn't draw the pile", systemImage: "exclamationmark.triangle",
+                    description: Text("Try Shuffle or another size."))
+            }
+            if isPending {
+                ProgressView("Dropping books")
+                    .padding()
+                    .background(.regularMaterial, in: .rect(cornerRadius: 12))
+            }
+        }
+        .aspectRatio(aspect.size.width / aspect.size.height, contentMode: .fit)
+        .clipShape(.rect(cornerRadius: 12))
+        .frame(maxHeight: .infinity)
+    }
+
+    private func render(_ options: Options) async {
+        do {
+            let drawn = try await PileSnapshotRenderer.render(
+                books: books, title: title, aspect: options.aspect, seed: options.seed,
+                model: model)
+            // A render cancelled after its last check still returns; a newer one is on its way.
+            try Task.checkCancellation()
+            image = ShareImage(image: drawn, name: "Pile \(title)")
+            failed = false
+            #if DEBUG
+                PileSnapshotDebug.write(drawn)
+            #endif
+        } catch is CancellationError {
+            return
+        } catch {
+            // A blank or failed render must not leave an older image to share.
+            image = nil
+            failed = true
+        }
+        rendered = options
+    }
+}
+
+#if DEBUG
+    /// Simulator hooks, since a script cannot tap the share button.
+    ///
+    /// `-BookwormsPileShare YES` opens the pile's share sheet when the pile appears, and
+    /// `-BookwormsPileShareAspect <story|portrait|square>` picks its size. Each image is then
+    /// written to `Library/Caches/Bookworms/pile-share-debug.png`.
+    enum PileSnapshotDebug {
+        static var opensSheet: Bool { UserDefaults.standard.bool(forKey: "BookwormsPileShare") }
+
+        static func write(_ image: UIImage) {
+            guard opensSheet else { return }
+            let url = URL.cachesDirectory.appending(path: "Bookworms/pile-share-debug.png")
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? image.pngData()?.write(to: url, options: .atomic)
+        }
+    }
+#endif
