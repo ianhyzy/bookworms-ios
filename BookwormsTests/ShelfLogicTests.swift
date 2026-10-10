@@ -82,5 +82,73 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertLessThan(below.scale, 1)
 
         XCTAssertEqual(WheelPose(distance: 280, length: 60, viewport: 500).opacity, 0)
+        // Gone once the center leaves the viewport, so no visible spine's page is unbuilt.
+        XCTAssertEqual(WheelPose(distance: -250, length: 60, viewport: 500).opacity, 0)
+        XCTAssertEqual(CoverFlowPose(distance: 200, length: 60, viewport: 400).opacity, 0)
+    }
+
+    func testTrackCentersEachSpineAndSnapsToTheNearest() {
+        // 40, 600, and 1,400 pages make spines 44, ~70.6, and 96 points thick.
+        let books = [book(1, "A", pages: 40), book(2, "B", pages: 600), book(3, "C", pages: 1_400)]
+        let thickness = books.map(\.slabThickness)
+        let track = SpineTrack(books: books, spacing: 6)
+
+        XCTAssertEqual(track.ids, [1, 2, 3])
+        XCTAssertEqual(track.offsets[0], 0)
+        // Each step is half of each neighbor plus the spacing.
+        XCTAssertEqual(track.offsets[1], (thickness[0] + thickness[1]) / 2 + 6, accuracy: 0.001)
+        XCTAssertEqual(
+            track.offsets[2] - track.offsets[1], (thickness[1] + thickness[2]) / 2 + 6,
+            accuracy: 0.001)
+
+        let between = (track.offsets[0] + track.offsets[1]) / 2
+        XCTAssertEqual(track.index(nearest: -500), 0)
+        XCTAssertEqual(track.index(nearest: between - 0.5), 0)
+        XCTAssertEqual(track.index(nearest: between + 0.5), 1)
+        XCTAssertEqual(track.index(nearest: 10_000), 2)
+        XCTAssertEqual(track.offset(nearest: track.offsets[2] - 3), track.offsets[2])
+        XCTAssertEqual(track.offset(of: 3), track.offsets[2])
+        XCTAssertEqual(track.offset(of: 99), 0)
+        XCTAssertNil(SpineTrack(books: [], spacing: 6).index(nearest: 0))
+
+        // With the end spaces, the last offset is the content's end less the viewport.
+        let viewport: CGFloat = 500
+        let pagesLength = CGFloat(track.pages.count) * SpineTrack.pageLength
+        let content =
+            track.leadingSpace(viewport: viewport) + pagesLength
+            + track.trailingSpace(viewport: viewport)
+        XCTAssertEqual(content - viewport, track.offsets[2], accuracy: 0.001)
+    }
+
+    func testTrackPagesHoldTheSpinesCenteredInThem() {
+        let books = (1...40).map { book($0, "Book \($0)", pages: 40 + $0 * 37) }
+        let track = SpineTrack(books: books, spacing: 6)
+        var start: CGFloat = 0
+        var order: [Int] = []
+        for (page, slots) in track.pages.enumerated() {
+            for slot in slots {
+                let pageStart = CGFloat(page) * SpineTrack.pageLength
+                let thickness = slot.book.slabThickness
+                XCTAssertEqual(pageStart + slot.inset, start, accuracy: 0.001)
+                XCTAssertLessThanOrEqual(pageStart, start + thickness / 2)
+                XCTAssertLessThan(start + thickness / 2, pageStart + SpineTrack.pageLength)
+                start += thickness + 6
+                order.append(slot.id)
+            }
+        }
+        XCTAssertEqual(order, track.ids)
+    }
+
+    func testCoastSpringsFromTheShownPoseToTheTarget() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let coast = Coast(
+            from: BookPose(yaw: 0, pitch: 0.2), to: BookPose(yaw: 3, pitch: -0.12), start: start)
+        XCTAssertEqual(coast.pose(at: start), coast.from)
+        let midway = coast.pose(at: start.addingTimeInterval(0.3))
+        XCTAssertGreaterThan(midway.yaw, 0)
+        XCTAssertLessThan(midway.pitch, 0.2)
+        let settled = coast.pose(at: start.addingTimeInterval(Coast.spring.settlingDuration))
+        XCTAssertEqual(settled.yaw, 3, accuracy: 0.01)
+        XCTAssertEqual(settled.pitch, -0.12, accuracy: 0.01)
     }
 }

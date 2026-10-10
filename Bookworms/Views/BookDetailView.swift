@@ -5,18 +5,14 @@ struct BookDetailView: View {
     let book: CloudBook
 
     @Environment(AppModel.self) private var model
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var cover: UIImage?
-    @State private var pose = BookPose.resting
-    /// The pose when the current drag began; `nil` between drags.
-    @State private var dragStart: BookPose?
 
     var body: some View {
         let look = model.look(for: book)
         let design = model.library?.designs[book.id]
         ScrollView {
             VStack(spacing: 24) {
-                stage(look: look)
+                TurningBook(book: book, look: look, cover: cover)
                 header
                 record
                 designCard(look: look, design: design)
@@ -31,56 +27,6 @@ struct BookDetailView: View {
             }
         }
         .task(id: book.id) { cover = await model.covers.image(for: book) }
-        #if DEBUG
-            .onAppear(perform: applyDebugPose)
-        #endif
-    }
-
-    private func stage(look: SpineLook) -> some View {
-        TurningBook(
-            book: book, look: look, cover: cover, height: 380, yaw: pose.yaw, pitch: pose.pitch
-        )
-        .frame(maxWidth: .infinity)
-        .frame(height: 460)
-        .background {
-            // Larger than the stage so the glow's falloff never meets an edge.
-            RadialGradient(
-                colors: [ShelfPalette.lamp.opacity(0.22), .clear], center: .center,
-                startRadius: 0, endRadius: 280
-            )
-            .frame(width: 640, height: 640)
-            .accessibilityHidden(true)
-        }
-        .contentShape(.rect)
-        .gesture(spin)
-        .accessibilityHint("Swipe up or down to turn the book.")
-        .accessibilityAdjustableAction { direction in
-            let step = direction == .increment ? Double.pi / 4 : -Double.pi / 4
-            withAnimation(reduceMotion ? nil : .smooth) { pose.yaw += step }
-        }
-    }
-
-    /// Turns the book with the finger: yaw is unbounded and pitch stays within a gentle tilt.
-    /// On release the book coasts with the swipe's momentum and its tilt eases back to rest,
-    /// unless Reduce Motion is on, when it stays where the finger left it.
-    ///
-    /// The drag claims touches that start on the book, so the page scrolls from the text below.
-    private var spin: some Gesture {
-        DragGesture(minimumDistance: 2)
-            .onChanged { value in
-                let start = dragStart ?? pose
-                dragStart = start
-                pose = start.turned(by: value.translation)
-            }
-            .onEnded { value in
-                let start = dragStart ?? pose
-                dragStart = nil
-                guard !reduceMotion else { return }
-                let coast = start.turned(by: value.predictedEndTranslation)
-                withAnimation(.spring(duration: 1.1, bounce: 0.12)) {
-                    pose = BookPose(yaw: coast.yaw, pitch: BookPose.resting.pitch)
-                }
-            }
     }
 
     private var header: some View {
@@ -105,7 +51,8 @@ struct BookDetailView: View {
             book.seriesPosition.map { ("Series", "Book \($0.formatted())") },
             book.finishedDate.map { ("Finished", $0.formatted(ShelfLabels.finishedFormat)) },
             book.isReading == true ? ("Status", "Reading now") : nil,
-            book.pages.map { ("Pages", $0.formatted()) },
+            // Hardcover records 0 pages for some audiobooks; the Apple TV omits those too.
+            book.pages.flatMap { $0 > 0 ? ("Pages", $0.formatted()) : nil },
             ShelfLabels.format(book.format).map { ("Format", $0) },
         ]
         .compactMap(\.self)
@@ -154,20 +101,6 @@ struct BookDetailView: View {
             }
         }
     }
-
-    #if DEBUG
-        /// Simulator screenshot hook: `-BookwormsBookYaw <radians>` and
-        /// `-BookwormsBookPitch <radians>` set the initial pose.
-        private func applyDebugPose() {
-            let defaults = UserDefaults.standard
-            if let yaw = defaults.string(forKey: "BookwormsBookYaw").flatMap(Double.init) {
-                pose.yaw = yaw
-            }
-            if let pitch = defaults.string(forKey: "BookwormsBookPitch").flatMap(Double.init) {
-                pose.pitch = pitch
-            }
-        }
-    #endif
 }
 
 /// The 3D book's orientation, in radians.
@@ -190,22 +123,118 @@ struct BookPose: Equatable {
     }
 }
 
-/// `Book3DView` with an animatable pose, so a released spin coasts and settles smoothly.
-private struct TurningBook: View, Animatable {
+/// A `Book3DView` to turn with a drag. Yaw is unbounded and pitch stays within a gentle tilt.
+/// On release the book coasts with the swipe's momentum and its tilt eases back to rest, unless
+/// Reduce Motion is on, when it stays where the finger left it.
+///
+/// The coast is a function of time that `TimelineView` samples, rather than a SwiftUI
+/// animation, so a drag that interrupts it starts from the pose on screen. The drag claims
+/// touches that start on the book, so the page scrolls from the text below.
+private struct TurningBook: View {
     let book: CloudBook
     let look: SpineLook
     let cover: UIImage?
-    let height: CGFloat
-    var yaw: Double
-    var pitch: Double
 
-    nonisolated var animatableData: AnimatablePair<Double, Double> {
-        get { AnimatablePair(yaw, pitch) }
-        set { (yaw, pitch) = (newValue.first, newValue.second) }
-    }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The pose under the finger, or the pose a coast comes to rest at.
+    @State private var pose = BookPose.resting
+    /// The coast in progress, if any.
+    @State private var coast: Coast?
+    /// The pose on screen when the current drag began. SwiftUI resets it when a drag ends or
+    /// is cancelled, so the next drag starts from the current pose.
+    @GestureState private var dragStart: BookPose?
 
     var body: some View {
-        Book3DView(book: book, look: look, cover: cover, height: height, yaw: yaw, pitch: pitch)
+        TimelineView(.animation(paused: coast == nil)) { context in
+            let shown = coast?.pose(at: context.date) ?? pose
+            Book3DView(
+                book: book, look: look, cover: cover, height: 380, yaw: shown.yaw,
+                pitch: shown.pitch)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 460)
+        .background {
+            // Larger than the stage so the glow's falloff never meets an edge.
+            RadialGradient(
+                colors: [ShelfPalette.lamp.opacity(0.22), .clear], center: .center,
+                startRadius: 0, endRadius: 280
+            )
+            .frame(width: 640, height: 640)
+            .accessibilityHidden(true)
+        }
+        .contentShape(.rect)
+        .gesture(spin)
+        // Pauses the timeline once the coast settles.
+        .task(id: coast) {
+            guard coast != nil else { return }
+            try? await Task.sleep(for: .seconds(Coast.spring.settlingDuration))
+            if !Task.isCancelled { coast = nil }
+        }
+        .accessibilityHint("Swipe up or down to turn the book.")
+        .accessibilityAdjustableAction { direction in
+            let step = direction == .increment ? Double.pi / 4 : -Double.pi / 4
+            let target = BookPose(yaw: pose.yaw + step, pitch: pose.pitch)
+            if reduceMotion { pose = target } else { settle(at: target) }
+        }
+        #if DEBUG
+            .onAppear(perform: applyDebugPose)
+        #endif
+    }
+
+    private var spin: some Gesture {
+        DragGesture(minimumDistance: 2)
+            .updating($dragStart) { _, start, _ in
+                if start == nil { start = coast?.pose(at: .now) ?? pose }
+            }
+            .onChanged { value in
+                guard let dragStart else { return }
+                coast = nil
+                pose = dragStart.turned(by: value.translation)
+            }
+            .onEnded { value in
+                guard !reduceMotion else { return }
+                let momentum = CGSize(
+                    width: value.predictedEndTranslation.width - value.translation.width,
+                    height: value.predictedEndTranslation.height - value.translation.height)
+                let yaw = pose.turned(by: momentum).yaw
+                settle(at: BookPose(yaw: yaw, pitch: BookPose.resting.pitch))
+            }
+    }
+
+    /// Springs from the pose on screen to `target`.
+    private func settle(at target: BookPose) {
+        coast = Coast(from: coast?.pose(at: .now) ?? pose, to: target, start: .now)
+        pose = target
+    }
+
+    #if DEBUG
+        /// Simulator screenshot hook: `-BookwormsBookYaw <radians>` and
+        /// `-BookwormsBookPitch <radians>` set the initial pose.
+        private func applyDebugPose() {
+            let defaults = UserDefaults.standard
+            if let yaw = defaults.string(forKey: "BookwormsBookYaw").flatMap(Double.init) {
+                pose.yaw = yaw
+            }
+            if let pitch = defaults.string(forKey: "BookwormsBookPitch").flatMap(Double.init) {
+                pose.pitch = pitch
+            }
+        }
+    #endif
+}
+
+/// A spring from one pose to another, sampled by time.
+struct Coast: Equatable {
+    static let spring = Spring(duration: 1.1, bounce: 0.12)
+
+    let from: BookPose
+    let to: BookPose
+    let start: Date
+
+    func pose(at date: Date) -> BookPose {
+        let progress = Self.spring.value(target: 1.0, time: date.timeIntervalSince(start))
+        return BookPose(
+            yaw: from.yaw + (to.yaw - from.yaw) * progress,
+            pitch: from.pitch + (to.pitch - from.pitch) * progress)
     }
 }
 

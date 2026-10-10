@@ -29,10 +29,11 @@ struct SpineCarousel: View {
 
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Space between the screen edges and a stacked spine's ends.
     private static let sideMargin: CGFloat = 20
+    private static let stackSpacing: CGFloat = 6
+    private static let shelfSpacing: CGFloat = 4
 
     var body: some View {
         GeometryReader { proxy in
@@ -56,86 +57,94 @@ struct SpineCarousel: View {
     private func stack(in size: CGSize) -> some View {
         let length = size.width - 2 * Self.sideMargin
         let center = size.height / 2
+        let track = SpineTrack(books: books, spacing: Self.stackSpacing)
         return ScrollView(.vertical) {
             VStack(spacing: 0) {
-                endSpace(size.height, beside: books.first)
-                LazyVStack(spacing: 6) {
-                    ForEach(books) { book in
-                        let thickness = book.slabThickness
-                        spineButton(book) {
-                            SpineView(book: book, look: model.look(for: book))
-                                .frame(width: length, height: thickness)
+                Color.clear.frame(height: track.leadingSpace(viewport: size.height))
+                LazyVStack(spacing: 0) {
+                    ForEach(track.pages.indices, id: \.self) { page in
+                        ZStack(alignment: .top) {
+                            ForEach(track.pages[page]) { slot in
+                                let thickness = slot.book.slabThickness
+                                spineButton(slot.book) {
+                                    SpineView(book: slot.book, look: model.look(for: slot.book))
+                                        .frame(width: length, height: thickness)
+                                }
+                                .visualEffect { content, proxy in
+                                    let pose = WheelPose(
+                                        distance: proxy.frame(in: .scrollView).midY - center,
+                                        length: thickness, viewport: size.height)
+                                    return
+                                        content
+                                        .rotation3DEffect(pose.angle, axis: (x: 1, y: 0, z: 0))
+                                        .scaleEffect(pose.scale)
+                                        .offset(y: pose.offset)
+                                        .brightness(pose.brightness)
+                                        .opacity(pose.opacity)
+                                }
+                                .padding(.top, slot.inset)
+                            }
                         }
-                        .visualEffect { content, proxy in
-                            let pose = WheelPose(
-                                distance: proxy.frame(in: .scrollView).midY - center,
-                                length: thickness, viewport: size.height)
-                            return
-                                content
-                                .rotation3DEffect(pose.angle, axis: (x: 1, y: 0, z: 0))
-                                .scaleEffect(pose.scale)
-                                .offset(y: pose.offset)
-                                .brightness(pose.brightness)
-                                .opacity(pose.opacity)
-                        }
+                        .frame(height: SpineTrack.pageLength, alignment: .top)
                     }
                 }
-                .scrollTargetLayout()
-                endSpace(size.height, beside: books.last)
+                Color.clear.frame(height: track.trailingSpace(viewport: size.height))
             }
         }
-        .modifier(CenterSnapping(centeredID: $centeredID))
-    }
-
-    /// Space before the first spine or after the last, so either end can reach the center.
-    ///
-    /// Spacer views instead of `contentMargins`, which make `.viewAligned(anchor: .center)`
-    /// center the wrong spine after some programmatic scrolls.
-    private func endSpace(_ viewport: CGFloat, beside book: CloudBook?) -> some View {
-        let length = (viewport - (book?.slabThickness ?? 0)) / 2
-        return Color.clear.frame(
-            width: mode == .shelf ? length : nil, height: mode == .stack ? length : nil)
+        .modifier(
+            CenterSnapping(
+                track: track, axis: .vertical, viewport: size.height, centeredID: $centeredID))
     }
 
     private func shelf(in size: CGSize) -> some View {
         // Leaves room under the spines for the shelf board.
         let height = min(440, size.height - 56)
         let center = size.width / 2
+        let track = SpineTrack(books: books, spacing: Self.shelfSpacing)
         return VStack(spacing: 0) {
             ScrollView(.horizontal) {
                 HStack(spacing: 0) {
-                    endSpace(size.width, beside: books.first)
-                    LazyHStack(alignment: .bottom, spacing: 4) {
-                        ForEach(books) { book in
-                            let thickness = book.slabThickness
-                            spineButton(book) {
-                                UprightSpineView(
-                                    book: book, look: model.look(for: book), height: height,
-                                    thickness: thickness)
+                    Color.clear.frame(width: track.leadingSpace(viewport: size.width))
+                    LazyHStack(spacing: 0) {
+                        ForEach(track.pages.indices, id: \.self) { page in
+                            ZStack(alignment: .bottomLeading) {
+                                ForEach(track.pages[page]) { slot in
+                                    let thickness = slot.book.slabThickness
+                                    spineButton(slot.book) {
+                                        UprightSpineView(
+                                            book: slot.book, look: model.look(for: slot.book),
+                                            height: height, thickness: thickness)
+                                    }
+                                    .visualEffect { content, proxy in
+                                        let pose = CoverFlowPose(
+                                            distance: proxy.frame(in: .scrollView).midX - center,
+                                            length: thickness, viewport: size.width)
+                                        return
+                                            content
+                                            .rotation3DEffect(
+                                                pose.angle, axis: (x: 0, y: 1, z: 0),
+                                                perspective: 0.7
+                                            )
+                                            .scaleEffect(pose.scale, anchor: .bottom)
+                                            .offset(x: pose.offset)
+                                            .brightness(pose.brightness)
+                                            .opacity(pose.opacity)
+                                    }
+                                    .padding(.leading, slot.inset)
+                                }
                             }
-                            .visualEffect { content, proxy in
-                                let pose = CoverFlowPose(
-                                    distance: proxy.frame(in: .scrollView).midX - center,
-                                    length: thickness, viewport: size.width)
-                                return
-                                    content
-                                    .rotation3DEffect(
-                                        pose.angle, axis: (x: 0, y: 1, z: 0), perspective: 0.7
-                                    )
-                                    .scaleEffect(pose.scale, anchor: .bottom)
-                                    .offset(x: pose.offset)
-                                    .brightness(pose.brightness)
-                                    .opacity(pose.opacity)
-                            }
+                            .frame(width: SpineTrack.pageLength, alignment: .leading)
                         }
                     }
-                    .scrollTargetLayout()
-                    endSpace(size.width, beside: books.last)
+                    Color.clear.frame(width: track.trailingSpace(viewport: size.width))
                 }
             }
             .frame(height: height)
             .scrollClipDisabled()
-            .modifier(CenterSnapping(centeredID: $centeredID))
+            .modifier(
+                CenterSnapping(
+                    track: track, axis: .horizontal, viewport: size.width,
+                    centeredID: $centeredID))
             ShelfBoard()
         }
         .frame(maxHeight: .infinity)
@@ -148,7 +157,7 @@ struct SpineCarousel: View {
             if voiceOver || book.id == (centeredID ?? books.first?.id) {
                 open(book)
             } else {
-                withAnimation(reduceMotion ? nil : .smooth) { centeredID = book.id }
+                centeredID = book.id
             }
         } label: {
             label().matchedTransitionSource(id: book.id, in: namespace)
@@ -159,18 +168,75 @@ struct SpineCarousel: View {
     }
 }
 
-/// Snaps the carousel so a spine always rests at the center and tracks which one it is.
+/// Snaps the carousel so a spine always rests at the center, keeps `centeredID` on the spine at
+/// the center, and scrolls to `centeredID` when something other than scrolling changes it.
+///
+/// Snapping, tracking, and scrolling all use `SpineTrack` offsets, which match the layout
+/// exactly. Offsets count from the end of the scroll view's content inset, as `ScrollPosition`
+/// and `ScrollTarget` do; the scroll view takes a top inset where it meets the navigation bar.
 private struct CenterSnapping: ViewModifier {
+    let track: SpineTrack
+    let axis: Axis
+    /// The scroll view's length along `axis`.
+    let viewport: CGFloat
     @Binding var centeredID: Int?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var position = ScrollPosition()
+    /// The book that scrolling last brought to the center, which tells scrolling apart from
+    /// other changes to `centeredID`.
+    @State private var scrolledID: Int?
 
     func body(content: Content) -> some View {
         content
-            .scrollTargetBehavior(.viewAligned(anchor: .center))
-            .scrollPosition(id: $centeredID, anchor: .center)
+            .scrollPosition($position)
+            .scrollTargetBehavior(SpineSnapping(track: track, axis: axis))
+            .onScrollGeometryChange(for: Int?.self) { geometry in
+                track.id(
+                    nearest: axis == .vertical
+                        ? geometry.contentOffset.y + geometry.contentInsets.top
+                        : geometry.contentOffset.x + geometry.contentInsets.leading)
+            } action: { old, id in
+                // The first call reports the starting book, before `onAppear` scrolls to
+                // `centeredID`, so only an actual change moves `centeredID`.
+                guard id != old else { return }
+                scrolledID = id
+                centeredID = id
+            }
+            .onChange(of: centeredID) {
+                guard centeredID != scrolledID else { return }
+                // Glides to a spine on screen, such as a tapped neighbor, and jumps to one off
+                // screen, such as the first book after a new sort.
+                let distance = abs(track.offset(of: centeredID) - track.offset(of: scrolledID))
+                let glides = !reduceMotion && distance < viewport / 2
+                withAnimation(glides ? .smooth : nil) { scrollToCenteredBook() }
+            }
+            // The same offset centers a different book after the order changes.
+            .onChange(of: track.ids) { scrollToCenteredBook() }
+            // A new carousel, such as after a mode switch, opens on the centered book.
+            .onAppear(perform: scrollToCenteredBook)
             .scrollIndicators(.hidden)
             // The spines fade out before the carousel's ends, so the bar's edge effect would
             // only draw a seam across the walnut wall.
             .scrollEdgeEffectHidden()
+    }
+
+    private func scrollToCenteredBook() {
+        let offset = track.offset(of: centeredID)
+        if axis == .vertical { position.scrollTo(y: offset) } else { position.scrollTo(x: offset) }
+    }
+}
+
+/// Ends every scroll, including a fling's momentum, with the nearest spine at the center.
+private struct SpineSnapping: ScrollTargetBehavior {
+    let track: SpineTrack
+    let axis: Axis
+
+    func updateTarget(_ target: inout ScrollTarget, context: TargetContext) {
+        if axis == .vertical {
+            target.rect.origin.y = track.offset(nearest: target.rect.minY)
+        } else {
+            target.rect.origin.x = track.offset(nearest: target.rect.minX)
+        }
     }
 }
 
@@ -188,6 +254,95 @@ private struct ShelfBoard: View {
         }
         .shadow(color: .black.opacity(0.5), radius: 10, y: 8)
         .accessibilityHidden(true)
+    }
+}
+
+/// The carousel's spines laid out along its scroll axis, from their thicknesses.
+///
+/// A lazy stack estimates the extent of rows it has not built, so with one spine per row, a
+/// fling or a jump to a distant book stops with a different spine at the center than the one
+/// the scroll offset names. The carousel's lazy stack therefore holds pages of equal length,
+/// with no spacing, so it places even pages it has not built exactly and `offsets` match the
+/// layout. Each page holds the spines whose centers fall within it; a spine may overhang its
+/// page by half its thickness. A spine fades out completely once its center leaves the
+/// viewport, so every visible spine's page intersects the viewport and is built.
+struct SpineTrack {
+    static let pageLength: CGFloat = 100
+
+    /// A spine on a page, `inset` from the page's start. The inset is negative for a spine that
+    /// overhangs the page's start.
+    struct Slot: Identifiable {
+        let book: CloudBook
+        let inset: CGFloat
+        var id: Int { book.id }
+    }
+
+    let ids: [Int]
+    /// The scroll offset that centers each spine. The first spine is centered at offset 0.
+    let offsets: [CGFloat]
+    let pages: [[Slot]]
+    /// From the first spine's start to the last spine's end.
+    private let length: CGFloat
+    private let firstThickness: CGFloat
+    private let lastThickness: CGFloat
+
+    init(books: [CloudBook], spacing: CGFloat) {
+        ids = books.map(\.id)
+        firstThickness = books.first?.slabThickness ?? 0
+        lastThickness = books.last?.slabThickness ?? 0
+        var start: CGFloat = 0
+        var offsets: [CGFloat] = []
+        var pages: [[Slot]] = []
+        for book in books {
+            let thickness = book.slabThickness
+            offsets.append(start + (thickness - firstThickness) / 2)
+            let page = Int((start + thickness / 2) / Self.pageLength)
+            while pages.count <= page { pages.append([]) }
+            let inset = start - CGFloat(page) * Self.pageLength
+            pages[page].append(Slot(book: book, inset: inset))
+            start += thickness + spacing
+        }
+        self.offsets = offsets
+        self.pages = pages
+        length = max(0, start - spacing)
+    }
+
+    /// The space before the first page, so the first spine can reach the viewport's center.
+    func leadingSpace(viewport: CGFloat) -> CGFloat { max(0, (viewport - firstThickness) / 2) }
+
+    /// The space after the last page, so the last spine can reach the viewport's center, less
+    /// the room the last page already leaves after it.
+    func trailingSpace(viewport: CGFloat) -> CGFloat {
+        let pagesEnd = CGFloat(pages.count) * Self.pageLength
+        return max(0, (viewport - lastThickness) / 2 - (pagesEnd - length))
+    }
+
+    /// The index of the spine nearest the center at `offset`, or `nil` for an empty track.
+    func index(nearest offset: CGFloat) -> Int? {
+        guard !offsets.isEmpty else { return nil }
+        // Binary search for the first spine whose midpoint with the next lies past `offset`.
+        var low = 0
+        var high = offsets.count - 1
+        while low < high {
+            let middle = (low + high) / 2
+            if (offsets[middle] + offsets[middle + 1]) / 2 < offset {
+                low = middle + 1
+            } else {
+                high = middle
+            }
+        }
+        return low
+    }
+
+    func id(nearest offset: CGFloat) -> Int? { index(nearest: offset).map { ids[$0] } }
+
+    func offset(nearest offset: CGFloat) -> CGFloat {
+        index(nearest: offset).map { offsets[$0] } ?? offset
+    }
+
+    /// The offset that centers the book with `id`, or the first book when `id` is absent.
+    func offset(of id: Int?) -> CGFloat {
+        id.flatMap { ids.firstIndex(of: $0) }.map { offsets[$0] } ?? 0
     }
 }
 
@@ -221,7 +376,8 @@ struct WheelPose {
         // A positive turn about x tips the top edge away, as on the upper half of the drum.
         angle = .radians(-theta)
         brightness = -0.22 * abs(phase)
-        opacity = 1 - pow(abs(phase), 1.6)
+        // Gone once the spine's center leaves the viewport, which `SpineTrack` relies on.
+        opacity = 1 - pow(min(1, abs(distance) / (viewport / 2)), 1.6)
     }
 }
 
@@ -242,7 +398,9 @@ struct CoverFlowPose {
         offset = -turn * 14 - (distance - turn * 70) * 0.28
         scale = 1 - 0.1 * abs(phase)
         brightness = -0.18 * abs(turn) - 0.1 * abs(phase)
-        opacity = 1 - phase * phase
+        // Gone once the spine's center leaves the viewport, which `SpineTrack` relies on.
+        let edge = min(1, abs(distance) / (viewport / 2))
+        opacity = 1 - edge * edge
     }
 }
 

@@ -64,6 +64,9 @@ struct ShelfView: View {
                         books: books, mode: mode, centeredID: $centeredID, namespace: namespace
                     ) { path.append($0.id) }
                     ShelfCaption(books: books, designs: library.designs, centeredID: $centeredID)
+                        // Larger sizes overflow the caption's fixed height; the book's details
+                        // show the same record at any size.
+                        .dynamicTypeSize(...DynamicTypeSize.accessibility3)
                 }
             }
         } else if model.isLoading {
@@ -145,30 +148,44 @@ private struct ShelfCaption: View {
     let designs: [Int: SpineDesignV1]
     @Binding var centeredID: Int?
     @ScaledMetric(relativeTo: .title3) private var height: CGFloat = 150
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         let index = books.firstIndex { $0.id == centeredID } ?? 0
         let book = books[index]
         VStack(spacing: 5) {
-            Text("\(index + 1) of \(books.count)")
-                .font(.caption2.weight(.medium))
-                .monospacedDigit()
-                .foregroundStyle(.tertiary)
-                .accessibilityHidden(true)
+            // The position is decorative, so accessibility sizes give its line to the title.
+            if !typeSize.isAccessibilitySize {
+                Text("\(index + 1) of \(books.count)")
+                    .font(.caption2.weight(.medium))
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
             Text(book.title)
                 .font(.title3.weight(.semibold))
                 .fontDesign(.serif)
                 .lineLimit(2)
+                .layoutPriority(1)
                 .accessibilityAddTraits(.isHeader)
             Text(book.author)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-            HStack(spacing: 10) {
-                if let date = book.finishedDate {
-                    Text("Finished \(date, format: ShelfLabels.finishedFormat)")
+            let finished = book.finishedDate.map {
+                Text("Finished \($0, format: ShelfLabels.finishedFormat)")
+            }
+            let stars = book.rating.flatMap { $0 > 0 ? RatingStars(rating: $0) : nil }
+            // Stacks the date over the stars when large text leaves no room for both.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    finished
+                    stars
                 }
-                if let rating = book.rating, rating > 0 { RatingStars(rating: rating) }
+                VStack(spacing: 4) {
+                    finished
+                    stars
+                }
             }
             .font(.footnote)
             .foregroundStyle(.secondary)
@@ -178,6 +195,7 @@ private struct ShelfCaption: View {
             )
             .font(.caption)
             .foregroundStyle(.tertiary)
+            .lineLimit(1)
         }
         .multilineTextAlignment(.center)
         .minimumScaleFactor(0.8)
