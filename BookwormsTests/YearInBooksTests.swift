@@ -14,7 +14,7 @@ final class YearInBooksTests: XCTestCase {
 
     func testCountsTheYearsFinishedBooksEarliestFirst() {
         let stats = YearInBooks(
-            year: 2025,
+            frame: .year(2025),
             library: [
                 book(1, finished: "2025-03-02"),
                 book(2, finished: "2026-01-15"),
@@ -22,18 +22,61 @@ final class YearInBooksTests: XCTestCase {
                 book(4, finished: "2025-13-01"),
                 book(5, finished: "not a date"),
                 book(6, finished: "2025-01-20T10:00:00Z"),
+                book(7, finished: "2025-03-09"),
+                book(8, finished: "2025-01-02"),
             ])
-        XCTAssertEqual(stats.books.map(\.id), [6, 1], "Other years and invalid dates are left out")
-        XCTAssertEqual(stats.months.map(\.count), [1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0])
-        XCTAssertEqual(stats.busiestMonth, 1, "The earliest month wins a tie")
-        let empty = YearInBooks(year: 2025, library: [book(1, finished: nil)])
-        XCTAssertNil(empty.busiestMonth)
+        XCTAssertEqual(
+            stats.books.map(\.id), [8, 6, 1, 7], "Other years and invalid dates are left out")
+        XCTAssertEqual(stats.columns.map(\.span), (1...12).map { .month($0) })
+        XCTAssertEqual(
+            stats.columns.map(\.books.count), [2, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        XCTAssertEqual(stats.busiest?.span, .month(1), "The earliest month wins a tie")
+        let empty = YearInBooks(frame: .year(2025), library: [book(1, finished: nil)])
+        XCTAssertNil(empty.busiest)
         XCTAssertTrue(empty.records.isEmpty)
+        let single = YearInBooks(frame: .year(2025), library: [book(1, finished: "2025-03-02")])
+        XCTAssertNil(single.busiest, "A column of one book isn't busy")
+    }
+
+    func testMonthsChartWeeksOfTheirDays() {
+        let august = YearInBooks(
+            frame: .month(year: 2025, month: 8),
+            library: [
+                book(1, finished: "2025-08-01"), book(2, finished: "2025-08-08"),
+                book(3, finished: "2025-08-14"), book(4, finished: "2025-08-31"),
+                book(5, finished: "2025-07-31"),
+            ])
+        XCTAssertEqual(
+            august.columns.map(\.span),
+            [
+                .days(1...7, month: 8), .days(8...14, month: 8), .days(15...21, month: 8),
+                .days(22...28, month: 8), .days(29...31, month: 8),
+            ])
+        XCTAssertEqual(august.columns.map(\.books.count), [1, 2, 0, 0, 1])
+        XCTAssertEqual(august.busiest?.span, .days(8...14, month: 8))
+
+        let february = YearInBooks(frame: .month(year: 2025, month: 2), library: [])
+        XCTAssertEqual(february.columns.last?.span, .days(22...28, month: 2))
+        let leapFebruary = YearInBooks(frame: .month(year: 2024, month: 2), library: [])
+        XCTAssertEqual(leapFebruary.columns.last?.span, .days(29...29, month: 2))
+    }
+
+    func testLifetimeChartsEveryYearFromFirstToLast() {
+        let stats = YearInBooks(
+            frame: .lifetime,
+            library: [
+                book(1, finished: "2021-05-01"), book(2, finished: "2019-02-01"),
+                book(3, finished: "2021-09-01"), book(4, finished: nil),
+            ])
+        XCTAssertEqual(stats.columns.map(\.span), [.year(2019), .year(2020), .year(2021)])
+        XCTAssertEqual(stats.columns.map(\.books.count), [1, 0, 2])
+        XCTAssertEqual(stats.busiest?.span, .year(2021))
+        XCTAssertTrue(YearInBooks(frame: .lifetime, library: []).columns.isEmpty)
     }
 
     func testTotalsIgnoreMissingValues() throws {
         let stats = YearInBooks(
-            year: 2025,
+            frame: .year(2025),
             library: [
                 book(1, finished: "2025-05-01", rating: 5, pages: 300, format: "Listened"),
                 book(2, finished: "2025-05-02", rating: 4, pages: 200, format: "Ebook"),
@@ -44,7 +87,7 @@ final class YearInBooksTests: XCTestCase {
         XCTAssertEqual(stats.booksWithPages, 2)
         XCTAssertEqual(stats.ratedBooks, 2, "Out-of-range ratings are ignored")
         XCTAssertEqual(try XCTUnwrap(stats.averageRating), 4.5, accuracy: 0.001)
-        XCTAssertEqual(stats.busiestMonth, 5)
+        XCTAssertEqual(stats.busiest?.span, .month(5))
         XCTAssertEqual(
             stats.formats,
             [
@@ -57,7 +100,7 @@ final class YearInBooksTests: XCTestCase {
 
     func testRecordsPickLongestShortestAndFavorite() {
         let stats = YearInBooks(
-            year: 2025,
+            frame: .year(2025),
             library: [
                 book(1, finished: "2025-01-01", rating: 5, pages: 640),
                 book(2, finished: "2025-02-01", rating: 3, pages: 180),
@@ -70,13 +113,13 @@ final class YearInBooksTests: XCTestCase {
         XCTAssertEqual(stats.records.map(\.id), [3, 2], "A book appears once among the records")
 
         let single = YearInBooks(
-            year: 2025, library: [book(1, finished: "2025-01-01", pages: 300)])
+            frame: .year(2025), library: [book(1, finished: "2025-01-01", pages: 300)])
         XCTAssertEqual(single.longest?.id, 1)
         XCTAssertNil(single.shortest, "One paged book isn't also the shortest")
         XCTAssertNil(single.favorite)
 
         let equal = YearInBooks(
-            year: 2025,
+            frame: .year(2025),
             library: [
                 book(1, finished: "2025-01-01", pages: 300),
                 book(2, finished: "2025-02-01", pages: 300),
@@ -87,7 +130,7 @@ final class YearInBooksTests: XCTestCase {
 
     func testGenresAndAuthorsRankByCountThenName() {
         let stats = YearInBooks(
-            year: 2025,
+            frame: .year(2025),
             library: [
                 book(
                     1, finished: "2025-01-01", author: "Rowan",
@@ -105,7 +148,7 @@ final class YearInBooksTests: XCTestCase {
         XCTAssertEqual(stats.topAuthor, .init(name: "Rowan", count: 2))
 
         let distinct = YearInBooks(
-            year: 2025,
+            frame: .year(2025),
             library: [
                 book(1, finished: "2025-01-01", author: "Rowan"),
                 book(2, finished: "2025-02-01", author: "Vale"),
@@ -115,7 +158,7 @@ final class YearInBooksTests: XCTestCase {
 
     func testGenresSkipForeignTagsAndCapitalizeLowercaseOnes() {
         let stats = YearInBooks(
-            year: 2025,
+            frame: .year(2025),
             library: [
                 book(
                     1, finished: "2025-01-01", genres: ["Féminisme", "litrpg", "LGBTQ", "Fantasy"])

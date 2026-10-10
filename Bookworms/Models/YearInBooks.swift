@@ -2,9 +2,9 @@ import Foundation
 import NaturalLanguage
 import Synchronization
 
-/// Reading statistics for one calendar year, computed with the Apple TV Year in Review's rules.
+/// Reading statistics for a time frame, computed with the Apple TV Year in Review's rules.
 ///
-/// The library keeps each book's most recent read, so a reread counts once, in the year of its
+/// The library keeps each book's most recent read, so a reread counts once, in the frame of its
 /// latest finish. Books without a valid finish date are left out.
 struct YearInBooks: Equatable {
     /// A name and how many books it applies to, such as a genre or format.
@@ -13,18 +13,35 @@ struct YearInBooks: Equatable {
         let count: Int
     }
 
-    let year: Int
-    /// Every book finished this year, earliest first.
+    /// A chart column: a month of a year, a run of days in a month, or a year of a lifetime.
+    struct Column: Equatable {
+        enum Span: Equatable {
+            /// A month, 1...12.
+            case month(Int)
+            /// Days of `month` (1...12), such as 8...14.
+            case days(ClosedRange<Int>, month: Int)
+            case year(Int)
+        }
+
+        let span: Span
+        /// The column's books, earliest first.
+        let books: [CloudBook]
+    }
+
+    let frame: TimeFrame
+    /// Every book finished in the frame, earliest first.
     let books: [CloudBook]
-    /// The books finished in each month, January first, each month earliest first.
-    let months: [[CloudBook]]
+    /// The chart's columns, earliest first: the twelve months of a year, a month's weeks (days
+    /// 1–7, 8–14, and so on, the last one shorter), or every year from the first finish to the
+    /// last.
+    let columns: [Column]
+    /// The column with the most books, when it has at least two; the earliest wins a tie.
+    let busiest: Column?
     /// The page total across books with a recorded page count.
     let pages: Int
     let booksWithPages: Int
     let averageRating: Double?
     let ratedBooks: Int
-    /// The month (1–12) with the most finished books; the earliest wins a tie.
-    let busiestMonth: Int?
     /// Reading formats, most common first. A book read in print and on audio counts toward both.
     let formats: [Tally]
     /// Up to five genres, most common first.
@@ -41,23 +58,16 @@ struct YearInBooks: Equatable {
     /// Genres counted per book; Hardcover lists a book's most-tagged genres first.
     static let genresPerBook = 3
 
-    /// Computes the statistics for the books in `library` finished in `year`.
-    init(year: Int, library: [CloudBook]) {
-        self.year = year
-        let books = library.filter { $0.finishedYear == year }
+    /// Computes the statistics for the books in `library` finished in `frame`.
+    init(frame: TimeFrame, library: [CloudBook]) {
+        self.frame = frame
+        let books = library.filter(frame.contains)
             .sorted { ($0.finished ?? "", $0.id) < ($1.finished ?? "", $1.id) }
         self.books = books
 
-        var months = Array(repeating: [CloudBook](), count: 12)
-        for book in books {
-            // `finishedYear` validated the date, so the month is 1...12.
-            if let month = book.finished.flatMap({ Int($0.dropFirst(5).prefix(2)) }) {
-                months[month - 1].append(book)
-            }
-        }
-        self.months = months
-        let most = months.map(\.count).max() ?? 0
-        busiestMonth = most > 0 ? months.firstIndex { $0.count == most }.map { $0 + 1 } : nil
+        columns = Self.columns(for: frame, books: books)
+        let most = columns.map(\.books.count).max() ?? 0
+        busiest = most >= 2 ? columns.first { $0.books.count == most } : nil
 
         // `books` is earliest first, so the last of equal page counts is the latest finish.
         let withPages = books.filter { ($0.pages ?? 0) > 0 }
@@ -98,6 +108,41 @@ struct YearInBooks: Equatable {
         var seen = Set<Int>()
         return [longest, shortest, favorite].compactMap(\.self)
             .filter { seen.insert($0.id).inserted }
+    }
+
+    /// Sorts `books`, already in `frame` and earliest first, into the frame's chart columns.
+    private static func columns(for frame: TimeFrame, books: [CloudBook]) -> [Column] {
+        // `finishedDate` validated each `finished` as `yyyy-MM-dd`, so these parse.
+        func part(_ book: CloudBook, _ offset: Int, _ length: Int) -> Int {
+            Int(book.finished?.dropFirst(offset).prefix(length) ?? "") ?? 0
+        }
+        switch frame {
+        case .year:
+            return (1...12)
+                .map { month in
+                    Column(span: .month(month), books: books.filter { part($0, 5, 2) == month })
+                }
+        case .month(let year, let month):
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = .gmt
+            let days =
+                calendar.date(from: DateComponents(year: year, month: month, day: 15))
+                .flatMap { calendar.range(of: .day, in: .month, for: $0)?.count } ?? 31
+            return stride(from: 1, through: days, by: 7)
+                .map { first in
+                    let range = first...min(first + 6, days)
+                    return Column(
+                        span: .days(range, month: month),
+                        books: books.filter { range.contains(part($0, 8, 2)) })
+                }
+        case .lifetime:
+            let years = books.map { part($0, 0, 4) }
+            guard let first = years.min(), let last = years.max() else { return [] }
+            return (first...last)
+                .map { year in
+                    Column(span: .year(year), books: books.filter { part($0, 0, 4) == year })
+                }
+        }
     }
 
     /// Counts each distinct name, most common first, then alphabetically.

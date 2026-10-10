@@ -51,15 +51,25 @@ VoiceOver reads the pile as one element with its book count and a **Drop again**
 
 ### Share
 
-The **Share** tab renders a 1080-pixel-wide PNG in Story (9:16), Portrait (4:5), or Square format and shares it through the share sheet, which can also save it to Photos.
+The **Share** tab renders a 1080-pixel-wide PNG in Story (9:16), Portrait (4:5), or Square format and shares it through the share sheet, which can also save it to Photos. Choose a template from the grid, then set its options:
+
+- **Time frame**: **Year** (the newest year by default), **Month**, or **Lifetime**, with a menu of the years or months that have finished books. Templates about several books draw the books finished in the frame, and headings follow it, such as "2025 in books", "My top 5 of August 2025", or "My lifetime in books". Just Finished and Review list the frame's books in their book picker. Currently Reading has no time frame.
+- **Book**: the featured book of Just Finished, Review, and Currently Reading. It defaults to the newest choice.
+- **Cover**: **3D** (default), a lit 3D book with its spine, or **Flat**, the cover alone with rounded corners and a soft shadow. Every template that shows covers has it.
+- **Options**: **Loved more** or **Loved less** for Hot Takes, **Show ratings**, and **Shuffle**, which varies tilts and lengths.
 
 | Template | Shows |
 | --- | --- |
-| Year Stack | A year's finished books as a stack of spines, with the book and page counts. |
-| Just Finished | One book as a 3D object with its title in the spine's font, your rating, and its format, finish date, and pages. |
-| Top Five | A year's five highest-rated books, fanned as 3D books, with a ranked list. |
-| Spine Spectrum | Every finished book in a year, or all time, as a stripe of its spine color in reading order. It shows no titles. |
-| Year in Books | A year's totals (books, pages, average rating, and busiest month), each month's books as a stack of spines, and its top genres, most-read author, and formats. Story also shows the longest, shortest, and favorite books as 3D books. Totals and highlights without data are left out. |
+| Year Stack | The frame's finished books as a stack of spines, with the book and page counts. |
+| Year in Books | The frame's totals (books, pages, average rating, and the busiest month, week, or year), a chart of its books as stacks of spines (by month for a year, by week for a month, and by year for a lifetime), top genres, most-read author, and formats. The longest, shortest, and favorite books appear on Story, and on Portrait when they fit. Totals, highlights, and records without data are left out. |
+| Top Five | The frame's five highest-rated books, fanned, with a ranked list. |
+| Hot Takes | Up to three of the frame's books whose rating is furthest from Hardcover's average, with your stars, the readers' stars, and the difference. **Loved more** shows books you rated at least half a star above the average, and **Loved less** at least half a star below. Only books with 50 or more Hardcover ratings count. |
+| Spine Spectrum | Every book finished in the frame as a stripe of its spine color, in reading order. A lifetime marks where each year starts. It shows no titles. |
+| Just Finished | One book with your rating and its format, finish date, and length. |
+| Review | Your review of one book under its cover, title, and rating. A long review shows as an excerpt that ends with an ellipsis, and the text takes the largest size that fits. Only books with a review are offered. The Apple TV library carries no reviews, so without the iPhone's own Hardcover sign-in the template shows how to add them. |
+| Currently Reading | A book you are reading, with its progress and its start date when known. |
+
+Text on every image is set in New York for headings and San Francisco for other text, in each book's own capitalization. Spines keep their designed fonts and colors: Year Stack's spines, the spine of a 3D book, and Spine Spectrum's stripes. A 3D book without a downloaded cover shows its title on the front in the spine's font.
 
 Images show only your own library. They include no account name or ID. Ratings are optional. A small "Created with Bookworms for iPhone" credit sits in the bottom margin of every image.
 
@@ -83,7 +93,7 @@ The Simulator usually has no iCloud library. `script/load-preview-data.py` conve
 
 The preview data contains real reading history. It stays in ignored `.local/` folders and the Simulator; do not publish screenshots made from it.
 
-Debug builds accept more launch arguments for checks that cannot tap the Simulator, such as `-BookwormsGenerateOnLaunch YES`, `-BookwormsShelfMode <stack|shelf|pile>`, `-BookwormsOpenBook <book ID>`, and `-BookwormsShareTemplate <yearStack|justFinished|topFive|spectrum|yearInBooks>`. For the pile, `-BookwormsPileZoom <1...2.5>` and `-BookwormsPileYaw <radians>` set the camera, and once a drop finishes, `-BookwormsPileTilt <x,y>` applies a tilt and `-BookwormsPileThrow YES` throws the top book. Search the source for `"Bookworms` to find them all.
+Debug builds accept more launch arguments for checks that cannot tap the Simulator, such as `-BookwormsGenerateOnLaunch YES`, `-BookwormsShelfMode <stack|shelf|pile>`, `-BookwormsOpenBook <book ID>`, and `-BookwormsShareTemplate <yearStack|yearInBooks|topFive|hotTakes|spectrum|justFinished|review|currentlyReading>` with `-BookwormsShareFrame <year:2025|month:2025-08|lifetime>` and `-BookwormsShareCover <threeD|flat>`. The preview library has no reviews or current reads; `-BookwormsShareSamples <n>` adds fictional ones to Debug builds. For the pile, `-BookwormsPileZoom <1...2.5>` and `-BookwormsPileYaw <radians>` set the camera, and once a drop finishes, `-BookwormsPileTilt <x,y>` applies a tilt and `-BookwormsPileThrow YES` throws the top book. Search the source for `"Bookworms` to find them all.
 
 ## iCloud contract
 
