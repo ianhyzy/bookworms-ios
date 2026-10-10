@@ -16,9 +16,13 @@ struct PileViewport: Equatable {
 ///
 /// Returning from a book's details finds the pile as the reader left it. Leaving it any other
 /// way, such as for another tab, frees its books and textures, and the books drop again on the
-/// reader's return.
+/// reader's return. **Share** makes an image of the same books in a new pile, headed `title`.
+/// While its sheet is open, the pile leaves the screen and keeps its books, because RealityKit
+/// can crash when this view and the share image's offscreen renderer draw at the same time.
 struct BookPileView: View {
     let books: [CloudBook]
+    /// The name of the books' time frame, which heads the share image.
+    let title: String
     let open: (CloudBook) -> Void
 
     @Environment(AppModel.self) private var model
@@ -30,6 +34,7 @@ struct BookPileView: View {
     @State private var generation = 0
     /// Set while a book's details cover the pile.
     @State private var showsBook = false
+    @State private var sharesPile = false
     /// Set while a finger holds a book. SwiftUI resets it when the drag ends or is cancelled,
     /// so the book is let go either way.
     @GestureState private var holdsBook = false
@@ -42,14 +47,20 @@ struct BookPileView: View {
     }
 
     var body: some View {
-        RealityView { content in
-            content.camera = .virtual
-            content.renderingEffects.antialiasing = .multisample4X
-            scene.attach(to: &content)
+        ZStack {
+            if sharesPile {
+                Color.clear
+            } else {
+                RealityView { content in
+                    content.camera = .virtual
+                    content.renderingEffects.antialiasing = .multisample4X
+                    scene.attach(to: &content)
+                }
+                .gesture(throwBook)
+                .gesture(openBook)
+                .simultaneousGesture(moveCamera)
+            }
         }
-        .gesture(throwBook)
-        .gesture(openBook)
-        .simultaneousGesture(moveCamera)
         .ignoresSafeArea()
         // Outside `ignoresSafeArea`, the proxy reports the safe area's size and the insets the
         // view extends past.
@@ -76,6 +87,9 @@ struct BookPileView: View {
         .onAppear {
             showsBook = false
             scene.setTilt(tiltIsOn)
+            #if DEBUG
+                if PileSnapshotDebug.opensSheet { sharesPile = true }
+            #endif
         }
         .onDisappear {
             scene.endDrag()
@@ -92,9 +106,18 @@ struct BookPileView: View {
                         .toggleStyle(.button)
                 }
             }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Share", systemImage: "square.and.arrow.up") { sharesPile = true }
+            }
+            // Names the time frame, which the toolbar's menu saves across launches.
+            ToolbarItem(placement: .subtitle) {
+                Text(books.count == 1 ? "\(title) · 1 book" : "\(title) · \(books.count) books")
+            }
         }
+        .sheet(isPresented: $sharesPile) { PileSnapshotSheet(books: books, title: title) }
         .accessibilityElement()
         .accessibilityLabel(books.count == 1 ? "Pile of 1 book" : "Pile of \(books.count) books")
+        .accessibilityValue(title)
         .accessibilityHint(
             "Drag a book to throw it, or tap one for its details. To go through books one at a time, choose Stack or Shelf."
         )
@@ -136,5 +159,45 @@ struct BookPileView: View {
                     in: viewport?.size ?? .zero)
             }
             .onEnded { _ in scene.endCameraMove() }
+    }
+}
+
+extension TimeFrame {
+    /// The frame a setting names: "year:2025", "month:2025-8", or "lifetime".
+    init?(setting: String) {
+        let parts = setting.split(separator: ":", maxSplits: 1).map(String.init)
+        let numbers = parts.dropFirst().first?.split(separator: "-").compactMap { Int($0) } ?? []
+        switch (parts.first, numbers.count) {
+        case ("year", 1): self = .year(numbers[0])
+        case ("month", 2) where (1...12).contains(numbers[1]):
+            self = .month(year: numbers[0], month: numbers[1])
+        case ("lifetime", 0) where parts.count == 1: self = .lifetime
+        default: return nil
+        }
+    }
+
+    /// The frame as `init(setting:)` reads it.
+    var setting: String {
+        switch self {
+        case .year(let year): "year:\(year)"
+        case .month(let year, let month): "month:\(year)-\(month)"
+        case .lifetime: "lifetime"
+        }
+    }
+
+    /// The pile's frame for a saved setting, or `nil` for every book.
+    ///
+    /// A saved year or month in which no book was finished, such as one from another library,
+    /// gives way to the newest year or month that has one, so the pile keeps the reader's kind
+    /// of frame.
+    static func pileFrame(setting: String, in books: [CloudBook]) -> TimeFrame? {
+        guard let saved = TimeFrame(setting: setting) else { return nil }
+        let periods = periods(in: books)
+        switch saved {
+        case .year(let year) where !periods.years.contains(year):
+            return periods.years.first.map(TimeFrame.year)
+        case .month where !periods.months.contains(saved): return periods.months.first
+        default: return saved
+        }
     }
 }

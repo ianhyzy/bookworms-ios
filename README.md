@@ -63,13 +63,15 @@ The **Shelf** tab shows every book as a spine in its saved design, or in a plain
 
 - **Stack** (default) lays the spines flat and scrolls them vertically as a 3D wheel.
 - **Shelf** stands the spines upright, as on the Apple TV, and scrolls them horizontally like Cover Flow.
-- **Pile** drops every book onto a wooden table as a physics toy. See [Pile](#pile).
+- **Pile** drops every book, or a year's or month's books, onto a wooden table as a physics toy, and shares the pile as an image. See [Pile](#pile).
 - The caption shows the centered book's title, author, finish date, and your rating. Sort by finish date, title, author, or rating, or show designed books only.
 - Tap the centered spine for details: a 3D book you can turn with a drag, its reading details, the design's font and colors, and **Share**.
 
 ### Pile
 
 **Pile** shows the books in the shelf's sort and filter order as RealityKit rigid bodies that fall onto a table in waves of 16 and pile up.
+
+- In Pile mode, **Sort and filter** adds **Time frame**: **All books** (the default), a **Year**, or a **Month**. The year and month lists include only periods with finished books. Choosing one drops that period's finished books in a new pile, as **Drop again** does. The app saves the choice. If the saved year or month has no finished books in the current library, the pile uses the newest year or month instead. Under the presentation picker, the pile names its time frame and book count, such as "2025 · 39 books"; for **All books**, it names the years the books span. When **Designed only** leaves a year or month empty, the shelf says so and offers to show that period's books or all books.
 
 - Each book is a box the size of a real book: 21 to 24 cm tall, as wide as its cover's aspect ratio allows (2:3 without a cover), and as thick as its page count suggests. The front shows the cover, cropped to the book's shape as on its details screen, the spine shows the saved design rendered by `SpineView`, the page edges are cream, and the back is the spine's cloth color.
 - Drag a book to pick it up and throw it, tap one for its details, pinch to zoom toward a point, and turn two fingers to look around the pile. **Drop again** starts a new drop and redraws books whose design or font changed since the last one.
@@ -78,7 +80,19 @@ The **Shelf** tab shows every book as a spine in its saved design, or in a plain
 - Invisible walls keep the books between the navigation bar and the tab bar. The view keeps its pile while you open a book and come back. Switching to another tab, **Stack**, or **Shelf** releases the books and their textures, and the books drop again when you return.
 - Each wave waits at most 1.5 seconds for its own covers, and the next wave's covers download while it falls. A book whose cover arrives later falls with its title on its cloth color, and the cover replaces the title when it arrives. Textures stay small: covers are at most 224 pixels and spines 384 pixels long, an estimated 75 MB of GPU memory for 300 books and at most 116 MB.
 
-VoiceOver reads the pile as one element with its book count and a **Drop again** action; choose **Stack** or **Shelf** to go through books one at a time. RealityKit shadows, frame rate, and the stability of tall stacks have been checked only in the Simulator; check them on a device.
+VoiceOver reads the pile as one element with its book count, its time frame, and a **Drop again** action; choose **Stack** or **Shelf** to go through books one at a time. RealityKit shadows, frame rate, and the stability of tall stacks have been checked only in the Simulator; check them on a device.
+
+#### Share the pile
+
+**Share** in the Pile toolbar opens **Share pile**. It drops the pile's books into a new pile and renders a 1080-pixel-wide PNG in Story, Portrait, or Square format. **Shuffle** drops them again from new starting poses. A new library, such as one the Apple TV uploads while the sheet is open, draws a new image. The share button waits for the current image.
+
+- The heading names the time frame, such as "2025" or "November 2025", in New York. For **All books**, it shows the years the books were finished, such as "2014–2026". Below it is the book count, and the bottom margin holds the same credit as the Share tab's images.
+- Up to 150 books drop, last book first, so the first books in the shelf's order land on top. Fewer books are framed closer, with sharper textures. Books start over the middle of the table, just above the pile so far, tilted only a little and without spin, so few land face down. Invisible walls keep the pile together while it settles and are removed for the last half second, so no book stays propped against one. The camera then fits every book between the heading and the bottom margin.
+- While the sheet is open, the live pile leaves the screen and keeps its books. RealityKit can crash when a `RealityView` and the offscreen renderer draw at the same time. Closing the sheet shows the pile as you left it.
+- `ImageRenderer` cannot capture a `RealityView`, so `PileSnapshotRenderer` builds a `BookPileScene` that no view shows. It runs the physics with RealityKit's `RealityRenderer` for a fixed number of 60 Hz steps, renders one frame into a Metal texture, and copies the frame to memory. If that frame is one flat color, the sheet reports that the pile could not be drawn instead of sharing it. The renderer and its textures are released after each image.
+- Covers get up to 10 seconds to load. The simulation runs on the main actor between short pauses while the sheet shows progress. `PileSnapshotRenderer.render(books:title:aspect:seed:model:)` is the entry point other features can use.
+
+Offscreen rendering, physics stepping, and the image itself have been checked only in the Simulator. Check them on a device.
 
 ### Share
 
@@ -106,7 +120,7 @@ Images show only your own library. They include no account name or ID. Ratings a
 
 ## How the 3D books work
 
-`Book3DView` draws each visible face of a book (cover, spine, page edges) as an ordinary SwiftUI view and maps it onto the screen with the perspective transform a pinhole camera gives that face. The faces share one camera, so their edges meet, and the result stays pure SwiftUI. `ImageRenderer` can therefore export it in share images, which it cannot do for RealityKit views.
+`Book3DView` draws each visible face of a book (cover, spine, page edges) as an ordinary SwiftUI view and maps it onto the screen with the perspective transform a pinhole camera gives that face. The faces share one camera, so their edges meet, and the result stays pure SwiftUI. `ImageRenderer` can therefore export it in share images, which it cannot do for RealityKit views. Pile share images are the exception: they render RealityKit offscreen (see [Share the pile](#share-the-pile)).
 
 ## Run locally
 
@@ -124,7 +138,7 @@ The Simulator usually has no iCloud library. `script/load-preview-data.py` conve
 
 The preview data contains real reading history. It stays in ignored `.local/` folders and the Simulator; do not publish screenshots made from it.
 
-Debug builds accept more launch arguments for checks that cannot tap the Simulator, such as `-BookwormsGenerateOnLaunch YES`, `-BookwormsShelfMode <stack|shelf|pile>`, `-BookwormsOpenBook <book ID>`, and `-BookwormsShareTemplate <yearStack|yearInBooks|topFive|hotTakes|spectrum|justFinished|review|currentlyReading>` with `-BookwormsShareFrame <year:2025|month:2025-08|lifetime>` and `-BookwormsShareCover <threeD|flat>`. The preview library has no reviews or current reads; `-BookwormsShareSamples <n>` adds fictional ones to Debug builds. For the pile, `-BookwormsPileZoom <1...2.5>` and `-BookwormsPileYaw <radians>` set the camera, and once a drop finishes, `-BookwormsPileTilt <x,y>` applies a tilt and `-BookwormsPileThrow YES` throws the top book. With `-BookwormsShowSpines YES`, `-BookwormsShowAccount YES` opens the Hardcover sheet, and `-BookwormsStubSignIn YES` answers sign-in with the fictional code `WORM-2611` that is never approved, without contacting Hardcover. Search the source for `"Bookworms` to find them all.
+Debug builds accept more launch arguments for checks that cannot tap the Simulator, such as `-BookwormsGenerateOnLaunch YES`, `-BookwormsShelfMode <stack|shelf|pile>`, `-BookwormsOpenBook <book ID>`, and `-BookwormsShareTemplate <yearStack|yearInBooks|topFive|hotTakes|spectrum|justFinished|review|currentlyReading>` with `-BookwormsShareFrame <year:2025|month:2025-08|lifetime>` and `-BookwormsShareCover <threeD|flat>`. The preview library has no reviews or current reads; `-BookwormsShareSamples <n>` adds fictional ones to Debug builds. For the pile, `-BookwormsPileZoom <1...2.5>` and `-BookwormsPileYaw <radians>` set the camera, and once a drop finishes, `-BookwormsPileTilt <x,y>` applies a tilt and `-BookwormsPileThrow YES` throws the top book. `-BookwormsPileFrame <year:2025|month:2025-8>` sets the time frame. `-BookwormsPileShare YES` opens **Share pile** and writes each image to `Library/Caches/Bookworms/pile-share-debug.png`, and `-BookwormsPileShareAspect <story|portrait|square>` picks its size. With `-BookwormsShowSpines YES`, `-BookwormsShowAccount YES` opens the Hardcover sheet, and `-BookwormsStubSignIn YES` answers sign-in with the fictional code `WORM-2611` that is never approved, without contacting Hardcover. Search the source for `"Bookworms` to find them all.
 
 ### Test Hardcover sign-in
 
