@@ -264,9 +264,7 @@ struct JustFinishedCard: View {
 
     private func hero(_ book: CloudBook, look: SpineLook) -> some View {
         let cover = input.covers[book.id]
-        // Book3DView's cover proportions, so the book fits the space whatever its shape.
-        let ratio =
-            cover.map { min(0.85, max(0.55, $0.size.width / max(1, $0.size.height))) } ?? 2 / 3
+        let ratio = Book3DView.aspect(of: cover)
         return GeometryReader { proxy in
             Book3DView(
                 book: book, look: look, cover: cover,

@@ -39,7 +39,6 @@ struct ShareStudioView: View {
             _seed = State(
                 initialValue: defaults.string(forKey: "BookwormsShareSeed").flatMap { UInt64($0) }
                     ?? 0)
-            ShareDebug.openShareTab()
         #endif
     }
 
@@ -49,14 +48,22 @@ struct ShareStudioView: View {
     /// The image the current options and library call for.
     private var request: RenderRequest {
         let shownYear = template == .spectrum ? year : year ?? years.first
+        // Spine Spectrum draws no lettering, so a newly loaded face cannot change it. Other
+        // templates re-render only when a face for one of their own books arrives.
+        let loadedFaces =
+            template == .spectrum
+            ? 0
+            : template.books(
+                from: model.books, year: template == .justFinished ? nil : shownYear,
+                bookID: template == .justFinished ? bookID : nil
+            )
+            .count { model.fonts.face(for: model.library?.designs[$0.id]) != nil }
         return RenderRequest(
             template: template, aspect: aspect,
             year: template == .justFinished ? nil : shownYear,
             bookID: template == .justFinished ? bookID : nil,
             showsRatings: showsRatings, seed: seed, syncedAt: model.library?.syncedAt,
-            designs: model.library?.designs,
-            // Spine Spectrum draws no lettering, so a newly loaded face cannot change it.
-            fontCount: template == .spectrum ? 0 : model.fonts.faces.count)
+            designs: model.library?.designs, loadedFaces: loadedFaces)
     }
 
     var body: some View {
@@ -221,10 +228,8 @@ struct ShareStudioView: View {
             return
         }
         if request.template != .spectrum {
-            // The download runs in its own task, because an option change cancels this one and
-            // `SpineFonts` never retries a face whose download failed, cancelled ones included.
-            let designs = books.compactMap { model.library?.designs[$0.id] }
-            await Task { await model.fonts.load(designs) }.value
+            // Waits for every face, including ones another feature is already downloading.
+            await model.fonts.load(books.compactMap { model.library?.designs[$0.id] })
         }
         let covers: [Int: UIImage] =
             switch request.template {
@@ -278,7 +283,7 @@ private struct RenderRequest: Equatable {
     var seed: UInt64
     var syncedAt: Date?
     var designs: [Int: SpineDesignV1]?
-    var fontCount: Int
+    var loadedFaces: Int
 }
 
 /// A rendered share image, which the share sheet receives as PNG data.
@@ -346,16 +351,6 @@ private struct ShareBookPicker: View {
     /// `-BookwormsShareYear <year>`, `-BookwormsShareBook <id>`, and `-BookwormsShareSeed <n>` set
     /// its options. Each render is then written to `Library/Caches/Bookworms/share-debug.png`.
     enum ShareDebug {
-        @MainActor private static var didOpenTab = false
-
-        @MainActor
-        static func openShareTab() {
-            guard !didOpenTab else { return }
-            didOpenTab = true
-            // The tab view is building its tabs now; switch after this update.
-            Task { AppModel.shared.selectedTab = .share }
-        }
-
         static func write(_ image: UIImage) {
             guard UserDefaults.standard.string(forKey: "BookwormsShareTemplate") != nil else {
                 return

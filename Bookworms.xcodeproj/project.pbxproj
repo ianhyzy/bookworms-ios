@@ -213,7 +213,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = gay.ian.BookwormsTests;
 				SDKROOT = iphoneos;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Bookworms.app/Bookworms";
 			};
 			name = Release;
@@ -231,7 +231,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = gay.ian.Bookworms.iOS;
 				SDKROOT = iphoneos;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -301,7 +301,6 @@
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -364,7 +363,6 @@
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
@@ -381,7 +379,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = gay.ian.Bookworms.iOS;
 				SDKROOT = iphoneos;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
@@ -396,7 +394,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = gay.ian.BookwormsTests;
 				SDKROOT = iphoneos;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Bookworms.app/Bookworms";
 			};
 			name = Debug;

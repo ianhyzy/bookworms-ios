@@ -13,12 +13,10 @@ final class CompanionContractTests: XCTestCase {
         try await ledger.useCloudUser("first-icloud-user")
         let now = Date(timeIntervalSince1970: 1_000_000)
         func needsCheck(
-            _ ledger: WorkLedger, work: String = "work", force: Bool = false,
-            after interval: TimeInterval = 0
+            _ ledger: WorkLedger, work: String = "work", after interval: TimeInterval = 0
         ) async -> Bool {
             await ledger.needsCheck(
-                recordName: "record", workItemHash: work, force: force,
-                now: now.addingTimeInterval(interval))
+                recordName: "record", workItemHash: work, now: now.addingTimeInterval(interval))
         }
         let newBook = await needsCheck(ledger)
         XCTAssertTrue(newBook)
@@ -26,21 +24,17 @@ final class CompanionContractTests: XCTestCase {
             recordName: "record", workItemHash: "work", coverHash: "cover", now: now)
         let unchanged = await needsCheck(ledger, after: 6 * 86_400)
         let changedWork = await needsCheck(ledger, work: "edited")
-        let forced = await needsCheck(ledger, force: true)
         let dueAfterWeek = await needsCheck(ledger, after: 7 * 86_400)
         XCTAssertFalse(unchanged)
         XCTAssertTrue(changedWork)
-        XCTAssertTrue(forced)
         XCTAssertTrue(dueAfterWeek)
 
         try await ledger.recordFailure(recordName: "record", workItemHash: "work", now: now)
         let backingOff = await needsCheck(ledger, after: 23 * 3_600)
         let failedAndEdited = await needsCheck(ledger, work: "edited", after: 60)
-        let failedAndForced = await needsCheck(ledger, force: true, after: 60)
         let retryAfterDay = await needsCheck(ledger, after: 86_400)
         XCTAssertFalse(backingOff)
         XCTAssertTrue(failedAndEdited)
-        XCTAssertTrue(failedAndForced)
         XCTAssertTrue(retryAfterDay)
         try await ledger.recordSuccess(
             recordName: "record", workItemHash: "work", coverHash: "cover", now: now)
@@ -217,48 +211,6 @@ final class CompanionContractTests: XCTestCase {
         XCTAssertThrowsError(try unreadable.validate())
     }
 
-    func testNewerCloudDesignWinsSameWorkItemConflict() {
-        func design(workHash: String, coverHash: String, time: TimeInterval) -> SpineDesignV1 {
-            SpineDesignV1(
-                version: 1, accountID: "account", bookID: 1,
-                workItemHash: workHash, coverHash: coverHash,
-                generatorVersion: CloudContract.generatorVersion,
-                generatedAt: Date(timeIntervalSince1970: time),
-                backgroundHex: "#000000", foregroundHex: "#FFFFFF",
-                accentHex: "#FFFFFF", typeface: "serif", weight: 600, uppercase: false)
-        }
-        let candidate = design(
-            workHash: String(repeating: "a", count: 64),
-            coverHash: String(repeating: "b", count: 64), time: 2)
-        let newer = design(
-            workHash: candidate.workItemHash,
-            coverHash: candidate.coverHash, time: 3)
-        let older = design(
-            workHash: candidate.workItemHash,
-            coverHash: candidate.coverHash, time: 1)
-        let differentWork = design(
-            workHash: String(repeating: "e", count: 64),
-            coverHash: candidate.coverHash, time: 3)
-        XCTAssertTrue(newer.supersedes(candidate))
-        XCTAssertFalse(older.supersedes(candidate))
-        XCTAssertFalse(differentWork.supersedes(candidate))
-    }
-
-    func testExistingDesignDoesNotSupersedeReplacedCoverAtSameURL() {
-        func design(coverHash: String, time: TimeInterval) -> SpineDesignV1 {
-            SpineDesignV1(
-                version: 1, accountID: "account", bookID: 1,
-                workItemHash: String(repeating: "a", count: 64), coverHash: coverHash,
-                generatorVersion: CloudContract.generatorVersion,
-                generatedAt: Date(timeIntervalSince1970: time),
-                backgroundHex: "#000000", foregroundHex: "#FFFFFF",
-                accentHex: "#FFFFFF", typeface: "serif", weight: 600, uppercase: false)
-        }
-        let existing = design(coverHash: String(repeating: "b", count: 64), time: 3)
-        let replacement = design(coverHash: String(repeating: "c", count: 64), time: 2)
-        XCTAssertFalse(existing.supersedes(replacement))
-    }
-
     func testAccentUsesHighestContrastSampleBeforeNeutralFallback() {
         let background = ColorValue(hex: "#000000")!
         let poorChoice = ColorValue(hex: "#202020")!
@@ -362,6 +314,16 @@ final class CompanionContractTests: XCTestCase {
         XCTAssertEqual(darkInk.hex, "#000000")
         XCTAssertGreaterThan(SpineContrast.lab(lightenedCloth).l, lightness("#555555"))
         XCTAssertGreaterThanOrEqual(darkLc, 75)
+
+        // White on mid-tone blue passes APCA 75 but not WCAG 4.5:1, which the contract requires.
+        let white = ColorValue(hex: "#FFFFFF")!
+        let blue = ColorValue(hex: "#007EBE")!
+        XCTAssertGreaterThanOrEqual(abs(SpineContrast.apca(text: white, background: blue)), 75)
+        XCTAssertLessThan(white.contrast(with: blue), 4.5)
+        let pair = SpineContrast.resolve(foreground: white, background: blue, minimumLc: 75)
+        XCTAssertGreaterThanOrEqual(pair.foreground.contrast(with: pair.background), 4.5)
+        XCTAssertGreaterThanOrEqual(
+            abs(SpineContrast.apca(text: pair.foreground, background: pair.background)), 75)
     }
 
     func testDesignValidatesOptionalFontFields() throws {

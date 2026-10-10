@@ -37,7 +37,6 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>processing</string>
-		<string>fetch</string>
 		<string>remote-notification</string>
 	</array>
 	<key>UILaunchScreen</key>

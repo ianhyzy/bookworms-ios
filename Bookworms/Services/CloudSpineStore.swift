@@ -110,9 +110,10 @@ actor CloudSpineStore: SpineStore {
     func loadLibrary() async throws -> LibrarySnapshot? {
         _ = try await checkedUserRecordName()
         guard let archive = try await fetchArchive() else { return nil }
-        let worklist = try? await fetchWorklist()
+        // An empty worklist pauses generation only; the library still shows every book.
+        let shown = (try? await fetchWorklist()).flatMap { $0.bookIDs.isEmpty ? nil : $0 }
         let (snapshot, books) =
-            try (try? archive.workSource(for: worklist)) ?? archive.workSource(for: nil)
+            try (try? archive.workSource(for: shown)) ?? archive.workSource(for: nil)
         var designs: [SpineDesignV1] = []
         let names = books.map {
             CKRecord.ID(

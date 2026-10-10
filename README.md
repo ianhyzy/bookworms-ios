@@ -1,0 +1,96 @@
+# Bookworms for iPhone
+
+Bookworms for iPhone is a companion to the [Bookworms Apple TV app](../tvos/README.md). It designs book spines with Apple's Private Cloud Compute model and shares them with the Apple TV through iCloud, shows your spines as a 3D carousel, and makes share images for social media. It never asks for a Hardcover or AI API key.
+
+The app targets iOS 27 and iPhone. It reads the library that the Apple TV app uploads to the private iCloud container `iCloud.gay.ian.Bookworms`, so the Apple TV app needs **iCloud storage** turned on.
+
+## Features
+
+### Spine generation
+
+The **Spines** tab shows how many books have designs, the current run, Private Cloud Compute availability, and the daily request limit.
+
+- **Generate now** starts a run in the app. iOS can keep it going after you leave the app, with system progress UI, through a continued-processing background task.
+- **Generate while charging** (on by default) asks iOS for a background processing task that needs external power and a network connection. iOS chooses when to run it, typically overnight while the iPhone charges. Background runs download covers only on unmetered networks and stop when the daily limit is almost reached.
+- When the Apple TV publishes a new worklist, a silent push schedules the charging task. Generation never runs inside the push's 30-second window.
+
+Each run designs the books that need it, one at a time:
+
+1. The worklist from the Apple TV lists the active Hardcover account and its books. Apple TV builds without the worklist upload only the library; the iPhone then designs the newest Hardcover snapshot, preferring a real account ID over the legacy `hardcover` placeholder.
+2. The app downloads the cover over HTTPS, reads its lettering with Vision, and samples its colors.
+3. The first model request asks only which of 12 letterform styles the cover's title uses, with the cover attached and the styles in a different order for each book. If Private Cloud Compute cannot read images, the on-device model answers this question.
+4. The second request picks cloth, ink, and accent colors from the sampled palette, a weight, and up to four families from that style's open-source Google Fonts families.
+5. The app downloads the first family that has every letter of the title and author, rejects italic, oblique, and slanted faces and Impact, and adjusts the colors until the text reaches APCA Lc 75. If no ranked family works, one more ranking request runs without them.
+6. Books in the same series reuse the first saved series design without a request when its font covers the book's letters.
+7. The app saves a `SpineDesignV1` record with generator version `ios-pcc-v1`.
+
+A new design usually uses two or three requests. The app rechecks a book when its metadata or the generator changes, or after seven days. A book that fails waits 24 hours. Quota, network, service, and iCloud save errors stop the run and schedule the next attempt for the reset or retry time.
+
+### Shelf
+
+The **Shelf** tab shows every book as a spine in its saved design, or in a plain cloth fallback before it has one.
+
+- **Stack** (default) lays the spines flat and scrolls them vertically as a 3D wheel.
+- **Shelf** stands the spines upright, as on the Apple TV, and scrolls them horizontally like Cover Flow.
+- The caption shows the centered book's title, author, finish date, your rating, and who designed the spine. Sort by finish date, title, author, or rating, or show designed books only.
+- Tap the centered spine for details: a 3D book you can turn with a drag, its reading details, the design's font and colors, and **Share**.
+
+### Share
+
+The **Share** tab renders a 1080-pixel-wide PNG in Story (9:16), Portrait (4:5), or Square format and shares it through the share sheet, which can also save it to Photos.
+
+| Template | Shows |
+| --- | --- |
+| Year Stack | A year's finished books as a stack of spines, with the book and page counts. |
+| Just Finished | One book as a 3D object with its title in the spine's font, your rating, and its format, finish date, and pages. |
+| Top Five | A year's five highest-rated books, fanned as 3D books, with a ranked list. |
+| Spine Spectrum | Every finished book in a year, or all time, as a stripe of its spine color in reading order. It shows no titles. |
+
+Images show only your own library. They include no account name or ID. Ratings are optional.
+
+## How the 3D books work
+
+`Book3DView` draws each visible face of a book (cover, spine, page edges) as an ordinary SwiftUI view and maps it onto the screen with the perspective transform a pinhole camera gives that face. The faces share one camera, so their edges meet, and the result stays pure SwiftUI. `ImageRenderer` can therefore export it in share images, which it cannot do for RealityKit views.
+
+## Run locally
+
+1. Install [XcodeGen](https://github.com/yonaskolb/XcodeGen) and run `xcodegen generate --spec project.yml` to create `Bookworms.xcodeproj`. Source folders are synced, so new files need no regeneration.
+2. Set up signing for `gay.ian.Bookworms.iOS` with the `iCloud.gay.ian.Bookworms` container, push notifications, and the managed Private Cloud Compute capability (`com.apple.developer.private-cloud-compute`). Request that capability for the team before signing a device build; Apple grants it to members of the App Store Small Business Program.
+3. Run `script/build_and_run.sh` to build, install, and launch on a Simulator.
+
+The app shows the library it loaded last while it reloads. It reloads when it becomes active (at most every five minutes) and after a generation run that saved designs for books it had not loaded. Signing out of iCloud, or switching to an account without a library, clears the shown and cached library.
+
+### Preview with a local library
+
+The Simulator usually has no iCloud library. `script/load-preview-data.py` converts a private Apple TV library export and its fonts from the workspace `.local` folder into the iCloud JSON shapes and copies them into the installed app. Then run `script/build_and_run.sh --preview`, which launches with `-BookwormsPreviewFolder preview`. Generation then reads and writes that folder instead of iCloud, and Private Cloud Compute requests are real and count against the signed-in Apple Account's daily limit.
+
+The preview data contains real reading history. It stays in ignored `.local/` folders and the Simulator; do not publish screenshots made from it.
+
+Debug builds accept more launch arguments for checks that cannot tap the Simulator, such as `-BookwormsGenerateOnLaunch YES`, `-BookwormsShelfMode shelf`, `-BookwormsOpenBook <book ID>`, and `-BookwormsShareTemplate <yearStack|justFinished|topFive|spectrum>`. Search the source for `"Bookworms` to find them all.
+
+## iCloud contract
+
+The Apple TV app owns the `library-v1` archive and, from builds that include the spine companion work, the `SpineWorklistV1` record. This app writes one `SpineDesignV1` record per book. Record names and JSON fields are defined in `Bookworms/Models/CloudContract.swift`, and the tests pin the same digests as the Apple TV and Mac companion tests. Designs add optional `fontFamily`, `fontPostScriptName`, `instanceWeight`, and `provenance` fields; older readers ignore them.
+
+Current limits:
+
+- The Apple TV caches companion designs only on its `spine-companion` branch, and no Apple TV view displays them yet.
+- The Mac companion regenerates any design whose generator version is not its own, and this app does the same for Mac designs. Run only one companion per iCloud account until both accept each other's designs.
+- A development-signed build uses the CloudKit Development environment. It does not see data that App Store or TestFlight Apple TV builds write to Production.
+- The [release workflow](docs/RELEASING.md) lists the production schema, capability, and App Review steps that remain before shipping.
+
+## Verification
+
+Run the unit tests on a Simulator:
+
+```sh
+xcodebuild -project Bookworms.xcodeproj -scheme Bookworms \
+  -destination 'platform=iOS Simulator,name=iPhone 18 Pro' -derivedDataPath DerivedData \
+  OTHER_SWIFT_FLAGS='-disable-sandbox' test
+```
+
+The tests use fictional books and need no iCloud account, network, or model. Simulator runs check rendering and the generation flow against the preview folder; the Simulator does not run background tasks. Check a signed device build for iCloud access, push delivery, the charging task, continued processing, and Private Cloud Compute quotas, and confirm that the Apple TV caches the designs.
+
+## Credits
+
+Spine fonts are open-source Google Fonts families (SIL Open Font License or Apache License), downloaded at runtime with their license files. The app icon uses the Bookworms Apple TV artwork.

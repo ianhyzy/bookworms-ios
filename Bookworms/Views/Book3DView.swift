@@ -39,7 +39,11 @@ struct Book3DView: View {
         .accessibilityLabel("\(book.title), by \(book.author)")
     }
 
-    private var coverAspect: CGFloat {
+    private var coverAspect: CGFloat { Self.aspect(of: cover) }
+
+    /// The book's width-to-height ratio: the cover's, clamped to 0.55...0.85, else 2:3.
+    /// Layouts that size a book before drawing it use this, so their space matches the book.
+    static func aspect(of cover: UIImage?) -> CGFloat {
         guard let cover, cover.size.height > 0 else { return 2 / 3 }
         return min(0.85, max(0.55, cover.size.width / cover.size.height))
     }

@@ -94,6 +94,9 @@ final class GenerationController {
     }
 
     func scenePhaseChanged(to phase: ScenePhase) {
+        // Without a continued-processing task, iOS suspends the run mid-download. Cancelling
+        // it records no failure, unlike the errors a suspended download returns on resume.
+        if phase == .background, continuedTask == nil { userRun?.cancel() }
         switch phase {
         case .background where generatesWhileCharging && workMayRemain:
             Task { await scheduleChargingTask() }
@@ -142,21 +145,30 @@ final class GenerationController {
             request.earliestBeginDate = .now.addingTimeInterval(24 * 60 * 60)
         }
         do {
-            try await BGTaskScheduler.shared.submitTaskRequest(request)
+            try await Self.submit(request)
         } catch {
             // The Simulator does not support background processing.
             generationLog.info("Charging task not scheduled: \(error, privacy: .public)")
         }
     }
 
+    /// Submits a request off the main thread, as `BGTaskScheduler` asks.
+    @concurrent nonisolated private static func submit(_ request: sending BGTaskRequest)
+        async throws
+    {
+        try await BGTaskScheduler.shared.submitTaskRequest(request)
+    }
+
     private func handle(_ update: WorkerUpdate) {
         switch update {
         case .status(let snapshot):
             // A new finish date marks the end of a run, which is the outcome worth saving.
-            if snapshot.lastRunAt != status.lastRunAt,
-                let data = try? JSONEncoder().encode(snapshot)
-            {
-                UserDefaults.standard.set(data, forKey: Self.lastRunKey)
+            if snapshot.lastRunAt != status.lastRunAt {
+                if let data = try? JSONEncoder().encode(snapshot) {
+                    UserDefaults.standard.set(data, forKey: Self.lastRunKey)
+                }
+                // Shows books the Apple TV added while the app was suspended.
+                Task { await AppModel.shared.reloadIfStale() }
             }
             status = snapshot
             if let continuedTask { report(snapshot, to: continuedTask) }
@@ -187,7 +199,7 @@ final class GenerationController {
         // Run now or not at all: the foreground run starts either way.
         request.strategy = .fail
         do {
-            try await BGTaskScheduler.shared.submitTaskRequest(request)
+            try await Self.submit(request)
         } catch {
             generationLog.info("Continued processing unavailable: \(error, privacy: .public)")
         }

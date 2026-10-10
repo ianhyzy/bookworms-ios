@@ -83,10 +83,15 @@ final class GenerationTests: XCTestCase {
         // A dead cover link or an unusable cover fails the book, so it cannot block the queue.
         for error: any Error in [
             URLError(.cannotFindHost), CompanionError.invalidCover, CompanionError.invalidDesign,
-            CompanionError.coverTooLarge, CKError(.serverRejectedRequest),
+            CompanionError.coverTooLarge,
         ] {
             XCTAssertEqual(SpineWorker.disposition(of: error, now: now), .skipBook, "\(error)")
         }
+        // A rejected save, such as a record type missing from the production schema, would fail
+        // every book after spending its model requests, so the run stops.
+        XCTAssertEqual(
+            SpineWorker.disposition(of: CKError(.serverRejectedRequest), now: now),
+            .skipBookAndStop)
         // A slow cover host and a failing network look alike: the book backs off and the run
         // stops, so the next run moves past the book.
         for code in [URLError.Code.timedOut, .networkConnectionLost] {

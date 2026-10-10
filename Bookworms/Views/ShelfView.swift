@@ -214,11 +214,7 @@ struct RatingStars: View {
     var body: some View {
         HStack(spacing: 1) {
             ForEach(0..<5, id: \.self) { index in
-                let fill = rating - Double(index)
-                Image(
-                    systemName: fill >= 1
-                        ? "star.fill" : fill >= 0.5 ? "star.leadinghalf.filled" : "star"
-                )
+                Image(systemName: ShareStars.symbol(rating: rating, index: index))
             }
         }
         .foregroundStyle(ShelfPalette.gold)

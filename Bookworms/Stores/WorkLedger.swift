@@ -3,9 +3,8 @@ import Foundation
 /// Remembers which books were checked or failed, so a run spends cover downloads and Private
 /// Cloud Compute requests only on books that need them.
 ///
-/// A book is rechecked when it has no entry, its work-item hash or the generator changed, the
-/// caller forces it, or its last check is seven days old. A failed book waits 24 hours unless
-/// forced or its work-item hash changed. An Apple TV sync alone does not trigger a recheck: on a
+/// A book is rechecked when it has no entry, its work-item hash or the generator changed, or its
+/// last check is seven days old. A failed book waits 24 hours unless its work-item hash changed. An Apple TV sync alone does not trigger a recheck: on a
 /// phone, re-downloading every cover after each sync costs too much time and data.
 actor WorkLedger {
     private struct LedgerState: Codable {
@@ -52,9 +51,9 @@ actor WorkLedger {
     }
 
     func needsCheck(
-        recordName: String, workItemHash: String, force: Bool, now: Date = Date()
+        recordName: String, workItemHash: String, now: Date = Date()
     ) -> Bool {
-        guard !force, let entry = entries[recordName], entry.workItemHash == workItemHash,
+        guard let entry = entries[recordName], entry.workItemHash == workItemHash,
             entry.generatorVersion == CloudContract.generatorVersion
         else { return true }
         if let failedAt = entry.failedAt {

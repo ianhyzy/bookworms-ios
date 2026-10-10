@@ -114,11 +114,7 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
     var finished: String? = nil
     /// The reader's rating, 0...5 in half steps.
     var rating: Double? = nil
-    var communityRating: Double? = nil
-    var ratingsCount: Int? = nil
     var isReading: Bool? = nil
-    /// Reading progress, 0...1, for current reads.
-    var progress: Double? = nil
     var audioSeconds: Int? = nil
 
     var coverCandidates: [URL] {
@@ -182,15 +178,6 @@ struct SpineDesignV1: Codable, Sendable, Hashable {
             let foreground = ColorValue(hex: foregroundHex),
             background.contrast(with: foreground) >= 4.5
         else { throw CompanionError.invalidDesign }
-    }
-
-    func supersedes(_ candidate: Self) -> Bool {
-        (try? validate()) != nil
-            && accountID == candidate.accountID && bookID == candidate.bookID
-            && workItemHash == candidate.workItemHash
-            && coverHash == candidate.coverHash
-            && generatorVersion == candidate.generatorVersion
-            && generatedAt >= candidate.generatedAt
     }
 
     private static func isShortLine(_ value: String?) -> Bool {

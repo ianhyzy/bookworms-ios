@@ -245,18 +245,21 @@ struct ShareStars: View {
     let rating: Double
     let size: CGFloat
 
+    /// The symbol for star `index` (0...4), rounding `rating` to the nearest half star as the
+    /// Apple TV does.
+    static func symbol(rating: Double, index: Int) -> String {
+        let fill = rating - Double(index)
+        return fill >= 0.75 ? "star.fill" : fill >= 0.25 ? "star.leadinghalf.filled" : "star"
+    }
+
     var body: some View {
         HStack(spacing: size * 0.12) {
             ForEach(0..<5, id: \.self) { index in
-                let fill = rating - Double(index)
-                Image(
-                    systemName: fill >= 0.75
-                        ? "star.fill" : fill >= 0.25 ? "star.leadinghalf.filled" : "star"
-                )
-                .font(.system(size: size, weight: .semibold))
-                // Filled, half, and empty symbols differ in width; a fixed frame keeps the row
-                // the same width for every rating.
-                .frame(width: size * 1.15, height: size * 1.1)
+                Image(systemName: Self.symbol(rating: rating, index: index))
+                    .font(.system(size: size, weight: .semibold))
+                    // Filled, half, and empty symbols differ in width; a fixed frame keeps the row
+                    // the same width for every rating.
+                    .frame(width: size * 1.15, height: size * 1.1)
             }
         }
         .foregroundStyle(ShareStyle.gold)

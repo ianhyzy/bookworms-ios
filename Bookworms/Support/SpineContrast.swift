@@ -61,7 +61,8 @@ enum SpineContrast {
         return ColorValue(red: srgb(r), green: srgb(g), blue: srgb(b))
     }
 
-    /// Returns a pair whose absolute APCA contrast reaches `minimumLc` when possible.
+    /// Returns a pair whose absolute APCA contrast reaches `minimumLc` and whose WCAG contrast
+    /// reaches 4.5:1, the rule `SpineDesignV1.validate()` and the Apple TV enforce, when possible.
     ///
     /// The ink keeps its proposed polarity: dark ink moves toward black and light ink toward
     /// white. If the ink reaches that extreme without passing, the cloth moves away from it,
@@ -71,8 +72,13 @@ enum SpineContrast {
     static func resolve(foreground: ColorValue, background: ColorValue, minimumLc: Double)
         -> (foreground: ColorValue, background: ColorValue)
     {
+        // The shared contract also requires WCAG 4.5:1, which APCA 75 alone can miss on mid-tone
+        // cloth, so a pair passes only when it meets both.
+        func passes(_ ink: ColorValue, _ cloth: ColorValue) -> Bool {
+            abs(apca(text: ink, background: cloth)) >= minimumLc && ink.contrast(with: cloth) >= 4.5
+        }
+        guard !passes(foreground, background) else { return (foreground, background) }
         let before = apca(text: foreground, background: background)
-        guard abs(before) < minimumLc else { return (foreground, background) }
         // APCA reports 0 for near-equal luminance; then the cloth's lightness picks the polarity.
         let darkInk = before == 0 ? lab(background).l >= 0.5 : before > 0
         func stepped(_ start: Lab, toward target: Double, passes: (ColorValue) -> Bool)
@@ -89,7 +95,7 @@ enum SpineContrast {
         }
         if let ink = stepped(
             lab(foreground), toward: darkInk ? 0 : 1,
-            passes: { abs(apca(text: $0, background: background)) >= minimumLc })
+            passes: { passes($0, background) })
         {
             return (ink, background)
         }
@@ -98,7 +104,7 @@ enum SpineContrast {
             ? ColorValue(red: 0, green: 0, blue: 0) : ColorValue(red: 255, green: 255, blue: 255)
         if let cloth = stepped(
             lab(background), toward: darkInk ? 1 : 0,
-            passes: { abs(apca(text: extreme, background: $0)) >= minimumLc })
+            passes: { passes(extreme, $0) })
         {
             return (extreme, cloth)
         }

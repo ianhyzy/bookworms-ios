@@ -45,30 +45,46 @@ struct FontFace: @unchecked Sendable, Equatable {
 final class SpineFonts {
     private(set) var faces: [String: FontFace] = [:]
     @ObservationIgnored private let downloader = GoogleFonts()
-    @ObservationIgnored private var attempted = Set<String>()
+    /// Downloads in progress, shared so every caller waits for the same face.
+    @ObservationIgnored private var loads: [String: Task<FontFace?, any Error>] = [:]
+    /// Faces whose family or file is unusable. Network failures are not listed, so they retry.
+    @ObservationIgnored private var unusable = Set<String>()
 
     func face(for design: SpineDesignV1?) -> FontFace? {
         guard let design, let key = Self.key(design) else { return nil }
         return faces[key]
     }
 
-    /// Loads each missing face one at a time. A face that fails to load is not retried until
-    /// the next launch; the spine keeps its system typeface.
+    /// Loads each missing face one at a time and returns when all of them have loaded or failed.
+    ///
+    /// A face another caller is already downloading is awaited, not skipped, so a share image
+    /// never renders before its fonts arrive. Downloads run in their own tasks: cancelling a
+    /// caller does not cancel a download that others share. A family that is missing or
+    /// unusable is not retried until the next launch; a network failure retries on the next load.
     func load(_ designs: some Sequence<SpineDesignV1>) async {
         for design in designs {
-            guard let key = Self.key(design), let family = design.fontFamily,
-                attempted.insert(key).inserted
+            guard let key = Self.key(design), let family = design.fontFamily, faces[key] == nil,
+                !unusable.contains(key)
             else { continue }
-            guard let font = try? await downloader.download(family: family, weight: design.weight)
-            else { continue }
-            let name = design.fontPostScriptName ?? font.postScriptName
-            let descriptors = GoogleFonts.descriptors(at: font.fileURL)
-            guard
-                let descriptor = descriptors.first(where: {
-                    GoogleFonts.postScriptName(of: $0) == name
-                }) ?? descriptors.first
-            else { continue }
-            faces[key] = FontFace(descriptor: descriptor, postScriptName: name)
+            let task =
+                loads[key]
+                ?? Task { [downloader] in
+                    let font = try await downloader.download(family: family, weight: design.weight)
+                    let name = design.fontPostScriptName ?? font.postScriptName
+                    let descriptors = GoogleFonts.descriptors(at: font.fileURL)
+                    return
+                        (descriptors.first { GoogleFonts.postScriptName(of: $0) == name }
+                        ?? descriptors.first)
+                        .map { FontFace(descriptor: $0, postScriptName: name) }
+                }
+            loads[key] = task
+            let result = await task.result
+            loads[key] = nil
+            switch result {
+            case .success(let face?): faces[key] = face
+            case .success(nil), .failure(is CompanionError): unusable.insert(key)
+            case .failure: break
+            }
         }
     }
 
@@ -88,8 +104,6 @@ struct SpineLook: Equatable, Sendable {
     var weight: Int
     var uppercase: Bool
     var isCondensed: Bool
-    /// Whether a model designed this spine. The fallback look is the same for every launch.
-    var isGenerated: Bool
 
     init(book: CloudBook, design: SpineDesignV1?, face: FontFace?) {
         if let design, let background = ColorValue(hex: design.backgroundHex),
@@ -105,7 +119,6 @@ struct SpineLook: Equatable, Sendable {
             uppercase = design.uppercase
             isCondensed =
                 design.fontFamily.flatMap(SpineFamily.init(rawValue:))?.style == .condensedSans
-            isGenerated = true
             return
         }
         // The Apple TV's fallback cloths, keyed by series so a series shares a color.
@@ -123,7 +136,6 @@ struct SpineLook: Equatable, Sendable {
         weight = 600
         uppercase = false
         isCondensed = !seed.isMultiple(of: 2)
-        isGenerated = false
     }
 
     /// The title font at `size`: the downloaded face, else the system design and weight.

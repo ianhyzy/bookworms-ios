@@ -103,7 +103,7 @@ actor SpineWorker {
     ///
     /// A call made while another run is in progress waits for that run, then runs, so a
     /// background task never completes while work it asked for is still in flight.
-    func reconcile(mode: RunMode, force: Bool = false) async {
+    func reconcile(mode: RunMode) async {
         // Overlapping runs are rare, and polling keeps the wait cancellable.
         while isRunning {
             do { try await Task.sleep(for: .seconds(1)) } catch { return }
@@ -114,7 +114,7 @@ actor SpineWorker {
         snapshot.retryAfter = nil
         // A pass ends early when the Apple TV changes the work; the next pass reads it again.
         for _ in 0..<3 {
-            guard await runPass(mode: mode, force: force) else { break }
+            guard await runPass(mode: mode) else { break }
         }
         snapshot.isRunning = false
         snapshot.currentTitle = nil
@@ -124,7 +124,7 @@ actor SpineWorker {
     }
 
     /// Returns `true` when the Apple TV changed the work during the pass.
-    private func runPass(mode: RunMode, force: Bool) async -> Bool {
+    private func runPass(mode: RunMode) async -> Bool {
         snapshot.phase = "Checking the library"
         snapshot.queue = 0
         snapshot.completed = 0
@@ -145,8 +145,7 @@ actor SpineWorker {
             for book in books {
                 let workHash = CloudContract.workItemHash(accountID: accountID, book: book)
                 if await ledger.needsCheck(
-                    recordName: Self.recordName(accountID, book), workItemHash: workHash,
-                    force: force)
+                    recordName: Self.recordName(accountID, book), workItemHash: workHash)
                 {
                     queue.append(book)
                 }
@@ -339,7 +338,9 @@ actor SpineWorker {
                 .serviceUnavailable, .notAuthenticated, .quotaExceeded,
                 .accountTemporarilyUnavailable,
             ]
-            guard transient.contains(error.code) else { return .skipBook }
+            // Other codes, such as a schema the production container lacks, usually affect
+            // every save, so stop after this book instead of spending the quota on the rest.
+            guard transient.contains(error.code) else { return .skipBookAndStop }
             return .stopRun(retryAfter: error.retryAfterSeconds.map { now.addingTimeInterval($0) })
         case let error as URLError:
             let offline: Set<URLError.Code> = [

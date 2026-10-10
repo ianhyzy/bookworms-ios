@@ -23,6 +23,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 AppModel.shared.selectedTab = .spines
                 GenerationController.shared.generateNow()
             }
+            // `-BookwormsShareTemplate <name>` opens the Share tab; see `ShareStudioView`.
+            if !testing && UserDefaults.standard.string(forKey: "BookwormsShareTemplate") != nil {
+                AppModel.shared.selectedTab = .share
+            }
         #endif
         return true
     }
@@ -73,6 +77,7 @@ struct RootView: View {
         .task { await model.reload() }
         .onChange(of: scenePhase) { _, phase in
             generation.scenePhaseChanged(to: phase)
+            if phase == .active { Task { await model.reloadIfStale() } }
         }
     }
 }

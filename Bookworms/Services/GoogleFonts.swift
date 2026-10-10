@@ -231,9 +231,13 @@ actor GoogleFonts {
 
     private func fetch(_ url: URL) async throws -> Data {
         let (data, response) = try await session.data(from: url)
-        guard let response = response as? HTTPURLResponse, response.statusCode == 200,
-            response.url?.scheme == "https", data.count <= maximumBytes
-        else { throw CompanionError.invalidDesign }
+        // A busy or failing server is temporary, unlike an unusable family or file.
+        guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+        guard response.url?.scheme == "https", data.count <= maximumBytes else {
+            throw CompanionError.invalidDesign
+        }
         return data
     }
 }

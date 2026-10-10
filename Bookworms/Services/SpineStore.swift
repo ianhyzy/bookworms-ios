@@ -77,9 +77,11 @@ actor LocalSpineStore: SpineStore {
         guard let archive = try decode(CloudLibraryArchive.self, "library-v1.json") else {
             return nil
         }
-        let worklist = try? decode(SpineWorklistV1.self, "spine-worklist-v1.json")
+        // An empty worklist pauses generation only; the library still shows every book.
+        let shown = (try? decode(SpineWorklistV1.self, "spine-worklist-v1.json"))
+            .flatMap { $0.bookIDs.isEmpty ? nil : $0 }
         let (snapshot, books) =
-            try (try? archive.workSource(for: worklist)) ?? archive.workSource(for: nil)
+            try (try? archive.workSource(for: shown)) ?? archive.workSource(for: nil)
         return LibrarySnapshot(
             accountID: snapshot.accountID, syncedAt: snapshot.syncedAt, books: books,
             designs: LibrarySnapshot.latestDesigns(

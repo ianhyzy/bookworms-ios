@@ -28,12 +28,14 @@ final class AppModel {
 
     @ObservationIgnored private let cacheURL = URL.cachesDirectory.appending(
         path: "Bookworms/library-snapshot.json")
+    @ObservationIgnored private var lastReload: Date?
+    /// Set when a saved design names a book or account the shown library lacks.
+    @ObservationIgnored private var needsReload = false
+    /// Designs saved while a reload's fetch runs, merged into its result so none are lost.
+    @ObservationIgnored private var appliedDuringLoad: [SpineDesignV1] = []
 
-    init(store: (any SpineStore)? = nil) {
-        if let store {
-            self.store = store
-            isPreview = true
-        } else if let path = UserDefaults.standard.string(forKey: "BookwormsPreviewFolder") {
+    private init() {
+        if let path = UserDefaults.standard.string(forKey: "BookwormsPreviewFolder") {
             let folder =
                 path.hasPrefix("/")
                 ? URL(filePath: path) : URL.cachesDirectory.appending(path: "Bookworms/\(path)")
@@ -62,32 +64,68 @@ final class AppModel {
     }
 
     /// Reloads the library and designs, then loads the fonts the designs name.
+    ///
+    /// An iCloud account without a library, or no iCloud account, clears the shown and cached
+    /// library, so another account's reading history never stays visible. Other errors keep the
+    /// cached library and report the error.
     func reload() async {
         guard !isLoading else { return }
         isLoading = true
-        defer { isLoading = false }
+        appliedDuringLoad = []
         do {
-            if let snapshot = try await store.loadLibrary() {
+            if var snapshot = try await store.loadLibrary() {
+                snapshot.designs = LibrarySnapshot.latestDesigns(
+                    Array(snapshot.designs.values) + appliedDuringLoad,
+                    accountID: snapshot.accountID, books: snapshot.books)
                 setLibrary(snapshot)
                 persist()
+            } else {
+                clearLibrary()
             }
             loadError = nil
+        } catch CompanionError.noICloudAccount, CompanionError.iCloudRestricted {
+            clearLibrary()
+            loadError = "Sign in to iCloud with the account your Apple TV uses."
         } catch {
             loadError =
                 (error as? LocalizedError)?.errorDescription ?? "Could not read the library."
         }
+        isLoading = false
+        lastReload = .now
+        needsReload = false
+        // Fonts load after `isLoading` clears, so a slow download never blocks the next reload.
         if let designs = library?.designs.values { await fonts.load(Array(designs)) }
+    }
+
+    /// Reloads when the library is more than five minutes old or a saved design named a book
+    /// it lacks. Called when the app becomes active and when a generation run ends.
+    func reloadIfStale() async {
+        guard needsReload || lastReload.map({ -$0.timeIntervalSinceNow > 300 }) ?? true else {
+            return
+        }
+        await reload()
     }
 
     /// Shows a design the generator just saved, without a reload.
     func apply(_ design: SpineDesignV1) {
+        if isLoading { appliedDuringLoad.append(design) }
         guard var library, design.accountID == library.accountID,
             library.books.contains(where: { $0.id == design.bookID })
-        else { return }
+        else {
+            // The Apple TV changed the library since it loaded; the next reload shows it.
+            needsReload = true
+            return
+        }
         library.designs[design.bookID] = design
         setLibrary(library)
         persist()
         Task { await fonts.load([design]) }
+    }
+
+    private func clearLibrary() {
+        library = nil
+        books = []
+        try? FileManager.default.removeItem(at: cacheURL)
     }
 
     private func setLibrary(_ snapshot: LibrarySnapshot) {
