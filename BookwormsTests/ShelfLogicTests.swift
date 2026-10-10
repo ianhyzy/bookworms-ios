@@ -1,0 +1,154 @@
+import Foundation
+import XCTest
+
+@testable import Bookworms
+
+final class ShelfLogicTests: XCTestCase {
+    private func book(
+        _ id: Int, _ title: String, by author: String = "An Author", rating: Double? = nil,
+        pages: Int? = nil
+    ) -> CloudBook {
+        var book = CloudBook(
+            id: id, title: title, author: author, coverURL: nil, detailCoverURL: nil)
+        book.rating = rating
+        book.pages = pages
+        return book
+    }
+
+    func testSortsKeepRecentlyFinishedOrderForTies() {
+        // Arrives most recently finished first, as `AppModel.books` provides it.
+        let books = [
+            book(1, "Volume 10", by: "Zed Writer", rating: 4),
+            book(2, "Volume 2", by: "Ann Author"),
+            book(3, "An Atlas", by: "Mid Writer", rating: 5),
+            book(4, "Volume 1", by: "Ann Author", rating: 4),
+        ]
+        XCTAssertEqual(ShelfSort.finished.sorted(books).map(\.id), [1, 2, 3, 4])
+        XCTAssertEqual(ShelfSort.title.sorted(books).map(\.id), [3, 4, 2, 1])
+        XCTAssertEqual(ShelfSort.author.sorted(books).map(\.id), [2, 4, 3, 1])
+        XCTAssertEqual(ShelfSort.rating.sorted(books).map(\.id), [3, 1, 4, 2])
+    }
+
+    func testProvenanceNamesTheGenerator() {
+        func design(_ generator: String) -> SpineDesignV1 {
+            SpineDesignV1(
+                version: 1, accountID: "42", bookID: 1,
+                workItemHash: String(repeating: "a", count: 64),
+                coverHash: String(repeating: "b", count: 64), generatorVersion: generator,
+                generatedAt: Date(timeIntervalSince1970: 0), backgroundHex: "#101010",
+                foregroundHex: "#F0F0F0", accentHex: "#808080", typeface: "serif", weight: 600,
+                uppercase: false)
+        }
+        XCTAssertEqual(ShelfLabels.provenance(of: nil), "Not designed yet")
+        XCTAssertEqual(
+            ShelfLabels.provenance(of: design(CloudContract.generatorVersion)),
+            "Designed with Private Cloud Compute")
+        XCTAssertEqual(
+            ShelfLabels.provenance(of: design("mac-foundation-models-v2")), "Designed on Mac")
+        XCTAssertEqual(ShelfLabels.provenance(of: design("fixture-ai-styles-v1")), "Designed")
+    }
+
+    func testFormatLabelsMatchTheAppleTV() {
+        XCTAssertEqual(ShelfLabels.format("Read"), "Physical")
+        XCTAssertEqual(ShelfLabels.format("Listened"), "Audiobook")
+        XCTAssertEqual(ShelfLabels.format("Ebook"), "Ebook")
+        XCTAssertEqual(ShelfLabels.format("Both"), "Physical & audiobook")
+        XCTAssertEqual(ShelfLabels.format("Scroll"), "Scroll")
+        XCTAssertNil(ShelfLabels.format(nil))
+    }
+
+    func testSlabThicknessStaysInTheComfortableRange() {
+        XCTAssertEqual(book(1, "Short", pages: 40).slabThickness, 44, accuracy: 0.001)
+        XCTAssertEqual(book(2, "Long", pages: 2_000).slabThickness, 96, accuracy: 0.001)
+        let typical = book(3, "Unknown length").slabThickness
+        XCTAssertGreaterThan(typical, 44)
+        XCTAssertLessThan(typical, book(4, "Longer", pages: 600).slabThickness)
+    }
+
+    func testWheelIsFlatAtTheCenterAndFadesAtTheEdges() {
+        let center = WheelPose(distance: 0, length: 60, viewport: 500)
+        XCTAssertEqual(center.angle.radians, 0, accuracy: 0.0001)
+        XCTAssertEqual(center.scale, 1, accuracy: 0.0001)
+        XCTAssertEqual(center.offset, 0, accuracy: 0.0001)
+        XCTAssertEqual(center.opacity, 1, accuracy: 0.0001)
+
+        let above = WheelPose(distance: -120, length: 60, viewport: 500)
+        let below = WheelPose(distance: 120, length: 60, viewport: 500)
+        // The upper half tips its top edge away, and both halves crowd toward the center.
+        XCTAssertGreaterThan(above.angle.radians, 0)
+        XCTAssertEqual(above.angle.radians, -below.angle.radians, accuracy: 0.0001)
+        XCTAssertGreaterThan(above.offset, 0)
+        XCTAssertLessThan(below.offset, 0)
+        XCTAssertLessThan(below.scale, 1)
+
+        XCTAssertEqual(WheelPose(distance: 280, length: 60, viewport: 500).opacity, 0)
+        // Gone once the center leaves the viewport, so no visible spine's page is unbuilt.
+        XCTAssertEqual(WheelPose(distance: -250, length: 60, viewport: 500).opacity, 0)
+        XCTAssertEqual(CoverFlowPose(distance: 200, length: 60, viewport: 400).opacity, 0)
+    }
+
+    func testTrackCentersEachSpineAndSnapsToTheNearest() {
+        // 40, 600, and 1,400 pages make spines 44, ~70.6, and 96 points thick.
+        let books = [book(1, "A", pages: 40), book(2, "B", pages: 600), book(3, "C", pages: 1_400)]
+        let thickness = books.map(\.slabThickness)
+        let track = SpineTrack(books: books, spacing: 6)
+
+        XCTAssertEqual(track.ids, [1, 2, 3])
+        XCTAssertEqual(track.offsets[0], 0)
+        // Each step is half of each neighbor plus the spacing.
+        XCTAssertEqual(track.offsets[1], (thickness[0] + thickness[1]) / 2 + 6, accuracy: 0.001)
+        XCTAssertEqual(
+            track.offsets[2] - track.offsets[1], (thickness[1] + thickness[2]) / 2 + 6,
+            accuracy: 0.001)
+
+        let between = (track.offsets[0] + track.offsets[1]) / 2
+        XCTAssertEqual(track.index(nearest: -500), 0)
+        XCTAssertEqual(track.index(nearest: between - 0.5), 0)
+        XCTAssertEqual(track.index(nearest: between + 0.5), 1)
+        XCTAssertEqual(track.index(nearest: 10_000), 2)
+        XCTAssertEqual(track.offset(nearest: track.offsets[2] - 3), track.offsets[2])
+        XCTAssertEqual(track.offset(of: 3), track.offsets[2])
+        XCTAssertEqual(track.offset(of: 99), 0)
+        XCTAssertNil(SpineTrack(books: [], spacing: 6).index(nearest: 0))
+
+        // With the end spaces, the last offset is the content's end less the viewport.
+        let viewport: CGFloat = 500
+        let pagesLength = CGFloat(track.pages.count) * SpineTrack.pageLength
+        let content =
+            track.leadingSpace(viewport: viewport) + pagesLength
+            + track.trailingSpace(viewport: viewport)
+        XCTAssertEqual(content - viewport, track.offsets[2], accuracy: 0.001)
+    }
+
+    func testTrackPagesHoldTheSpinesCenteredInThem() {
+        let books = (1...40).map { book($0, "Book \($0)", pages: 40 + $0 * 37) }
+        let track = SpineTrack(books: books, spacing: 6)
+        var start: CGFloat = 0
+        var order: [Int] = []
+        for (page, slots) in track.pages.enumerated() {
+            for slot in slots {
+                let pageStart = CGFloat(page) * SpineTrack.pageLength
+                let thickness = slot.book.slabThickness
+                XCTAssertEqual(pageStart + slot.inset, start, accuracy: 0.001)
+                XCTAssertLessThanOrEqual(pageStart, start + thickness / 2)
+                XCTAssertLessThan(start + thickness / 2, pageStart + SpineTrack.pageLength)
+                start += thickness + 6
+                order.append(slot.id)
+            }
+        }
+        XCTAssertEqual(order, track.ids)
+    }
+
+    func testCoastSpringsFromTheShownPoseToTheTarget() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let coast = Coast(
+            from: BookPose(yaw: 0, pitch: 0.2), to: BookPose(yaw: 3, pitch: -0.12), start: start)
+        XCTAssertEqual(coast.pose(at: start), coast.from)
+        let midway = coast.pose(at: start.addingTimeInterval(0.3))
+        XCTAssertGreaterThan(midway.yaw, 0)
+        XCTAssertLessThan(midway.pitch, 0.2)
+        let settled = coast.pose(at: start.addingTimeInterval(Coast.spring.settlingDuration))
+        XCTAssertEqual(settled.yaw, 3, accuracy: 0.01)
+        XCTAssertEqual(settled.pitch, -0.12, accuracy: 0.01)
+    }
+}
