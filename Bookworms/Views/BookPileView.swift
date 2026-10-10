@@ -17,8 +17,13 @@ struct PileViewport: Equatable {
 /// Returning from a book's details finds the pile as the reader left it. Leaving it any other
 /// way, such as for another tab, frees its books and textures, and the books drop again on the
 /// reader's return. **Share** makes an image of the same books in a new pile, headed `title`.
-/// While its sheet is open, the pile leaves the screen and keeps its books, because RealityKit
-/// can crash when this view and the share image's offscreen renderer draw at the same time.
+/// While its sheet is open, the pile leaves the screen and keeps its books.
+///
+/// RealityKit's render thread can crash drawing this view while a share image's offscreen
+/// renderer steps the same engine, so while any pile image renders, such as the Share tab's
+/// Pile template, the table and books leave the view's scene. RealityKit keeps updating a
+/// `RealityView` in a tab that is not selected, and a view removed there lingers until its tab
+/// shows again and then takes its scene along, so the view itself stays.
 struct BookPileView: View {
     let books: [CloudBook]
     /// The name of the books' time frame, which heads the share image.
@@ -55,6 +60,12 @@ struct BookPileView: View {
                     content.camera = .virtual
                     content.renderingEffects.antialiasing = .multisample4X
                     scene.attach(to: &content)
+                    if PileSnapshotRenderer.isRendering { scene.root.removeFromParent() }
+                } update: { content in
+                    // Puts back what a finished render took out of the scene.
+                    if !PileSnapshotRenderer.isRendering && scene.root.scene == nil {
+                        content.add(scene.root)
+                    }
                 }
                 .gesture(throwBook)
                 .gesture(openBook)
@@ -95,6 +106,10 @@ struct BookPileView: View {
             scene.endDrag()
             scene.setTilt(false)
             if !showsBook { scene.release() }
+        }
+        // Leaves the view nothing to draw while a share image renders, in whichever tab.
+        .onChange(of: PileSnapshotRenderer.isRendering) { _, isRendering in
+            if isRendering { scene.root.removeFromParent() }
         }
         .onChange(of: tiltIsOn) { scene.setTilt(tiltIsOn) }
         .onChange(of: holdsBook) { if !holdsBook { scene.endDrag() } }

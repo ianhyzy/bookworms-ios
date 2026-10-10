@@ -15,6 +15,20 @@ enum PileSnapshotRenderer {
     /// under the ones that show.
     nonisolated static let maximumBooks = 150
 
+    @MainActor @Observable fileprivate final class Activity {
+        var isRendering = false
+    }
+
+    private static let activity = Activity()
+
+    /// Whether an image is rendering. Views that read it update when it changes.
+    ///
+    /// `RealityRenderer` steps the same RealityKit engine that draws every `RealityView`, and
+    /// RealityKit's render thread can crash drawing a view's meshes while this renderer steps
+    /// it. `BookPileView` therefore takes its entities out of its view's scene while this is
+    /// set, whichever tab starts the render.
+    static var isRendering: Bool { activity.isRendering }
+
     /// Renders `books` as a pile under the heading `title`, at the pixel size of `aspect`.
     ///
     /// The books drop in reverse order, so the first books land on top; past `maximumBooks`,
@@ -25,14 +39,20 @@ enum PileSnapshotRenderer {
     /// between short pauses. The renderer, the scene, and their textures are released when
     /// this returns.
     ///
-    /// Do not call this while a `RealityView` draws: RealityKit's render thread can crash when
-    /// a view and this renderer draw at the same time.
+    /// One image renders at a time: a call waits for the previous one, which can still be
+    /// finishing its frame after its task was cancelled. `isRendering` stays set from the start
+    /// of the render until the image is ready, and the simulation starts a few frames after it
+    /// is set, so views have time to react.
     ///
     /// - Throws: `CancellationError` when the task is cancelled, and `PileSnapshotError` when
     ///   Metal fails or the rendered frame is one flat color.
     static func render(
         books: [CloudBook], title: String, aspect: ShareAspect, seed: UInt64, model: AppModel
     ) async throws -> UIImage {
+        while activity.isRendering { try await Task.sleep(for: .milliseconds(50)) }
+        activity.isRendering = true
+        defer { activity.isRendering = false }
+        try await Task.sleep(for: .milliseconds(100))
         let dropped = Array(books.prefix(maximumBooks).reversed())
         guard let layout = PileSnapshotLayout(aspect: aspect, count: dropped.count) else {
             throw PileSnapshotError.drawingFailed

@@ -4,7 +4,8 @@ import UIKit
 
 /// A share image layout.
 enum ShareTemplate: String, CaseIterable, Identifiable {
-    case yearStack, yearInBooks, topFive, hotTakes, spectrum, justFinished, review, currentlyReading
+    case yearStack, yearInBooks, topFive, hotTakes, spectrum, pile, justFinished, review
+    case currentlyReading
 
     var id: Self { self }
 
@@ -15,6 +16,7 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         case .topFive: "Top Five"
         case .hotTakes: "Hot Takes"
         case .spectrum: "Spine Spectrum"
+        case .pile: "Pile"
         case .justFinished: "Just Finished"
         case .review: "Review"
         case .currentlyReading: "Currently Reading"
@@ -28,6 +30,7 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         case .topFive: "trophy"
         case .hotTakes: "flame"
         case .spectrum: "barcode"
+        case .pile: "square.stack.3d.down.right"
         case .justFinished: "book.closed"
         case .review: "quote.bubble"
         case .currentlyReading: "bookmark"
@@ -37,8 +40,9 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
     /// Whether the card features one book, which the reader can choose.
     var isSingleBook: Bool { self == .justFinished || self == .review || self == .currentlyReading }
 
-    /// Whether the card draws covers, which can be 3D books or flat.
-    var showsCovers: Bool { self != .yearStack && self != .spectrum }
+    /// Whether the card draws covers that can be 3D books or flat. Year Stack and Spine Spectrum
+    /// draw no covers, and a pile's books are always 3D.
+    var hasCoverStyle: Bool { self != .yearStack && self != .spectrum && self != .pile }
 
     /// Whether the card shows the reader's ratings, which the studio can hide. Hot Takes is
     /// about ratings, so it always shows them.
@@ -69,7 +73,8 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
     /// A single-book card draws the book with `bookID` when it is one of its `choices`, else the
     /// first choice. Just Finished also draws a chosen book from outside the frame, so a book
     /// shared from its details always shows. Year Stack, Year in Books, and Spine Spectrum draw
-    /// the books finished in `frame`, oldest first. Top Five draws up to five of them, highest
+    /// the books finished in `frame`, oldest first. Pile draws them newest first, as the shelf
+    /// lists them, so the newest books land on top. Top Five draws up to five of them, highest
     /// rated first, then most recently finished. Hot Takes draws up to three whose rating
     /// differs most from Hardcover's average in `direction`.
     func books(
@@ -84,6 +89,8 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         let finished = library.filter(frame.contains)
             .sorted { ($0.finished ?? "", $0.id) < ($1.finished ?? "", $1.id) }
         switch self {
+        case .pile:
+            return finished.reversed()
         case .topFive:
             return Array(finished.sorted(by: Self.isRankedHigher).prefix(5))
         case .hotTakes:
@@ -210,7 +217,8 @@ struct ShareInput {
         return first == last ? String(first) : "\(first)–\(last)"
     }
 
-    /// Draws the card at exactly `aspect.size` pixels.
+    /// Draws the card at exactly `aspect.size` pixels. Piles need `PileSnapshotRenderer`
+    /// instead; here they draw only the credit.
     @MainActor
     func render() -> UIImage? {
         let renderer = ImageRenderer(content: ShareCanvas(input: self))
@@ -236,6 +244,8 @@ struct ShareCanvas: View {
             case .topFive: TopFiveCard(input: input)
             case .hotTakes: HotTakesCard(input: input)
             case .spectrum: SpectrumCard(input: input)
+            // `PileSnapshotRenderer` draws piles: `ImageRenderer` cannot capture RealityKit.
+            case .pile: EmptyView()
             case .justFinished, .currentlyReading: FeaturedBookCard(input: input)
             case .review: ReviewCard(input: input)
             }
