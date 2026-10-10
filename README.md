@@ -45,6 +45,7 @@ The **Share** tab renders a 1080-pixel-wide PNG in Story (9:16), Portrait (4:5),
 | Just Finished | One book as a 3D object with its title in the spine's font, your rating, and its format, finish date, and pages. |
 | Top Five | A year's five highest-rated books, fanned as 3D books, with a ranked list. |
 | Spine Spectrum | Every finished book in a year, or all time, as a stripe of its spine color in reading order. It shows no titles. |
+| Year in Books | A year's totals (books, pages, average rating, and busiest month), each month's books as a stack of spines, and its top genres, most-read author, and formats. Story also shows the longest, shortest, and favorite books as 3D books. Totals and highlights without data are left out. |
 
 Images show only your own library. They include no account name or ID. Ratings are optional.
 
@@ -66,7 +67,7 @@ The Simulator usually has no iCloud library. `script/load-preview-data.py` conve
 
 The preview data contains real reading history. It stays in ignored `.local/` folders and the Simulator; do not publish screenshots made from it.
 
-Debug builds accept more launch arguments for checks that cannot tap the Simulator, such as `-BookwormsGenerateOnLaunch YES`, `-BookwormsShelfMode shelf`, `-BookwormsOpenBook <book ID>`, and `-BookwormsShareTemplate <yearStack|justFinished|topFive|spectrum>`. Search the source for `"Bookworms` to find them all.
+Debug builds accept more launch arguments for checks that cannot tap the Simulator, such as `-BookwormsGenerateOnLaunch YES`, `-BookwormsShelfMode shelf`, `-BookwormsOpenBook <book ID>`, and `-BookwormsShareTemplate <yearStack|justFinished|topFive|spectrum|yearInBooks>`. Search the source for `"Bookworms` to find them all.
 
 ## iCloud contract
 

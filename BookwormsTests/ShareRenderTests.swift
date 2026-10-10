@@ -5,8 +5,8 @@ import XCTest
 @testable import Bookworms
 
 final class ShareRenderTests: XCTestCase {
-    /// Fictional books over two years, with gaps in pages, ratings, and designs, a long title,
-    /// and a contributor list. None has a cover, so Book3DView draws its fallback cover.
+    /// Fictional books over two years, with gaps in pages, ratings, genres, and designs, a long
+    /// title, and a contributor list. None has a cover, so Book3DView draws its fallback cover.
     private static let books: [CloudBook] = (1...14).map(fixture)
 
     private static func fixture(_ index: Int) -> CloudBook {
@@ -21,6 +21,8 @@ final class ShareRenderTests: XCTestCase {
         let audioSeconds: Int? = index % 3 == 2 ? 36_000 + index * 600 : nil
         return CloudBook(
             id: index, title: title, author: author, coverURL: nil, detailCoverURL: nil,
+            genres: index == 7
+                ? nil : index.isMultiple(of: 2) ? ["Fantasy", "Mystery"] : ["Horror"],
             format: ["Read", "Ebook", "Listened"][index % 3], pages: pages,
             finished: String(format: "%d-%02d-15", year, index % 12 + 1), rating: rating,
             audioSeconds: audioSeconds)
@@ -62,23 +64,56 @@ final class ShareRenderTests: XCTestCase {
         }
     }
 
+    /// A year with one bare book, and a year with ratings hidden, leave out what they lack and
+    /// still fill the image.
+    @MainActor
+    func testYearInBooksRendersSparseAndUnratedYears() throws {
+        let bare = CloudBook(
+            id: 99, title: "Fictional Bare Book", author: "Author", coverURL: nil,
+            detailCoverURL: nil, finished: "2019-06-01")
+        let cases: [(books: [CloudBook], year: Int, showsRatings: Bool)] = [
+            ([bare], 2019, true),
+            (
+                ShareTemplate.yearInBooks.books(from: Self.books, year: 2025, bookID: nil), 2025,
+                false
+            ),
+        ]
+        for (books, year, showsRatings) in cases {
+            for aspect in ShareAspect.allCases {
+                let input = ShareInput(
+                    template: .yearInBooks, aspect: aspect, books: books, looks: Self.looks,
+                    year: year, showsRatings: showsRatings, seed: 7)
+                let image = try XCTUnwrap(input.render()?.cgImage, "\(year) \(aspect)")
+                XCTAssertEqual(image.width, Int(aspect.size.width), "\(year) \(aspect)")
+                XCTAssertEqual(image.height, Int(aspect.size.height), "\(year) \(aspect)")
+                XCTAssertGreaterThan(
+                    try differingFraction(image), 0.05, "\(year) \(aspect) is a flat color")
+            }
+        }
+    }
+
     @MainActor
     func testSameSeedDrawsSameImage() throws {
-        let books = ShareTemplate.yearStack.books(from: Self.books, year: 2025, bookID: nil)
-        func pixels(seed: UInt64) throws -> Data {
-            let input = ShareInput(
-                template: .yearStack, aspect: .square, books: books, looks: Self.looks,
-                year: 2025, seed: seed)
-            return try XCTUnwrap(input.render()?.cgImage?.dataProvider?.data as Data?)
+        for template in [ShareTemplate.yearStack, .yearInBooks] {
+            let books = template.books(from: Self.books, year: 2025, bookID: nil)
+            func pixels(seed: UInt64) throws -> Data {
+                let input = ShareInput(
+                    template: template, aspect: .square, books: books, looks: Self.looks,
+                    year: 2025, seed: seed)
+                return try XCTUnwrap(input.render()?.cgImage?.dataProvider?.data as Data?)
+            }
+            XCTAssertEqual(try pixels(seed: 3), try pixels(seed: 3), "\(template)")
+            XCTAssertNotEqual(try pixels(seed: 3), try pixels(seed: 4), "\(template)")
         }
-        XCTAssertEqual(try pixels(seed: 3), try pixels(seed: 3))
-        XCTAssertNotEqual(try pixels(seed: 3), try pixels(seed: 4))
     }
 
     func testSelectionOrdersEachTemplate() {
         let stack = ShareTemplate.yearStack.books(from: Self.books, year: 2025, bookID: nil)
         XCTAssertEqual(stack.count, 10)
         XCTAssertEqual(stack.compactMap(\.finished), stack.compactMap(\.finished).sorted())
+
+        XCTAssertEqual(
+            ShareTemplate.yearInBooks.books(from: Self.books, year: 2025, bookID: nil), stack)
 
         let top = ShareTemplate.topFive.books(from: Self.books, year: 2025, bookID: nil)
         XCTAssertEqual(top.map(\.id), [4, 8, 7, 2, 1])

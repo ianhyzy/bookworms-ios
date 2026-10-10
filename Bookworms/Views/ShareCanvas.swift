@@ -3,7 +3,7 @@ import UIKit
 
 /// A share image layout.
 enum ShareTemplate: String, CaseIterable, Identifiable {
-    case yearStack, justFinished, topFive, spectrum
+    case yearStack, justFinished, topFive, spectrum, yearInBooks
 
     var id: Self { self }
 
@@ -13,6 +13,7 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         case .justFinished: "Just Finished"
         case .topFive: "Top Five"
         case .spectrum: "Spine Spectrum"
+        case .yearInBooks: "Year in Books"
         }
     }
 
@@ -22,15 +23,16 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         case .justFinished: "book.closed"
         case .topFive: "trophy"
         case .spectrum: "barcode"
+        case .yearInBooks: "chart.bar.xaxis"
         }
     }
 
     /// Returns the books the card draws, in the card's order.
     ///
-    /// Year Stack and Spine Spectrum draw the books finished in `year`, or in every year when
-    /// `year` is `nil`, oldest first. Top Five draws up to five of them, highest rated first,
-    /// then most recently finished. Just Finished draws the book with `bookID`, else the most
-    /// recently finished book, and ignores `year`.
+    /// Year Stack, Year in Books, and Spine Spectrum draw the books finished in `year`, or in
+    /// every year when `year` is `nil`, oldest first. Top Five draws up to five of them, highest
+    /// rated first, then most recently finished. Just Finished draws the book with `bookID`, else
+    /// the most recently finished book, and ignores `year`.
     func books(from library: [CloudBook], year: Int?, bookID: Int?) -> [CloudBook] {
         if self == .justFinished, let book = library.first(where: { $0.id == bookID }) {
             return [book]
@@ -42,7 +44,7 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
             }
             .sorted { ($0.finished ?? "", $0.id) < ($1.finished ?? "", $1.id) }
         switch self {
-        case .yearStack, .spectrum:
+        case .yearStack, .spectrum, .yearInBooks:
             return finished
         case .topFive:
             return Array(finished.sorted(by: Self.isRankedHigher).prefix(5))
@@ -146,6 +148,7 @@ struct ShareCanvas: View {
             case .justFinished: JustFinishedCard(input: input)
             case .topFive: TopFiveCard(input: input)
             case .spectrum: SpectrumCard(input: input)
+            case .yearInBooks: YearInBooksCard(input: input)
             }
         }
         .frame(width: input.aspect.size.width, height: input.aspect.size.height)

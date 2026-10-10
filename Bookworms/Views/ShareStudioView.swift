@@ -81,7 +81,7 @@ struct ShareStudioView: View {
                 }
                 Section("Template") {
                     if dynamicTypeSize.isAccessibilitySize {
-                        // Four names side by side truncate at accessibility sizes.
+                        // Five names side by side truncate at accessibility sizes.
                         Picker("Template", selection: $template) {
                             ForEach(ShareTemplate.allCases) { option in
                                 Label(option.title, systemImage: option.systemImage).tag(option)
@@ -227,14 +227,19 @@ struct ShareStudioView: View {
             renderedRequest = request
             return
         }
+        // Year in Books letters and draws covers only for its record books.
+        let lettered =
+            request.template == .yearInBooks
+            ? request.year.map { YearInBooks(year: $0, library: books).records } ?? [] : books
         if request.template != .spectrum {
             // Waits for every face, including ones another feature is already downloading.
-            await model.fonts.load(books.compactMap { model.library?.designs[$0.id] })
+            await model.fonts.load(lettered.compactMap { model.library?.designs[$0.id] })
         }
         let covers: [Int: UIImage] =
             switch request.template {
             case .justFinished: await loadCovers(books, maximumPixelSize: 1200)
             case .topFive: await loadCovers(books, maximumPixelSize: 900)
+            case .yearInBooks: await loadCovers(lettered, maximumPixelSize: 700)
             case .yearStack, .spectrum: [:]
             }
         guard !Task.isCancelled else { return }
@@ -346,10 +351,11 @@ private struct ShareBookPicker: View {
 #if DEBUG
     /// Simulator hooks, since a script cannot tap the Share tab.
     ///
-    /// Launching with `-BookwormsShareTemplate <yearStack|justFinished|topFive|spectrum>` opens the
-    /// Share tab with that template. `-BookwormsShareAspect <story|portrait|square>`,
-    /// `-BookwormsShareYear <year>`, `-BookwormsShareBook <id>`, and `-BookwormsShareSeed <n>` set
-    /// its options. Each render is then written to `Library/Caches/Bookworms/share-debug.png`.
+    /// Launching with `-BookwormsShareTemplate <name>` opens the Share tab with that template,
+    /// where the name is a `ShareTemplate` raw value such as `yearStack` or `yearInBooks`.
+    /// `-BookwormsShareAspect <story|portrait|square>`, `-BookwormsShareYear <year>`,
+    /// `-BookwormsShareBook <id>`, and `-BookwormsShareSeed <n>` set its options. Each render is
+    /// then written to `Library/Caches/Bookworms/share-debug.png`.
     enum ShareDebug {
         static func write(_ image: UIImage) {
             guard UserDefaults.standard.string(forKey: "BookwormsShareTemplate") != nil else {
