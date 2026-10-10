@@ -320,7 +320,7 @@ struct YearInBooksCard: View {
                 .opacity(0.8)
             Text(look.text(book.spineTitle))
                 .font(look.font(size: 34))
-                .lineLimit(2)
+                .lineLimit(4)
                 .minimumScaleFactor(30 / 34)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)

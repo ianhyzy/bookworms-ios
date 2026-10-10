@@ -80,8 +80,8 @@ struct ShareStudioView: View {
                     .listRowBackground(Color.clear)
                 }
                 Section("Template") {
-                    if dynamicTypeSize.isAccessibilitySize {
-                        // Five names side by side truncate at accessibility sizes.
+                    if dynamicTypeSize >= .xLarge {
+                        // Five names side by side truncate above the default text size.
                         Picker("Template", selection: $template) {
                             ForEach(ShareTemplate.allCases) { option in
                                 Label(option.title, systemImage: option.systemImage).tag(option)
