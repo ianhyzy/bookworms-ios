@@ -73,6 +73,8 @@ Images show only your own library. They include no account name or ID. Ratings a
 2. Set up signing for `gay.ian.Bookworms.iOS` with the `iCloud.gay.ian.Bookworms` container, push notifications, and the managed Private Cloud Compute capability (`com.apple.developer.private-cloud-compute`). Request that capability for the team before signing a device build; Apple grants it to members of the App Store Small Business Program.
 3. Run `script/build_and_run.sh` to build, install, and launch on a Simulator.
 
+To test on an iPhone before Apple grants the Private Cloud Compute capability, run `script/install_on_device.sh`. It signs an optimized build with `config/NoPCC.entitlements`, compiles it with `NO_PCC` so the app never creates the model, registers the iPhone with the team if needed, and installs it. Generation then reports Private Cloud Compute as unavailable; the Shelf, Pile, and Share tabs work with the iCloud library. A development-signed build reads the CloudKit Development environment, the same one development builds of the Apple TV app and the Mac companion use.
+
 The app shows the library it loaded last while it reloads. It reloads when it becomes active (at most every five minutes) and after a generation run that saved designs for books it had not loaded. Signing out of iCloud, or switching to an account without a library, clears the shown and cached library.
 
 ### Preview with a local library

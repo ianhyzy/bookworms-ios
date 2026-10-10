@@ -4,7 +4,7 @@ This checklist covers what a TestFlight or App Store build needs beyond a passin
 
 ## Before the first TestFlight build
 
-1. **Private Cloud Compute capability.** Request the managed `com.apple.developer.private-cloud-compute` capability for the team on the Apple Developer website. Apple grants it to App Store Small Business Program members with fewer than 2 million first-time downloads. Signing a device build fails until the provisioning profile includes it.
+1. **Private Cloud Compute capability.** The Account Holder requests the managed `com.apple.developer.private-cloud-compute` entitlement from **Get the entitlement** on Apple's Private Cloud Compute developer page. Apple grants it to App Store Small Business Program members with fewer than 2 million first-time downloads. Signing a device build with it fails until the provisioning profile includes it. `script/install_on_device.sh` builds a test-only variant without it (`NO_PCC`); never archive that variant for TestFlight.
 2. **CloudKit production schema.** In CloudKit Console, deploy the `SpineWorklistV1` and `SpineDesignV1` record types, each with a `payload` field of type Bytes, from Development to Production. Without them, every design save fails in Production; the app stops a run after the first rejected save.
 3. **Apple TV build.** Ship an Apple TV build that publishes `SpineWorklistV1` and reads `SpineDesignV1` (the tvOS `spine-companion` work) so designs reach the TV. Until then the iPhone designs the newest Hardcover snapshot in `library-v1`, and the TV ignores the designs.
 4. **One companion per account.** Make the Mac companion treat valid `ios-pcc-v1` designs as current, or retire it, so the two companions do not keep regenerating each other's designs.

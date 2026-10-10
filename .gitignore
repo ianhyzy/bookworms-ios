@@ -6,3 +6,4 @@ xcuserdata/
 *.xcresult
 .local/
 .claude/
+DerivedData-device/

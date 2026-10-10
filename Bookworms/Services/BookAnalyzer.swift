@@ -87,6 +87,19 @@ actor BookAnalyzer {
 
     /// Reads Private Cloud Compute's availability and quota, creating the model on first use.
     func status() -> ModelStatus {
+        #if NO_PCC
+            return ModelStatus(
+                isAvailable: false,
+                unavailableReason:
+                    "This test build leaves out Private Cloud Compute until Apple grants the entitlement.",
+                coverReader: .none, quota: .belowLimit, quotaResetDate: nil,
+                limitIncreaseSuggestion: nil)
+        #else
+            return pccStatus()
+        #endif
+    }
+
+    private func pccStatus() -> ModelStatus {
         let model = pccModel()
         let usage = model.quotaUsage
         let quota: ModelStatus.Quota =
@@ -152,6 +165,10 @@ actor BookAnalyzer {
     private func makeDesign(
         book: CloudBook, accountID: String, workItemHash: String, cover: CoverImage
     ) async throws -> SpineDesignV1 {
+        #if NO_PCC
+            // Device builds without the managed entitlement must never create the model.
+            throw CompanionError.modelUnavailable
+        #endif
         let pcc = pccModel()
         guard pcc.isAvailable else { throw CompanionError.modelUnavailable }
         let usage = pcc.quotaUsage
