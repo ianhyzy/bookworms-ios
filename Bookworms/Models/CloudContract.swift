@@ -115,7 +115,17 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
     /// The reader's rating, 0...5 in half steps.
     var rating: Double? = nil
     var isReading: Bool? = nil
+    /// Reading progress, 0...1, for current reads.
+    var progress: Double? = nil
+    /// The start date of a current read as `yyyy-MM-dd`.
+    var started: String? = nil
     var audioSeconds: Int? = nil
+    /// Hardcover's average rating from all readers, and how many ratings it averages.
+    var communityRating: Double? = nil
+    var ratingsCount: Int? = nil
+    /// The reader's own review as plain text. The Apple TV archive does not carry reviews; the
+    /// iPhone fills this in from its own Hardcover sign-in.
+    var review: String? = nil
 
     var coverCandidates: [URL] {
         var urls: [URL] = []
