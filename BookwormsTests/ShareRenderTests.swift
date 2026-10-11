@@ -348,6 +348,10 @@ final class ShareRenderTests: XCTestCase {
         XCTAssertEqual(ShareTheme(colors: []), .neutral)
         let yellow = ShareTheme(colors: [ColorValue(red: 200, green: 190, blue: 60)])
         XCTAssertFalse((85...125).contains(yellow.hue), "Muddy yellows turn to amber")
+        // A sage theme (hue 126) turns its third panel to hue 110, inside the muddy band.
+        let sage = SpineContrast.lab(
+            ShareTheme(colors: [ColorValue(red: 140, green: 160, blue: 110)]).panel(2))
+        XCTAssertLessThanOrEqual((sage.a * sage.a + sage.b * sage.b).squareRoot(), 0.04)
 
         let swept = stride(from: 0.0, to: 360, by: 10).map { ShareTheme(hue: $0, chroma: 0.3) }
         for theme in [clashing, .neutral] + swept {

@@ -405,6 +405,9 @@ struct ShareTheme: Equatable {
     /// Hue offsets that tell panels apart within the family, 32 degrees from end to end.
     private static let panelOffsets: [Double] = [0, 16, -16, 8]
 
+    /// Dark yellows and yellow-greens, which look muddy at more than 0.035 chroma.
+    private static let muddyHues = 85.0...125.0
+
     init(hue: Double, chroma: Double) {
         self.hue = hue
         self.chroma = chroma
@@ -422,7 +425,8 @@ struct ShareTheme: Equatable {
     /// and each bin also counts half of its neighbors. The theme's hue is the chroma-weighted
     /// circular mean of the colors within 30 degrees of the fullest bin, and its chroma is their
     /// median. Without such colors, the theme is `neutral`. Dark yellows and yellow-greens
-    /// (hues 85 to 125) look muddy, so such a theme turns to amber with less chroma.
+    /// (hues 85 to 125) look muddy, so such a theme turns to amber with less chroma. A panel
+    /// whose hue offset turns it into that band keeps its hue but takes the lower chroma.
     init(colors: [ColorValue]) {
         let colorful = colors.compactMap { color -> (hue: Double, chroma: Double)? in
             let lab = SpineContrast.lab(color)
@@ -451,7 +455,7 @@ struct ShareTheme: Equatable {
         let chroma =
             chromas.count.isMultiple(of: 2)
             ? (chromas[middle - 1] + chromas[middle]) / 2 : chromas[middle]
-        let isMuddy = (85...125).contains(hue)
+        let isMuddy = Self.muddyHues.contains(hue)
         self.init(hue: isMuddy ? 75 : hue, chroma: isMuddy ? min(chroma, 0.035) : chroma)
     }
 
@@ -482,13 +486,16 @@ struct ShareTheme: Equatable {
         return degrees < 0 ? degrees + 360 : degrees
     }
 
-    /// The theme's hue, turned by `hueOffset`, at `lightness` with at most `chromaLimit` chroma.
+    /// The theme's hue, turned by `hueOffset`, at `lightness` with at most `chromaLimit` chroma,
+    /// or 0.035 when the turned hue is muddy.
     /// The lightness drops until cream text on the color reaches 7:1.
     private func color(lightness: Double, chromaLimit: Double, hueOffset: Double = 0)
         -> ColorValue
     {
-        let hue = (self.hue + hueOffset) * .pi / 180
-        let chroma = min(self.chroma, chromaLimit)
+        let turned = (self.hue + hueOffset + 360).truncatingRemainder(dividingBy: 360)
+        let chroma = min(
+            self.chroma, chromaLimit, Self.muddyHues.contains(turned) ? 0.035 : chromaLimit)
+        let hue = turned * .pi / 180
         let (a, b) = (chroma * cos(hue), chroma * sin(hue))
         var lightness = lightness
         var result = SpineContrast.color(SpineContrast.Lab(l: lightness, a: a, b: b))
