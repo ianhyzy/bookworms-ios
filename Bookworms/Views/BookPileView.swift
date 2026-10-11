@@ -11,9 +11,11 @@ struct PileViewport: Equatable {
 ///
 /// Drag a book to pick it up and throw it, tap one for its details, pinch to zoom, and turn two
 /// fingers to look around the pile. Tilting the phone tips the table, when the phone reports
-/// motion and the shelf's **Tilt to move books** is on. With Reduce Motion on, books appear in
-/// tidy stacks instead of falling, and tilt is off. The table fills the screen, but walls keep
-/// the books between the bars.
+/// motion and the shelf's **Tilt to move books** is on. Collisions play haptic taps and, while
+/// the shelf's **Sounds** is on, knocks (`ImpactFeedback`), only while the pile shows in the
+/// active app. With Reduce Motion on, books appear in tidy stacks instead of falling, tilt is
+/// off, and no dust drifts in the lamp's beam. The table fills the screen, but walls keep the
+/// books between the bars.
 ///
 /// A tapped book rises out of the pile and flies to where `BookDetailView` draws its book, and
 /// the details fade in over the darkened pile once it lands. The details' own book is a
@@ -55,6 +57,8 @@ struct BookPileView: View {
     @Environment(\.displayScale) private var displayScale
     /// Set by **Tilt to move books** in the shelf's **Sort and filter** menu.
     @AppStorage("BookwormsPileTilt") private var tilts = true
+    /// Set by **Sounds** in the shelf's **Sort and filter** menu.
+    @AppStorage("BookwormsThreeDSounds") private var sounds = true
     @State private var scene = BookPileScene()
     @State private var viewport: PileViewport?
     /// The canvas's frame in global coordinates, which the details' book frame converts from.
@@ -205,6 +209,12 @@ struct BookPileView: View {
         }
         // Stops sampling motion while nothing reads it, and takes a new reference afterward.
         .onChange(of: tracksTilt) { scene.setTilt(tracksTilt) }
+        .onChange(of: sounds, initial: true) { scene.feedback.playsSounds = sounds }
+        // Keeps the haptic and audio engines only while collisions can be seen.
+        .onChange(of: playsFeedback, initial: true) {
+            if playsFeedback { scene.feedback.start() } else { scene.feedback.stop() }
+        }
+        .onChange(of: reduceMotion, initial: true) { scene.setDust(!reduceMotion) }
         .onChange(of: holdsBook) { if !holdsBook { scene.endDrag() } }
         .onChange(of: movesCamera) { if !movesCamera { scene.endCameraMove() } }
         .toolbar {
@@ -262,6 +272,7 @@ struct BookPileView: View {
     }
 
     private var tiltIsOn: Bool { tilts && !reduceMotion }
+    private var playsFeedback: Bool { isShown && !sharesPile && scenePhase == .active }
     private var tracksTilt: Bool {
         isShown && tiltIsOn && !sharesPile && lifted == nil && scenePhase == .active
     }

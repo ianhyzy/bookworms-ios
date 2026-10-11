@@ -1,4 +1,3 @@
-import Combine
 import CoreMotion
 import RealityKit
 import SwiftUI
@@ -52,7 +51,7 @@ struct PileCamera: Equatable {
         return distance > 0 ? ray.origin + ray.direction * distance : nil
     }
 
-    /// The pose that shows a book of `size` (see `PileLayout.size`) as `Book3DView` draws it at
+    /// The pose that shows a book of `size` (see `BookShape.size`) as `Book3DView` draws it at
     /// `pose`, in a view of width-to-height `aspect`.
     ///
     /// `center` and `height` give the book's place in normalized device coordinates, where the
@@ -307,13 +306,6 @@ enum PileLayout {
     /// The largest sideways gravity tilt allows, as a fraction of `gravity` (about 27 degrees).
     static let maximumTilt: Float = 0.5
 
-    /// A book's box: x from spine to fore edge (the cover's width), y from tail to head, and z
-    /// from back to front cover. Heights vary by book between 2.1 and 2.4 units.
-    static func size(of book: CloudBook, coverAspect: CGFloat) -> SIMD3<Float> {
-        let height = 2.1 + 0.3 * Float(ShareStyle.unit(0, book.id, 40))
-        return [height * Float(coverAspect), height, height * Float(book.thicknessRatio)]
-    }
-
     /// A book lying front cover up with its head to the left (-x) and its spine toward the
     /// camera (+z), so its spine reads left to right like `SpineView`.
     static let lyingFlat = simd_quatf(
@@ -432,7 +424,7 @@ enum PileLayout {
         for (stack, start) in stride(from: 0, to: books.count, by: perStack).enumerated() {
             var y: Float = 0
             for book in books[start..<min(start + perStack, books.count)].reversed() {
-                let thickness = size(of: book, coverAspect: 2 / 3).z
+                let thickness = BookShape(of: book, coverAspect: 2 / 3).size.z
                 // A slight turn and shift, so the stacks look placed by hand.
                 let jitter = Float(ShareStyle.unit(0, book.id, 11)) - 0.5
                 slots.append(
@@ -489,19 +481,13 @@ enum PileLayout {
     }
 }
 
-/// The pile's RealityKit content: a wooden table, invisible walls and ceiling, warm lights, and
-/// one rigid body per book.
+/// The pile's RealityKit content: the desk and its lamp (`DeskStage`), invisible walls and
+/// ceiling, and one rigid body per book (`BookFactory`).
 ///
 /// Books arrive a wave at a time. Each wave waits for its own fonts and textures, and at most
 /// `coverWait` for its covers, so the first books fall within a second or two while later
-/// covers download. A new drop reuses the textures of books whose look has not changed.
-///
-/// GPU memory stays bounded by the texture sizes. A cover is at most 224 pixels on its long
-/// side, cropped to its box's 0.55 to 0.85 aspect: 149 × 224 × 4 bytes (178 KB with mipmaps)
-/// for a 2:3 cover, and at most 190 × 224 (227 KB). A spine is 384 pixels long and 5 to 20
-/// percent as thick (39 to 158 KB with mipmaps). Three hundred books therefore need about
-/// 75 MB, and at most 116 MB, plus 6 MB for the table. Each texture has one material, and books
-/// share the page and cloth materials, so materials add nothing per book beyond their textures.
+/// covers download. A new drop reuses the parts of books whose look has not changed. While the
+/// view shows the scene, collisions play taps and sounds through `feedback`.
 @MainActor
 final class BookPileScene {
     /// The scene root, which runs the physics simulation.
@@ -510,21 +496,15 @@ final class BookPileScene {
     static let canTilt = CMMotionManager().isDeviceMotionAvailable
 
     private static let coverWait = Duration.seconds(1.5)
-    private static let spineLength: CGFloat = 384
-    private static let paper = PhysicsMaterialResource.generate(
-        staticFriction: 0.6, dynamicFriction: 0.45, restitution: 0)
-    /// One unit box with a book's material slots, scaled to each book.
-    private static let bookMesh = try? makeBookMesh()
 
     /// The camera the pile is seen through, for a renderer that draws the scene without a view.
     let camera = PerspectiveCamera()
-    /// The longest side of a cover texture, in pixels.
-    private let coverPixels: Int
-    /// The pixels per point of spine textures and of the fronts drawn for books without a cover.
-    private let textureScale: CGFloat
+    /// Haptics and sounds for collisions, which `BookPileView` starts and stops.
+    let feedback = ImpactFeedback()
+    private let factory: BookFactory
+    private let stage = DeskStage()
     private let shelf = Entity()
     private let walls = Entity()
-    private let environment = Entity()
     private lazy var motion = CMMotionManager()
     private var view = PileCamera()
     private var aspect: Float = 0.5
@@ -535,10 +515,6 @@ final class BookPileScene {
     private var spawned = 0
     private var lastWave = ContinuousClock.now
     private var bookIDs: [Entity.ID: Int] = [:]
-    private var parts: [Int: BookParts] = [:]
-    private var cloths: [ColorValue: PhysicallyBasedMaterial] = [:]
-    private lazy var pages = Self.surface(
-        nil, tint: UIColor(red: 0.93, green: 0.90, blue: 0.82, alpha: 1), roughness: 0.85)
     private var drag: Drag?
     /// Whether the books stand still in tidy stacks, as kinematic bodies. Picking up a book
     /// frees only that book and the books resting on it. Tall stacks of uneven books can slip
@@ -548,15 +524,13 @@ final class BookPileScene {
     private var tiltReference: SIMD3<Double>?
     private var gravity = SIMD3<Float>(0, -PileLayout.gravity, 0)
     private var updates: EventSubscription?
+    private var collisions: EventSubscription?
     private var lifted: Lifted?
     private var whip: Whip?
     /// A camera-facing walnut plane that dims the pile behind a lifted book, made by the first
     /// lift.
     private var veil: ModelEntity?
     private var veilLevel: Float = 0
-    /// The lifted book's collisions while it falls back, until its first hit.
-    private var landing: AnyCancellable?
-    private var thud: UIImpactFeedbackGenerator?
 
     /// The walls' collision group, which a thrown-back book passes through.
     private static let wallGroup = CollisionGroup(rawValue: 1 << 1)
@@ -609,14 +583,6 @@ final class BookPileScene {
         let generation: Int
     }
 
-    /// A book's size and materials, in `bookMesh` slot order: cover, spine, pages, cloth, and
-    /// the look they were drawn with, so a changed design or a newly loaded font redraws them.
-    private struct BookParts {
-        let size: SIMD3<Float>
-        var materials: [any RealityKit.Material]
-        let look: SpineLook
-    }
-
     /// A book held under a finger, steered toward `target` on a plane above where it was picked
     /// up, keeping its offset from the finger. It is kinematic, so it pushes other books aside.
     /// Among Reduce Motion's kinematic stacks it is dynamic instead: kinematic bodies pass
@@ -632,8 +598,7 @@ final class BookPileScene {
     /// Creates an empty pile. `textureScale` multiplies the texture sizes, for still images that
     /// frame a few books closely; their GPU memory grows with its square.
     init(textureScale: CGFloat = 1) {
-        self.textureScale = textureScale
-        coverPixels = Int((224 * textureScale).rounded())
+        factory = BookFactory(textureScale: textureScale)
         var simulation = PhysicsSimulationComponent()
         simulation.gravity = gravity
         simulation.solverIterations = .init(positionIterations: 12, velocityIterations: 2)
@@ -643,16 +608,38 @@ final class BookPileScene {
             fieldOfViewOrientation: .vertical)
         camera.transform = view.transform
         root.addChild(camera)
+        root.addChild(stage.root)
         root.addChild(shelf)
+        factory.coverArrived = { [weak self] id, material in self?.retexture(id, cover: material) }
     }
 
-    /// Calls `update` every frame while the view shows the scene.
+    /// Calls `update` every frame, and plays collisions through `feedback`, while the view
+    /// shows the scene. A thrown-back book's first hit lands it instead (see `land`).
     func attach(to content: inout RealityViewCameraContent) {
         content.add(root)
         updates = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
             self?.update(event.deltaTime)
         }
+        collisions = content.subscribe(to: CollisionEvents.Began.self) { [weak self] event in
+            guard let self else { return }
+            if let whip, !whip.landed,
+                event.entityA === whip.flight.book || event.entityB === whip.flight.book
+            {
+                land(impulse: event.impulse)
+            } else {
+                feedback.collide(event, pan: pan)
+            }
+        }
     }
+
+    /// Where `point` shows from left to right on screen, as a stereo position from -0.8 to 0.8,
+    /// so no hit plays from one side alone.
+    private func pan(_ point: SIMD3<Float>) -> Float {
+        min(1, max(-1, view.project(point, aspect: aspect).x)) * 0.8
+    }
+
+    /// Shows or hides the dust in the lamp's beam.
+    func setDust(_ enabled: Bool) { stage.setDust(enabled) }
 
     // MARK: Building
 
@@ -663,58 +650,16 @@ final class BookPileScene {
         build(tray)
     }
 
+    /// Lays the lamp's pool over the tray, with its edges a little past the tray's corners.
     private func build(_ tray: PileTray) {
         self.tray = tray
-        if let image = Self.studioEnvironment(),
-            let resource = try? EnvironmentResource(equirectangular: image, options: .init())
-        {
-            environment.components.set(
-                ImageBasedLightComponent(source: .single(resource), intensityExponent: 0.3))
-        }
-        root.addChild(environment)
-        root.addChild(makeTable())
+        let middle = (tray.farZ + tray.nearZ) / 2
+        stage.build(
+            pool: [0, 0, middle],
+            radius: simd_length(
+                SIMD2(max(tray.farHalfWidth, tray.nearHalfWidth), tray.nearZ - middle)) * 1.05)
         root.addChild(walls)
         walls.addChild(Self.makeWalls(around: tray))
-        // A warm lamp above and to the left of the reader, with soft shadows.
-        let lamp = DirectionalLight()
-        lamp.light = DirectionalLightComponent(
-            color: UIColor(red: 1, green: 0.9, blue: 0.78, alpha: 1), intensity: 2400)
-        lamp.shadow = DirectionalLightComponent.Shadow(
-            shadowProjection: .automatic(maximumDistance: 45), depthBias: 1.5)
-        lamp.look(at: .zero, from: [-7, 20, 9], relativeTo: nil)
-        root.addChild(lamp)
-    }
-
-    private func makeTable() -> Entity {
-        var material = Self.surface(
-            nil, tint: UIColor(red: 0.68, green: 0.5, blue: 0.36, alpha: 1), roughness: 0.7)
-        if let image = UIImage(named: "TableWood")?.cgImage,
-            let texture = try? TextureResource(image: image, options: .init(semantic: .color))
-        {
-            let sampler = MTLSamplerDescriptor()
-            sampler.sAddressMode = .repeat
-            sampler.tAddressMode = .repeat
-            sampler.minFilter = .linear
-            sampler.magFilter = .linear
-            sampler.mipFilter = .linear
-            sampler.maxAnisotropy = 8
-            material.baseColor.texture = .init(texture, sampler: .init(sampler))
-            // One 1024-pixel tile spans 10 units (a meter) of the 90-unit table.
-            material.textureCoordinateTransform = .init(scale: [9, 9])
-        }
-        let table = ModelEntity(mesh: .generatePlane(width: 90, depth: 90), materials: [material])
-        table.components.set(
-            CollisionComponent(shapes: [
-                ShapeResource.generateBox(width: 90, height: 2, depth: 90)
-                    .offsetBy(translation: [0, -1, 0])
-            ]))
-        table.components.set(
-            PhysicsBodyComponent(
-                massProperties: .default,
-                material: .generate(staticFriction: 0.7, dynamicFriction: 0.55, restitution: 0.1),
-                mode: .static))
-        table.components.set(ImageBasedLightReceiverComponent(imageBasedLight: environment))
-        return table
     }
 
     /// Static walls along the tray's edges and a ceiling above the drop height. They have no
@@ -803,7 +748,7 @@ final class BookPileScene {
             let end = min(spawned + PileLayout.waveSize, plan.count)
             let wave = plan[spawned..<end]
             let next = plan[end..<min(end + PileLayout.waveSize, plan.count)]
-            await prepare(
+            await factory.prepare(
                 wave.map(\.book), prefetching: next.map(\.book), coverWait: Self.coverWait,
                 model: model)
             if !tidy { try? await Task.sleep(until: lastWave + PileLayout.waveInterval) }
@@ -826,11 +771,9 @@ final class BookPileScene {
         cameraMove = nil
         lifted = nil
         whip = nil
-        landing = nil
-        thud = nil
         showVeil(0, behind: nil)
         spawned = 0
-        parts = parts.filter { ids.contains($0.key) }
+        factory.release(keeping: ids)
         view = PileCamera()
         #if DEBUG
             // Simulator screenshot hooks: `-BookwormsPileZoom <1...2.5>` and
@@ -848,7 +791,6 @@ final class BookPileScene {
     /// drops the books again.
     func release() {
         reset(keeping: [])
-        cloths = [:]
         plan = []
         planKey = nil
     }
@@ -872,7 +814,8 @@ final class BookPileScene {
         look(through: camera)
         // Room for the longest book, 3.15 units corner to corner, tilted a little.
         build(tray.scaled(toFit: 3.4))
-        await prepare(books, prefetching: [], coverWait: .seconds(10), model: model)
+        await factory.prepare(books, prefetching: [], coverWait: .seconds(10), model: model)
+        await stage.lit()
         func run(_ steps: Int) async throws {
             for index in 0..<steps {
                 if index % 10 == 0 {
@@ -915,130 +858,20 @@ final class BookPileScene {
         }
     }
 
-    /// Builds the parts of the books that lack them or whose look changed. Covers download in
-    /// parallel; spines render on the main actor once their fonts load, because
-    /// `ImageRenderer` draws synchronously.
-    ///
-    /// A book whose cover takes longer than `coverWait` is built with its title on the cloth,
-    /// and its cover replaces the title when the download finishes. Once this wave's covers
-    /// arrive or time out, the covers of `upcoming` books start downloading, so the next wave
-    /// finds them in the cover store while this one builds and falls. The cover store shares
-    /// downloads still in flight with later requests.
-    private func prepare(
-        _ books: [CloudBook], prefetching upcoming: [CloudBook], coverWait: Duration,
-        model: AppModel
-    ) async {
-        let missing = books.filter { parts[$0.id]?.look != model.look(for: $0) }
-        guard !missing.isEmpty else { return }
-        await model.fonts.load(missing.compactMap { model.library?.designs[$0.id] })
-        guard !Task.isCancelled else { return }
-        let covers = model.covers
-        let pixels = coverPixels
-        let (arrivals, delivery) = AsyncStream.makeStream(of: (Int, UIImage?).self)
-        for book in missing {
-            Task {
-                delivery.yield((book.id, await covers.image(for: book, maximumPixelSize: pixels)))
-            }
-        }
-        let deadline = Task {
-            try? await Task.sleep(for: coverWait)
-            delivery.finish()
-        }
-        var arrived = Set<Int>()
-        var images: [Int: UIImage] = [:]
-        for await (id, image) in arrivals {
-            arrived.insert(id)
-            images[id] = image
-            if arrived.count == missing.count { break }
-        }
-        deadline.cancel()
-        for book in upcoming where parts[book.id] == nil {
-            Task { _ = await covers.image(for: book, maximumPixelSize: pixels) }
-        }
-        for book in missing where !Task.isCancelled {
-            parts[book.id] = await makeParts(
-                book, cover: images[book.id], look: model.look(for: book))
-            if !arrived.contains(book.id) {
-                Task { [weak self] in
-                    guard let cover = await covers.image(for: book, maximumPixelSize: pixels)
-                    else { return }
-                    await self?.addCover(cover, to: book.id)
-                }
-            }
-        }
-    }
-
-    /// Puts a cover that arrived after its book was built onto the book's front, cropped to
-    /// the book's box, and onto the book in the pile.
-    private func addCover(_ cover: UIImage, to id: Int) async {
-        guard let size = parts[id]?.size, let image = Self.crop(cover, to: size),
-            let texture = await Self.texture(image)
-        else { return }
-        let material = Self.coverSurface(texture)
-        parts[id]?.materials[0] = material
+    /// Puts a cover that arrived after its book was built onto the book in the pile.
+    private func retexture(_ id: Int, cover: any RealityKit.Material) {
         for case let book as ModelEntity in shelf.children where bookIDs[book.id] == id {
-            book.children.first?.components[ModelComponent.self]?.materials[0] = material
+            book.children.first?.components[ModelComponent.self]?
+                .materials[
+                    Int(BookSlot.cover)] = cover
         }
-    }
-
-    /// Builds a book's parts. A box `size` keeps a built book's shape for a new cover, and
-    /// `scale` overrides `textureScale` for the spine and a front without a cover.
-    private func makeParts(
-        _ book: CloudBook, cover: UIImage?, look: SpineLook, size: SIMD3<Float>? = nil,
-        scale: CGFloat? = nil
-    ) async -> BookParts {
-        let size = size ?? PileLayout.size(of: book, coverAspect: Book3DView.aspect(of: cover))
-        let scale = scale ?? textureScale
-        let thickness = max(16, (Self.spineLength * book.thicknessRatio).rounded())
-        let spine = Self.render(
-            SpineView(book: book, look: look)
-                .frame(width: Self.spineLength, height: thickness)
-                .background(look.background.color), scale: scale)
-        // Unshaded, since RealityKit lights the front as it does the cloth.
-        let width = 224 * CGFloat(size.x / size.y)
-        let front =
-            cover.flatMap { Self.crop($0, to: size) }
-            ?? Self.render(
-                BookFrontPlaceholder(book: book, look: look, width: width)
-                    .frame(width: width, height: 224), scale: scale)
-        let coverTexture = await Self.texture(front)
-        let spineTexture = await Self.texture(spine)
-        let cloth =
-            cloths[look.background]
-            ?? Self.surface(nil, tint: UIColor(look.background.color), roughness: 0.56)
-        cloths[look.background] = cloth
-        return BookParts(
-            size: size,
-            materials: [
-                coverTexture.map(Self.coverSurface) ?? cloth,
-                spineTexture.map { Self.surface($0, roughness: 0.56) } ?? cloth,
-                pages, cloth,
-            ],
-            look: look)
     }
 
     private func spawn(_ slot: PileSlot, mode: PhysicsBodyMode) {
-        guard let parts = parts[slot.book.id], let mesh = Self.bookMesh else { return }
-        let size = parts.size
-        let shape = ShapeResource.generateBox(size: size)
-        let book = ModelEntity()
-        book.components.set(CollisionComponent(shapes: [shape]))
-        book.components.set(InputTargetComponent())
-        // Paper weighs about 0.7 kg per liter, and a cubic decimeter is a liter.
-        var body = PhysicsBodyComponent(
-            shapes: [shape], mass: size.x * size.y * size.z * 0.7, material: Self.paper,
-            mode: mode)
-        body.isContinuousCollisionDetectionEnabled = true
-        body.linearDamping = 0.05
-        body.angularDamping = 0.3
-        book.components.set(body)
+        guard let book = factory.makeBook(slot.book.id, mode: mode, lighting: stage.lighting)
+        else { return }
         book.components.set(PhysicsMotionComponent(angularVelocity: slot.spin))
         book.transform = slot.transform
-        let model = Entity()
-        model.components.set(ModelComponent(mesh: mesh, materials: parts.materials))
-        model.components.set(ImageBasedLightReceiverComponent(imageBasedLight: environment))
-        model.scale = size
-        book.addChild(model)
         shelf.addChild(book)
         bookIDs[book.id] = slot.book.id
     }
@@ -1049,6 +882,7 @@ final class BookPileScene {
     // MARK: Interaction
 
     private func update(_ deltaTime: TimeInterval) {
+        feedback.advance(by: deltaTime)
         if let lifted {
             if let steady = lifted.steadyFrames {
                 // A late frame follows a main-thread stall, such as a large SwiftUI update. The
@@ -1167,7 +1001,7 @@ final class BookPileScene {
     /// The camera eases to its default framing, keeping its turn, so the book in front of it
     /// clears the pile at any zoom. The pile keeps simulating behind the veil.
     func lift(_ id: Int) -> Double? {
-        guard !isFlying, root.scene != nil, let parts = parts[id],
+        guard !isFlying, root.scene != nil, let parts = factory.parts[id],
             let book = shelf.children.first(where: { bookIDs[$0.id] == id }) as? ModelEntity
         else { return nil }
         endDrag()
@@ -1178,7 +1012,7 @@ final class BookPileScene {
         book.components.set(PhysicsMotionComponent())
         let rise = PileFlight.rise(of: book.visualBounds(relativeTo: root), clearing: others)
         lifted = Lifted(
-            book: book, id: id, size: parts.size, resting: book.transform, rise: rise,
+            book: book, id: id, size: parts.shape.size, resting: book.transform, rise: rise,
             camera: view, materials: parts.materials)
         if veil == nil { veil = makeVeil() }
         return PileFlight.landing(rise: rise)
@@ -1211,15 +1045,17 @@ final class BookPileScene {
     /// point, with `book`'s current cover and design. The book's pile textures take the cover
     /// too, so the book returns to the pile as the details last showed it.
     func dressLifted(_ book: CloudBook, scale: CGFloat, model: AppModel) async {
-        guard lifted?.id == book.id, let size = parts[book.id]?.size else { return }
+        guard lifted?.id == book.id, let shape = factory.parts[book.id]?.shape else { return }
         let covers = model.covers
-        let small = await covers.image(for: book, maximumPixelSize: coverPixels)
+        let small = await covers.image(for: book, maximumPixelSize: factory.coverPixels)
         let cover = await covers.image(for: book) ?? small
         guard !Task.isCancelled, lifted?.id == book.id else { return }
-        if let small { await addCover(small, to: book.id) }
-        let dressed = await makeParts(
-            book, cover: cover, look: model.look(for: book), size: size, scale: scale)
-        guard !Task.isCancelled, lifted?.id == book.id else { return }
+        if let small { await factory.addCover(small, to: book.id) }
+        guard
+            let dressed = await factory.makeParts(
+                book, cover: cover, look: model.look(for: book), shape: shape, scale: scale),
+            !Task.isCancelled, lifted?.id == book.id
+        else { return }
         lifted?.materials = dressed.materials
         dress()
     }
@@ -1230,7 +1066,7 @@ final class BookPileScene {
     /// The book leaves once three frames in a row follow one another closely, so a main-thread
     /// stall from the caller's own changes passes while it holds still. Its details pose can lie
     /// outside the walls or above the ceiling, so it passes through them until it first hits
-    /// something, which happens inside them. A device then plays a heavy tap. Continuous
+    /// something, which happens inside them, with a hard tap and knock. Continuous
     /// collision detection keeps it out of the table.
     func throwBack() {
         guard let lifted, lifted.steadyFrames == nil else { return }
@@ -1253,14 +1089,6 @@ final class BookPileScene {
             PhysicsMotionComponent(
                 linearVelocity: velocity, angularVelocity: PileFlight.spin(for: velocity)))
         whip = Whip(flight: lifted, camera: view, veil: veilLevel)
-        thud = UIImpactFeedbackGenerator(style: .heavy)
-        thud?.prepare()
-        landing = root.scene.map { scene in
-            AnyCancellable(
-                scene.subscribe(to: CollisionEvents.Began.self, on: book) { [weak self] _ in
-                    self?.land()
-                })
-        }
     }
 
     /// Ends a lift or a throw at once: puts the book back above the place it left, at rest, in
@@ -1269,8 +1097,6 @@ final class BookPileScene {
         guard let flight = lifted ?? whip?.flight else { return }
         lifted = nil
         whip = nil
-        landing = nil
-        thud = nil
         undress(flight)
         let book = flight.book
         setMode(.dynamic, of: book)
@@ -1284,21 +1110,25 @@ final class BookPileScene {
         showVeil(0)
     }
 
-    /// Gives a lifted book its pile textures again, which keeps their memory bounded.
+    /// Gives a lifted book its pile textures again, which keeps their memory bounded, and its
+    /// ribbon.
     private func undress(_ flight: Lifted) {
-        guard let materials = parts[flight.id]?.materials else { return }
+        flight.book.findEntity(named: BookFactory.ribbonName)?.isEnabled = true
+        guard let materials = factory.parts[flight.id]?.materials else { return }
         flight.book.children.first?.components[ModelComponent.self]?.materials = materials
     }
 
     /// Draws the lifted book from its materials: lit like the pile while it rises, then unlit
-    /// and shaded for its turn as `Book3DView` shades the details' own book.
+    /// and shaded for its turn as `Book3DView` shades the details' own book, without a ribbon,
+    /// which that book lacks.
     private func dress() {
         guard let lifted else { return }
+        lifted.book.findEntity(named: BookFactory.ribbonName)?.isEnabled = lifted.clear == nil
         let materials =
             lifted.clear == nil
             ? lifted.materials
             : zip(lifted.materials, PileFlight.shades(of: lifted.size, at: lifted.turn))
-                .map { Self.unlit($0, shade: $1) }
+                .map { BookFactory.unlit($0, shade: $1) }
         lifted.book.children.first?.components[ModelComponent.self]?.materials = materials
     }
 
@@ -1368,38 +1198,42 @@ final class BookPileScene {
         self.whip = whip
         guard progress >= 1 else { return }
         // It reaches its old place now, inside the walls, if nothing stopped it on the way.
-        land()
+        land(impulse: nil)
         self.whip = nil
     }
 
-    /// Ends a thrown book's pass through the walls at its first hit, with a heavy tap, and
-    /// gives it its pile textures again.
+    /// Ends a thrown book's pass through the walls at its first hit, with a hard tap and
+    /// knock through `feedback`, and gives it its pile textures again. `impulse` is the hit's,
+    /// or `nil` when the book reached its place without one, which counts as a hit at its speed.
     ///
     /// The throw comes in at tens of units per second, mostly sideways, and tumbling, which
     /// would carry the book across the pile and out of it after the crash. The hit keeps a
     /// quarter of the sideways speed, all of the fall, and half of the tumble, so the book
     /// stays near where it hit.
-    private func land() {
+    private func land(impulse: Float?) {
         guard let whip, !whip.landed else { return }
         self.whip?.landed = true
         let book = whip.flight.book
         book.components[CollisionComponent.self]?.filter = .default
+        let mass = book.components[PhysicsBodyComponent.self]?.massProperties.mass ?? 0.5
+        let speed = simd_length(
+            book.components[PhysicsMotionComponent.self]?.linearVelocity ?? .zero)
         if var motion = book.components[PhysicsMotionComponent.self] {
             motion.linearVelocity *= [0.25, 1, 0.25]
             motion.angularVelocity *= 0.5
             book.components.set(motion)
         }
         undress(whip.flight)
-        thud?.impactOccurred()
-        thud = nil
-        landing = nil
+        feedback.impact(
+            impulse: impulse ?? mass * speed, mass: mass, position: book.position(relativeTo: root),
+            pan: pan, minimum: 0.85)
     }
 
     /// A camera child that fills the view with the shelf's walnut wall, unlit and without tone
     /// mapping, so it matches the details' SwiftUI backdrop.
     private func makeVeil() -> ModelEntity {
         var material = UnlitMaterial(applyPostProcessToneMap: false)
-        if let image = Self.render(
+        if let image = BookFactory.render(
             Rectangle().fill(ShelfPalette.wall).frame(width: 4, height: 128), scale: 1),
             let texture = try? TextureResource(image: image, options: .init(semantic: .color))
         {
@@ -1465,148 +1299,22 @@ final class BookPileScene {
         }
     }
 
-    // MARK: Resources
-
-    private static func texture(_ image: CGImage?) async -> TextureResource? {
-        guard let image else { return nil }
-        return try? await TextureResource(image: image, options: .init(semantic: .color))
-    }
-
-    /// The middle of `cover` at the width-to-height aspect of a box of `size`.
-    private static func crop(_ cover: UIImage, to size: SIMD3<Float>) -> CGImage? {
-        guard let image = cover.cgImage else { return nil }
-        return image.cropping(
-            to: PileLayout.crop(
-                CGSize(width: image.width, height: image.height), to: CGFloat(size.x / size.y)))
-    }
-
-    /// `material`'s color and texture, unlit and without tone mapping, darkened as a black
-    /// overlay of opacity `shade` darkens a SwiftUI view.
-    private static func unlit(_ material: any RealityKit.Material, shade: Float)
-        -> any RealityKit.Material
-    {
-        guard let lit = material as? PhysicallyBasedMaterial else { return material }
-        var red: CGFloat = 0
-        var green: CGFloat = 0
-        var blue: CGFloat = 0
-        lit.baseColor.tint.getRed(&red, green: &green, blue: &blue, alpha: nil)
-        // The tint is in sRGB, like SwiftUI's blending, and multiplies the texture in linear
-        // light, which scales the texture's sRGB values by the same factor.
-        let light = CGFloat(1 - shade)
-        var unlit = UnlitMaterial(applyPostProcessToneMap: false)
-        unlit.color = .init(
-            tint: UIColor(red: red * light, green: green * light, blue: blue * light, alpha: 1),
-            texture: lit.baseColor.texture)
-        return unlit
-    }
-
-    private static func coverSurface(_ texture: TextureResource) -> PhysicallyBasedMaterial {
-        surface(texture, roughness: 0.5, specular: 0.25)
-    }
-
-    private static func render(_ content: some View, scale: CGFloat) -> CGImage? {
-        let renderer = ImageRenderer(content: content)
-        renderer.scale = scale
-        renderer.isOpaque = true
-        return renderer.cgImage
-    }
-
-    /// A nonmetallic surface with low reflectance. The bright environment otherwise lays a gray
-    /// haze over dark covers, as on the Apple TV Book Wall.
-    private static func surface(
-        _ texture: TextureResource?, tint: UIColor = .white, roughness: Float,
-        specular: Float = 0.1
-    ) -> PhysicallyBasedMaterial {
-        var material = PhysicallyBasedMaterial()
-        material.baseColor = .init(tint: tint, texture: texture.map { .init($0) })
-        material.roughness = .init(floatLiteral: roughness)
-        material.metallic = .init(floatLiteral: 0)
-        material.specular = .init(floatLiteral: specular)
-        return material
-    }
-
-    /// A warm studio gradient for image-based light, bright above and dim below. It varies only
-    /// from top to bottom, so its orientation does not matter.
-    private static func studioEnvironment() -> CGImage? {
-        let size = CGSize(width: 256, height: 128)
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        format.opaque = true
-        return UIGraphicsImageRenderer(size: size, format: format)
-            .image { context in
-                let colors = [
-                    UIColor(red: 1, green: 0.96, blue: 0.9, alpha: 1),
-                    UIColor(red: 0.86, green: 0.8, blue: 0.72, alpha: 1),
-                    UIColor(red: 0.36, green: 0.3, blue: 0.25, alpha: 1),
-                ]
-                guard
-                    let gradient = CGGradient(
-                        colorsSpace: CGColorSpaceCreateDeviceRGB(),
-                        colors: colors.map(\.cgColor) as CFArray, locations: [0, 0.5, 1])
-                else { return }
-                context.cgContext.drawLinearGradient(
-                    gradient, start: .zero, end: CGPoint(x: 0, y: size.height), options: [])
-            }
-            .cgImage
-    }
-
-    /// A unit cube centered on the origin, in a book's axes (see `PileLayout.size`), with four
-    /// material slots: 0 for the front cover, 1 for the spine, 2 for the page edges, and 3 for
-    /// the back cover and the boards' edges.
-    ///
-    /// Each face's texture runs along its `u` and `v` edges, and `u × v` points out of the
-    /// book, so every quad winds counterclockwise seen from outside. The front cover's image
-    /// stands upright with its left edge at the spine. The spine's image runs head to tail
-    /// with its top toward the front cover, matching `UprightSpineView`. The head, tail, and
-    /// fore edge show cloth-colored boards across their outer eighths, like `Book3DView`.
-    private static func makeBookMesh() throws -> MeshResource {
-        var positions: [SIMD3<Float>] = []
-        var normals: [SIMD3<Float>] = []
-        var coordinates: [SIMD2<Float>] = []
-        var indices: [UInt32] = []
-        var slots: [UInt32] = []
-        func face(
-            _ origin: SIMD3<Float>, u: SIMD3<Float>, v: SIMD3<Float>, slot: UInt32,
-            from start: Float = 0, to end: Float = 1
-        ) {
-            let base = UInt32(positions.count)
-            for (a, b) in [(0, start), (1, start), (1, end), (0, end)] as [(Float, Float)] {
-                positions.append(origin + a * u + b * v)
-                normals.append(simd_normalize(simd_cross(u, v)))
-                coordinates.append([a, b])
-            }
-            indices += [base, base + 1, base + 2, base, base + 2, base + 3]
-            slots += [slot, slot]
-        }
-        let h: Float = 0.5
-        face([-h, -h, h], u: [1, 0, 0], v: [0, 1, 0], slot: 0)
-        face([-h, h, -h], u: [0, -1, 0], v: [0, 0, 1], slot: 1)
-        face([h, -h, -h], u: [-1, 0, 0], v: [0, 1, 0], slot: 3)
-        let board: Float = 0.125
-        for (origin, u, v) in [
-            (SIMD3<Float>(h, -h, -h), SIMD3<Float>(0, 1, 0), SIMD3<Float>(0, 0, 1)),
-            ([h, h, -h], [-1, 0, 0], [0, 0, 1]),
-            ([-h, -h, -h], [1, 0, 0], [0, 0, 1]),
-        ] {
-            face(origin, u: u, v: v, slot: 3, to: board)
-            face(origin, u: u, v: v, slot: 2, from: board, to: 1 - board)
-            face(origin, u: u, v: v, slot: 3, from: 1 - board)
-        }
-        var descriptor = MeshDescriptor(name: "book")
-        descriptor.positions = MeshBuffers.Positions(positions)
-        descriptor.normals = MeshBuffers.Normals(normals)
-        descriptor.textureCoordinates = MeshBuffers.TextureCoordinates(coordinates)
-        descriptor.primitives = .triangles(indices)
-        descriptor.materials = .perFace(slots)
-        return try MeshResource.generate(from: [descriptor])
-    }
-
     #if DEBUG
-        /// Simulator hooks that run once a drop finishes: `-BookwormsPileTilt <x,y>` applies a
+        /// Simulator hooks that run once a drop finishes: `-BookwormsPileFocus <book ID>` zooms
+        /// all the way in on that book three seconds later, `-BookwormsPileTilt <x,y>` applies a
         /// device tilt (the change in device gravity, in g), and `-BookwormsPileThrow YES`
         /// throws the top book through the drag path.
         private func runDebugActions() async {
             let defaults = UserDefaults.standard
+            if let id = defaults.string(forKey: "BookwormsPileFocus").flatMap(Int.init),
+                let book = shelf.children.first(where: { bookIDs[$0.id] == id })
+            {
+                try? await Task.sleep(for: .seconds(3))
+                var camera = view
+                camera.target = book.position(relativeTo: root)
+                camera.zoom = PileCamera.zoomRange.upperBound
+                look(through: camera)
+            }
             let tilt = defaults.string(forKey: "BookwormsPileTilt")?.split(separator: ",")
                 .compactMap { Double($0) }
             let throwsBook = defaults.bool(forKey: "BookwormsPileThrow")
