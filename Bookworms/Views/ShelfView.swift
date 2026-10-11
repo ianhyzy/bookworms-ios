@@ -15,8 +15,10 @@ struct ShelfView: View {
     /// The 3D views' time frame as `TimeFrame.setting` writes it; empty for every book. Until the
     /// reader chooses one, the views show the current year.
     @AppStorage("BookwormsPileFrame") private var pileFrameSetting = TimeFrame.thisYear.setting
-    /// Whether tilting the phone tips the pile's table, which `BookPileView` reads.
-    @AppStorage("BookwormsPileTilt") private var tilts = true
+    /// How the pile follows the phone's tilt, which `BookPileView` reads.
+    @AppStorage("BookwormsPileTiltMode") private var tilt = PileTilt.table
+    /// Whether the pile drops period by period, which `BookPileView` reads.
+    @AppStorage("BookwormsPileByPeriod") private var dropsByPeriod = false
     /// Whether collisions in 3D play sounds, which `BookPileView` reads.
     @AppStorage("BookwormsThreeDSounds") private var sounds = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -104,7 +106,9 @@ struct ShelfView: View {
                 let title = frame?.title ?? Self.years(of: books)
                 switch threeDView {
                 case .pile:
-                    BookPileView(books: books, title: title, showsDetails: $pileShowsDetails) {
+                    BookPileView(
+                        books: books, title: title, frame: frame, showsDetails: $pileShowsDetails
+                    ) {
                         path.append($0.id)
                     }
                 }
@@ -137,9 +141,14 @@ struct ShelfView: View {
                         pileFrameOptions
                         Section {
                             Toggle("Sounds", systemImage: "speaker.wave.2", isOn: $sounds)
+                            if !reduceMotion {
+                                Toggle(byPeriodTitle, systemImage: "calendar", isOn: $dropsByPeriod)
+                            }
                             if BookPileScene.canTilt && !reduceMotion {
-                                Toggle(
-                                    "Tilt to move books", systemImage: "gyroscope", isOn: $tilts)
+                                Picker("Tilt", systemImage: "gyroscope", selection: $tilt) {
+                                    ForEach(PileTilt.allCases) { Text($0.title).tag($0) }
+                                }
+                                .pickerStyle(.menu)
                             }
                         }
                     }
@@ -179,6 +188,15 @@ struct ShelfView: View {
                 }
                 .pickerStyle(.menu)
             }
+        }
+    }
+
+    /// Names the drop by period for the time frame's periods.
+    private var byPeriodTitle: String {
+        switch pileFrame {
+        case .year: "Drop month by month"
+        case .month: "Drop week by week"
+        case .lifetime, nil: "Drop year by year"
         }
     }
 

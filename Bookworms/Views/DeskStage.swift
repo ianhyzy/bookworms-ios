@@ -20,6 +20,7 @@ final class DeskStage {
     /// Holds the image-based light, which lit entities receive through `light(_:)`.
     let lighting = Entity()
     private let dust = Entity()
+    private var lamp: SpotLight?
     private var isBuilt = false
     private var environment: Task<Void, Never>?
 
@@ -66,6 +67,7 @@ final class DeskStage {
         lamp.shadow = shadow
         lamp.look(at: placement.aim, from: placement.position, relativeTo: nil)
         root.addChild(lamp)
+        self.lamp = lamp
         dust.components.set(Self.dustMotes(radius: radius))
         dust.position = center + [0, 3.5, 0]
     }
@@ -77,6 +79,11 @@ final class DeskStage {
     /// Lets `entity` reflect the room and be lit by it.
     func light(_ entity: Entity) {
         entity.components.set(ImageBasedLightReceiverComponent(imageBasedLight: lighting))
+    }
+
+    /// Gives the lamp `color`, such as a season's tint, or its usual `lampColor` for `nil`.
+    func setLampColor(_ color: UIColor?) {
+        lamp?.light.color = color ?? Self.lampColor
     }
 
     /// Shows or hides the dust drifting through the lamp's beam. Reduce Motion hides it, as
