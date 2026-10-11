@@ -14,7 +14,8 @@ struct ShelfView: View {
     @AppStorage("BookwormsThreeDView") private var threeDView = ThreeDView.pile
     /// The 3D views' time frame as `TimeFrame.setting` writes it; empty for every book.
     /// `FrameChip` sets it. Until the reader chooses one, the views show the current year.
-    @AppStorage("BookwormsPileFrame") private var pileFrameSetting = TimeFrame.thisYear.setting
+    @AppStorage(TimeFrame.pileSettingKey)
+    private var pileFrameSetting = TimeFrame.defaultPileSetting
     /// How the pile follows the phone's tilt, which `BookPileView` reads.
     @AppStorage("BookwormsPileTiltMode") private var tilt = PileTilt.table
     /// Whether the pile drops period by period, which `BookPileView` reads.
@@ -77,19 +78,31 @@ struct ShelfView: View {
                             : "Books you finish appear here after your Apple TV syncs."))
             } else if books.isEmpty {
                 // Only Designed only empties the shelf: a pile's time frame always has books.
-                ContentUnavailableView {
-                    Label(
-                        frame.map { "No designed spines in \($0.title)" }
-                            ?? "No designed spines yet", systemImage: "wand.and.sparkles")
-                } description: {
-                    Text("Spines appear here once they are designed.")
-                } actions: {
-                    if let frame {
-                        Button("Show all books from \(frame.title)") { designedOnly = false }
+                // Scrolls so that at accessibility sizes the actions stay above the tab bar.
+                ScrollView {
+                    ContentUnavailableView {
+                        Label(
+                            frame.map { "No designed spines in \($0.title)" }
+                                ?? "No designed spines yet", systemImage: "wand.and.sparkles")
+                    } description: {
+                        Text("Spines appear here once they are designed.")
+                    } actions: {
+                        if let frame {
+                            Button("Show all books from \(frame.title)") { designedOnly = false }
+                        }
+                        Button("Show all books") {
+                            designedOnly = false
+                            if frame != nil { pileFrameSetting = "" }
+                        }
                     }
-                    Button("Show all books") {
-                        designedOnly = false
-                        if frame != nil { pileFrameSetting = "" }
+                }
+                .defaultScrollAnchor(.center, for: .alignment)
+                // Keeps the time frame button, the only way to another period with designed
+                // spines.
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if mode == .pile {
+                        FrameChip(
+                            title: frame?.title ?? Self.years(of: model.books), shown: 0, total: 0)
                     }
                 }
             } else if let carousel = mode.carousel {
@@ -243,7 +256,7 @@ struct FrameChip: View {
     let total: Int
 
     @Environment(AppModel.self) private var model
-    @AppStorage("BookwormsPileFrame") private var setting = TimeFrame.thisYear.setting
+    @AppStorage(TimeFrame.pileSettingKey) private var setting = TimeFrame.defaultPileSetting
 
     var body: some View {
         Menu {
@@ -267,44 +280,48 @@ struct FrameChip: View {
             .minimumScaleFactor(0.75)
         }
         .buttonStyle(.glass)
-        // Caps its size, as the bar's buttons do, so accessibility sizes leave the scene its
-        // room; the large content viewer shows the text at those sizes instead.
+        // At least 44 points tall, the minimum touch target.
+        .controlSize(.large)
+        // Stops growing at the largest standard size so accessibility sizes leave the scene its
+        // room; the large content viewer shows the text at those sizes.
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .accessibilityShowsLargeContentViewer {
             Label("\(title), \(Self.books(shown, of: total))", systemImage: "calendar")
         }
         .accessibilityLabel("Time frame")
         .accessibilityValue("\(title), \(Self.books(shown, of: total))")
+        .padding(.horizontal, 16)
         .padding(.bottom, 8)
     }
 
     /// **All books**, and the years and months with finished books, newest first. Choosing one
     /// shows that period's books, which the Pile drops in a new pile.
     @ViewBuilder private var options: some View {
+        // Reading finish dates parses them, so the chosen frame resolves once, not for each
+        // picker.
         let periods = TimeFrame.periods(in: model.books)
+        let current = TimeFrame.pileFrame(setting: setting, in: model.books)
         let frame = Binding {
-            TimeFrame.pileFrame(setting: setting, in: model.books)
+            current
         } set: {
             setting = $0?.setting ?? ""
         }
-        Section("Time frame") {
-            Picker("Books", selection: frame) {
-                Text("All books").tag(TimeFrame?.none)
-            }
-            if !periods.years.isEmpty {
-                Picker("Year", selection: frame) {
-                    ForEach(periods.years, id: \.self) { year in
-                        Text(String(year)).tag(TimeFrame?.some(.year(year)))
-                    }
+        Picker("Books", selection: frame) {
+            Text("All books").tag(TimeFrame?.none)
+        }
+        if !periods.years.isEmpty {
+            Picker("Year", selection: frame) {
+                ForEach(periods.years, id: \.self) { year in
+                    Text(String(year)).tag(TimeFrame?.some(.year(year)))
                 }
-                .pickerStyle(.menu)
-                Picker("Month", selection: frame) {
-                    ForEach(periods.months, id: \.self) { month in
-                        Text(month.title).tag(TimeFrame?.some(month))
-                    }
-                }
-                .pickerStyle(.menu)
             }
+            .pickerStyle(.menu)
+            Picker("Month", selection: frame) {
+                ForEach(periods.months, id: \.self) { month in
+                    Text(month.title).tag(TimeFrame?.some(month))
+                }
+            }
+            .pickerStyle(.menu)
         }
     }
 

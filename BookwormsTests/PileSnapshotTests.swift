@@ -36,6 +36,8 @@ final class PileSnapshotTests: XCTestCase {
     func testSavedFrameFallsBackToTheNewestOfItsKind() {
         let books = Self.books
         XCTAssertNil(TimeFrame.pileFrame(setting: "", in: books))
+        // No menu saves "lifetime"; a launch argument that does gets every book.
+        XCTAssertNil(TimeFrame.pileFrame(setting: "lifetime", in: books))
         XCTAssertEqual(TimeFrame.pileFrame(setting: "year:2024", in: books), .year(2024))
         XCTAssertEqual(
             TimeFrame.pileFrame(setting: "month:2025-8", in: books), .month(year: 2025, month: 8))

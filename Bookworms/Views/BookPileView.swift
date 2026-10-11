@@ -444,13 +444,20 @@ extension TimeFrame {
         }
     }
 
-    /// The pile's frame for a saved setting, or `nil` for every book.
+    /// The `UserDefaults` key of the 3D views' time frame, which `ShelfView` reads and
+    /// `FrameChip` sets.
+    static let pileSettingKey = "BookwormsPileFrame"
+    /// The saved time frame until the reader chooses one: the current year.
+    static var defaultPileSetting: String { thisYear.setting }
+
+    /// The pile's frame for a saved setting, or `nil` for every book, which an empty setting
+    /// names. No menu saves "lifetime", but a launch argument can, so it names every book too.
     ///
     /// A saved year or month in which no book was finished, such as one from another library,
     /// gives way to the newest year or month that has one, so the pile keeps the reader's kind
     /// of frame.
     static func pileFrame(setting: String, in books: [CloudBook]) -> TimeFrame? {
-        guard let saved = TimeFrame(setting: setting) else { return nil }
+        guard let saved = TimeFrame(setting: setting), saved != .lifetime else { return nil }
         let periods = periods(in: books)
         switch saved {
         case .year(let year) where !periods.years.contains(year):
