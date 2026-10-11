@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The library as a 3D carousel of spines, with a caption for the centered book, or in 3D, which
-/// shows a pile of books on a table (`BookPileView`).
+/// shows the books in the chosen `ThreeDView`, such as a pile on a table (`BookPileView`).
 ///
 /// Both show the library snapshot that `AppModel` holds; sorting and filtering happen here when
 /// the snapshot or the options change, never while scrolling.
@@ -10,11 +10,15 @@ struct ShelfView: View {
     @AppStorage("BookwormsShelfMode") private var mode = ShelfPresentation.stack
     @AppStorage("BookwormsShelfSort") private var sort = ShelfSort.finished
     @AppStorage("BookwormsShelfDesignedOnly") private var designedOnly = false
-    /// The pile's time frame as `TimeFrame.setting` writes it; empty for every book. Until the
-    /// reader chooses one, the pile shows the current year.
+    /// The 3D view the shelf shows.
+    @AppStorage("BookwormsThreeDView") private var threeDView = ThreeDView.pile
+    /// The 3D views' time frame as `TimeFrame.setting` writes it; empty for every book. Until the
+    /// reader chooses one, the views show the current year.
     @AppStorage("BookwormsPileFrame") private var pileFrameSetting = TimeFrame.thisYear.setting
     /// Whether tilting the phone tips the pile's table, which `BookPileView` reads.
     @AppStorage("BookwormsPileTilt") private var tilts = true
+    /// Whether collisions in 3D play sounds, which `BookPileView` reads.
+    @AppStorage("BookwormsThreeDSounds") private var sounds = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The centered book, shared by both carousel modes so switching keeps the reader's place.
     @State private var centeredID: Int?
@@ -97,11 +101,12 @@ struct ShelfView: View {
                         .dynamicTypeSize(...DynamicTypeSize.accessibility3)
                 }
             } else {
-                BookPileView(
-                    books: books, title: frame?.title ?? Self.years(of: books),
-                    showsDetails: $pileShowsDetails
-                ) {
-                    path.append($0.id)
+                let title = frame?.title ?? Self.years(of: books)
+                switch threeDView {
+                case .pile:
+                    BookPileView(books: books, title: title, showsDetails: $pileShowsDetails) {
+                        path.append($0.id)
+                    }
                 }
             }
         } else {
@@ -123,9 +128,16 @@ struct ShelfView: View {
                     // In the menu rather than the bar, which the presentation picker and the
                     // pile's own buttons fill.
                     if mode == .pile {
+                        if ThreeDView.allCases.count > 1 {
+                            Picker("View", systemImage: "cube", selection: $threeDView) {
+                                ForEach(ThreeDView.allCases) { Text($0.title).tag($0) }
+                            }
+                            .pickerStyle(.menu)
+                        }
                         pileFrameOptions
-                        if BookPileScene.canTilt && !reduceMotion {
-                            Section {
+                        Section {
+                            Toggle("Sounds", systemImage: "speaker.wave.2", isOn: $sounds)
+                            if BookPileScene.canTilt && !reduceMotion {
                                 Toggle(
                                     "Tilt to move books", systemImage: "gyroscope", isOn: $tilts)
                             }
@@ -187,6 +199,10 @@ struct ShelfView: View {
         var books = sort.sorted(model.books)
         if designedOnly { books = books.filter { library.designs[$0.id] != nil } }
         if let frame { books = books.filter(frame.contains) }
+        #if DEBUG
+            // `-BookwormsShareSamples <n>` also marks current reads here, for the pile's ribbons.
+            books = ShareDebug.samples(books)
+        #endif
         return books
     }
 
@@ -447,8 +463,9 @@ enum ShelfPalette {
     static let gold = Color(red: 0.98, green: 0.76, blue: 0.36)
 }
 
-/// The shelf's presentations: the carousel's two modes and 3D, which shows the physics pile. The
-/// raw values match `ShelfMode`, so a saved carousel mode carries over.
+/// The shelf's presentations: the carousel's two modes and 3D, which shows a `ThreeDView`. The
+/// raw values match `ShelfMode`, so a saved carousel mode carries over. 3D's raw value is
+/// `pile`, which saved settings and `-BookwormsShelfMode pile` use.
 enum ShelfPresentation: String, CaseIterable, Identifiable {
     case stack, shelf, pile
 
@@ -456,6 +473,17 @@ enum ShelfPresentation: String, CaseIterable, Identifiable {
     /// The carousel mode, or `nil` for 3D.
     var carousel: ShelfMode? { ShelfMode(rawValue: rawValue) }
     var title: String { carousel?.title ?? "3D" }
+}
+
+/// The scenes 3D can show. Each shows the shelf's books in its sort and filter order, within
+/// the time frame that all of them share. Adding a view takes a case here, titled by its raw
+/// value, and its arm in `ShelfView.content`; **Sort and filter** offers **View** once there
+/// are two.
+enum ThreeDView: String, CaseIterable, Identifiable {
+    case pile
+
+    var id: Self { self }
+    var title: String { rawValue.capitalized }
 }
 
 /// How the shelf orders books.

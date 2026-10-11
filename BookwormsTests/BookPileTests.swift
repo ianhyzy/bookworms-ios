@@ -19,7 +19,7 @@ final class BookPileTests: XCTestCase {
 
     /// The corners of a slot's book at the widest cover, in scene coordinates.
     private func corners(of slot: PileSlot) -> [SIMD3<Float>] {
-        let half = PileLayout.size(of: slot.book, coverAspect: 0.85) / 2
+        let half = BookShape(of: slot.book, coverAspect: 0.85).size / 2
         return (0..<8)
             .map { corner in
                 slot.transform.translation
@@ -37,7 +37,7 @@ final class BookPileTests: XCTestCase {
             [[1, 0, 0], [0, 1, 0], [0, 0, 1]].map { slot.transform.rotation.act($0) }
         }
         func radius(_ slot: PileSlot, along axis: SIMD3<Float>) -> Float {
-            let half = PileLayout.size(of: slot.book, coverAspect: 0.85) / 2
+            let half = BookShape(of: slot.book, coverAspect: 0.85).size / 2
             return zip(axes(slot), [half.x, half.y, half.z])
                 .map { abs(simd_dot($0, axis)) * $1 }
                 .reduce(0, +)
@@ -61,22 +61,23 @@ final class BookPileTests: XCTestCase {
 
     func testBookSizesFollowTheCoverAndPageCount() {
         let book = Self.books[0]
-        let size = PileLayout.size(of: book, coverAspect: 0.7)
-        XCTAssertEqual(size, PileLayout.size(of: book, coverAspect: 0.7))
+        let size = BookShape(of: book, coverAspect: 0.7).size
+        XCTAssertEqual(size, BookShape(of: book, coverAspect: 0.7).size)
         XCTAssertGreaterThanOrEqual(size.y, 2.1)
         XCTAssertLessThanOrEqual(size.y, 2.4)
-        XCTAssertEqual(size.x, size.y * 0.7, accuracy: 0.0001)
-        XCTAssertEqual(size.z, size.y * Float(book.thicknessRatio), accuracy: 0.0001)
+        // Sizes snap to `BookShape.step`, so they follow the cover and pages to within a step.
+        XCTAssertEqual(size.x, size.y * 0.7, accuracy: BookShape.step.x)
+        XCTAssertEqual(size.z, size.y * Float(book.thicknessRatio), accuracy: BookShape.step.z)
         // The cover changes only the width.
-        XCTAssertEqual(PileLayout.size(of: book, coverAspect: 2 / 3).y, size.y)
+        XCTAssertEqual(BookShape(of: book, coverAspect: 2 / 3).size.y, size.y)
 
         var short = book
         short.pages = 100
         var long = book
         long.pages = 1_000
         XCTAssertLessThan(
-            PileLayout.size(of: short, coverAspect: 0.7).z,
-            PileLayout.size(of: long, coverAspect: 0.7).z)
+            BookShape(of: short, coverAspect: 0.7).size.z,
+            BookShape(of: long, coverAspect: 0.7).size.z)
     }
 
     func testCameraLooksAtItsTarget() {
@@ -159,7 +160,7 @@ final class BookPileTests: XCTestCase {
         let starts = (0..<20 as Range<UInt64>)
             .flatMap { PileLayout.dropPlan(Self.books, in: Self.tray, seed: $0) }
             .map(\.transform.translation.y)
-        let reach = Self.books.map { simd_length(PileLayout.size(of: $0, coverAspect: 0.85)) / 2 }
+        let reach = Self.books.map { simd_length(BookShape(of: $0, coverAspect: 0.85).size) / 2 }
             .max()!
         // Physics starts a frame after a wave spawns.
         let time = Float(PileLayout.waveInterval / .seconds(1)) - 1 / 60
@@ -213,7 +214,7 @@ final class BookPileTests: XCTestCase {
         var stacks: [(center: SIMD2<Float>, top: Float, firstID: Int?)] = []
         for slot in plan {
             let position = slot.transform.translation
-            let thickness = PileLayout.size(of: slot.book, coverAspect: 2 / 3).z
+            let thickness = BookShape(of: slot.book, coverAspect: 2 / 3).size.z
             let center = SIMD2(position.x, position.z)
             if let index = stacks.firstIndex(where: { simd_distance($0.center, center) < 0.2 }) {
                 XCTAssertEqual(position.y - thickness / 2, stacks[index].top, accuracy: 0.0001)
