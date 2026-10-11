@@ -113,8 +113,6 @@ struct ShelfView: View {
                     }
                 case .dominoes:
                     DominoesView(books: books, title: title) { path.append($0.id) }
-                case .jenga:
-                    JengaView(books: books, title: title) { path.append($0.id) }
                 case .bookworm:
                     BookwormView(books: books, title: title)
                 }
@@ -506,7 +504,6 @@ enum ShelfPresentation: String, CaseIterable, Identifiable {
 enum ThreeDView: String, CaseIterable, Identifiable {
     case pile
     case dominoes
-    case jenga
     case bookworm
 
     var id: Self { self }

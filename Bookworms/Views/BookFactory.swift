@@ -8,8 +8,7 @@ import UIKit
 /// `prepare` builds each book's parts once: its shape (`BookShape`), a mesh shared by every
 /// book of that shape, and its materials. Covers download in parallel and spines render on the
 /// main actor, because `ImageRenderer` draws synchronously. A book's parts are kept until its
-/// look, its wear, or its shape in `shapes` changes or `release` drops them, so a new drop
-/// reuses them.
+/// look or its wear changes or `release` drops them, so a new drop reuses them.
 ///
 /// GPU memory stays bounded by the texture sizes. A cover is at most `coverPixels` on its long
 /// side (224 pixels at a `textureScale` of 1), cropped to its front board's 0.5 to 0.85
@@ -67,10 +66,6 @@ final class BookFactory {
     /// built, so the scene can retexture the book.
     var coverArrived: ((Int, any RealityKit.Material) -> Void)?
 
-    /// Shapes that replace books' own, by book ID, such as a tower's uniform blocks. `prepare`
-    /// rebuilds a book whose built shape differs, and draws its spine at the new shape's
-    /// proportions rather than stretching the book's own.
-    var shapes: [Int: BookShape] = [:]
     private(set) var parts: [Int: Parts] = [:]
     private var meshes: [BookShape: Task<MeshResource?, Never>] = [:]
     private var ribbonMeshes: [RibbonKey: MeshResource] = [:]
@@ -100,8 +95,7 @@ final class BookFactory {
         coverPixels = Int((224 * textureScale).rounded())
     }
 
-    /// Builds the parts of the books that lack them, whose look or wear changed, or whose shape
-    /// in `shapes` differs from the built one.
+    /// Builds the parts of the books that lack them or whose look or wear changed.
     ///
     /// A book whose cover takes longer than `coverWait` is built with its title on the cloth,
     /// and `coverArrived` hands over its cover when the download finishes. Once these books'
@@ -116,7 +110,6 @@ final class BookFactory {
             let look = model.look(for: book)
             guard let built = parts[book.id] else { return true }
             return built.look != look || built.wear != Wear(book, accent: look.accent)
-                || shapes[book.id].map { $0 != built.shape } == true
         }
         guard !missing.isEmpty else { return }
         await model.fonts.load(missing.compactMap { model.library?.designs[$0.id] })
@@ -147,8 +140,7 @@ final class BookFactory {
         for book in missing where !Task.isCancelled {
             guard
                 let built = await makeParts(
-                    book, cover: images[book.id], look: model.look(for: book),
-                    shape: shapes[book.id])
+                    book, cover: images[book.id], look: model.look(for: book))
             else { continue }
             parts[book.id] = built
             if !arrived.contains(book.id) {
@@ -182,8 +174,7 @@ final class BookFactory {
         let shape = shape ?? BookShape(of: book, coverAspect: Book3DView.aspect(of: cover))
         guard let mesh = await mesh(for: shape) else { return nil }
         let scale = scale ?? textureScale
-        let ratio = shapes[book.id].map { CGFloat($0.size.z / $0.size.y) } ?? book.thicknessRatio
-        let thickness = max(16, (Self.spineLength * ratio).rounded())
+        let thickness = max(16, (Self.spineLength * book.thicknessRatio).rounded())
         let spine = Self.render(
             SpineView(book: book, look: look)
                 .frame(width: Self.spineLength, height: thickness)
