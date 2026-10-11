@@ -40,13 +40,41 @@ struct BookShape: Hashable, Sendable {
         self.binding = binding
     }
 
-    /// A book's shape: 2.1 to 2.4 units tall, as the book's ID decides, as wide as
-    /// `coverAspect` allows, and as thick as its page count suggests.
+    /// The longest a book gets: 28 cm, a doorstopper's length.
+    static let longest: Float = 2.8
+
+    /// A book's shape: its size for its page count (`size(pages:coverAspect:variety:)`), with
+    /// the variety that the book's ID decides, so a book keeps its size everywhere.
     init(of book: CloudBook, coverAspect: CGFloat) {
-        let height = 2.1 + 0.3 * Float(ShareStyle.unit(0, book.id, 40))
+        let variety = SIMD2(
+            Float(ShareStyle.unit(0, book.id, 40)), Float(ShareStyle.unit(0, book.id, 41)))
         self.init(
-            size: [height * Float(coverAspect), height, height * Float(book.thicknessRatio)],
+            size: Self.size(pages: book.pages, coverAspect: Float(coverAspect), variety: variety),
             binding: book.binding)
+    }
+
+    /// The size of a book of `pages` pages, before snapping: from spine to fore edge, tail to
+    /// head, and back to front cover, as `size` lays them out. It follows the rules of the
+    /// Apple TV's Book Wall, at real books' scale.
+    ///
+    /// Page count grows both length and thickness. Length grows with the square root of the
+    /// page count from a floor of 17 cm, which keeps short books close to long ones, up to
+    /// 23 cm at 460 pages. Thickness grows by 0.35 mm a page from 7 mm at 100 pages, up to 4 cm
+    /// at about 1,040 pages, so long books look substantially thicker. `variety`, two numbers
+    /// from 0 to 1, then lengthens the book by up to 22 percent and thickens it by up to 25
+    /// percent, so books of similar length still differ. A book is at least 6 times as long as
+    /// it is thick, up to `longest`, which also caps length, so a very thick book reads as
+    /// chunky. The width is the length times `coverAspect`, the front board's width-to-height
+    /// ratio. Page counts count from 100 to 1,400, and a book without one counts as 320 pages.
+    ///
+    /// Each page adds less than real paper does, so a typical library's books average about
+    /// 0.8 liters, and 300 of them still fit in the pile between the bars.
+    static func size(pages: Int?, coverAspect: Float, variety: SIMD2<Float>) -> SIMD3<Float> {
+        let pages = Float(min(1_400, max(100, pages ?? 320)))
+        let natural = min(2.3, max(1.7, 2.4 * (pages / 500).squareRoot()))
+        let thickness = min(0.4, 0.07 + (pages - 100) * 0.00035) * (1 + variety.y * 0.25)
+        let length = min(longest, max(natural * (1 + variety.x * 0.22), thickness * 6))
+        return [length * coverAspect, length, thickness]
     }
 
     /// The book's box: x from spine to fore edge (the cover's width), y from tail to head, and

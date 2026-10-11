@@ -16,8 +16,8 @@ enum BookwormLayout {
     static let maximumBooks = 100
     static let booksPerStack = 8
     /// The distance between stack centers along x and z: a little more than the longest book's
-    /// height (2.4 units, lying along x) and the widest cover (2.04 units, along z).
-    static let stackPitch = SIMD2<Float>(2.55, 2.2)
+    /// height (2.8 units, lying along x) and the widest cover (2.4 units, along z).
+    static let stackPitch = SIMD2<Float>(2.95, 2.55)
     static let bodyRadius: Float = 0.3
     static let headRadius: Float = 0.42
     /// Half a stack's footprint, as (x, z), for a stack of typical books: half a book's height,

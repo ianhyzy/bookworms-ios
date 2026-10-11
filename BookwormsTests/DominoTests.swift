@@ -180,6 +180,11 @@ final class DominoTests: XCTestCase {
         // It looks at most two books past the next one, and never past the last book.
         XCTAssertEqual(DominoLayout.pushTarget(next: 0, count: 4) { _ in false }, 2)
         XCTAssertEqual(DominoLayout.pushTarget(next: 3, count: 4) { _ in false }, 3)
+        // A pushed book that stood up again is skipped, so the next push moves on.
+        XCTAssertEqual(DominoLayout.pushTarget(next: 2, count: 4, pushed: 2) { upright[$0] }, 3)
+        XCTAssertEqual(
+            DominoLayout.pushTarget(next: 0, count: 6, pushed: 2) { _ in false }, 5)
+        XCTAssertEqual(DominoLayout.pushTarget(next: 3, count: 4, pushed: 3) { _ in true }, 3)
     }
 
     func testPhaseFollowsTheFront() {

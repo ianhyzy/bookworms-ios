@@ -143,6 +143,9 @@ enum PileSnapshotRenderer {
         try await scene.settle(
             books, on: layout.tray, camera: layout.camera, seed: seed, model: model
         ) { try renderer.update(1.0 / 60) }
+        #if DEBUG
+            scene.logCovers("image seed \(seed), \(books.count) books")
+        #endif
         scene.look(
             through: layout.camera.framing(
                 scene.bookCorners, in: layout.pileRect, of: layout.aspect.size,

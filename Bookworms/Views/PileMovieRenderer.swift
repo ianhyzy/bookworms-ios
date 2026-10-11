@@ -227,6 +227,9 @@ extension PileSnapshotRenderer {
                 progress(Double(frame + 1) / Double(PileMovieTiming.frameCount))
             }
             _ = scene.feedback.finishRecording()
+            #if DEBUG
+                scene.logCovers("video seed \(seed), \(books.count) books")
+            #endif
             guard let poster else { throw PileSnapshotError.drawingFailed }
             return (writer, poster)
         } catch {

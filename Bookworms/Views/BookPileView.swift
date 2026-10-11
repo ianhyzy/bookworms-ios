@@ -186,6 +186,13 @@ struct BookPileView: View {
                 viewport: viewport, model: model)
             #if DEBUG
                 await openDebugBook()
+                // `-BookwormsPileRedrops <n>` drops again, as **Drop again** does, until the
+                // drop with generation n.
+                if !Task.isCancelled,
+                    generation < UserDefaults.standard.integer(forKey: "BookwormsPileRedrops")
+                {
+                    generation += 1
+                }
             #endif
         }
         // Draws the lifted book as sharply as the details' own book, with its current cover and

@@ -60,6 +60,9 @@ struct PileSnapshotSheet: View {
             {
                 _aspect = State(initialValue: aspect)
             }
+            _seed = State(
+                initialValue: UInt64(
+                    max(0, UserDefaults.standard.integer(forKey: "BookwormsPileShareSeed"))))
         #endif
     }
 
@@ -164,6 +167,7 @@ struct PileSnapshotSheet: View {
             failed = false
             #if DEBUG
                 PileSnapshotDebug.write(drawn)
+                if options.seed < PileSnapshotDebug.lastSeed { seed = options.seed + 1 }
             #endif
         } catch is CancellationError {
             return
@@ -181,9 +185,14 @@ struct PileSnapshotSheet: View {
     ///
     /// `-BookwormsPileShare YES` opens the pile's share sheet when the pile appears, and
     /// `-BookwormsPileShareAspect <story|portrait|square>` picks its size. Each image is then
-    /// written to `Library/Caches/Bookworms/pile-share-debug.png`.
+    /// written to `Library/Caches/Bookworms/pile-share-debug.png`. `-BookwormsPileShareSeed <n>`
+    /// sets the first image's seed, and `-BookwormsPileRedrops <n>` renders an image for each
+    /// seed after it up to n.
     enum PileSnapshotDebug {
         static var opensSheet: Bool { UserDefaults.standard.bool(forKey: "BookwormsPileShare") }
+        static var lastSeed: UInt64 {
+            UInt64(max(0, UserDefaults.standard.integer(forKey: "BookwormsPileRedrops")))
+        }
 
         static func write(_ image: UIImage) {
             guard opensSheet else { return }
