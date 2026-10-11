@@ -109,6 +109,8 @@ struct ShelfView: View {
                     }
                 case .dominoes:
                     DominoesView(books: books, title: title) { path.append($0.id) }
+                case .jenga:
+                    JengaView(books: books, title: title) { path.append($0.id) }
                 }
             }
         } else {
@@ -478,12 +480,13 @@ enum ShelfPresentation: String, CaseIterable, Identifiable {
 }
 
 /// The scenes 3D can show. Each shows the shelf's filtered books within the time frame that all
-/// of them share, and picks its own order: the Pile follows the shelf's sort, and Dominoes the
-/// finish dates. Adding a view takes a case here, titled by its raw value, and its arm in
+/// of them share, and picks its own order: the Pile follows the shelf's sort, Dominoes the finish
+/// dates, and Jenga takes the shelf's first books and stacks them by finish date. Adding a view takes a case here, titled by its raw value, and its arm in
 /// `ShelfView.content`; **Sort and filter** offers **View** once there are two.
 enum ThreeDView: String, CaseIterable, Identifiable {
     case pile
     case dominoes
+    case jenga
 
     var id: Self { self }
     var title: String { rawValue.capitalized }

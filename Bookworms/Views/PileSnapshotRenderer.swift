@@ -25,8 +25,8 @@ enum PileSnapshotRenderer {
     ///
     /// `RealityRenderer` steps the same RealityKit engine that draws every `RealityView`, and
     /// RealityKit's render thread can crash drawing a view's meshes while this renderer steps
-    /// it. `BookPileView` therefore takes its entities out of its view's scene while this is
-    /// set, whichever tab starts the render.
+    /// it. `BookPileView` and `JengaView` therefore take their entities out of their views'
+    /// scenes while this is set, whichever tab starts the render.
     static var isRendering: Bool { activity.isRendering }
 
     /// Renders `books` as a pile under the heading `title`, at the pixel size of `aspect`.
