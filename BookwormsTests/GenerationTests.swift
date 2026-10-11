@@ -80,10 +80,11 @@ final class GenerationTests: XCTestCase {
             SpineWorker.disposition(of: CompanionError.noICloudAccount, now: now),
             .stopRun(retryAfter: nil))
 
-        // A dead cover link or an unusable cover fails the book, so it cannot block the queue.
+        // A dead cover link, a cover server's temporary error, or an unusable cover fails the
+        // book, so it cannot block the queue.
         for error: any Error in [
-            URLError(.cannotFindHost), CompanionError.invalidCover, CompanionError.invalidDesign,
-            CompanionError.coverTooLarge,
+            URLError(.cannotFindHost), URLError(.badServerResponse), CompanionError.invalidCover,
+            CompanionError.invalidDesign, CompanionError.coverTooLarge,
         ] {
             XCTAssertEqual(SpineWorker.disposition(of: error, now: now), .skipBook, "\(error)")
         }

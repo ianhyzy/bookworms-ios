@@ -16,7 +16,7 @@ Either way, designs are saved to that iCloud container, where the Apple TV picks
 The **Spines** tab shows how many books have designs, the current run, Private Cloud Compute availability, and the daily request limit.
 
 - **Generate now** starts a run in the app. iOS can keep it going after you leave the app, with system progress UI, through a continued-processing background task.
-- **Generate while charging** (on by default) asks iOS for a background processing task that needs external power and a network connection. iOS chooses when to run it, typically overnight while the iPhone charges. Background runs download covers only on unmetered networks and stop when the daily limit is almost reached.
+- **Generate while charging** (on by default) asks iOS for a background processing task that needs external power and a network connection. iOS chooses when to run it, typically overnight while the iPhone charges. It needs Background App Refresh; when that is off or restricted, the **Spines** tab says so. Background runs download covers only on unmetered networks and stop when the daily limit is almost reached.
 - When the Apple TV publishes a new worklist, a silent push schedules the charging task. Generation never runs inside the push's 30-second window.
 
 Each run designs the books that need it, one at a time:
@@ -25,11 +25,11 @@ Each run designs the books that need it, one at a time:
 2. The app downloads the cover over HTTPS (the one you chose, if any; see [Cover choice](#cover-choice)), reads its lettering with Vision, and samples its colors.
 3. The first model request asks only which of 12 letterform styles the cover's title uses, with the cover attached and the styles in a different order for each book. If Private Cloud Compute cannot read images, the on-device model answers this question.
 4. The second request picks cloth, ink, and accent colors from the sampled palette, a weight, and up to four families from that style's open-source Google Fonts families.
-5. The app downloads the first family that has every letter of the title and author, rejects italic, oblique, and slanted faces and Impact, and adjusts the colors until the text reaches APCA Lc 75. If no ranked family works, one more ranking request runs without them.
+5. The app downloads the first family that has every letter of the title and author, rejects italic, oblique, and slanted faces and Impact, and adjusts the colors until the text reaches APCA Lc 75. If no ranked family works, one more ranking request runs without them; if none of those works either, the design uses the style's system typeface.
 6. Books in the same series reuse the first saved series design without a request when its font covers the book's letters.
 7. The app saves a `SpineDesignV1` record with generator version `ios-pcc-v1`.
 
-A new design usually uses two or three requests. The app rechecks a book when its metadata, its chosen cover, or the generator changes, or after seven days. A book that fails waits 24 hours unless its metadata or chosen cover changes. Quota, network, service, and iCloud save errors stop the run and schedule the next attempt for the reset or retry time.
+A new design usually uses two or three requests. The app rechecks a book when its metadata, its chosen cover, or the generator changes, or after seven days. A book that fails waits 24 hours unless its metadata or chosen cover changes. Quota, network, service, Google Fonts, and iCloud save errors stop the run and schedule the next attempt for the reset or retry time. A Google Fonts outage waits for its `Retry-After` time, at most one day, or 15 minutes without one. An unavailable model or full iCloud storage pauses background runs for a day; **Generate now** runs anyway.
 
 ### Hardcover sign-in
 
@@ -37,7 +37,7 @@ The account button in the **Spines** tab's toolbar opens the Hardcover sheet, an
 
 1. The app requests a code from Hardcover and shows it with **Copy code**.
 2. **Open Hardcover** opens Hardcover's approval page in Safari inside the app: the link with the code filled in when Hardcover provides one, otherwise `hardcover.app/link`. Sign in to Hardcover if asked, enter the code, and allow Bookworms.
-3. The app polls Hardcover at the interval it asks for, waits 5 seconds longer after each `slow_down`, and stops when the code expires or the request is declined; **Get a new code** starts over.
+3. The app polls Hardcover at the interval it asks for and waits 5 seconds longer after each `slow_down` or HTTP 429. It keeps polling through network and server errors, and stops when the code expires or the request is declined; **Get a new code** starts over.
 4. Once approved, the app checks the account with a `me` query, then saves the token.
 
 The signed-in sheet shows the Hardcover username, when the library last synced, **Sync now**, and **Sign out**. When Hardcover rejects the saved login (HTTP 401, or HTTP 403 with `insufficient_scope`), the sheet and the **Spines** tab say so and offer **Reconnect**, and the toolbar button shows a warning badge; the copy of the library stays until then. Other 403 responses are reported as denied requests, not as an expired login. The **Spines** tab also shows other download and load errors, even while it shows an older copy of the library.
@@ -45,7 +45,7 @@ The signed-in sheet shows the Hardcover username, when the library last synced, 
 While signed in:
 
 - The Shelf and Share tabs show the Hardcover account's own library: every book on its shelves, with the same covers, page counts, finish and start dates, ratings, community ratings, formats, genres, series, and progress as the Apple TV builds. Each book also carries your review as plain text (`CloudBook.review`, from Hardcover's `user_books.review` with HTML and Markdown removed). Designs for these books still come from iCloud, matched by the same account ID the Apple TV uses (the Hardcover user ID).
-- The app downloads the library when it launches or becomes active if the copy on the iPhone is missing or more than four hours old, and when you choose **Sync now**. Any reload the app or the Shelf starts also checks this.
+- The app downloads the library when it launches or becomes active if the copy on the iPhone is missing or more than four hours old, and when you choose **Sync now**. Any reload the app or the Shelf starts also checks this. Each Hardcover query, including the account check and the library download, retries server errors, timeouts, and dropped connections up to twice, after about 2 and then 4 seconds, and retries a rate limit whose `Retry-After` is 30 seconds or less.
 - The Apple TV's library never stands in for the signed-in account, which may differ. Until the first download finishes, the app shows no library, or an earlier copy only when it belongs to the same account, and a generation run reports "Waiting for your Hardcover library to download". If the download fails, or iOS deleted the copy and the iPhone is offline, the library stays empty and the **Shelf**, **Share**, and **Spines** tabs show the error (see [No library yet](#no-library-yet)).
 
 **Sign out** deletes the token and the copy of the library from the iPhone and returns to the Apple TV's library. Preview mode (`-BookwormsPreviewFolder`) ignores the sign-in.
@@ -64,7 +64,7 @@ Without a library, the **Shelf** and **Share** tabs say why, from the Hardcover 
 - **Signed out:** **No library yet** explains both ways to get one: turn on **iCloud storage** in the Bookworms app on the Apple TV, or connect Hardcover on this iPhone. Below them, it shows any error from loading the Apple TV's library, such as a missing iCloud account, after **Apple TV library:**. It offers **Connect Hardcover**, which opens the Hardcover sheet, and **Try again**, which reloads.
 - **Signed in, downloading:** a progress indicator says the Hardcover library is downloading.
 - **Signed in, download failed:** the error, such as Hardcover being unavailable, with **Try again**.
-- **Signed in, login rejected:** **Reconnect Hardcover** with the error and **Reconnect**, which starts a new sign-in in the Hardcover sheet.
+- **Signed in, login rejected:** **Reconnect Hardcover** with the error and **Reconnect**, which opens the Hardcover sheet and starts a sign-in, or shows the code of a sign-in already in progress.
 
 The sheet stays open when the library arrives. Preview mode ignores the sign-in, so it offers only **Try again**. A library without books says that books appear after the Apple TV's next sync, or after the next sync with Hardcover when signed in.
 
@@ -74,7 +74,7 @@ The **Shelf** tab shows every book as a spine in its saved design, or in a plain
 
 - **Stack** (default) lays the spines flat and scrolls them vertically as a 3D wheel.
 - **Shelf** stands the spines upright, as on the Apple TV, and scrolls them horizontally like Cover Flow.
-- **Pile** drops every book, or a year's or month's books, onto a wooden table as a physics toy, and shares the pile as an image. See [Pile](#pile).
+- **Pile** drops up to 300 books, or a year's or month's books, onto a wooden table as a physics toy, and shares the pile as an image. See [Pile](#pile).
 - The caption shows the centered book's title, author, finish date, and your rating. Sort by finish date, title, author, or rating, or show designed books only.
 - Tap the centered spine for details: a 3D book you can turn with a drag, its reading details, the design's font and colors, **Change cover**, and **Share**.
 
@@ -90,16 +90,16 @@ The **Shelf** tab shows every book as a spine in its saved design, or in a plain
 
 ### Pile
 
-**Pile** shows the books in the shelf's sort and filter order as RealityKit rigid bodies that fall onto a table in waves of 16 and pile up.
+**Pile** shows up to 300 books, the first in the shelf's sort and filter order, as RealityKit rigid bodies that fall onto a table in waves of 16 and pile up.
 
-- In Pile mode, **Sort and filter** adds **Time frame**: **All books** (the default), a **Year**, or a **Month**. The year and month lists include only periods with finished books. Choosing one drops that period's finished books in a new pile, as **Drop again** does. The app saves the choice. If the saved year or month has no finished books in the current library, the pile uses the newest year or month instead. Under the presentation picker, the pile names its time frame and book count, such as "2025 · 39 books"; for **All books**, it names the years the books span. When **Designed only** leaves a year or month empty, the shelf says so and offers to show that period's books or all books.
+- In Pile mode, **Sort and filter** adds **Time frame**: **All books** (the default), a **Year**, or a **Month**. The year and month lists include only periods with finished books. Choosing one drops that period's finished books in a new pile, as **Drop again** does. The app saves the choice. If the saved year or month has no finished books in the current library, the pile uses the newest year or month instead. Under the presentation picker, the pile names its time frame and book count, such as "2025 · 39 books"; for **All books**, it names the years the books span. Past 300 books, it says how many it shows, such as "2009–2026 · 300 of 412 books". When **Designed only** leaves a year or month empty, the shelf says so and offers to show that period's books or all books.
 
 - Each book is a box the size of a real book: 21 to 24 cm tall, as wide as its cover's aspect ratio allows (2:3 without a cover), and as thick as its page count suggests. The front shows the cover, cropped to the book's shape as on its details screen, the spine shows the saved design rendered by `SpineView`, the page edges are cream, and the back is the spine's cloth color.
 - Drag a book to pick it up and throw it, tap one for its details, pinch to zoom toward a point, and turn two fingers to look around the pile. **Drop again** starts a new drop and redraws books whose design or font changed since the last one.
-- On an iPhone that reports motion, tilting the phone tips the table. The pile responds to the change from how you held the phone when tilting began, up to about 27 degrees, and books slide toward the edge of the screen you tip down, however you have turned the view. Turn **Tilt to move books** off in the toolbar to keep the table level.
+- On an iPhone that reports motion, tilting the phone tips the table. The pile responds to the change from how you held the phone when tilting began, up to about 27 degrees, and books slide toward the edge of the screen you tip down, however you have turned the view. Turn **Tilt to move books** off in the **Sort and filter** menu to keep the table level.
 - With **Reduce Motion** on, the books appear in tidy stacks, spines toward you, and tilt is off. The stacks hold still: picking up a book frees only that book and the books resting on it. **Stack again** replaces **Drop again**.
 - Invisible walls keep the books between the navigation bar and the tab bar. The view keeps its pile while you open a book and come back. Switching to another tab, **Stack**, or **Shelf** releases the books and their textures, and the books drop again when you return.
-- Each wave waits at most 1.5 seconds for its own covers, and the next wave's covers download while it falls. A book whose cover arrives later falls with its title on its cloth color, and the cover replaces the title when it arrives. Textures stay small: covers are at most 224 pixels and spines 384 pixels long, an estimated 75 MB of GPU memory for 300 books and at most 116 MB.
+- Each wave waits at most 1.5 seconds for its own covers, and the next wave's covers download while it falls. A book whose cover arrives later falls with its title on its cloth color, and the cover replaces the title when it arrives. Textures stay small: covers are at most 224 pixels and spines 384 pixels long, an estimated 75 MB of GPU memory for the 300-book maximum and at most 116 MB.
 
 VoiceOver reads the pile as one element with its book count, its time frame, and a **Drop again** action; choose **Stack** or **Shelf** to go through books one at a time. RealityKit shadows, frame rate, and the stability of tall stacks have been checked only in the Simulator; check them on a device.
 
@@ -137,7 +137,7 @@ The **Share** tab renders a 1080-pixel-wide PNG in Story (9:16), Portrait (4:5),
 | Review | Your review of one book under its cover, title, and rating. A long review shows as an excerpt that ends with an ellipsis, and the text takes the largest size that fits. Only books with a review are offered. The Apple TV library carries no reviews, so without the iPhone's own Hardcover sign-in the template says so and offers **Connect Hardcover**. |
 | Currently Reading | A book you are reading, with its progress and its start date when known. A reread shows its new start date, not its last finish. |
 
-Text on every image is set in New York for headings and San Francisco for other text, in each book's own capitalization. Spines keep their designed fonts and colors: Year Stack's spines, the spine of a 3D book, and Spine Spectrum's stripes. A 3D book without a downloaded cover shows its title on the front in the spine's font.
+Each image's backgrounds and panels come from one color family: the hue its books' spines share most, or a warm neutral when they are mostly gray. Unrelated spine colors never compete in the background; covers and spines keep their own colors. Text is cream with gold accents. Text on every image is set in New York for headings and San Francisco for other text, in each book's own capitalization. Spines keep their designed fonts and colors: Year Stack's spines, the spine of a 3D book, and Spine Spectrum's stripes. A 3D book without a downloaded cover shows its title on the front in the spine's font.
 
 Images show only your own library. They include no account name or ID. Ratings are optional. A small "Created with Bookworms for iPhone" credit sits in the bottom margin of every image. If an image cannot be drawn, such as a pile whose frame comes out one flat color, the preview says so, suggesting **Shuffle** for a pile, and nothing is shared.
 
@@ -155,7 +155,7 @@ A new option draws a new image and cancels the one in progress. A new design for
 
 To test on an iPhone before Apple grants the Private Cloud Compute capability, run `script/install_on_device.sh`. It signs an optimized build with `config/NoPCC.entitlements`, compiles it with `NO_PCC` so the app never creates the model, registers the iPhone with the team if needed, and installs it. Generation then reports Private Cloud Compute as unavailable; the Shelf, Pile, and Share tabs work with the iCloud or Hardcover library. A development-signed build reads the CloudKit Development environment, the same one development builds of the Apple TV app and the Mac companion use.
 
-The app shows the library it loaded last while it reloads. It reloads when it becomes active (at most every five minutes) and after a generation run that saved designs for books it had not loaded. Without a Hardcover sign-in, signing out of iCloud, or switching to an account without a library, clears the shown and cached library. Signing out of Hardcover, or signing in to another Hardcover account, also clears it before the reload.
+The app shows the library it loaded last while it reloads. It reloads when it becomes active, at most every five minutes after a load succeeds. After a failed load, it tries again the next time it becomes active or a generation run ends. It also reloads after a generation run that saved designs for books it had not loaded. Without a Hardcover sign-in, signing out of iCloud, or switching to an account without a library, clears the shown and cached library. Signing out of Hardcover, or signing in to another Hardcover account, also clears it before the reload.
 
 ### Preview with a local library
 
