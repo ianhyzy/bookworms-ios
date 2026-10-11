@@ -12,7 +12,7 @@ BUNDLE_ID="gay.ian.Bookworms.iOS"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DERIVED_DATA="$ROOT_DIR/DerivedData-device"
 DEVICE="${1:-$(xcrun devicectl list devices 2>/dev/null \
-    | awk '/iPhone/ && /available/ && /physical/ { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9A-F]{8}-[0-9A-F]{16}$/) { print $i; exit } }')}"
+    | awk '/iPhone/ && / physical/ && (/ available \(paired\)/ || / connected /) { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9A-F]{8}-[0-9A-F]{16}$/) { print $i; exit } }')}"
 if [[ -z "$DEVICE" ]]; then
     echo "No paired iPhone found. Connect one and turn on Developer Mode." >&2
     exit 1

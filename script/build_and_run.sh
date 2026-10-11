@@ -9,10 +9,16 @@ if [[ "${1:-}" == "--preview" ]]; then PREVIEW=1; shift; fi
 BUNDLE_ID="gay.ian.Bookworms.iOS"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DERIVED_DATA="$ROOT_DIR/DerivedData"
-SIMULATOR="${1:-$(xcrun simctl list devices available | grep -m1 -E 'iPhone .*\(Booted\)' \
+# The app targets iOS 27, so only iOS 27 iPhones qualify; a booted one wins.
+SIMULATOR="${1:-$(xcrun simctl list devices available 'iOS 27' | grep -m1 -E 'iPhone .*\(Booted\)' \
     | grep -oE '[0-9A-F-]{36}' || true)}"
 if [[ -z "$SIMULATOR" ]]; then
-    SIMULATOR="$(xcrun simctl list devices available 'iOS 27' | grep -m1 -oE '[0-9A-F-]{36}')"
+    SIMULATOR="$(xcrun simctl list devices available 'iOS 27' | grep -m1 -E 'iPhone ' \
+        | grep -oE '[0-9A-F-]{36}' || true)"
+    if [[ -z "$SIMULATOR" ]]; then
+        echo "No iOS 27 iPhone Simulator found. Create one in Xcode or pass its UDID." >&2
+        exit 1
+    fi
     xcrun simctl boot "$SIMULATOR"
 fi
 
