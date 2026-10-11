@@ -65,12 +65,22 @@ actor CoverDownloader {
 
     /// Downloads the first usable candidate's bytes after checking that they decode as an image,
     /// and returns them with the candidate they came from. Falls back as `fetch(_:)` describes.
-    func fetchData(_ urls: [URL]) async throws -> (url: URL, data: Data) {
+    ///
+    /// - Parameter fallsBackOnServerError: Whether a temporary server error also moves on to the
+    ///   next candidate. Display passes `true`, because showing another cover changes no hash;
+    ///   generation keeps the default `false`.
+    func fetchData(_ urls: [URL], fallsBackOnServerError: Bool = false) async throws -> (
+        url: URL, data: Data
+    ) {
         var lastError: Error = CompanionError.invalidCover
         for url in urls where CoverURLPolicy.allows(url) {
             do {
                 return (url, try await fetchOne(url))
             } catch let error as CompanionError {
+                lastError = error
+            } catch let error as URLError
+                where fallsBackOnServerError && error.code == .badServerResponse
+            {
                 lastError = error
             }
         }
@@ -102,8 +112,8 @@ actor CoverDownloader {
             "image/avif,image/webp,image/jpeg,image/png,image/heic", forHTTPHeaderField: "Accept")
         let (bytes, response) = try await session.bytes(for: request)
         guard let response = response as? HTTPURLResponse else { throw CompanionError.invalidCover }
-        // A busy or failing server says nothing about the cover, so `fetchData` must not fall
-        // back to another candidate; it stops at any error that is not a `CompanionError`.
+        // A busy or failing server says nothing about the cover, so `fetchData` falls back to
+        // another candidate only when its caller opts in; it stops at other `URLError`s.
         if [408, 429].contains(response.statusCode) || (500...599).contains(response.statusCode) {
             throw URLError(.badServerResponse)
         }
