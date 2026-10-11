@@ -133,6 +133,12 @@ extension PileTray {
             farZ: middle + (farZ - middle) * factor, nearZ: middle + (nearZ - middle) * factor,
             farHalfWidth: farHalfWidth * factor, nearHalfWidth: nearHalfWidth * factor)
     }
+
+    /// The tray grown about its middle, if needed, until its depth and its narrower near edge
+    /// both span at least `span`.
+    func scaled(toFit span: Float) -> PileTray {
+        scaled(by: max(1, span / min(nearZ - farZ, 2 * nearHalfWidth)))
+    }
 }
 
 /// A book's starting pose in the pile.
@@ -148,8 +154,12 @@ enum PileLayout {
     /// follow.
     static let gravity: Float = 55
     static let waveSize = 16
+    /// The least time from one wave to the next. It lets the previous wave's highest books
+    /// fall below the next wave's lowest cells before those books start.
+    static let waveInterval = Duration.milliseconds(750)
     static let spawnHeight: Float = 9
-    static let ceiling: Float = 13
+    /// Above the highest start a drop plan gives, 11.4 units over `spawnHeight`.
+    static let ceiling: Float = 22
     /// Half the longest book's length plus a little, which keeps a new book clear of the walls.
     static let reach: Float = 1.3
     /// The largest sideways gravity tilt allows, as a fraction of `gravity` (about 27 degrees).
@@ -167,14 +177,16 @@ enum PileLayout {
     static let lyingFlat = simd_quatf(
         simd_float3x3(columns: ([0, 0, -1], [-1, 0, 0], [0, 1, 0])))
 
-    /// Drop poses above the tray, in waves of `waveSize` books, from `height` above the table.
+    /// Drop poses above the tray, in waves of `waveSize` books, from `spawnHeight` up.
     ///
-    /// Each wave fills a 2 × 8 grid of cells once, in a shuffled order, and alternate cells
-    /// start 1.6 units higher, so books in a wave start apart. Each book starts at a random yaw,
-    /// tumbled up to `tumble` radians (about 57 degrees by default), and spinning.
+    /// Each wave fills a 2 × 8 grid of cells once, in a shuffled order. Cells start at six
+    /// heights 2.2 units apart, repeating every three rows, so books in a wave start apart:
+    /// cells at one height are three rows apart, farther than a book reaches. Each book starts
+    /// at a random yaw, tumbled up to `tumble` radians (about 57 degrees by default), and
+    /// spinning. A tray too shallow to keep `reach` from its walls drops every book over its
+    /// middle.
     static func dropPlan(
-        _ books: [CloudBook], in tray: PileTray, seed: UInt64, height: Float = spawnHeight,
-        tumble: Float = 1
+        _ books: [CloudBook], in tray: PileTray, seed: UInt64, tumble: Float = 1
     ) -> [PileSlot] {
         let columns = 2
         let rows = waveSize / columns
@@ -192,10 +204,12 @@ enum PileLayout {
                 let (row, column) = cell.quotientAndRemainder(dividingBy: columns)
                 func random(_ salt: UInt64) -> Float { Float(ShareStyle.unit(seed, book.id, salt)) }
                 let depth = (Float(row) + 0.2 + 0.6 * random(2)) / Float(rows)
-                let z = tray.farZ + reach + (tray.nearZ - tray.farZ - 2 * reach) * depth
+                let z =
+                    (tray.farZ + tray.nearZ) / 2
+                    + max(0, tray.nearZ - tray.farZ - 2 * reach) * (depth - 0.5)
                 let across = (Float(column) + 0.2 + 0.6 * random(3)) / Float(columns) * 2 - 1
                 let x = across * max(0, tray.halfWidth(at: z) - reach)
-                let y = height + Float((row + column) % 2) * 1.6 + random(4) * 0.4
+                let y = spawnHeight + Float((row % 3) * 2 + column) * 2.2 + random(4) * 0.4
                 let axis = random(5) * 2 * .pi
                 let tumble = simd_quatf(
                     angle: (random(6) - 0.5) * 2 * tumble, axis: [cos(axis), 0, sin(axis)])
@@ -208,14 +222,49 @@ enum PileLayout {
             }
     }
 
-    /// The ranges of a drop plan of `count` books that fall together: at most `size` books, all
-    /// from one wave, since only books in the same wave start in different cells.
-    static func groups(of count: Int, size: Int) -> [Range<Int>] {
-        stride(from: 0, to: count, by: waveSize)
-            .flatMap { wave in
-                let end = min(wave + waveSize, count)
-                return stride(from: wave, to: end, by: size).map { $0..<min($0 + size, end) }
+    /// Starting poses for a still image's pile, in groups that fall together, with heights
+    /// above the pile so far.
+    ///
+    /// Books start over the middle 70 percent of `tray`, tilted a little and without spin. A
+    /// group's books start in up to three layers, 1.2, 2.45, and 3.7 units up, so they land
+    /// within the 0.4 seconds before the next group; layers 1.25 apart clear two tilted books.
+    /// A book takes the lowest layer that no book of its group within 3.4 units uses, since two
+    /// books farther apart cannot touch, and a book with no free layer starts the next group.
+    static func settleGroups(_ books: [CloudBook], in tray: PileTray, seed: UInt64)
+        -> [[PileSlot]]
+    {
+        var groups: [[PileSlot]] = []
+        var layers: [(spot: SIMD2<Float>, layer: Int)] = []
+        for var slot in dropPlan(books, in: tray.scaled(by: 0.7), seed: seed, tumble: 0.25) {
+            let spot = SIMD2(slot.transform.translation.x, slot.transform.translation.z)
+            var taken = Set(layers.filter { simd_distance($0.spot, spot) < 3.4 }.map(\.layer))
+            if groups.isEmpty || taken.count == 3 {
+                groups.append([])
+                layers = []
+                taken = []
             }
+            let layer = (0..<3).first { !taken.contains($0) } ?? 0
+            layers.append((spot, layer))
+            slot.transform.translation.y = 1.2 + Float(layer) * 1.25
+            slot.spin = .zero
+            groups[groups.count - 1].append(slot)
+        }
+        return groups
+    }
+
+    /// The books in `books` that `ids` lacks, when `books` keeps every book of `ids` in the
+    /// same order; otherwise `nil`.
+    static func added(to ids: [Int], in books: [CloudBook]) -> [CloudBook]? {
+        var remaining = ids[...]
+        var added: [CloudBook] = []
+        for book in books {
+            if book.id == remaining.first {
+                remaining.removeFirst()
+            } else {
+                added.append(book)
+            }
+        }
+        return remaining.isEmpty ? added : nil
     }
 
     /// Tidy stacks for Reduce Motion, listed bottom up so each book rests on the one before it.
@@ -315,7 +364,8 @@ enum PileLayout {
 final class BookPileScene {
     /// The scene root, which runs the physics simulation.
     let root = Entity()
-    var canTilt: Bool { motion.isDeviceMotionAvailable }
+    /// Whether the device reports motion, which tilt needs. The Simulator does not.
+    static let canTilt = CMMotionManager().isDeviceMotionAvailable
 
     private static let coverWait = Duration.seconds(1.5)
     private static let spineLength: CGFloat = 384
@@ -371,8 +421,10 @@ final class BookPileScene {
         let look: SpineLook
     }
 
-    /// A book held under a finger. It is kinematic, steered toward `target` on a plane above
-    /// where it was picked up, and keeps its offset from the finger.
+    /// A book held under a finger, steered toward `target` on a plane above where it was picked
+    /// up, keeping its offset from the finger. It is kinematic, so it pushes other books aside.
+    /// Among Reduce Motion's kinematic stacks it is dynamic instead: kinematic bodies pass
+    /// through one another, and only a dynamic book is stopped by a stack.
     private struct Drag {
         let book: ModelEntity
         let height: Float
@@ -506,8 +558,11 @@ final class BookPileScene {
     /// Drops `books` onto the table, or stacks them when `tidy`, continuing a drop that an
     /// earlier call started for the same books and generation.
     ///
-    /// Returns when every book is in the pile or the task is cancelled. A cancelled drop, such
-    /// as one interrupted by opening a book, resumes at its next wave.
+    /// Books added to a dropped list, such as a newly designed book under **Designed only**,
+    /// fall onto the pile as it is, after the books still waiting, when the list keeps the
+    /// earlier books in their order. Any other change starts a new pile. Returns when every
+    /// book is in the pile or the task is cancelled. A cancelled drop, such as one interrupted
+    /// by opening a book, resumes at its next wave.
     func fill(
         _ books: [CloudBook], tidy: Bool, generation: Int, viewport: PileViewport,
         model: AppModel
@@ -516,13 +571,24 @@ final class BookPileScene {
         guard let tray else { return }
         let key = PlanKey(ids: books.map(\.id), tidy: tidy, generation: generation)
         if key != planKey {
-            reset(keeping: Set(key.ids))
+            if !tidy, let planKey, !planKey.tidy, planKey.generation == generation,
+                let added = PileLayout.added(to: planKey.ids, in: books)
+            {
+                // Plans the waiting books again with the new ones, so the next wave starts in
+                // a fresh set of cells.
+                let waiting = plan[spawned...].map(\.book) + added
+                plan =
+                    Array(plan[..<spawned])
+                    + PileLayout.dropPlan(waiting, in: tray, seed: UInt64(generation))
+            } else {
+                reset(keeping: Set(key.ids))
+                plan =
+                    tidy
+                    ? PileLayout.stackPlan(books, in: tray)
+                    : PileLayout.dropPlan(books, in: tray, seed: UInt64(generation))
+                holdsStill = tidy
+            }
             planKey = key
-            plan =
-                tidy
-                ? PileLayout.stackPlan(books, in: tray)
-                : PileLayout.dropPlan(books, in: tray, seed: UInt64(generation))
-            holdsStill = tidy
         }
         while spawned < plan.count {
             let end = min(spawned + PileLayout.waveSize, plan.count)
@@ -531,10 +597,7 @@ final class BookPileScene {
             await prepare(
                 wave.map(\.book), prefetching: next.map(\.book), coverWait: Self.coverWait,
                 model: model)
-            if !tidy {
-                // Lets the previous wave fall clear of the spawn cells first.
-                try? await Task.sleep(until: lastWave + .milliseconds(350))
-            }
+            if !tidy { try? await Task.sleep(until: lastWave + PileLayout.waveInterval) }
             guard !Task.isCancelled, planKey == key else { return }
             for slot in wave { spawn(slot, mode: holdsStill ? .kinematic : .dynamic) }
             spawned += wave.count
@@ -551,6 +614,7 @@ final class BookPileScene {
         shelf.children.removeAll()
         bookIDs = [:]
         drag = nil
+        cameraMove = nil
         spawned = 0
         parts = parts.filter { ids.contains($0.key) }
         view = PileCamera()
@@ -581,17 +645,19 @@ final class BookPileScene {
     /// Unlike `fill`, every book is built before the first one falls, and covers get up to 10
     /// seconds to load. Books start over the middle 70 percent of the tray, just above the pile
     /// so far, tilted a little and without spin, so they land close to where they start and few
-    /// land face down, showing only their cloth. Each group falls for 0.4 seconds before the
-    /// next one appears, and the pile settles for 2.5 seconds inside the walls, which keep it
-    /// compact. The walls then go for a last half second, so no book stays propped against
-    /// one. Every 10 steps the interface gets a turn, and a cancelled task stops with
-    /// `CancellationError`.
+    /// land face down, showing only their cloth (see `PileLayout.settleGroups`). Each group
+    /// falls for 0.4 seconds before the next one appears, and the pile settles for 2.5 seconds
+    /// inside the walls, which keep it compact. The walls stand at least 3.4 units apart, so
+    /// even a tray framed closely around one book lets it lie flat at any turn. The walls then
+    /// go for a last half second, so no book stays propped against one. Every 10 steps the
+    /// interface gets a turn, and a cancelled task stops with `CancellationError`.
     func settle(
         _ books: [CloudBook], on tray: PileTray, camera: PileCamera, seed: UInt64,
         model: AppModel, step: () throws -> Void
     ) async throws {
         look(through: camera)
-        build(tray)
+        // Room for the longest book, 3.15 units corner to corner, tilted a little.
+        build(tray.scaled(toFit: 3.4))
         await prepare(books, prefetching: [], coverWait: .seconds(10), model: model)
         func run(_ steps: Int) async throws {
             for index in 0..<steps {
@@ -602,16 +668,10 @@ final class BookPileScene {
                 try step()
             }
         }
-        let area = tray.scaled(by: 0.7)
-        let plan = PileLayout.dropPlan(books, in: area, seed: seed, height: 1.2, tumble: 0.25)
-        // A small tray crowds the plan's cells until books start inside one another and the
-        // physics flings them away, so fewer books fall at once: one per 8 square units.
-        let size = max(1, Int(area.area / 8))
-        for group in PileLayout.groups(of: plan.count, size: size) {
+        for group in PileLayout.settleGroups(books, in: tray, seed: seed) {
             let top = max(0, shelf.visualBounds(relativeTo: root).max.y)
-            for var slot in plan[group] {
+            for var slot in group {
                 slot.transform.translation.y += top
-                slot.spin = .zero
                 spawn(slot, mode: .dynamic)
             }
             try await run(24)
@@ -657,6 +717,7 @@ final class BookPileScene {
         let missing = books.filter { parts[$0.id]?.look != model.look(for: $0) }
         guard !missing.isEmpty else { return }
         await model.fonts.load(missing.compactMap { model.library?.designs[$0.id] })
+        guard !Task.isCancelled else { return }
         let covers = model.covers
         let pixels = coverPixels
         let (arrivals, delivery) = AsyncStream.makeStream(of: (Int, UIImage?).self)
@@ -713,13 +774,13 @@ final class BookPileScene {
             SpineView(book: book, look: look)
                 .frame(width: Self.spineLength, height: thickness)
                 .background(look.background.color), scale: textureScale)
-        // Facing the camera, `Book3DView` draws only its front: the cover, or the title on the
-        // spine's cloth when there is none.
+        // Unshaded, since RealityKit lights the front as it does the cloth.
+        let width = 224 * CGFloat(size.x / size.y)
         let front =
             cover.flatMap { Self.crop($0, to: size) }
             ?? Self.render(
-                Book3DView(book: book, look: look, cover: nil, height: 224, yaw: 0, pitch: 0)
-                    .background(look.background.color), scale: textureScale)
+                BookFrontPlaceholder(book: book, look: look, width: width)
+                    .frame(width: width, height: 224), scale: textureScale)
         let coverTexture = await Self.texture(front)
         let spineTexture = await Self.texture(spine)
         let cloth =
@@ -806,7 +867,7 @@ final class BookPileScene {
                     }
                 }
             }
-            setMode(.kinematic, of: book)
+            setMode(holdsStill ? .dynamic : .kinematic, of: book)
             let height = min(position.y + 1.2, PileLayout.ceiling - 2)
             drag = Drag(
                 book: book, height: height, offset: (position - grabbed) * [1, 0, 1],
@@ -863,7 +924,7 @@ final class BookPileScene {
     /// Starts or stops following the phone's tilt. Stopping returns gravity to straight down.
     func setTilt(_ enabled: Bool) {
         if enabled {
-            guard canTilt, !motion.isDeviceMotionActive else { return }
+            guard Self.canTilt, !motion.isDeviceMotionActive else { return }
             motion.deviceMotionUpdateInterval = 1 / 30
             motion.startDeviceMotionUpdates()
         } else {

@@ -56,15 +56,7 @@ struct Book3DView: View {
                 Image(uiImage: cover).resizable().scaledToFill()
                     .frame(width: size.width, height: size.height).clipped()
             } else {
-                ZStack {
-                    look.background.color
-                    Text(look.text(book.spineTitle))
-                        .font(look.font(size: size.width * 0.14))
-                        .multilineTextAlignment(.center)
-                        .minimumScaleFactor(0.4)
-                        .foregroundStyle(look.foreground.color)
-                        .padding(size.width * 0.12)
-                }
+                BookFrontPlaceholder(book: book, look: look, width: size.width)
             }
         case .back:
             look.background.color
@@ -74,6 +66,27 @@ struct Book3DView: View {
             PageEdgeView(board: look.background.color, linesRunHorizontally: true)
         case .foreEdge:
             PageEdgeView(board: look.background.color, linesRunHorizontally: false)
+        }
+    }
+}
+
+/// The front of a book without a cover: its title on the spine's cloth, sized to the front's
+/// `width`. `Book3DView` shades it with the other faces; the pile draws it flat and lets
+/// RealityKit light it.
+struct BookFrontPlaceholder: View {
+    let book: CloudBook
+    let look: SpineLook
+    let width: CGFloat
+
+    var body: some View {
+        ZStack {
+            look.background.color
+            Text(look.text(book.spineTitle))
+                .font(look.font(size: width * 0.14))
+                .multilineTextAlignment(.center)
+                .minimumScaleFactor(0.4)
+                .foregroundStyle(look.foreground.color)
+                .padding(width * 0.12)
         }
     }
 }

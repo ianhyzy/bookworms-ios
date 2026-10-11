@@ -34,10 +34,11 @@ enum PileSnapshotRenderer {
     /// The books drop in reverse order, so the first books land on top; past `maximumBooks`,
     /// only the first ones drop, and the heading still counts every book. Fewer books are
     /// framed closer, with sharper textures, and the camera then fits the settled pile between
-    /// the heading and the bottom margin. `seed` picks their starting poses. Covers and spine
-    /// fonts load first, for up to 10 seconds, and the simulation then runs on the main actor
-    /// between short pauses. The renderer, the scene, and their textures are released when
-    /// this returns.
+    /// the heading and the bottom margin. `seed` picks their starting poses. Spine fonts load
+    /// first, for as long as their downloads take (see `SpineFonts.load(_:)`), then covers, for
+    /// up to 10 seconds, and the simulation then runs on the main actor between short pauses.
+    /// A cancelled render stops waiting for fonts and covers at once. The renderer, the scene,
+    /// and their textures are released when this returns.
     ///
     /// One image renders at a time: a call waits for the previous one, which can still be
     /// finishing its frame after its task was cancelled. `isRendering` stays set from the start

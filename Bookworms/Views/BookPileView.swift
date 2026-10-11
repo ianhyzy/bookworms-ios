@@ -7,17 +7,20 @@ struct PileViewport: Equatable {
     var insets: EdgeInsets
 }
 
-/// The library as a physics toy: every book drops onto a table and piles up.
+/// The library as a physics toy: the first `maximumBooks` books drop onto a table and pile up.
 ///
 /// Drag a book to pick it up and throw it, tap one for its details, pinch to zoom, and turn two
 /// fingers to look around the pile. Tilting the phone tips the table, when the phone reports
-/// motion. With Reduce Motion on, books appear in tidy stacks instead of falling, and tilt is
-/// off. The table fills the screen, but walls keep the books between the bars.
+/// motion and the shelf's **Tilt to move books** is on. With Reduce Motion on, books appear in
+/// tidy stacks instead of falling, and tilt is off. The table fills the screen, but walls keep
+/// the books between the bars.
 ///
 /// Returning from a book's details finds the pile as the reader left it. Leaving it any other
 /// way, such as for another tab, frees its books and textures, and the books drop again on the
-/// reader's return. **Share** makes an image of the same books in a new pile, headed `title`.
-/// While its sheet is open, the pile leaves the screen and keeps its books.
+/// reader's return. **Share** makes an image of `books`, up to
+/// `PileSnapshotRenderer.maximumBooks` of them, in a new pile headed `title`. While its sheet
+/// is open, the pile leaves the screen and keeps its books, and tilt pauses, as it does while
+/// the app is not active.
 ///
 /// RealityKit's render thread can crash drawing this view while a share image's offscreen
 /// renderer steps the same engine, so while any pile image renders, such as the Share tab's
@@ -25,6 +28,10 @@ struct PileViewport: Equatable {
 /// `RealityView` in a tab that is not selected, and a view removed there lingers until its tab
 /// shows again and then takes its scene along, so the view itself stays.
 struct BookPileView: View {
+    /// The most books the pile drops. Tall enough stacks of more would reach the ceiling, and
+    /// their textures would outgrow the memory `BookPileScene` budgets for.
+    static let maximumBooks = 300
+
     let books: [CloudBook]
     /// The name of the books' time frame, which heads the share image.
     let title: String
@@ -32,6 +39,8 @@ struct BookPileView: View {
 
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    /// Set by **Tilt to move books** in the shelf's **Sort and filter** menu.
     @AppStorage("BookwormsPileTilt") private var tilts = true
     @State private var scene = BookPileScene()
     @State private var viewport: PileViewport?
@@ -39,10 +48,16 @@ struct BookPileView: View {
     @State private var generation = 0
     /// Set while a book's details cover the pile.
     @State private var showsBook = false
+    /// Set between `onAppear` and `onDisappear`. The view stays in the hierarchy under a pushed
+    /// book or in a tab that is not selected, where tilt must stay off.
+    @State private var isShown = false
     @State private var sharesPile = false
     /// Set while a finger holds a book. SwiftUI resets it when the drag ends or is cancelled,
     /// so the book is let go either way.
     @GestureState private var holdsBook = false
+    /// Set while fingers zoom or turn the camera, and reset like `holdsBook`, so the next
+    /// gesture starts from the camera as it is.
+    @GestureState private var movesCamera = false
 
     private struct DropRequest: Equatable {
         let ids: [Int]
@@ -52,6 +67,7 @@ struct BookPileView: View {
     }
 
     var body: some View {
+        let dropped = Array(books.prefix(Self.maximumBooks))
         ZStack {
             if sharesPile {
                 Color.clear
@@ -87,22 +103,23 @@ struct BookPileView: View {
         }
         .task(
             id: DropRequest(
-                ids: books.map(\.id), tidy: reduceMotion, generation: generation,
+                ids: dropped.map(\.id), tidy: reduceMotion, generation: generation,
                 viewport: viewport)
         ) {
             guard let viewport else { return }
             await scene.fill(
-                books, tidy: reduceMotion, generation: generation, viewport: viewport,
+                dropped, tidy: reduceMotion, generation: generation, viewport: viewport,
                 model: model)
         }
         .onAppear {
             showsBook = false
-            scene.setTilt(tiltIsOn)
+            isShown = true
             #if DEBUG
                 if PileSnapshotDebug.opensSheet { sharesPile = true }
             #endif
         }
         .onDisappear {
+            isShown = false
             scene.endDrag()
             scene.setTilt(false)
             if !showsBook { scene.release() }
@@ -111,27 +128,25 @@ struct BookPileView: View {
         .onChange(of: PileSnapshotRenderer.isRendering) { _, isRendering in
             if isRendering { scene.root.removeFromParent() }
         }
-        .onChange(of: tiltIsOn) { scene.setTilt(tiltIsOn) }
+        // Stops sampling motion while nothing reads it, and takes a new reference afterward.
+        .onChange(of: tracksTilt) { scene.setTilt(tracksTilt) }
         .onChange(of: holdsBook) { if !holdsBook { scene.endDrag() } }
+        .onChange(of: movesCamera) { if !movesCamera { scene.endCameraMove() } }
         .toolbar {
-            ToolbarItemGroup(placement: .topBarLeading) {
+            ToolbarItem(placement: .topBarLeading) {
                 Button(dropTitle, systemImage: "arrow.counterclockwise") { generation += 1 }
-                if scene.canTilt && !reduceMotion {
-                    Toggle("Tilt to move books", systemImage: "gyroscope", isOn: $tilts)
-                        .toggleStyle(.button)
-                }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Share", systemImage: "square.and.arrow.up") { sharesPile = true }
             }
             // Names the time frame, which the toolbar's menu saves across launches.
             ToolbarItem(placement: .subtitle) {
-                Text(books.count == 1 ? "\(title) · 1 book" : "\(title) · \(books.count) books")
+                Text("\(title) · \(count)")
             }
         }
         .sheet(isPresented: $sharesPile) { PileSnapshotSheet(books: books, title: title) }
         .accessibilityElement()
-        .accessibilityLabel(books.count == 1 ? "Pile of 1 book" : "Pile of \(books.count) books")
+        .accessibilityLabel("Pile of \(count)")
         .accessibilityValue(title)
         .accessibilityHint(
             "Drag a book to throw it, or tap one for its details. To go through books one at a time, choose Stack or Shelf."
@@ -140,6 +155,18 @@ struct BookPileView: View {
     }
 
     private var tiltIsOn: Bool { tilts && !reduceMotion }
+    private var tracksTilt: Bool {
+        isShown && tiltIsOn && !sharesPile && scenePhase == .active
+    }
+
+    /// The number of books, such as "39 books", or "300 of 1,024 books" past `maximumBooks`.
+    private var count: String {
+        if books.count > Self.maximumBooks {
+            return "\(Self.maximumBooks) of \(books.count.formatted()) books"
+        }
+        return books.count == 1 ? "1 book" : "\(books.count.formatted()) books"
+    }
+
     private var dropTitle: String { reduceMotion ? "Stack again" : "Drop again" }
 
     private var throwBook: some Gesture {
@@ -167,13 +194,13 @@ struct BookPileView: View {
     private var moveCamera: some Gesture {
         MagnifyGesture()
             .simultaneously(with: RotateGesture())
+            .updating($movesCamera) { _, moves, _ in moves = true }
             .onChanged { value in
                 scene.moveCamera(
                     magnification: value.first?.magnification ?? 1,
                     rotation: value.second?.rotation ?? .zero, focus: value.first?.startLocation,
                     in: viewport?.size ?? .zero)
             }
-            .onEnded { _ in scene.endCameraMove() }
     }
 }
 

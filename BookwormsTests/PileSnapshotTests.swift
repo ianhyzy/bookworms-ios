@@ -93,19 +93,6 @@ final class PileSnapshotTests: XCTestCase {
         XCTAssertLessThanOrEqual(crowded.tray.area, 40 * PileSnapshotLayout.areaPerBook + 5)
     }
 
-    func testDropGroupsStayWithinOneWave() {
-        for (count, size) in [(150, 7), (150, 12), (40, 14), (5, 1), (16, 16), (20, 40)] {
-            let groups = PileLayout.groups(of: count, size: size)
-            XCTAssertEqual(groups.flatMap { Array($0) }, Array(0..<count))
-            for group in groups {
-                XCTAssertLessThanOrEqual(group.count, size)
-                XCTAssertEqual(
-                    group.lowerBound / PileLayout.waveSize,
-                    (group.upperBound - 1) / PileLayout.waveSize, "\(group)")
-            }
-        }
-    }
-
     func testFramingFitsSettledBooksInsideThePileRect() throws {
         let layout = try XCTUnwrap(PileSnapshotLayout(aspect: .story, count: 12))
         let zoomRange: ClosedRange<Float> = 0.25...layout.camera.zoom * 1.25
@@ -151,6 +138,11 @@ final class PileSnapshotTests: XCTestCase {
         let scaled = tray.scaled(by: 0.5)
         XCTAssertEqual(scaled.farZ + scaled.nearZ, tray.farZ + tray.nearZ, accuracy: 0.0001)
         XCTAssertEqual(scaled.area, tray.area * 0.25, accuracy: 0.0001)
+        // Grown until its narrower near edge spans 8 units; a tray that already does stays.
+        let grown = tray.scaled(toFit: 8)
+        XCTAssertEqual(grown.nearHalfWidth * 2, 8, accuracy: 0.0001)
+        XCTAssertEqual(grown.farZ + grown.nearZ, tray.farZ + tray.nearZ, accuracy: 0.0001)
+        XCTAssertEqual(tray.scaled(toFit: 4), tray)
     }
 
     func testBlankFramesAreDetected() {
