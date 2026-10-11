@@ -4,7 +4,8 @@ import simd
 
 @testable import Bookworms
 
-/// The dominoes' layout: finish order, the spacing rule, the winding path, and its fit.
+/// The dominoes' layout: finish order, the spacing rule, the winding path, its fit, and the
+/// cobwebs over long gaps.
 final class DominoTests: XCTestCase {
     private static let day = 86_400.0
     private static let start = Date(timeIntervalSince1970: 1_577_880_000)  // 2020-01-01 12:00 UTC
@@ -24,24 +25,60 @@ final class DominoTests: XCTestCase {
         return book(id, finished: date.formatted(.iso8601.year().month().day()), pages: pages)
     }
 
-    func testBingesStayWithinReachAndSlumpsLeaveAGapTooWide() {
-        for height: Float in [1.7, 2.1, 2.4, 2.8] {
-            XCTAssertEqual(DominoLayout.gap(days: 0, height: height), height * 0.15, accuracy: 1e-4)
-            var previous: Float = 0
-            for days in 0..<DominoLayout.slumpDays {
-                let gap = DominoLayout.gap(days: days, height: height)
-                XCTAssertGreaterThan(gap, previous)
-                // The falling book's head strikes the next book high up.
-                XCTAssertLessThan(gap, height * 0.55)
-                previous = gap
-            }
-            // A slump lies beyond the falling book's reach, its height, by a quarter book or more.
-            XCTAssertEqual(
-                DominoLayout.gap(days: 30, height: height), height * 1.25, accuracy: 1e-4)
-            XCTAssertEqual(DominoLayout.gap(days: 60, height: height), height * 1.5, accuracy: 1e-4)
-            XCTAssertEqual(
-                DominoLayout.gap(days: 900, height: height), height * 1.75, accuracy: 1e-4)
+    func testEveryGapStaysWithinReachForAnyPairOfSizes() {
+        // Every height and thickness `BookShape` makes, at least 6 times as long as thick.
+        let heights = stride(from: Float(1.7), through: BookShape.longest, by: 0.1)
+        let sizes = heights.flatMap { height in
+            stride(from: Float(0.04), through: min(0.4, height / 6), by: 0.04)
+                .map { SIMD3<Float>(height * 2 / 3, height, $0) }
         }
+        for a in sizes {
+            // Wider than the 15 percent that the closest books once stood apart.
+            XCTAssertEqual(DominoLayout.gap(height: a.y), a.y * 0.3, accuracy: 1e-5)
+            for b in sizes {
+                // On a row, or on a turn, where books may stand farther apart.
+                let turn = DominoLayout.turnSpacing(a, b) - (a.z + b.z) / 2
+                for gap in [DominoLayout.gap(height: a.y), turn] {
+                    XCTAssertLessThan(gap, a.y * 0.4, "\(a) before \(b)")
+                    // The falling book's head, or its back cover at the next book's top edge,
+                    // strikes the next book at least half way up.
+                    let strike = min(b.y, (a.y * a.y - gap * gap).squareRoot())
+                    XCTAssertGreaterThan(strike, b.y * 0.55, "\(a) before \(b)")
+                }
+            }
+        }
+    }
+
+    func testCobwebsMarkOnlyLongGapsAndGrowDenserWithThem() throws {
+        XCTAssertNil(DominoLayout.cobweb(days: 0))
+        XCTAssertNil(DominoLayout.cobweb(days: DominoLayout.cobwebDays - 1))
+        XCTAssertEqual(try XCTUnwrap(DominoLayout.cobweb(days: 30)), 0, accuracy: 1e-5)
+        XCTAssertEqual(try XCTUnwrap(DominoLayout.cobweb(days: 60)), 1 / 3, accuracy: 1e-5)
+        XCTAssertEqual(try XCTUnwrap(DominoLayout.cobweb(days: 240)), 1, accuracy: 1e-5)
+        XCTAssertEqual(try XCTUnwrap(DominoLayout.cobweb(days: 900)), 1, accuracy: 1e-5)
+        let near: [SIMD3<Float>] = [[0, 2, -0.5], [0, 2, 0.5]]
+        let far: [SIMD3<Float>] = [[0.6, 1.8, -0.5], [0.6, 1.8, 0.5]]
+        func threads(_ web: Cobweb) -> [SIMD3<Float>] {
+            web.pieces.flatMap { piece in piece.threads.map { $0 + piece.pivot } }
+        }
+        let sparse = Cobweb(near: near, far: far, density: 0, seed: 7)
+        let dense = Cobweb(near: near, far: far, density: 1, seed: 7)
+        XCTAssertGreaterThan(threads(dense).count, threads(sparse).count)
+        XCTAssertGreaterThan(dense.pieces.count, sparse.pieces.count)
+        // The same seed strings the same web.
+        XCTAssertEqual(threads(Cobweb(near: near, far: far, density: 0, seed: 7)), threads(sparse))
+        XCTAssertNotEqual(
+            threads(Cobweb(near: near, far: far, density: 0, seed: 8)), threads(sparse))
+        // Every thread hangs within the gap, under the higher edge, and above the sag's limit.
+        for point in threads(dense) {
+            XCTAssertGreaterThanOrEqual(point.x, -1e-4)
+            XCTAssertLessThanOrEqual(point.x, 0.6 + 1e-4)
+            XCTAssertLessThanOrEqual(abs(point.z), 0.5 + 1e-4)
+            XCTAssertLessThanOrEqual(point.y, 2 + 1e-4)
+            XCTAssertGreaterThan(point.y, 1.8 - 0.6 * 0.35 - 1e-4)
+        }
+        let ribbons = Cobweb.ribbons(try XCTUnwrap(dense.pieces.first).threads, width: 0.01)
+        XCTAssertGreaterThan(ribbons.positions.count, 0)
     }
 
     func testDominoMassFollowsOnlyHeight() {
@@ -105,7 +142,7 @@ final class DominoTests: XCTestCase {
         XCTAssertFalse(path.isTurning(at: path.period + 1))
     }
 
-    func testSlumpsAreOutOfReachAndOtherGapsWithinIt() {
+    func testTimeDoesNotSpaceTheChain() {
         // Gaps of 0 to 100 days, and thick and thin books, around several turns.
         var day = 0
         let books = (0..<80)
@@ -115,12 +152,14 @@ final class DominoTests: XCTestCase {
             }
         let plan = DominoLayout.plan(DominoLayout.chain(books, now: .now), aspect: 0.5)
         XCTAssertGreaterThan(plan.slots.last?.distance ?? 0, 3 * plan.path.period)
+        XCTAssertTrue(plan.slots.contains { $0.days >= DominoLayout.cobwebDays })
         for (slot, next) in zip(plan.slots, plan.slots.dropFirst()) {
             let gap = next.distance - slot.distance - (slot.size.z + next.size.z) / 2
-            if slot.days >= DominoLayout.slumpDays {
-                XCTAssertGreaterThan(gap, slot.size.y * 1.2)
+            if plan.path.isTurning(at: slot.distance) || plan.path.isTurning(at: next.distance) {
+                XCTAssertGreaterThanOrEqual(gap, DominoLayout.gap(height: slot.size.y) - 1e-4)
+                XCTAssertLessThan(gap, slot.size.y * 0.4)
             } else {
-                XCTAssertLessThan(gap, slot.size.y * 0.6)
+                XCTAssertEqual(gap, DominoLayout.gap(height: slot.size.y), accuracy: 1e-3)
             }
         }
     }
@@ -138,7 +177,7 @@ final class DominoTests: XCTestCase {
     }
 
     func testTheLongestChainFitsTheTable() {
-        // The most books, every one thick and a long slump after the one before.
+        // The most books, every one as thick and as long as books get.
         let books = (0..<DominoLayout.maximumBooks).map { book($0, day: $0 * 200, pages: 1400) }
         for aspect: Float in [0.3, 0.5, 1] {
             let plan = DominoLayout.plan(DominoLayout.chain(books, now: .now), aspect: aspect)
@@ -192,15 +231,12 @@ final class DominoTests: XCTestCase {
     }
 
     func testPhaseFollowsTheFront() {
-        let days = [3, 45, 0]
         func phase(next: Int, count: Int = 3, started: Bool, settled: Bool) -> DominoPhase {
-            DominoLayout.phase(next: next, count: count, started: started, settled: settled) {
-                days[$0]
-            }
+            DominoLayout.phase(next: next, count: count, started: started, settled: settled)
         }
         XCTAssertEqual(phase(next: 0, started: false, settled: true), .standing)
         XCTAssertEqual(phase(next: 1, started: true, settled: false), .running)
-        XCTAssertEqual(phase(next: 2, started: true, settled: true), .stalled(fallen: 2, days: 45))
+        XCTAssertEqual(phase(next: 2, started: true, settled: true), .stalled(fallen: 2))
         XCTAssertEqual(phase(next: 3, started: true, settled: false), .running)
         XCTAssertEqual(phase(next: 3, started: true, settled: true), .done)
         // A chain that fell without a push, or has no books, never waits for one.
@@ -208,7 +244,7 @@ final class DominoTests: XCTestCase {
         XCTAssertEqual(phase(next: 3, started: false, settled: true), .done)
         XCTAssertEqual(phase(next: 0, count: 0, started: false, settled: true), .done)
         XCTAssertFalse(phase(next: 0, count: 0, started: false, settled: false).waitsForPush)
-        XCTAssertTrue(DominoPhase.stalled(fallen: 1, days: 2).waitsForPush)
+        XCTAssertTrue(DominoPhase.stalled(fallen: 1).waitsForPush)
     }
 
     func testThreeDOffersDominoes() {

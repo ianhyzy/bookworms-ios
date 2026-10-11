@@ -2,11 +2,12 @@ import RealityKit
 import SwiftUI
 
 /// The time frame's books as dominoes: they stand on end along a winding path in finish order,
-/// spaced by the days between finishes (`DominoLayout`), so a reading binge is a tight run and
-/// a slump is a gap that a falling book cannot cross.
+/// evenly spaced (`DominoLayout`), and a cobweb hangs between two books wherever 30 days or more
+/// passed between their finishes (`DominoLayout.cobwebDays`).
 ///
-/// A tap on the first book topples the chain, which stops at each slump until the reader taps
-/// the next book, which a glow marks, to nudge it on. A tap on any book the chain has not
+/// A tap on the first book, which a glow marks, topples the whole chain, tearing the cobwebs
+/// as it goes. Should the chain stop, such as where a book leans on the next without knocking
+/// it over, the glow marks the book to tap to nudge it on. A tap on any book the chain has not
 /// reached also pushes it on. Tapping a book the chain has passed, or touching and holding any
 /// book, calls `open` to push its details, and the chain is as the reader left it on return.
 /// Pinch to zoom, and drag to look along the path. **Set up again** stands every book again.
@@ -60,7 +61,7 @@ struct DominoesView: View {
         .ignoresSafeArea()
         .accessibilityElement()
         .accessibilityLabel("Dominoes of \(count)")
-        .accessibilityValue("\(title). \(status)")
+        .accessibilityValue("\(title). \(cobwebs)\(status)")
         .accessibilityHint("To go through books one at a time, choose Stack or Shelf.")
         .accessibilityActions {
             if scene.status.phase.waitsForPush {
@@ -132,8 +133,6 @@ struct DominoesView: View {
             switch scene.status.phase {
             case .standing:
                 "Tap the glowing book to start the chain. Touch and hold any book for its details."
-            case .stalled(_, let days) where days >= DominoLayout.slumpDays:
-                "\(days.formatted()) days without finishing a book stopped the chain. Tap the glowing book to go on."
             case .stalled:
                 "The chain stopped. Tap the glowing book to nudge it on."
             default: nil
@@ -159,11 +158,20 @@ struct DominoesView: View {
         case .settingUp: "Setting up."
         case .standing: "Standing. Push the first book to start the chain."
         case .running: "Falling."
-        case .stalled(let fallen, let days) where days >= DominoLayout.slumpDays:
-            "Stopped after \(fallen) of \(chainLength) books, at \(days.formatted()) days without finishing a book. Push the next book to go on."
-        case .stalled(let fallen, _):
+        case .stalled(let fallen):
             "Stopped after \(fallen) of \(chainLength) books. Push the next book to go on."
         case .done: "Every book has fallen."
+        }
+    }
+
+    /// How many cobwebs the chain has, as VoiceOver reads it before the status, or nothing for
+    /// none.
+    private var cobwebs: String {
+        switch scene.status.cobwebs {
+        case 0: ""
+        case 1: "A cobweb marks a gap of \(DominoLayout.cobwebDays) days or more between finishes. "
+        case let count:
+            "\(count) cobwebs mark gaps of \(DominoLayout.cobwebDays) days or more between finishes. "
         }
     }
 

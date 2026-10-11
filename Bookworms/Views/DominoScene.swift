@@ -61,42 +61,48 @@ struct DominoPlan {
     let extent: SIMD2<Float>
 }
 
-/// Where the dominoes stand: in finish order along a winding path, spaced by the days between
-/// finishes, so a reading binge is a tight run and a slump is a gap that a falling book cannot
-/// cross. Scene units are decimeters, as in the pile.
+/// Where the dominoes stand: in finish order along a winding path, evenly spaced for their
+/// heights, so one push topples the whole chain. Time does not space the books; a cobweb marks
+/// each long gap between finishes instead. Scene units are decimeters, as in the pile.
 enum DominoLayout {
     /// The most books a chain stands: the most recently finished.
     static let maximumBooks = 300
-    /// The days without a finish that make a slump, which the chain cannot cross.
-    static let slumpDays = 30
+    /// The days without a finish that string a cobweb between two books.
+    static let cobwebDays = 30
+    /// The days at and past which a cobweb is as dense as it gets (see `cobweb(days:)`).
+    static let densestCobwebDays = 240
     /// The turns' radius, half the distance between rows. It exceeds half the widest book, so
     /// books on a turn keep their inner corners apart (see `turnSpacing`).
     static let turnRadius: Float = 2
     static let shortestRow: Float = 6
-    /// How deep the rows may reach, and the longest a row may be. Rows stop at this length, so a
-    /// very long chain, such as 300 thick books finished months apart, reaches about 80 units
-    /// deep, which still keeps the path and the books that fall past its ends on the 90-unit
-    /// table.
+    /// How deep the rows may reach, and the longest a row may be. The longest chain, 300 of the
+    /// thickest and longest books, runs about 370 units, which fits in rows well short of this,
+    /// so the path and the books that fall past its ends stay on the 90-unit table.
     static let deepest: Float = 72
     /// The space a turn keeps between the inner corners of neighboring books.
     static let clearance: Float = 0.05
 
-    /// The gap from a book's back cover to the next book's front cover, for a book of `height`
-    /// whose finish came `days` before the next book's.
+    /// The gap from a book's back cover to the next book's front cover, as a share of the
+    /// first book's height.
+    static let spacing: Float = 0.3
+
+    /// The gap from the back cover of a book of `height` to the next book's front cover on a
+    /// row: `spacing` times the height, whatever the days between their finishes.
     ///
     /// A toppling book pivots on its leading bottom edge, the back cover's, so its head reaches
-    /// at most `height` past that edge: its reach. Books finished within `slumpDays` of each
-    /// other stand 15 percent of the height apart on the same day, growing evenly to 54
-    /// percent at 29 days, so the falling book strikes the next one at least 84 percent of its
-    /// own height up, or at the next book's top edge when that book is shorter, and knocks it
-    /// over. A slump leaves 1.25 times the height, a quarter of a book beyond reach, and
-    /// another quarter for each doubling of its length, up to 1.75 times the height at 120 days
-    /// or more. The falling book lands short, and the chain stops there.
-    static func gap(days: Int, height: Float) -> Float {
-        let days = Float(max(0, days))
-        let slump = Float(slumpDays)
-        guard days >= slump else { return height * (0.15 + 0.4 * days / slump) }
-        return height * min(1.75, 1.25 + 0.25 * log2(days / slump))
+    /// at most `height` past that edge: its reach. At 30 percent of its height, the falling
+    /// book strikes the next one about 95 percent of its own height up, or at the next book's
+    /// top edge when that book is shorter, so every pair of sizes knocks over: a short book
+    /// strikes a doorstopper more than half way up it.
+    static func gap(height: Float) -> Float { height * spacing }
+
+    /// How dense a cobweb hangs over a gap of `days` between two finishes: `nil` under
+    /// `cobwebDays`, then from 0 at `cobwebDays` to 1 at `densestCobwebDays` or more, by equal
+    /// steps for each doubling of the gap.
+    static func cobweb(days: Int) -> Float? {
+        guard days >= cobwebDays else { return nil }
+        let doublings = log2(Float(densestCobwebDays) / Float(cobwebDays))
+        return min(1, log2(Float(days) / Float(cobwebDays)) / doublings)
     }
 
     /// `books` in finish order, oldest first, with the whole days from each finish to the next.
@@ -122,15 +128,14 @@ enum DominoLayout {
     /// Stands `chain` along a path whose width is about `aspect` times its depth on the table,
     /// such as the visible table's, centered on the table.
     ///
-    /// Each book's middle stands half its thickness, `gap`, and half the next book's thickness
-    /// from the next book's along the path. On a turn the books fan out, so they stand farther
-    /// apart where their inner corners would otherwise touch (see `turnSpacing`).
+    /// Each book's middle stands half its thickness, `gap(height:)`, and half the next book's
+    /// thickness from the next book's along the path. On a turn the books fan out, so they stand
+    /// farther apart where their inner corners would otherwise touch (see `turnSpacing`).
     static func plan(_ chain: [(book: CloudBook, days: Int)], aspect: Float) -> DominoPlan {
         let sizes = chain.map { BookShape(of: $0.book, coverAspect: 2 / 3).size }
         let spacings = chain.indices.dropLast()
             .map { index in
-                (sizes[index].z + sizes[index + 1].z) / 2
-                    + gap(days: chain[index].days, height: sizes[index].y)
+                (sizes[index].z + sizes[index + 1].z) / 2 + gap(height: sizes[index].y)
             }
         let path = DominoPath(rowLength: rowLength(for: spacings.reduce(0, +), aspect: aspect))
         var slots: [DominoSlot] = []
@@ -234,18 +239,14 @@ enum DominoLayout {
 
     /// The chain's phase once every book stands, given `next`, the first of `count` books that
     /// has not fallen; whether a push or a book falling on its own has `started` the chain; and
-    /// whether no book has started to fall for a while (`settled`). `days(index)` gives the
-    /// days from the finish of the book at `index` to the next book's.
+    /// whether no book has started to fall for a while (`settled`).
     ///
     /// Once no book is left standing, the chain is running or done, whether or not it was
     /// pushed, so a chain without books, or one that fell on its own, never waits for a push.
-    static func phase(
-        next: Int, count: Int, started: Bool, settled: Bool, days: (Int) -> Int
-    ) -> DominoPhase {
+    static func phase(next: Int, count: Int, started: Bool, settled: Bool) -> DominoPhase {
         if next >= count { return settled ? .done : .running }
         guard started else { return .standing }
-        guard settled else { return .running }
-        return .stalled(fallen: next, days: next > 0 ? days(next - 1) : 0)
+        return settled ? .stalled(fallen: next) : .running
     }
 
     /// A book standing on its tail with its front cover facing back along `heading`, so it
@@ -266,9 +267,9 @@ enum DominoPhase: Equatable {
     case standing
     /// Books are falling.
     case running
-    /// The chain stopped after `fallen` books: at a slump, or wherever a book stayed standing.
-    /// `days` are the days between the last fallen book's finish and the next book's.
-    case stalled(fallen: Int, days: Int)
+    /// The chain stopped after `fallen` books, where a book stayed standing, such as one that
+    /// leans on the next book without knocking it over.
+    case stalled(fallen: Int)
     /// Every book has fallen.
     case done
 
@@ -281,15 +282,20 @@ enum DominoPhase: Equatable {
     }
 }
 
-/// The chain's phase, kept apart from the scene so that views update only when it changes.
+/// The chain's phase and its number of cobwebs, kept apart from the scene so that views update
+/// only when they change.
 @MainActor @Observable
 final class DominoStatus {
     fileprivate(set) var phase = DominoPhase.settingUp
+    /// The gaps of `DominoLayout.cobwebDays` or more between finishes in the chain, each of
+    /// which a cobweb marks.
+    fileprivate(set) var cobwebs = 0
 }
 
 /// The dominoes' RealityKit content: the desk and its lamp (`DeskStage`), whose pool of light
-/// covers the path, and one rigid body per book (`BookFactory`), standing where `DominoLayout`
-/// places it.
+/// covers the path, one rigid body per book (`BookFactory`), standing where `DominoLayout`
+/// places it, and a cobweb (`Cobweb`) between each pair of books whose finishes lie
+/// `DominoLayout.cobwebDays` or more apart.
 ///
 /// The chain's front is the book after the last one that tilted past about 26 degrees. Each
 /// frame checks only the next three books, so the work per frame does not grow with the
@@ -300,6 +306,9 @@ final class DominoStatus {
 /// a push, without Reduce Motion, the camera eases after the front, and once every book has
 /// fallen it eases back to the whole path. A pinch or drag stops it following until the next
 /// push.
+///
+/// A cobweb tears once either of its books tilts past `tearTilt`, about when the near book's
+/// back cover sweeps into it. Like the front, each frame checks only the webs near the front.
 @MainActor
 final class DominoScene {
     /// The scene root, which runs the physics simulation.
@@ -321,6 +330,9 @@ final class DominoScene {
     /// The cosine of the tilt under which a book counts as upright, about 6 degrees: more
     /// than a book rocks when it stands up, and less than it leans against the next book.
     private static let uprightTilt: Float = 0.995
+    /// The cosine of the tilt past which a book tears its cobwebs, about 8 degrees, when its
+    /// back cover has swept about half way across the gap at the web's sag.
+    private static let tearTilt: Float = 0.99
 
     private let camera = PerspectiveCamera()
     private let factory = BookFactory()
@@ -345,6 +357,10 @@ final class DominoScene {
     /// The standing books and their slots, in chain order.
     private var books: [ModelEntity] = []
     private var slots: [DominoSlot] = []
+    /// The cobwebs that still hang, in chain order, and those tearing.
+    private var cobwebs: [HangingCobweb] = []
+    private var torn: [HangingCobweb] = []
+    private lazy var silk = HangingCobweb.silk()
     private var indices: [Entity.ID: Int] = [:]
     /// The index of the next book to fall.
     private var next = 0
@@ -446,6 +462,7 @@ final class DominoScene {
             let plan = DominoLayout.plan(
                 chain, aspect: Float(safe.width / safe.height) * sin(PileCamera.pitch))
             self.plan = plan.slots
+            status.cobwebs = plan.slots.count(where: { DominoLayout.cobweb(days: $0.days) != nil })
             extent = plan.extent
             light(radius: max(6, simd_length(plan.extent) + 3))
             frame(viewport)
@@ -463,6 +480,7 @@ final class DominoScene {
             spawned = end
         }
         #if DEBUG
+            showDebugCobweb()
             await runDebugPushes()
         #endif
     }
@@ -479,6 +497,8 @@ final class DominoScene {
         shelf.children.removeAll()
         books = []
         slots = []
+        cobwebs = []
+        torn = []
         indices = [:]
         spawned = 0
         next = 0
@@ -490,6 +510,7 @@ final class DominoScene {
         mark(nil)
         factory.release(keeping: ids)
         status.phase = .settingUp
+        status.cobwebs = 0
     }
 
     /// Lays the lamp's pool over a circle of `radius` about the table's center: the first
@@ -533,6 +554,33 @@ final class DominoScene {
         indices[book.id] = books.count
         books.append(book)
         slots.append(slot)
+        if books.count > 1, let density = DominoLayout.cobweb(days: slots[books.count - 2].days) {
+            hangCobweb(after: books.count - 2, density: density)
+        }
+    }
+
+    /// Strings a cobweb of `density` between the facing top edges of the book at `index` and
+    /// the next book, from near their corners.
+    private func hangCobweb(after index: Int, density: Float) {
+        func edge(_ slot: DominoSlot, facing direction: Float) -> [SIMD3<Float>] {
+            // The built book's width follows its cover, unlike the slot's.
+            let size = factory.parts[slot.book.id]?.shape.size ?? slot.size
+            let across = SIMD2(-slot.heading.y, slot.heading.x) * size.x * 0.42
+            let middle = slot.position + slot.heading * size.z / 2 * direction
+            // Just under the top edge, so the threads leave the boards rather than float.
+            return [middle - across, middle + across].map { [$0.x, size.y - 0.005, $0.y] }
+        }
+        let (near, far) = (slots[index], slots[index + 1])
+        let web = Cobweb(
+            near: edge(near, facing: 1), far: edge(far, facing: -1), density: density,
+            seed: UInt64(bitPattern: Int64(near.book.id)) &* 0x9E37_79B9_7F4A_7C15
+                ^ UInt64(bitPattern: Int64(far.book.id)))
+        guard
+            let hanging = HangingCobweb(
+                web, book: index, material: silk, lighting: stage.lighting)
+        else { return }
+        shelf.addChild(hanging.root)
+        cobwebs.append(hanging)
     }
 
     /// Puts a cover that arrived after its book was built onto the standing book.
@@ -678,16 +726,35 @@ final class DominoScene {
             lastAdvance = clock
             started = true
         }
+        tearCobwebs()
+        for index in torn.indices.reversed() {
+            if !torn[index].advance(by: Float(deltaTime)) { torn.remove(at: index) }
+        }
         let phase = DominoLayout.phase(
             next: next, count: books.count, started: started,
-            settled: clock - lastAdvance > Self.stallTime
-        ) { slots[$0].days }
+            settled: clock - lastAdvance > Self.stallTime)
         if status.phase != phase { status.phase = phase }
         switch phase {
         case .standing, .stalled: mark(target)
         default: mark(nil)
         }
         if follows, cameraMove == nil { steer(Float(deltaTime)) }
+    }
+
+    /// Tears the cobwebs near the front whose books have tilted past `tearTilt`.
+    private func tearCobwebs() {
+        func tilt(_ index: Int) -> Float { books[index].transform.rotation.act([0, 1, 0]).y }
+        var index = 0
+        while index < cobwebs.count, cobwebs[index].book <= next + 2 {
+            let book = cobwebs[index].book
+            guard min(tilt(book), tilt(book + 1)) < Self.tearTilt else {
+                index += 1
+                continue
+            }
+            var web = cobwebs.remove(at: index)
+            web.tear(near: books[book], far: books[book + 1], fadesOnly: reducesMotion)
+            torn.append(web)
+        }
     }
 
     // MARK: Marking the next book
@@ -711,8 +778,8 @@ final class DominoScene {
         // A hair above the table, so the glow does not flicker against it.
         glow.transform = Transform(
             scale: [slot.size.x + 1.4, 1, slot.size.z + 1.2], translation: [0, 0.01, 0])
-        // Past the book's covers by less than the closest gap, 15 percent of a book's height,
-        // so the box does not cover a neighbor's taps on a row.
+        // Past the book's covers by less than the gap to a neighbor (`DominoLayout.gap`), so
+        // the box does not cover a neighbor's taps on a row.
         let box = slot.size + [0.4, 0.3, 0.3]
         hitBox.components.set(
             CollisionComponent(
@@ -782,6 +849,21 @@ final class DominoScene {
     }
 
     #if DEBUG
+        /// Simulator hook: `-BookwormsDominoCobweb <n>` zooms all the way in on the chain's nth
+        /// cobweb, counting from 1, once every book stands.
+        private func showDebugCobweb() {
+            guard
+                let number = UserDefaults.standard.string(forKey: "BookwormsDominoCobweb")
+                    .flatMap(Int.init), cobwebs.indices.contains(number - 1)
+            else { return }
+            let index = cobwebs[number - 1].book
+            let middle = (slots[index].position + slots[index + 1].position) / 2
+            look(
+                through: PileCamera(
+                    target: [middle.x, slots[index].size.y, middle.y],
+                    zoom: PileCamera.zoomRange.upperBound))
+        }
+
         /// Simulator hook: `-BookwormsDominoPush <seconds>` pushes the next book whenever the
         /// chain has stood or stalled that long, until every book has fallen.
         private func runDebugPushes() async {
