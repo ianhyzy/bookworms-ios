@@ -810,6 +810,13 @@ final class BookPileScene {
             await factory.prepare(
                 wave.map(\.book), prefetching: next.map(\.book), coverWait: Self.coverWait,
                 model: model)
+            // Renders the period's name while its books wait to fall.
+            let group = starts ? self.periods?[period] : nil
+            var label: TextureResource?
+            if let group, let span = group.span {
+                label = await PileCalendar.texture(
+                    YearInBooksCard.busiest(span, isCompact: false).value, season: group.season)
+            }
             if !tidy {
                 try? await Task.sleep(
                     until: lastWave
@@ -817,11 +824,10 @@ final class BookPileScene {
             }
             guard !Task.isCancelled, planKey == key else { return }
             for slot in wave { spawn(slot, mode: holdsStill ? .kinematic : .dynamic) }
-            if starts, let groups = self.periods {
+            if let group, let groups = self.periods {
                 calendar.show(
-                    groups[period].span.map { YearInBooksCard.busiest($0, isCompact: false).value },
-                    season: groups[period].season, isLast: period == groups.count - 1,
-                    facing: view)
+                    isFlying ? nil : label, season: group.season,
+                    isLast: period == groups.count - 1, facing: view)
             }
             spawned += wave.count
             lastWave = .now
@@ -1091,6 +1097,7 @@ final class BookPileScene {
         else { return nil }
         endDrag()
         cameraMove = nil
+        calendar.endGlow()
         let others = shelf.children.filter { $0 !== book }
             .map { $0.visualBounds(relativeTo: root) }
         setMode(.kinematic, of: book)
@@ -1467,10 +1474,12 @@ final class BookPileScene {
         /// motion hardware. For example, `0,0,1` holds the phone face down.
         private static let debugGravity = vector("BookwormsPileGravity")
 
-        /// The launch argument `key` as a vector of three comma-separated numbers.
+        /// The launch argument `key` as a vector of three comma-separated numbers. Spaces
+        /// around a number are ignored, so a value can start with a space before a minus sign,
+        /// which would otherwise make the argument parser read it as a key.
         private static func vector(_ key: String) -> SIMD3<Double>? {
             let parts = UserDefaults.standard.string(forKey: key)?.split(separator: ",")
-                .compactMap { Double($0) }
+                .compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
             guard let parts, parts.count == 3 else { return nil }
             return SIMD3(parts[0], parts[1], parts[2])
         }

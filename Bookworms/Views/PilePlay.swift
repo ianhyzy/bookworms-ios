@@ -228,9 +228,9 @@ struct PileBox {
 /// season, for a drop period by period.
 ///
 /// One label shows at a time: it fades in, holds, and fades out over `glowDuration`, drawn over
-/// the books so the pile cannot hide it, and its texture is released once it fades. The lamp eases to each period's color and holds it
-/// until the next period, and after the last period's glow it returns to its usual light.
-/// `advance` reports each new lamp color.
+/// the books so the pile cannot hide it, and its texture is released once it fades. The lamp
+/// eases to each period's color and holds it until the next period, and after the last
+/// period's glow it returns to its usual light. `advance` reports each new lamp color.
 @MainActor
 final class PileCalendar {
     /// The label, which the scene adds to its root. Hidden between glows.
@@ -245,36 +245,56 @@ final class PileCalendar {
         return SIMD3(Float(red), Float(green), Float(blue))
     }()
 
-    private lazy var plane = MeshResource.generatePlane(width: 5, height: 1.25)
+    /// About two thirds of the view's width where the label lies, at the texture's aspect.
+    private lazy var plane = MeshResource.generatePlane(width: 6.4, height: 2)
     private var glow: (elapsed: Float, isLast: Bool)?
     private var lamp = PileCalendar.resting
     private var target = PileCalendar.resting
 
     init() { label.isEnabled = false }
 
-    /// Starts a period's glow with `text`, flat on the table in front of `camera`'s target and
-    /// facing it, and eases the lamp toward `season`'s color, or its usual light for `nil`.
-    /// `isLast` returns the lamp to its usual light once this glow ends.
-    func show(_ text: String?, season: Float?, isLast: Bool, facing camera: PileCamera) {
-        let color = season.map(PileSeasons.lampColor) ?? Self.resting
-        target = color
-        guard let text, let texture = Self.texture(text, color: color) else {
-            glow = nil
-            hide()
-            return
-        }
+    /// The label for a period named `text` in `season`'s color, for `show`. The image renders
+    /// off the main actor, so prepare it before the period's books fall.
+    static func texture(_ text: String, season: Float?) async -> TextureResource? {
+        guard let image = await image(text, color: season.map(PileSeasons.lampColor) ?? resting)
+        else { return nil }
+        return try? await TextureResource(image: image, options: .init(semantic: .color))
+    }
+
+    /// Starts a period's glow with `texture` (see `texture(_:season:)`), flat on the table about
+    /// a third of the way from the middle of `camera`'s view to its bottom edge and facing it,
+    /// and eases the lamp toward `season`'s color, or its usual light for `nil`. `isLast`
+    /// returns the lamp to its usual light once this glow ends. Without a texture, the glow
+    /// keeps its time with the label hidden.
+    func show(
+        _ texture: TextureResource?, season: Float?, isLast: Bool, facing camera: PileCamera
+    ) {
+        target = season.map(PileSeasons.lampColor) ?? Self.resting
+        glow = (0, isLast)
+        guard let texture else { return hide() }
         var material = UnlitMaterial(applyPostProcessToneMap: false)
         material.color = .init(texture: .init(texture))
         material.blending = .transparent(opacity: .init(floatLiteral: 1))
         material.readsDepth = false
         label.model = ModelComponent(mesh: plane, materials: [material])
+        // Zooming scales the camera's distance about its target, so scaling the label's offset
+        // and size by the same factor keeps it where, and as large as, the default camera
+        // shows it.
         let turn = simd_quatf(angle: camera.yaw, axis: [0, 1, 0])
         label.transform = Transform(
+            scale: SIMD3(repeating: 1 / camera.zoom),
             rotation: turn * simd_quatf(angle: -.pi / 2, axis: [1, 0, 0]),
-            translation: camera.target + turn.act([0, 0.03, 4]))
+            translation: camera.target + turn.act([0, 0.03, 4 / camera.zoom]))
         label.components.set(OpacityComponent(opacity: 0))
         label.isEnabled = true
-        glow = (0, isLast)
+    }
+
+    /// Ends the glow at once, as its end would, such as when a book lifts toward its details,
+    /// where the label would show over the book.
+    func endGlow() {
+        if glow?.isLast == true { target = Self.resting }
+        glow = nil
+        hide()
     }
 
     /// Hides the label and gives the lamp its usual light at once.
@@ -313,22 +333,47 @@ final class PileCalendar {
             red: CGFloat(lamp.x), green: CGFloat(lamp.y), blue: CGFloat(lamp.z), alpha: 1)
     }
 
-    /// `text` in New York, white tinged with `color` and haloed in it, on a clear 1024 × 256
-    /// image, about 1 MB of GPU memory.
-    private static func texture(_ text: String, color: SIMD3<Float>) -> TextureResource? {
-        let tint = Color(red: Double(color.x), green: Double(color.y), blue: Double(color.z))
-        let renderer = ImageRenderer(
-            content: Text(text)
-                .font(.system(size: 110, weight: .semibold, design: .serif))
-                .lineLimit(1)
-                .minimumScaleFactor(0.4)
-                .foregroundStyle(tint.mix(with: .white, by: 0.6))
-                .shadow(color: tint, radius: 6)
-                .shadow(color: tint.opacity(0.8), radius: 22)
-                .frame(width: 1024, height: 256))
-        renderer.scale = 1
-        renderer.isOpaque = false
-        guard let image = renderer.cgImage else { return nil }
-        return try? TextureResource(image: image, options: .init(semantic: .color))
+    /// `text` in New York, white tinged with `color`, glowing in it over a soft dark halo that
+    /// keeps it legible on bright covers, on a clear 1024 × 320 image, about 1.3 MB of GPU
+    /// memory. Long names shrink to fit.
+    @concurrent nonisolated private static func image(_ text: String, color: SIMD3<Float>)
+        async -> CGImage?
+    {
+        let size = CGSize(width: 1024, height: 320)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = false
+        let tint = UIColor(
+            red: CGFloat(color.x), green: CGFloat(color.y), blue: CGFloat(color.z), alpha: 1)
+        let face = simd_mix(color, .one, SIMD3(repeating: 0.75))
+        let base = UIFont.systemFont(ofSize: 150, weight: .semibold)
+        var font = UIFont(
+            descriptor: base.fontDescriptor.withDesign(.serif) ?? base.fontDescriptor, size: 150)
+        let room = size.width - 140
+        let width = (text as NSString).size(withAttributes: [.font: font]).width
+        if width > room { font = font.withSize(150 * room / width) }
+        let string = NSAttributedString(
+            string: text,
+            attributes: [
+                .font: font,
+                .foregroundColor: UIColor(
+                    red: CGFloat(face.x), green: CGFloat(face.y), blue: CGFloat(face.z), alpha: 1),
+            ])
+        let bounds = string.size()
+        let origin = CGPoint(
+            x: (size.width - bounds.width) / 2, y: (size.height - bounds.height) / 2)
+        return UIGraphicsImageRenderer(size: size, format: format)
+            .image { context in
+                // The dark halo first, then a wide and a tight glow, each under the text.
+                let layers: [(color: UIColor, blur: CGFloat)] = [
+                    (.black.withAlphaComponent(0.55), 60), (tint.withAlphaComponent(0.9), 28),
+                    (tint, 6),
+                ]
+                for (color, blur) in layers {
+                    context.cgContext.setShadow(offset: .zero, blur: blur, color: color.cgColor)
+                    string.draw(at: origin)
+                }
+            }
+            .cgImage
     }
 }

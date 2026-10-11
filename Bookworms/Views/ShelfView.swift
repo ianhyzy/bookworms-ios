@@ -194,9 +194,9 @@ struct ShelfView: View {
     /// Names the drop by period for the time frame's periods.
     private var byPeriodTitle: String {
         switch pileFrame {
-        case .year: "Drop month by month"
-        case .month: "Drop week by week"
-        case .lifetime, nil: "Drop year by year"
+        case .year: "Drop by month"
+        case .month: "Drop by week"
+        case .lifetime, nil: "Drop by year"
         }
     }
 
