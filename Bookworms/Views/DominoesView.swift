@@ -6,9 +6,10 @@ import SwiftUI
 /// a slump is a gap that a falling book cannot cross.
 ///
 /// A tap on the first book topples the chain, which stops at each slump until the reader taps
-/// the next book to nudge it on. Tapping any other book, or touching and holding any book,
-/// calls `open` to push its details, and the chain is as the reader left it on return. Pinch
-/// to zoom, and drag to look along the path. **Set up again** stands every book again.
+/// the next book, which a glow marks, to nudge it on. Tapping any other book, or touching and
+/// holding any book, calls `open` to push its details, and the chain is as the reader left it
+/// on return. Pinch to zoom, and drag to look along the path. **Set up again** stands every
+/// book again.
 /// Collisions play taps and, while the shelf's **Sounds** is on, clacks (`ImpactFeedback`).
 ///
 /// Leaving other than for details, such as for another tab, frees the books and textures, and
@@ -78,8 +79,7 @@ struct DominoesView: View {
         } action: {
             viewport = $0
         }
-        .task(id: SetUpRequest(ids: books.map(\.id), generation: generation, viewport: viewport))
-        {
+        .task(id: SetUpRequest(ids: books.map(\.id), generation: generation, viewport: viewport)) {
             guard let viewport else { return }
             await scene.setUp(books, generation: generation, viewport: viewport, model: model)
         }
@@ -123,9 +123,11 @@ struct DominoesView: View {
         let text: String? =
             switch scene.status.phase {
             case .standing:
-                "Tap the first book, at the top left, to start the chain. Touch and hold any book for its details."
+                "Tap the glowing book to start the chain. Touch and hold any book for its details."
+            case .stalled(_, let days) where days >= DominoLayout.slumpDays:
+                "\(days.formatted()) days without finishing a book stopped the chain. Tap the glowing book to go on."
             case .stalled:
-                "The chain stopped. Tap the next standing book to nudge it on."
+                "The chain stopped. Tap the glowing book to nudge it on."
             default: nil
             }
         if let text {
@@ -156,7 +158,9 @@ struct DominoesView: View {
         case .settingUp: "Setting up."
         case .standing: "Standing. Push the first book to start the chain."
         case .running: "Falling."
-        case .stalled(let fallen):
+        case .stalled(let fallen, let days) where days >= DominoLayout.slumpDays:
+            "Stopped after \(fallen) of \(chainLength) books, at \(days.formatted()) days without finishing a book. Push the next book to go on."
+        case .stalled(let fallen, _):
             "Stopped after \(fallen) of \(chainLength) books. Push the next book to go on."
         case .done: "Every book has fallen."
         }

@@ -136,6 +136,37 @@ final class DominoTests: XCTestCase {
         XCTAssertEqual(front.z, -heading.y, accuracy: 1e-5)
     }
 
+    func testOutlineBoundsStandingAndFallenBooks() throws {
+        let books = (0..<12).map { book($0, day: $0 * 3) }
+        let slots = DominoLayout.plan(DominoLayout.chain(books, now: .now), aspect: 0.5).slots
+        let points = DominoLayout.outline(of: slots)
+        XCTAssertEqual(points.count, slots.count * 4 + 1)
+        for slot in slots {
+            // Both top corners across the path, at the book's height.
+            let tops = points.filter {
+                $0.y == slot.size.y
+                    && abs(simd_distance(SIMD2($0.x, $0.z), slot.position) - slot.size.x / 2) < 1e-4
+            }
+            XCTAssertGreaterThanOrEqual(tops.count, 2)
+        }
+        // The last book lands its height past its front bottom edge.
+        let last = try XCTUnwrap(slots.last)
+        let landing = try XCTUnwrap(points.last)
+        XCTAssertEqual(landing.y, 0)
+        XCTAssertEqual(
+            simd_dot(SIMD2(landing.x, landing.z) - last.position, last.heading),
+            last.size.y + last.size.z / 2, accuracy: 1e-4)
+    }
+
+    func testPushesTipTheFirstUprightBook() {
+        let upright = [false, false, true, true]
+        XCTAssertEqual(DominoLayout.pushTarget(next: 0, count: 4) { upright[$0] }, 2)
+        XCTAssertEqual(DominoLayout.pushTarget(next: 2, count: 4) { upright[$0] }, 2)
+        // It looks at most two books past the next one, and never past the last book.
+        XCTAssertEqual(DominoLayout.pushTarget(next: 0, count: 4) { _ in false }, 2)
+        XCTAssertEqual(DominoLayout.pushTarget(next: 3, count: 4) { _ in false }, 3)
+    }
+
     func testThreeDOffersDominoes() {
         XCTAssertEqual(ThreeDView.dominoes.title, "Dominoes")
         XCTAssertEqual(ThreeDView(rawValue: "dominoes"), .dominoes)

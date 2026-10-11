@@ -188,6 +188,39 @@ enum DominoLayout {
         return turnRadius * ((a.z + b.z) / 2 + clearance) / inner
     }
 
+    /// Points that bound the books of `slots` standing and fallen, for framing them: each
+    /// book's footprint across the path, at the table and at its height, and the table past
+    /// the last book where it lands. Every other book falls onto the path ahead of it, which
+    /// these points already cover.
+    static func outline(of slots: [DominoSlot]) -> [SIMD3<Float>] {
+        var points: [SIMD3<Float>] = []
+        points.reserveCapacity(slots.count * 4 + 1)
+        for slot in slots {
+            let across = SIMD2(-slot.heading.y, slot.heading.x) * slot.size.x / 2
+            for side in [slot.position - across, slot.position + across] {
+                points.append([side.x, 0, side.y])
+                points.append([side.x, slot.size.y, side.y])
+            }
+        }
+        if let last = slots.last {
+            let landing = last.position + last.heading * (last.size.y + last.size.z / 2)
+            points.append([landing.x, 0, landing.y])
+        }
+        return points
+    }
+
+    /// The book a push tips, given `next`, the first of `count` books that has not fallen.
+    ///
+    /// It is the first book from `next` that stands upright, looking at most two books past
+    /// `next`, or the last book looked at. A book that leans on the one after it without
+    /// knocking it over is not upright: pushing it again would only press it against that
+    /// book, so the push tips the book it leans on instead, and each push moves the chain on.
+    static func pushTarget(next: Int, count: Int, isUpright: (Int) -> Bool) -> Int {
+        var index = next
+        while index + 1 < min(count, next + 3), !isUpright(index) { index += 1 }
+        return index
+    }
+
     /// A book standing on its tail with its front cover facing back along `heading`, so it
     /// falls onto its back cover with the cover up. Its axes run spine to fore edge, tail to
     /// head, and back to front cover, as `BookShape` lays them out.
@@ -207,7 +240,8 @@ enum DominoPhase: Equatable {
     /// Books are falling.
     case running
     /// The chain stopped after `fallen` books: at a slump, or wherever a book stayed standing.
-    case stalled(fallen: Int)
+    /// `days` are the days between the last fallen book's finish and the next book's.
+    case stalled(fallen: Int, days: Int)
     /// Every book has fallen.
     case done
 }
@@ -225,9 +259,11 @@ final class DominoStatus {
 /// The chain's front is the book after the last one that tilted past about 26 degrees. Each
 /// frame checks only the next three books, so the work per frame does not grow with the
 /// chain, and a book that the chain skips counts as passed. The chain is stalled once no book
-/// has started to fall for `stallTime`. After a push, without Reduce Motion, the camera eases
-/// after the front, and once every book has fallen it eases back to the whole path. A pinch
-/// or drag stops it following until the next push.
+/// has started to fall for `stallTime`. While the chain waits for a push, a warm glow on the
+/// table marks the book a push tips (`DominoLayout.pushTarget`), and pulses unless Reduce
+/// Motion is on. After a push, without Reduce Motion, the camera eases after the front, and
+/// once every book has fallen it eases back to the whole path. A pinch or drag stops it
+/// following until the next push.
 @MainActor
 final class DominoScene {
     /// The scene root, which runs the physics simulation.
@@ -246,12 +282,25 @@ final class DominoScene {
     private static let coverWait = Duration.seconds(1.5)
     /// How many books are built and stood up at a time.
     private static let batchSize = 16
+    /// The cosine of the tilt under which a book counts as upright, about 6 degrees: more
+    /// than a book rocks when it stands up, and less than it leans against the next book.
+    private static let uprightTilt: Float = 0.995
+    /// The marker's collision group, which collides with nothing, so books pass through its
+    /// box while taps still find it.
+    private static let markerGroup = CollisionGroup(rawValue: 1 << 20)
 
     private let camera = PerspectiveCamera()
     private let factory = BookFactory()
     private var stage = DeskStage()
     private var poolRadius: Float?
     private let shelf = Entity()
+    /// Marks the book a push tips with `glow`, and takes that book's taps with a box a little
+    /// larger than the book, since a thin book is hard to hit from the overview.
+    private let marker = Entity()
+    private let glow: ModelEntity
+    private let pulse: AnimationResource?
+    /// The index of the book `marker` marks, if it shows.
+    private var marked: Int?
     private var key: Key?
     private var plan: [DominoSlot] = []
     private var extent = SIMD2<Float>.zero
@@ -293,6 +342,15 @@ final class DominoScene {
         root.addChild(camera)
         root.addChild(stage.root)
         root.addChild(shelf)
+        glow = Self.makeGlow()
+        pulse = try? AnimationResource.generate(
+            with: FromToByAnimation<Float>(
+                from: 0.5, to: 1, duration: 0.9, timing: .easeInOut, bindTarget: .opacity,
+                repeatMode: .autoReverse))
+        marker.addChild(glow)
+        marker.components.set(InputTargetComponent())
+        marker.isEnabled = false
+        root.addChild(marker)
         factory.coverArrived = { [weak self] id, material in self?.retexture(id, cover: material) }
     }
 
@@ -309,11 +367,13 @@ final class DominoScene {
         }
     }
 
-    /// Hides the dust and stops the camera from following the chain while `reduces`.
+    /// Hides the dust, holds the marker's glow steady, and stops the camera from following the
+    /// chain while `reduces`.
     func setReduceMotion(_ reduces: Bool) {
         reducesMotion = reduces
         stage.setDust(!reduces)
         if reduces { follows = false }
+        if marker.isEnabled { startGlow() }
     }
 
     private var isReady: Bool { !plan.isEmpty && spawned == plan.count }
@@ -386,6 +446,7 @@ final class DominoScene {
         clock = 0
         lastAdvance = 0
         cameraMove = nil
+        mark(nil)
         factory.release(keeping: ids)
         status.phase = .settingUp
     }
@@ -404,24 +465,18 @@ final class DominoScene {
         stage.setDust(!reducesMotion)
     }
 
-    /// Frames the whole path, and a falling book's length past it, between the bars and above
-    /// the hint at the bottom of `viewport`.
+    /// Frames every book of the chain, standing or fallen (`DominoLayout.outline`), between
+    /// the bars and above the hint at the bottom of `viewport`.
     private func frame(_ viewport: PileViewport) {
         let size = viewport.size
         let insets = viewport.insets
         aspect = Float(size.width / size.height)
-        let reach = extent + 2.4
-        var corners: [SIMD3<Float>] = []
-        for x: Float in [-1, 1] {
-            for z: Float in [-1, 1] {
-                for y: Float in [0, 2.4] { corners.append([x * reach.x, y, z * reach.y]) }
-            }
-        }
         let rect = CGRect(
             x: insets.leading + 16, y: insets.top + 8,
             width: size.width - insets.leading - insets.trailing - 32,
             height: size.height - insets.top - insets.bottom - 88)
-        overview = PileCamera().framing(corners, in: rect, of: size, zoomRange: 0.2...2.5)
+        overview = PileCamera()
+            .framing(DominoLayout.outline(of: plan), in: rect, of: size, zoomRange: 0.2...2.5)
         look(through: overview)
     }
 
@@ -449,24 +504,36 @@ final class DominoScene {
 
     // MARK: Interaction
 
-    /// Pushes the book if it is the next to fall, or returns its ID, for its details, if it is
-    /// another book. Returns `nil` for anything but a book, and for the next book, which waits
-    /// for every book to stand before it can fall.
+    /// Pushes the chain on when `entity` is the marker, the next book to fall, or a book
+    /// between it and the marked book, and returns `nil`. Returns any other book's ID, for its
+    /// details, and `nil` for the table. A push does nothing until every book stands.
     func tap(_ entity: Entity) -> Int? {
-        guard let index = indices[entity.id] else { return nil }
-        guard index == next else { return slots[index].book.id }
+        let index = entity == marker ? marked : indices[entity.id]
+        guard let index else { return nil }
+        guard index >= next, index <= target else { return slots[index].book.id }
         pushNext()
         return nil
     }
 
-    /// The ID of the book an entity belongs to, or `nil` for the table.
-    func bookID(for entity: Entity) -> Int? { indices[entity.id].map { slots[$0].book.id } }
+    /// The ID of the book an entity belongs to, including the marked book for the marker, or
+    /// `nil` for the table.
+    func bookID(for entity: Entity) -> Int? {
+        (entity == marker ? marked : indices[entity.id]).map { slots[$0].book.id }
+    }
 
-    /// Tips the next book forward along the path, with a light tap, once every book stands.
+    /// The book a push tips (see `DominoLayout.pushTarget`).
+    private var target: Int {
+        DominoLayout.pushTarget(next: next, count: books.count) {
+            books[$0].transform.rotation.act([0, 1, 0]).y > Self.uprightTilt
+        }
+    }
+
+    /// Tips the book a push tips (see `target`) forward along the path, with a light tap, once
+    /// every book stands.
     func pushNext() {
         guard isReady, next < books.count else { return }
-        let book = books[next]
-        let slot = slots[next]
+        let book = books[target]
+        let slot = slots[target]
         let forward = SIMD3(slot.heading.x, 0, slot.heading.y)
         let spin = simd_cross([0, 1, 0], forward) * Self.pushSpeed
         // About the front bottom edge, so the book tips over instead of sliding back.
@@ -483,8 +550,7 @@ final class DominoScene {
 
     /// Zooms toward the point under `focus` by `magnification`, or slides the camera across
     /// the table with a one-finger `translation`, keeping the path in view.
-    func moveCamera(translation: CGSize, magnification: CGFloat, focus: CGPoint?, in size: CGSize)
-    {
+    func moveCamera(translation: CGSize, magnification: CGFloat, focus: CGPoint?, in size: CGSize) {
         guard size.width > 0, size.height > 0 else { return }
         if cameraMove == nil {
             follows = false
@@ -540,6 +606,10 @@ final class DominoScene {
         }
         let phase = phase
         if status.phase != phase { status.phase = phase }
+        switch phase {
+        case .standing, .stalled: mark(target)
+        default: mark(nil)
+        }
         if follows, cameraMove == nil { steer(Float(deltaTime)) }
     }
 
@@ -548,7 +618,79 @@ final class DominoScene {
         guard started else { return .standing }
         let settled = clock - lastAdvance > Self.stallTime
         if next == books.count { return settled ? .done : .running }
-        return settled ? .stalled(fallen: next) : .running
+        guard settled else { return .running }
+        return .stalled(fallen: next, days: next > 0 ? slots[next - 1].days : 0)
+    }
+
+    // MARK: Marking the next book
+
+    /// Moves the marker to the book at `index`, or hides it for `nil`.
+    private func mark(_ index: Int?) {
+        guard index != marked else { return }
+        marked = index
+        guard let index else {
+            marker.isEnabled = false
+            glow.stopAllAnimations()
+            return
+        }
+        let slot = slots[index]
+        // The plane's x runs across the path and its z along it.
+        marker.transform = Transform(
+            rotation: simd_quatf(angle: atan2(slot.heading.x, slot.heading.y), axis: [0, 1, 0]),
+            translation: [slot.position.x, 0, slot.position.y])
+        // A hair above the table, so the glow does not flicker against it.
+        glow.transform = Transform(
+            scale: [slot.size.x + 1.4, 1, slot.size.z + 1.2], translation: [0, 0.01, 0])
+        // Past the book's covers by less than the closest gap, 15 percent of a book's height,
+        // so the box does not cover a neighbor's taps on a row.
+        let box = slot.size + [0.4, 0.3, 0.3]
+        marker.components.set(
+            CollisionComponent(
+                shapes: [.generateBox(size: box).offsetBy(translation: [0, box.y / 2, 0])],
+                mode: .trigger, filter: CollisionFilter(group: Self.markerGroup, mask: [])))
+        if !marker.isEnabled {
+            marker.isEnabled = true
+            startGlow()
+        }
+    }
+
+    /// Pulses the marker's glow, or holds it steady with Reduce Motion on.
+    private func startGlow() {
+        glow.stopAllAnimations()
+        glow.components.set(OpacityComponent(opacity: 0.9))
+        guard !reducesMotion, let pulse else { return }
+        glow.playAnimation(pulse)
+    }
+
+    /// A flat, warm glow that fades from its middle to its edges, on a plane one unit square.
+    private static func makeGlow() -> ModelEntity {
+        var material = UnlitMaterial(applyPostProcessToneMap: false)
+        let size = CGSize(width: 64, height: 64)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format)
+            .image { context in
+                // A bright middle that falls off quickly, then a faint halo.
+                let colors = [1, 0.5, 0].map { UIColor.white.withAlphaComponent($0).cgColor }
+                guard
+                    let gradient = CGGradient(
+                        colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors as CFArray,
+                        locations: [0, 0.4, 1])
+                else { return }
+                let middle = CGPoint(x: size.width / 2, y: size.height / 2)
+                context.cgContext.drawRadialGradient(
+                    gradient, startCenter: middle, startRadius: 0, endCenter: middle,
+                    endRadius: size.width / 2, options: [])
+            }
+        // The texture's alpha shapes the glow; its color tints the lamp's warm light gold.
+        if let cgImage = image.cgImage,
+            let texture = try? TextureResource(image: cgImage, options: .init(semantic: .color))
+        {
+            material.color = .init(
+                tint: UIColor(red: 1, green: 0.8, blue: 0.42, alpha: 1), texture: .init(texture))
+            material.blending = .transparent(opacity: .init(scale: 1, texture: .init(texture)))
+        }
+        return ModelEntity(mesh: .generatePlane(width: 1, depth: 1), materials: [material])
     }
 
     /// Eases the camera toward the next book to fall, closer in, or back to the whole path
