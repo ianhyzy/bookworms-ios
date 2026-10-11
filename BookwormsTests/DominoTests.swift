@@ -26,12 +26,19 @@ final class DominoTests: XCTestCase {
     }
 
     func testEveryGapStaysWithinReachForAnyPairOfSizes() {
-        // Every height and thickness `BookShape` makes, at least 6 times as long as thick.
-        let heights = stride(from: Float(1.7), through: BookShape.longest, by: 0.1)
-        let sizes = heights.flatMap { height in
-            stride(from: Float(0.04), through: min(0.4, height / 6), by: 0.04)
-                .map { SIMD3<Float>(height * 2 / 3, height, $0) }
+        // Every size `BookShape` makes for a 2:3 cover, from every page count and variety.
+        var sizes = Set<SIMD3<Float>>()
+        for pages in 100...1_400 {
+            for x: Float in [0, 0.5, 1] {
+                for y: Float in [0, 0.5, 1] {
+                    let size = BookShape.size(pages: pages, coverAspect: 2 / 3, variety: [x, y])
+                    sizes.insert(BookShape(size: size, binding: .paperback).size)
+                }
+            }
         }
+        // From 1.7 tall to doorstoppers 2.8 tall and 0.52 thick.
+        XCTAssertGreaterThan(sizes.count, 60)
+        XCTAssertTrue(sizes.contains { $0.y > 2.79 && $0.z > 0.51 })
         for a in sizes {
             // Wider than the 15 percent that the closest books once stood apart.
             XCTAssertEqual(DominoLayout.gap(height: a.y), a.y * 0.3, accuracy: 1e-5)
@@ -90,16 +97,16 @@ final class DominoTests: XCTestCase {
             DominoLayout.mass(height: BookShape.longest) / DominoLayout.mass(height: 1.7), 2)
     }
 
-    func testChainRunsInFinishOrderWithCurrentReadsLast() throws {
+    func testChainRunsInFinishOrderWithCurrentReadsLast() {
         let books = [
             book(1, finished: "2025-03-10"), book(2, finished: nil),
             book(3, finished: "2025-01-05"), book(4, finished: "2025-03-10"),
             book(5, finished: "2025-05-01"),
         ]
-        let now = try Date("2025-07-01T12:00:00Z", strategy: .iso8601)
-        let chain = DominoLayout.chain(books, now: now)
+        let chain = DominoLayout.chain(books)
         XCTAssertEqual(chain.map { $0.book.id }, [3, 1, 4, 5, 2])
-        XCTAssertEqual(chain.map { $0.days }, [64, 0, 52, 61, 0])
+        // No gap between finishes leads to a current read, so no cobweb hangs before one.
+        XCTAssertEqual(chain.map { $0.days }, [64, 0, 52, 0, 0])
     }
 
     func testSameDayBooksKeepTheirOrderWhateverTheShelfSort() {
@@ -108,15 +115,14 @@ final class DominoTests: XCTestCase {
             book(5, finished: "2025-03-10"),
             book(9, finished: nil), book(1, finished: "2025-01-05"),
         ]
-        let now = Date.now
-        let chain = DominoLayout.chain(books, now: now).map { $0.book.id }
+        let chain = DominoLayout.chain(books).map { $0.book.id }
         XCTAssertEqual(chain, [1, 5, 7, 2, 9])
-        XCTAssertEqual(DominoLayout.chain(books.reversed(), now: now).map { $0.book.id }, chain)
+        XCTAssertEqual(DominoLayout.chain(books.reversed()).map { $0.book.id }, chain)
     }
 
     func testLongChainsKeepTheMostRecentBooks() {
         let books = (0..<310).reversed().map { book($0, day: $0) }
-        let chain = DominoLayout.chain(books, now: .now)
+        let chain = DominoLayout.chain(books)
         XCTAssertEqual(chain.count, DominoLayout.maximumBooks)
         XCTAssertEqual(chain.first?.book.id, 10)
         XCTAssertEqual(chain.last?.book.id, 309)
@@ -150,9 +156,14 @@ final class DominoTests: XCTestCase {
                 defer { day += (index * 37) % 101 }
                 return book(index, day: day, pages: 60 + index * 17)
             }
-        let plan = DominoLayout.plan(DominoLayout.chain(books, now: .now), aspect: 0.5)
+        let chain = DominoLayout.chain(books)
+        let plan = DominoLayout.plan(chain, aspect: 0.5)
         XCTAssertGreaterThan(plan.slots.last?.distance ?? 0, 3 * plan.path.period)
-        XCTAssertTrue(plan.slots.contains { $0.days >= DominoLayout.cobwebDays })
+        // Each book's day counts the days of the gaps before it, some long enough for a web.
+        XCTAssertEqual(
+            zip(plan.slots, plan.slots.dropFirst()).map { $1.day - $0.day },
+            chain.dropLast().map(\.days))
+        XCTAssertTrue(chain.contains { $0.days >= DominoLayout.cobwebDays })
         for (slot, next) in zip(plan.slots, plan.slots.dropFirst()) {
             let gap = next.distance - slot.distance - (slot.size.z + next.size.z) / 2
             if plan.path.isTurning(at: slot.distance) || plan.path.isTurning(at: next.distance) {
@@ -168,7 +179,7 @@ final class DominoTests: XCTestCase {
         // Books finished on the same day stand closest; thick ones fan out the most on a turn.
         for pages in [60, 1400] {
             let books = (0..<120).map { book($0, day: 0, pages: pages) }
-            let plan = DominoLayout.plan(DominoLayout.chain(books, now: .now), aspect: 0.5)
+            let plan = DominoLayout.plan(DominoLayout.chain(books), aspect: 0.5)
             XCTAssertTrue(plan.slots.contains { plan.path.isTurning(at: $0.distance) })
             for (slot, next) in zip(plan.slots, plan.slots.dropFirst()) {
                 XCTAssertFalse(overlap(slot, next), "\(slot.book.id) touches \(next.book.id)")
@@ -180,7 +191,7 @@ final class DominoTests: XCTestCase {
         // The most books, every one as thick and as long as books get.
         let books = (0..<DominoLayout.maximumBooks).map { book($0, day: $0 * 200, pages: 1400) }
         for aspect: Float in [0.3, 0.5, 1] {
-            let plan = DominoLayout.plan(DominoLayout.chain(books, now: .now), aspect: aspect)
+            let plan = DominoLayout.plan(DominoLayout.chain(books), aspect: aspect)
             XCTAssertEqual(plan.slots.count, DominoLayout.maximumBooks)
             for slot in plan.slots {
                 // A fallen book reaches its height past where it stood.
@@ -199,26 +210,31 @@ final class DominoTests: XCTestCase {
         XCTAssertEqual(front.z, -heading.y, accuracy: 1e-5)
     }
 
-    func testOutlineBoundsStandingAndFallenBooks() throws {
-        let books = (0..<12).map { book($0, day: $0 * 3) }
-        let slots = DominoLayout.plan(DominoLayout.chain(books, now: .now), aspect: 0.5).slots
-        let points = DominoLayout.outline(of: slots)
-        XCTAssertEqual(points.count, slots.count * 4 + 1)
-        for slot in slots {
+    func testOutlineBoundsStandingAndFallenBooks() {
+        // Enough books to fill a row and turn, where books fall off the path.
+        let books = (0..<40).map { book($0, day: $0 * 3) }
+        let plan = DominoLayout.plan(DominoLayout.chain(books), aspect: 0.5)
+        XCTAssertTrue(plan.slots.contains { plan.path.isTurning(at: $0.distance) })
+        let points = DominoLayout.outline(of: plan.slots)
+        XCTAssertEqual(points.count, plan.slots.count * 6)
+        for slot in plan.slots {
             // Both top corners across the path, at the book's height.
             let tops = points.filter {
                 $0.y == slot.size.y
                     && abs(simd_distance(SIMD2($0.x, $0.z), slot.position) - slot.size.x / 2) < 1e-4
             }
             XCTAssertGreaterThanOrEqual(tops.count, 2)
+            // Both corners of its head where it lands, its height past its leading bottom edge.
+            let landings = points.filter { point in
+                let offset = SIMD2(point.x, point.z) - slot.position
+                return point.y == 0
+                    && abs(simd_dot(offset, slot.heading) - slot.size.y - slot.size.z / 2) < 1e-4
+                    && abs(
+                        simd_length(offset - slot.heading * simd_dot(offset, slot.heading))
+                            - slot.size.x / 2) < 1e-4
+            }
+            XCTAssertGreaterThanOrEqual(landings.count, 2, "\(slot.book.id)")
         }
-        // The last book lands its height past its leading bottom edge.
-        let last = try XCTUnwrap(slots.last)
-        let landing = try XCTUnwrap(points.last)
-        XCTAssertEqual(landing.y, 0)
-        XCTAssertEqual(
-            simd_dot(SIMD2(landing.x, landing.z) - last.position, last.heading),
-            last.size.y + last.size.z / 2, accuracy: 1e-4)
     }
 
     func testPushesTipTheFirstUprightBook() {

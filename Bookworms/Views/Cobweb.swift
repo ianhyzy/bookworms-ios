@@ -7,9 +7,10 @@ import simd
 ///
 /// Radial threads run from an off-center hub to the books' top edges and to two bridge threads
 /// that span the gap at its sides, and a capture spiral winds out across them. The web sags
-/// toward its middle, its threads are irregular, and a denser web has more radials, more turns,
-/// a deeper sag, and stray threads across it. A seed, such as one from the books' IDs, fixes
-/// the irregularity, so a chain stands the same web each time.
+/// toward its middle, its threads are irregular, some of the spiral's chords are broken, and
+/// a denser web has more radials, more turns, a deeper sag, more broken chords, and stray
+/// threads across it. A seed, such as one from the books' IDs, fixes the irregularity and the
+/// web's opacity, so a chain stands the same web each time.
 ///
 /// The threads come in pieces, one per radial, that tear away on their own (see
 /// `HangingCobweb`).
@@ -19,13 +20,15 @@ struct Cobweb: Sendable {
     struct Piece: Sendable {
         let pivot: SIMD3<Float>
         let threads: [SIMD3<Float>]
-        /// The horizontal direction from the hub to `pivot`, a unit vector.
-        let outward: SIMD3<Float>
+        /// The web's hub, relative to `pivot`.
+        let hub: SIMD3<Float>
         /// How far `pivot` lies across the gap: 0 at the near book's edge, 1 at the far one's.
         let along: Float
     }
 
     let pieces: [Piece]
+    /// How opaque the web is, from 0.6 to 1, so neighboring webs differ.
+    let opacity: Float
 
     /// A web from `near`, the two ends of the near book's top edge, to `far`, the far book's,
     /// in the same order across the gap, at a `density` from 0 to 1.
@@ -52,7 +55,7 @@ struct Cobweb: Sendable {
         let first = jitter(.pi)
         // Each radial's angle on the web, where u runs `length` and v runs `width`, and where it
         // meets the web's edge. The jitter keeps the angles in order.
-        let angles = (0..<count).map { first + (Float($0) + jitter(0.3)) * step }
+        let angles = (0..<count).map { first + (Float($0) + jitter(0.4)) * step }
         let ends = angles.map { angle in
             let direction = SIMD2(cos(angle) / length, sin(angle) / width)
             var reach = Float.infinity
@@ -81,15 +84,19 @@ struct Cobweb: Sendable {
             add((0...4).map { hub + (end - hub) * Float($0) / 4 }, to: index)
         }
         // The capture spiral, from a fifth of the way out to near the edge, one chord between
-        // each pair of radials.
+        // each pair of radials, with 10 to 25 percent of the chords broken.
         let chords = turns * count
-        add(
-            (0...chords)
-                .map { index in
-                    let radial = index % count
-                    let out = 0.2 + 0.72 * Float(index) / Float(chords) + jitter(0.03)
-                    return hub + (ends[radial] - hub) * min(0.97, out)
-                })
+        let spiral = (0...chords)
+            .map { index in
+                let radial = index % count
+                let out = 0.2 + 0.72 * Float(index) / Float(chords) + jitter(0.06)
+                return hub + (ends[radial] - hub) * min(0.97, out)
+            }
+        let broken = 0.1 + 0.15 * density
+        for (a, b) in zip(spiral, spiral.dropFirst())
+        where Float.random(in: 0..<1, using: &random) >= broken {
+            add([a, b])
+        }
         // The bridges along both sides, from the near edge to the far one.
         for side: Float in [0, 1] {
             add((0...6).map { SIMD2(Float($0) / 6, side) })
@@ -108,14 +115,12 @@ struct Cobweb: Sendable {
         pieces = ends.indices.compactMap { index in
             guard !threads[index].isEmpty else { return nil }
             let pivot = point(ends[index])
-            var outward = pivot - center
-            outward.y = 0
             return Piece(
                 pivot: pivot,
                 threads: threads[index].flatMap { [point($0.0) - pivot, point($0.1) - pivot] },
-                outward: simd_length(outward) > 0 ? simd_normalize(outward) : [1, 0, 0],
-                along: ends[index].x)
+                hub: center - pivot, along: ends[index].x)
         }
+        opacity = Float.random(in: 0.6...1, using: &random)
     }
 
     /// Threads, given as pairs of ends, as flat ribbons `width` wide, facing up as far as each
@@ -149,37 +154,56 @@ struct Cobweb: Sendable {
 /// A cobweb's entities between two standing dominoes, and how it tears.
 ///
 /// A hanging web draws as one mesh. Its pieces, each its own entity, show only once it tears.
-/// No part has a physics body, so the web never blocks or slows a book. Torn, each piece passes to the book whose edge it is nearer, which carries it as it
-/// falls, while the piece springs back toward where its radial is attached, crumples, droops
-/// from there, and fades, starting from the near book's side. With Reduce Motion on, the
-/// pieces only fade. Once every piece has faded, the web removes them.
+/// No part has a physics body, so the web never blocks or slows a book. The tear crosses the
+/// web from the near book's side to the far one's. Each piece stays in the scene's space, but
+/// its outer end, where it was attached, follows the edge of the nearer book as that book
+/// moves. The piece's threads spring back and bunch toward its radial, swing down to hang below
+/// that end, slip, and fade within half a second. With Reduce Motion on, the whole web fades
+/// where it hangs instead. Once it has faded, the web removes itself from the scene.
 @MainActor
 struct HangingCobweb {
-    /// Holds the whole web, and the pieces until the web tears.
+    /// Holds the whole web and its pieces.
     let root = Entity()
+    /// The index of the near book in the chain, which the scene sets when the web hangs.
+    var book = 0
     private let whole: ModelEntity
-    /// The index of the near book in the chain.
-    let book: Int
-    private var pieces: [(entity: Entity, piece: Cobweb.Piece)] = []
-    /// Each piece's transform in the book that holds it, from when the web tore.
-    private var holds: [Transform] = []
+    private let opacity: Float
+    private var pieces: [Piece] = []
     private var elapsed: Float?
     private var fadesOnly = false
 
-    /// How long a piece takes to fade once it starts tearing, in seconds.
-    private static let fade: Float = 0.9
-    /// How long the tear takes to cross from the near book's side to the far one's.
-    private static let sweep: Float = 0.15
+    /// A piece's entity and how it moves once the web tears.
+    private struct Piece {
+        let entity: Entity
+        /// The piece's own axes: x level from the hub outward, y up, and z across. Its mesh lies
+        /// in these axes, about its outer end, the thread end farthest along x. A scale along z
+        /// bunches its threads toward its radial, and a turn about z swings them all down.
+        let axes: simd_quatf
+        /// The turn about z that hangs the piece's radial nearly straight down from its outer
+        /// end.
+        let droop: Float
+        /// How far the piece's radial meets the web's edge across the gap, from 0 at the near
+        /// book to 1 at the far one.
+        let along: Float
+        /// The book whose edge holds the outer end once the web tears, and the end in that
+        /// book's space.
+        var hold: (book: Entity, end: SIMD3<Float>)?
+    }
+
+    /// How long a piece takes to hang and fade once the tear reaches it, in seconds.
+    private static let fade: Float = 0.5
+    /// How long the tear takes to cross from the near book's side to the far one's: short, so
+    /// the far side's pieces hang clear before the falling book reaches them.
+    private static let sweep: Float = 0.05
     /// Silk's width: about a pixel at the zoom that follows the chain.
     private static let thread: Float = 0.005
 
-    /// The pieces of `web`, between the book at `book` and the next one, in `material` and lit
-    /// by `lighting`. Fails if RealityKit cannot make a piece's mesh.
-    init?(_ web: Cobweb, book: Int, material: any RealityKit.Material, lighting: Entity) {
-        self.book = book
-        func entity(_ threads: [SIMD3<Float>]) -> ModelEntity? {
+    /// The entities of `web`, in `material` and lit by `lighting`. RealityKit generates the
+    /// meshes asynchronously. Fails if it cannot make one of them.
+    init?(_ web: Cobweb, material: any RealityKit.Material, lighting: Entity) async {
+        func entity(_ threads: [SIMD3<Float>]) async -> ModelEntity? {
             guard
-                let mesh = try? MeshResource.generate(
+                let mesh = try? await MeshResource(
                     from: [Cobweb.ribbons(threads, width: Self.thread)])
             else { return nil }
             let entity = ModelEntity(mesh: mesh, materials: [material])
@@ -189,60 +213,81 @@ struct HangingCobweb {
             return entity
         }
         guard
-            let whole = entity(
+            let whole = await entity(
                 web.pieces.flatMap { piece in piece.threads.map { $0 + piece.pivot } })
         else { return nil }
+        whole.components.set(OpacityComponent(opacity: web.opacity))
         self.whole = whole
+        opacity = web.opacity
         root.addChild(whole)
+        let up: SIMD3<Float> = [0, 1, 0]
         for piece in web.pieces {
-            guard let entity = entity(piece.threads) else { return nil }
-            entity.position = piece.pivot
+            var outward = -piece.hub
+            outward.y = 0
+            outward = simd_length(outward) > 1e-4 ? simd_normalize(outward) : [1, 0, 0]
+            let axes = simd_quatf(simd_float3x3(columns: (outward, up, simd_cross(outward, up))))
+            let threads = piece.threads.map { axes.inverse.act($0) }
+            // Every thread lies inward of the end, so the swing takes none of them up.
+            let end = threads.max { $0.x < $1.x } ?? .zero
+            guard let entity = await entity(threads.map { $0 - end }) else { return nil }
+            entity.transform = Transform(rotation: axes, translation: piece.pivot + axes.act(end))
             entity.isEnabled = false
             root.addChild(entity)
-            pieces.append((entity, piece))
+            // The radial leaves the end `slope` below level, toward the hub. A little short of
+            // hanging plumb keeps its threads off the cover below the end. A quarter turn at
+            // most keeps threads that sag below the end from swinging up past it.
+            let hub = axes.inverse.act(piece.hub) - end
+            let slope = atan2(-hub.y, -hub.x)
+            let droop = min(.pi / 2, max(0, .pi / 2 - slope)) * 0.9
+            pieces.append(Piece(entity: entity, axes: axes, droop: droop, along: piece.along))
         }
     }
 
-    /// Starts tearing the web, handing each piece to `near` or `far`, the books whose edges
-    /// hold it. With `fadesOnly`, the pieces only fade, as Reduce Motion asks.
+    /// Starts tearing the web, holding each piece's outer end on `near` or `far`, whichever
+    /// book's edge is nearer. With `fadesOnly`, as Reduce Motion asks, the whole web only fades.
     mutating func tear(near: Entity, far: Entity, fadesOnly: Bool) {
         guard elapsed == nil else { return }
         elapsed = 0
         self.fadesOnly = fadesOnly
-        whole.removeFromParent()
-        holds = pieces.map { entity, piece in
+        guard !fadesOnly else { return }
+        whole.isEnabled = false
+        for index in pieces.indices {
+            let book = pieces[index].along < 0.5 ? near : far
+            let entity = pieces[index].entity
+            pieces[index].hold = (book, book.convert(position: entity.position, from: root))
+            entity.components.set(OpacityComponent(opacity: opacity))
             entity.isEnabled = true
-            entity.setParent(piece.along < 0.5 ? near : far, preservingWorldTransform: true)
-            return entity.transform
         }
     }
 
-    /// Advances the tear by `deltaTime` seconds. Returns `false`, having removed the pieces from
-    /// the scene, once every piece has faded.
+    /// Advances the tear by `deltaTime` seconds. Returns `false`, having removed the web from
+    /// the scene, once it has faded.
     mutating func advance(by deltaTime: Float) -> Bool {
         guard var elapsed else { return true }
         elapsed += deltaTime
         self.elapsed = elapsed
         guard elapsed <= Self.sweep + Self.fade else {
-            for (entity, _) in pieces { entity.removeFromParent() }
             root.removeFromParent()
             return false
         }
-        for ((entity, piece), hold) in zip(pieces, holds) {
-            let time = max(0, elapsed - piece.along * Self.sweep)
-            let progress = min(1, time / Self.fade)
-            entity.components.set(OpacityComponent(opacity: 1 - progress))
-            guard !fadesOnly, time > 0 else { continue }
-            // The cut silk springs back toward its anchor, then crumples and droops. A piece's
-            // own axes are the scene's as the web hung, so "down" is down from where it hung.
-            let shrink = 1 - 0.5 * (1 - pow(1 - min(1, time / 0.15), 3)) - 0.3 * progress
-            let droop = 1.2 * (1 - pow(1 - progress, 2))
-            let tear = Transform(
-                scale: SIMD3(repeating: shrink),
-                rotation: simd_quatf(
-                    angle: droop, axis: simd_normalize(simd_cross(piece.outward, [0, 1, 0]))),
-                translation: [0, -0.2 * progress, 0])
-            entity.transform = Transform(matrix: hold.matrix * tear.matrix)
+        if fadesOnly {
+            let progress = elapsed / (Self.sweep + Self.fade)
+            whole.components.set(OpacityComponent(opacity: opacity * (1 - progress)))
+            return true
+        }
+        for piece in pieces {
+            guard let hold = piece.hold else { continue }
+            let progress = min(1, max(0, elapsed - piece.along * Self.sweep) / Self.fade)
+            // The threads hang within the first 40 percent of the fade.
+            let swing = 1 - pow(1 - min(1, progress / 0.4), 3)
+            piece.entity.components.set(OpacityComponent(opacity: opacity * (1 - progress)))
+            // The turn about the piece's own z axis is a swing about a level line in the
+            // scene, so the threads hang down however the holding book tilts.
+            piece.entity.transform = Transform(
+                scale: [1 - 0.15 * swing, 1, 1 - 0.45 * swing],
+                rotation: piece.axes * simd_quatf(angle: piece.droop * swing, axis: [0, 0, 1]),
+                translation: root.convert(position: hold.end, from: hold.book)
+                    - [0, 0.1 * progress * progress, 0])
         }
         return true
     }
@@ -256,7 +301,7 @@ struct HangingCobweb {
         material.clearcoat = .init(floatLiteral: 0.8)
         material.clearcoatRoughness = .init(floatLiteral: 0.15)
         material.emissiveColor = .init(color: UIColor(white: 0.5, alpha: 1))
-        material.emissiveIntensity = 0.25
+        material.emissiveIntensity = 0.08
         material.blending = .transparent(opacity: .init(floatLiteral: 0.85))
         material.faceCulling = .none
         return material
