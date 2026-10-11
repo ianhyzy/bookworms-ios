@@ -190,19 +190,77 @@ enum BookwormLayout {
         return (SIMD3(shift.x, 0, 0) + up * shift.y, far)
     }
 
-    /// Where the crease between two segments of the worm's body lies on the front one: its
-    /// distance behind the front segment's center, and the front segment's radius there. Each
-    /// segment is an ellipsoid, round across the body, with `radius` and a half length `half`
-    /// along it, and the back one's half length is `back`. Two ellipsoids of one radius cross
-    /// where they divide the `gap` between their centers in proportion to their half lengths.
-    /// A front segment that does not reach that far, such as one growing in, has radius 0
-    /// there.
-    static func crease(
-        front: (radius: Float, half: Float), back: Float, gap: Float
-    ) -> (offset: Float, radius: Float) {
-        let offset = gap * front.half / (front.half + back)
-        let along = offset / front.half
-        return (offset, front.radius * max(0, 1 - along * along).squareRoot())
+    /// A part of the worm's body: an ellipsoid, round across the body.
+    struct Ellipsoid {
+        var center: SIMD3<Float>
+        /// The unit direction of its length.
+        var axis: SIMD3<Float>
+        var radius: Float
+        /// Half its length along `axis`.
+        var half: Float
+
+        /// How far from `point` along the unit `direction` a ray leaves the ellipsoid for the
+        /// last time, or 0 if it does not meet the ellipsoid ahead of `point`.
+        func exit(from point: SIMD3<Float>, along direction: SIMD3<Float>) -> Float {
+            // The ray in the space where the ellipsoid is the unit sphere.
+            func unit(_ vector: SIMD3<Float>) -> SIMD3<Float> {
+                let along = simd_dot(vector, axis)
+                return (vector - along * axis) / radius + along * axis / half
+            }
+            let start = unit(point - center)
+            let step = unit(direction)
+            let a = simd_length_squared(step)
+            let b = simd_dot(start, step)
+            let discriminant = b * b - a * (simd_length_squared(start) - 1)
+            guard discriminant >= 0 else { return 0 }
+            return max(0, (discriminant.squareRoot() - b) / a)
+        }
+    }
+
+    /// The band around the crease where two segments of the worm's body meet: its center, the
+    /// turn that takes a ring in the xy-plane into the band's plane, and the ring's radii
+    /// along its x and y axes.
+    ///
+    /// Two round segments meet in a circle square to the line between their centers, so the
+    /// band lies square to that line, where the two segments' cross-sections match, counting
+    /// each segment's half length along the line. Where the body bends, the segments cross in
+    /// a curve that is not quite a circle, so the band is an oval that reaches the skin at its
+    /// top and both sides. A front segment that lies inside the back one, as one does when it
+    /// starts to grow in, puts its band around its own middle, inside the back one.
+    static func band(
+        front: Ellipsoid, back: Ellipsoid
+    ) -> (center: SIMD3<Float>, rotation: simd_quatf, size: SIMD2<Float>) {
+        let line = front.center - back.center
+        let gap = simd_length(line)
+        let direction = gap > 1e-4 ? line / gap : front.axis
+        // The front segment's squared radius `offset` behind its center, less the back
+        // segment's there, falls all the way from one center to the other.
+        func excess(_ offset: Float) -> Float {
+            let ahead = offset / front.half
+            let behind = (gap - offset) / back.half
+            return front.radius * front.radius * (1 - ahead * ahead)
+                - back.radius * back.radius * (1 - behind * behind)
+        }
+        var low: Float = 0
+        var high = gap
+        for _ in 0..<24 {
+            let middle = (low + high) / 2
+            if excess(middle) > 0 { low = middle } else { high = middle }
+        }
+        let point = front.center - direction * low
+        let across = simd_cross([0, 1, 0], direction)
+        let side = simd_length(across) > 1e-4 ? simd_normalize(across) : SIMD3<Float>(1, 0, 0)
+        let up = simd_cross(direction, side)
+        func skin(_ way: SIMD3<Float>) -> Float {
+            let own = front.exit(from: point, along: way)
+            return low > 0 ? max(own, back.exit(from: point, along: way)) : own
+        }
+        let (left, right) = (skin(-side), skin(side))
+        return (
+            point + side * (right - left) / 2,
+            simd_quatf(simd_float3x3(columns: (side, up, direction))),
+            [(left + right) / 2, skin(up)]
+        )
     }
 
     /// The triangles of a tube of radius `tube` bent along `arc` radians of a unit circle in

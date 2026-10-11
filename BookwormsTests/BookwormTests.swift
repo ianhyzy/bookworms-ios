@@ -253,18 +253,72 @@ final class BookwormTests: XCTestCase {
         XCTAssertEqual(lowest?.x ?? 1, 0, accuracy: 0.0001)
     }
 
-    func testBandSitsWhereTwoSegmentsCross() {
-        // Two spheres of radius 0.3 with centers 0.36 apart cross halfway, 0.24 from the axis.
-        let equal = BookwormLayout.crease(front: (0.3, 0.3), back: 0.3, gap: 0.36)
-        XCTAssertEqual(equal.offset, 0.18, accuracy: 0.0001)
-        XCTAssertEqual(equal.radius, 0.24, accuracy: 0.0001)
+    func testBandCirclesTheCrease() {
+        typealias Part = BookwormLayout.Ellipsoid
+        let forward = SIMD3<Float>(0, 0, 1)
+        // Two spheres of radius 0.3 with centers 0.36 apart meet halfway, 0.24 from the line.
+        let equal = BookwormLayout.band(
+            front: Part(center: [0, 0.3, 0], axis: forward, radius: 0.3, half: 0.3),
+            back: Part(center: [0, 0.3, -0.36], axis: forward, radius: 0.3, half: 0.3))
+        XCTAssertLessThan(simd_distance(equal.center, [0, 0.3, -0.18]), 0.0001)
+        XCTAssertLessThan(simd_distance(equal.rotation.act(forward), forward), 0.0001)
+        XCTAssertLessThan(simd_distance(equal.size, [0.24, 0.24]), 0.0001)
         // A longer front segment moves the crease toward the shorter one behind it.
-        let long = BookwormLayout.crease(front: (0.3, 0.6), back: 0.3, gap: 0.6)
-        XCTAssertEqual(long.offset, 0.4, accuracy: 0.0001)
-        XCTAssertEqual(long.radius, 0.3 * (5 / 9 as Float).squareRoot(), accuracy: 0.0001)
-        // A segment that ends before the crease puts its band nowhere.
-        let short = BookwormLayout.crease(front: (0.12, 0.12), back: 0.3, gap: 0.6)
-        XCTAssertEqual(short.radius, 0)
+        let long = BookwormLayout.band(
+            front: Part(center: [0, 0.3, 0], axis: forward, radius: 0.3, half: 0.6),
+            back: Part(center: [0, 0.3, -0.6], axis: forward, radius: 0.3, half: 0.3))
+        XCTAssertEqual(long.center.z, -0.4, accuracy: 0.0001)
+        XCTAssertEqual(long.size.y, 0.3 * (5 / 9 as Float).squareRoot(), accuracy: 0.0001)
+
+        // How far out `point` lies from `part`'s center, in units of its skin: 1 on the skin.
+        func reach(_ point: SIMD3<Float>, _ part: Part) -> Float {
+            let offset = point - part.center
+            let along = simd_dot(offset, part.axis) / part.half
+            let across = simd_length(offset - simd_dot(offset, part.axis) * part.axis)
+            return (along * along + across * across / (part.radius * part.radius)).squareRoot()
+        }
+        // Points around the band, from one side over the top to the other, which the camera
+        // sees.
+        func arch(
+            _ band: (center: SIMD3<Float>, rotation: simd_quatf, size: SIMD2<Float>)
+        ) -> [SIMD3<Float>] {
+            (0...8)
+                .map { step in
+                    let angle = Float(step) * .pi / 8
+                    return band.center
+                        + band.rotation.act([cos(angle) * band.size.x, sin(angle) * band.size.y, 0])
+                }
+        }
+        // A segment and the tail, round, of different radii, and at an angle and offset to the
+        // side, meet in a circle that the band follows exactly.
+        let segment = Part(
+            center: [0.1, 0.3, 0.05], axis: simd_normalize([1, 0, 1]), radius: 0.3, half: 0.3)
+        let tail = Part(center: [0.35, 0.21, -0.2], axis: forward, radius: 0.21, half: 0.21)
+        for point in arch(BookwormLayout.band(front: segment, back: tail)) {
+            XCTAssertEqual(reach(point, segment), 1, accuracy: 0.0001)
+            XCTAssertEqual(reach(point, tail), 1, accuracy: 0.0001)
+        }
+        // Where two long segments meet at 35 degrees, as at a sharp turn in the trail, the band
+        // stays on the skin: within about 1.5 mm of it.
+        let ahead = Part(
+            center: [0, 0.3, 0], axis: simd_quatf(angle: 0.6, axis: [0, 1, 0]).act(forward),
+            radius: 0.3, half: 0.548)
+        let behind = Part(center: [0, 0.3, -0.56], axis: forward, radius: 0.3, half: 0.548)
+        for point in arch(BookwormLayout.band(front: ahead, back: behind)) {
+            XCTAssertEqual(min(reach(point, ahead), reach(point, behind)), 1, accuracy: 0.05)
+        }
+        // A segment growing in inside the one behind keeps its band inside too.
+        let growing = Part(center: [0, 0.12, 0.1], axis: forward, radius: 0.12, half: 0.12)
+        let grown = Part(center: [0, 0.3, -0.04], axis: forward, radius: 0.3, half: 0.324)
+        for point in arch(BookwormLayout.band(front: growing, back: grown)) {
+            XCTAssertLessThan(reach(point, grown), 1)
+        }
+        // Segments too far apart to meet, which the worm's overlapping segments never are, get
+        // a band of no size.
+        let apart = BookwormLayout.band(
+            front: Part(center: [0, 0.12, 0], axis: forward, radius: 0.12, half: 0.12),
+            back: Part(center: [0, 0.3, -0.6], axis: forward, radius: 0.3, half: 0.3))
+        XCTAssertEqual(apart.size, .zero)
     }
 
     func testPaceKeepsLongMealsShort() {
