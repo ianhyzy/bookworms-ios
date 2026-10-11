@@ -17,7 +17,7 @@ struct ShelfView: View {
     @AppStorage("BookwormsPileFrame") private var pileFrameSetting = TimeFrame.thisYear.setting
     /// Whether tilting the phone tips the pile's table, which `BookPileView` reads.
     @AppStorage("BookwormsPileTilt") private var tilts = true
-    /// Whether collisions in 3D play sounds, which `BookPileView` reads.
+    /// Whether collisions in 3D play sounds, which the 3D views read.
     @AppStorage("BookwormsThreeDSounds") private var sounds = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The centered book, shared by both carousel modes so switching keeps the reader's place.
@@ -111,6 +111,8 @@ struct ShelfView: View {
                     DominoesView(books: books, title: title) { path.append($0.id) }
                 case .jenga:
                     JengaView(books: books, title: title) { path.append($0.id) }
+                case .bookworm:
+                    BookwormView(books: books, title: title)
                 }
             }
         } else {
@@ -479,14 +481,15 @@ enum ShelfPresentation: String, CaseIterable, Identifiable {
     var title: String { carousel?.title ?? "3D" }
 }
 
-/// The scenes 3D can show. Each shows the shelf's filtered books within the time frame that all
-/// of them share, and picks its own order: the Pile follows the shelf's sort, Dominoes the finish
-/// dates, and Jenga takes the shelf's first books and stacks them by finish date. Adding a view takes a case here, titled by its raw value, and its arm in
-/// `ShelfView.content`; **Sort and filter** offers **View** once there are two.
+/// The scenes 3D can show. Each takes the shelf's books within the time frame that all of them
+/// share, and orders them as the view needs. Adding a view takes a case here, titled by its raw
+/// value, and its arm in `ShelfView.content`; **Sort and filter** offers **View** once there
+/// are two.
 enum ThreeDView: String, CaseIterable, Identifiable {
     case pile
     case dominoes
     case jenga
+    case bookworm
 
     var id: Self { self }
     var title: String { rawValue.capitalized }
