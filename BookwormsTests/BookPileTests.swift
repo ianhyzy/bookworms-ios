@@ -17,6 +17,40 @@ final class BookPileTests: XCTestCase {
     private static let tray = PileTray(
         aspect: 402.0 / 874, safeTop: 1 - 2 * 116.0 / 874, safeBottom: -1 + 2 * 83.0 / 874)!
 
+    /// The corners of a slot's book at the widest cover, in scene coordinates.
+    private func corners(of slot: PileSlot) -> [SIMD3<Float>] {
+        let half = PileLayout.size(of: slot.book, coverAspect: 0.85) / 2
+        return (0..<8)
+            .map { corner in
+                slot.transform.translation
+                    + slot.transform.rotation.act(
+                        SIMD3(
+                            corner & 1 == 0 ? -half.x : half.x, corner & 2 == 0 ? -half.y : half.y,
+                            corner & 4 == 0 ? -half.z : half.z))
+            }
+    }
+
+    /// Whether two slots' books, at the widest cover, intersect: the separating axis test for
+    /// oriented boxes, over both boxes' axes and the cross products of their edges.
+    private func overlap(_ a: PileSlot, _ b: PileSlot) -> Bool {
+        func axes(_ slot: PileSlot) -> [SIMD3<Float>] {
+            [[1, 0, 0], [0, 1, 0], [0, 0, 1]].map { slot.transform.rotation.act($0) }
+        }
+        func radius(_ slot: PileSlot, along axis: SIMD3<Float>) -> Float {
+            let half = PileLayout.size(of: slot.book, coverAspect: 0.85) / 2
+            return zip(axes(slot), [half.x, half.y, half.z])
+                .map { abs(simd_dot($0, axis)) * $1 }
+                .reduce(0, +)
+        }
+        let edges = axes(a).flatMap { u in axes(b).map { simd_cross(u, $0) } }
+        let candidates = axes(a) + axes(b) + edges.filter { simd_length($0) > 0.0001 }
+        let offset = b.transform.translation - a.transform.translation
+        return !candidates.contains { axis in
+            let axis = simd_normalize(axis)
+            return abs(simd_dot(offset, axis)) > radius(a, along: axis) + radius(b, along: axis)
+        }
+    }
+
     /// Projects a point to normalized device coordinates for the default camera.
     private func project(_ point: SIMD3<Float>, aspect: Float = 402.0 / 874) -> SIMD2<Float> {
         let camera = PileCamera()
@@ -106,17 +140,56 @@ final class BookPileTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(position.y, PileLayout.spawnHeight)
             XCTAssertLessThan(position.y + 1.3, PileLayout.ceiling)
         }
-        // Each wave's books start in different cells.
-        for wave in stride(from: 0, to: plan.count, by: PileLayout.waveSize) {
-            let slots = plan[wave..<min(wave + PileLayout.waveSize, plan.count)]
-            for (index, slot) in slots.enumerated() {
-                for other in slots.dropFirst(index + 1) {
-                    let a = slot.transform.translation
-                    let b = other.transform.translation
-                    XCTAssertGreaterThan(simd_distance(SIMD2(a.x, a.z), SIMD2(b.x, b.z)), 0.3)
+        // No two books of a wave start inside each other, at the widest cover.
+        for seed in 0..<20 as Range<UInt64> {
+            let plan = PileLayout.dropPlan(Self.books, in: Self.tray, seed: seed)
+            for wave in stride(from: 0, to: plan.count, by: PileLayout.waveSize) {
+                let slots = plan[wave..<min(wave + PileLayout.waveSize, plan.count)]
+                for (index, slot) in slots.enumerated() {
+                    for other in slots.dropFirst(index + 1) {
+                        XCTAssertFalse(
+                            overlap(slot, other), "seed \(seed): \(slot.book.id), \(other.book.id)")
+                    }
                 }
             }
         }
+    }
+
+    func testStillImageGroupsStartApartInsideTheWalls() throws {
+        for aspect in ShareAspect.allCases {
+            for count in [1, 2, 12, 40] {
+                let books = Array(Self.books.prefix(count))
+                let tray = try XCTUnwrap(PileSnapshotLayout(aspect: aspect, count: count)).tray
+                let walls = tray.scaled(toFit: 3.4)
+                let groups = PileLayout.settleGroups(books, in: tray, seed: 5)
+                XCTAssertEqual(groups.flatMap { $0 }.map(\.book.id), books.map(\.id))
+                for group in groups {
+                    for (index, slot) in group.enumerated() {
+                        // Low enough to land within the group's 0.4 seconds, without spin.
+                        XCTAssertLessThanOrEqual(slot.transform.translation.y, 3.7 + 0.0001)
+                        XCTAssertEqual(slot.spin, .zero)
+                        for corner in corners(of: slot) {
+                            XCTAssertEqual(
+                                walls.clamp(corner, margin: 0), corner, "\(aspect) \(count)")
+                        }
+                        for other in group.dropFirst(index + 1) {
+                            XCTAssertFalse(overlap(slot, other), "\(aspect) \(count)")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    func testAddedBooksMustKeepTheEarlierOrder() {
+        let books = Array(Self.books.prefix(5))
+        let ids = books.map(\.id)
+        XCTAssertEqual(
+            PileLayout.added(to: [ids[1], ids[3]], in: books)?.map(\.id), [ids[0], ids[2], ids[4]])
+        XCTAssertEqual(PileLayout.added(to: [], in: books)?.map(\.id), ids)
+        // A reordered or shortened list starts a new pile.
+        XCTAssertNil(PileLayout.added(to: [ids[3], ids[1]], in: books))
+        XCTAssertNil(PileLayout.added(to: ids + [99], in: books))
     }
 
     func testStackPlanStacksBooksBottomUpInsideTheTray() {

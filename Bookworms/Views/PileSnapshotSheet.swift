@@ -4,9 +4,10 @@ import UIKit
 /// Shares the pile as an image: the pile's books dropped into a new pile under the name of its
 /// time frame, in a share size the reader picks.
 ///
-/// Each size change, shuffle, or library change renders a new image and cancels one in
-/// progress. The previous image stays in view under a progress indicator until the new one is
-/// ready, and sharing waits for it.
+/// Each size change or shuffle renders a new image and cancels one in progress. A change to the
+/// books, such as a design a generation run saves every few seconds under **Designed only**,
+/// waits for the image in progress and then draws again. The previous image stays in view
+/// under a progress indicator until the new one is ready, and sharing waits for it.
 struct PileSnapshotSheet: View {
     let books: [CloudBook]
     let title: String
@@ -15,6 +16,8 @@ struct PileSnapshotSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var aspect = ShareAspect.story
     @State private var seed: UInt64 = 0
+    /// `books` as last passed in, which the render loop reads between renders.
+    @State private var latest: [CloudBook]
     @State private var image: ShareImage?
     /// The options of the last finished render, whether it drew `image` or failed.
     @State private var rendered: Options?
@@ -26,11 +29,19 @@ struct PileSnapshotSheet: View {
         /// The books and heading, so a new library never leaves an image of the old one.
         var ids: [Int]
         var title: String
+
+        /// The options without the books, which restart a render in progress when they change.
+        var restartKey: Options {
+            var key = self
+            key.ids = []
+            return key
+        }
     }
 
     init(books: [CloudBook], title: String) {
         self.books = books
         self.title = title
+        _latest = State(initialValue: books)
         #if DEBUG
             if let aspect = UserDefaults.standard.string(forKey: "BookwormsPileShareAspect")
                 .flatMap(ShareAspect.init(rawValue:))
@@ -70,7 +81,8 @@ struct PileSnapshotSheet: View {
                 }
             }
         }
-        .task(id: options) { await render(options) }
+        .task(id: options.restartKey) { await render() }
+        .onChange(of: books.map(\.id)) { latest = books }
         // The shelf's dark scheme reaches this content but not the sheet's own background.
         .preferredColorScheme(.dark)
     }
@@ -100,10 +112,20 @@ struct PileSnapshotSheet: View {
         .frame(maxHeight: .infinity)
     }
 
-    private func render(_ options: Options) async {
+    /// Renders until the image shows the latest books.
+    private func render() async {
+        while !Task.isCancelled {
+            let books = latest
+            let options = Options(aspect: aspect, seed: seed, ids: books.map(\.id), title: title)
+            guard rendered != options else { return }
+            await render(books, options)
+        }
+    }
+
+    private func render(_ books: [CloudBook], _ options: Options) async {
         do {
             let drawn = try await PileSnapshotRenderer.render(
-                books: books, title: title, aspect: options.aspect, seed: options.seed,
+                books: books, title: options.title, aspect: options.aspect, seed: options.seed,
                 model: model)
             // A render cancelled after its last check still returns; a newer one is on its way.
             try Task.checkCancellation()

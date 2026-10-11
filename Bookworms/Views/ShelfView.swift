@@ -12,6 +12,9 @@ struct ShelfView: View {
     @AppStorage("BookwormsShelfDesignedOnly") private var designedOnly = false
     /// The pile's time frame as `TimeFrame.setting` writes it; empty for every book.
     @AppStorage("BookwormsPileFrame") private var pileFrameSetting = ""
+    /// Whether tilting the phone tips the pile's table, which `BookPileView` reads.
+    @AppStorage("BookwormsPileTilt") private var tilts = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The centered book, shared by both carousel modes so switching keeps the reader's place.
     @State private var centeredID: Int?
     @State private var path: [Int] = []
@@ -84,7 +87,7 @@ struct ShelfView: View {
                     SpineCarousel(
                         books: books, mode: carousel, centeredID: $centeredID, namespace: namespace
                     ) { path.append($0.id) }
-                    ShelfCaption(books: books, designs: library.designs, centeredID: $centeredID)
+                    ShelfCaption(books: books, centeredID: $centeredID)
                         // Larger sizes overflow the caption's fixed height; the book's details
                         // show the same record at any size.
                         .dynamicTypeSize(...DynamicTypeSize.accessibility3)
@@ -109,9 +112,16 @@ struct ShelfView: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu("Sort and filter", systemImage: "line.3.horizontal.decrease") {
-                // In the menu rather than beside it, so the pile's bar keeps room for its own
-                // buttons.
-                if mode == .pile { pileFrameOptions }
+                // In the menu rather than the bar, which the presentation picker and the pile's
+                // own buttons fill.
+                if mode == .pile {
+                    pileFrameOptions
+                    if BookPileScene.canTilt && !reduceMotion {
+                        Section {
+                            Toggle("Tilt to move books", systemImage: "gyroscope", isOn: $tilts)
+                        }
+                    }
+                }
                 Picker("Sort by", selection: $sort) {
                     ForEach(ShelfSort.allCases) { Text($0.title).tag($0) }
                 }
@@ -335,13 +345,12 @@ struct NoLibraryView: View {
     }
 }
 
-/// The centered book's title, author, reading record, and design provenance.
+/// The centered book's title, author, and reading record.
 ///
 /// Reads `centeredID` itself, so a new centered book updates only this caption. The caption
 /// keeps a fixed, Dynamic Type–scaled height so the carousel above it never resizes mid-scroll.
 private struct ShelfCaption: View {
     let books: [CloudBook]
-    let designs: [Int: SpineDesignV1]
     @Binding var centeredID: Int?
     @ScaledMetric(relativeTo: .title3) private var height: CGFloat = 150
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -355,7 +364,8 @@ private struct ShelfCaption: View {
                 Text("\(index + 1) of \(books.count)")
                     .font(.caption2.weight(.medium))
                     .monospacedDigit()
-                    .foregroundStyle(.tertiary)
+                    // Dimmer than the title, and above 4.5:1 contrast on the walnut wall.
+                    .foregroundStyle(ShelfPalette.paper.opacity(0.6))
                     .accessibilityHidden(true)
             }
             Text(book.title)

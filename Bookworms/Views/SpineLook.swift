@@ -46,7 +46,7 @@ final class SpineFonts {
     private(set) var faces: [String: FontFace] = [:]
     @ObservationIgnored private let downloader = GoogleFonts()
     /// Downloads in progress, shared so every caller waits for the same face.
-    @ObservationIgnored private var loads: [String: Task<FontFace?, any Error>] = [:]
+    @ObservationIgnored private var loads: [String: Task<Void, Never>] = [:]
     /// Faces whose family or file is unusable. Network failures are not listed, so they retry.
     @ObservationIgnored private var unusable = Set<String>()
 
@@ -55,37 +55,55 @@ final class SpineFonts {
         return faces[key]
     }
 
-    /// Loads each missing face one at a time and returns when all of them have loaded or failed.
+    /// Loads each missing face one at a time and returns when all of them have loaded or failed,
+    /// or when the calling task is cancelled.
     ///
     /// A face another caller is already downloading is awaited, not skipped, so a share image
-    /// never renders before its fonts arrive. Downloads run in their own tasks: cancelling a
-    /// caller does not cancel a download that others share. A family that is missing or
-    /// unusable is not retried until the next launch; a network failure retries on the next load.
+    /// never renders before its fonts arrive. Each download runs in its own task and records
+    /// its own result, so a cancelled caller stops waiting at once while the download continues
+    /// for others. Otherwise a call waits as long as its downloads take; `GoogleFonts` gives up
+    /// on a request after 40 seconds without data. A family that is missing or unusable is not
+    /// retried until the next launch; a network failure retries on the next load.
     func load(_ designs: some Sequence<SpineDesignV1>) async {
-        for design in designs {
+        for design in designs where !Task.isCancelled {
             guard let key = Self.key(design), let family = design.fontFamily, faces[key] == nil,
                 !unusable.contains(key)
             else { continue }
-            let task =
-                loads[key]
-                ?? Task { [downloader] in
-                    let font = try await downloader.download(family: family, weight: design.weight)
-                    let name = design.fontPostScriptName ?? font.postScriptName
-                    let descriptors = GoogleFonts.descriptors(at: font.fileURL)
-                    return
-                        (descriptors.first { GoogleFonts.postScriptName(of: $0) == name }
-                        ?? descriptors.first)
-                        .map { FontFace(descriptor: $0, postScriptName: name) }
-                }
-            loads[key] = task
-            let result = await task.result
-            loads[key] = nil
-            switch result {
-            case .success(let face?): faces[key] = face
-            case .success(nil), .failure(is CompanionError): unusable.insert(key)
-            case .failure: break
+            let task = loads[key] ?? download(family: family, design: design, key: key)
+            // Awaiting the task itself would ignore cancellation; the stream's iteration ends
+            // when the download finishes or the caller is cancelled.
+            let (finished, finish) = AsyncStream.makeStream(of: Never.self)
+            Task {
+                await task.value
+                finish.finish()
             }
+            for await _ in finished {}
         }
+    }
+
+    /// Starts downloading `design`'s face and records the result under `key` when it ends.
+    private func download(family: String, design: SpineDesignV1, key: String) -> Task<Void, Never>
+    {
+        let task = Task { [downloader] in
+            do {
+                let font = try await downloader.download(family: family, weight: design.weight)
+                let name = design.fontPostScriptName ?? font.postScriptName
+                let descriptors = GoogleFonts.descriptors(at: font.fileURL)
+                if let descriptor =
+                    descriptors.first(where: { GoogleFonts.postScriptName(of: $0) == name })
+                    ?? descriptors.first
+                {
+                    faces[key] = FontFace(descriptor: descriptor, postScriptName: name)
+                } else {
+                    unusable.insert(key)
+                }
+            } catch is CompanionError {
+                unusable.insert(key)
+            } catch {}
+            loads[key] = nil
+        }
+        loads[key] = task
+        return task
     }
 
     private static func key(_ design: SpineDesignV1) -> String? {
