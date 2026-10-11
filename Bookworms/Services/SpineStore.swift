@@ -14,9 +14,10 @@ protocol SpineStore: Sendable {
     func loadWork() async throws -> WorkContext?
     /// Returns the book's saved design when it is valid and made by this app's generator.
     func currentDesign(accountID: String, bookID: Int) async throws -> SpineDesignV1?
-    /// Returns whether `bookID` still belongs to the work in `context`, so a stale result is not
-    /// saved after the Apple TV changed accounts or removed the book.
-    func isStillCurrent(_ context: WorkContext, bookID: Int) async throws -> Bool
+    /// Returns whether `book` still belongs to the work in `context` with the same chosen cover,
+    /// so a stale result is not saved after the Apple TV changed accounts or removed the book, or
+    /// the reader picked another cover.
+    func isStillCurrent(_ context: WorkContext, book: CloudBook) async throws -> Bool
     /// Saves `design` unless an equal or newer design for the same work already exists.
     func save(_ design: SpineDesignV1) async throws
     /// Saves the reader's cover for a book, replacing an earlier choice.
@@ -96,11 +97,13 @@ actor LocalSpineStore: SpineStore {
         return design
     }
 
-    func isStillCurrent(_ context: WorkContext, bookID: Int) async throws -> Bool {
-        guard let work = try await loadWork() else { return false }
+    func isStillCurrent(_ context: WorkContext, book: CloudBook) async throws -> Bool {
+        guard let work = try await loadWork(),
+            let current = work.books.first(where: { $0.id == book.id })
+        else { return false }
         return work.accountID == context.accountID
             && abs(work.syncedAt.timeIntervalSince(context.syncedAt)) < 0.001
-            && work.books.contains { $0.id == bookID }
+            && current.chosenCoverURL == book.chosenCoverURL
     }
 
     func save(_ design: SpineDesignV1) async throws {

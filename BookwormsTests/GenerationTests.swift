@@ -98,6 +98,54 @@ final class GenerationTests: XCTestCase {
             XCTAssertEqual(
                 SpineWorker.disposition(of: URLError(code), now: now), .skipBookAndStop, "\(code)")
         }
+        // A Google Fonts outage affects every book, so the run stops until it can clear.
+        XCTAssertEqual(
+            SpineWorker.disposition(of: CompanionError.fontServiceUnavailable(nil), now: now),
+            .stopRun(retryAfter: now.addingTimeInterval(SpineWorker.busyRetryDelay)))
+        XCTAssertEqual(
+            SpineWorker.disposition(
+                of: CompanionError.fontServiceUnavailable(now.addingTimeInterval(60)), now: now),
+            .stopRun(retryAfter: now.addingTimeInterval(60)))
+        // A full iCloud storage plan does not clear by itself.
+        let full = CKError(.quotaExceeded)
+        XCTAssertEqual(
+            SpineWorker.disposition(of: full, now: now),
+            .stopRun(retryAfter: now.addingTimeInterval(SpineWorker.lastingStopDelay)))
+        XCTAssertTrue(SpineWorker.message(for: full).contains("iCloud storage is full"))
+        // A background run on cellular or Low Data Mode waits for Wi-Fi.
+        let cellular = URLError(
+            .notConnectedToInternet,
+            userInfo: [
+                NSURLErrorNetworkUnavailableReasonKey:
+                    URLError.NetworkUnavailableReason.expensive.rawValue
+            ])
+        XCTAssertEqual(SpineWorker.disposition(of: cellular, now: now), .stopRun(retryAfter: nil))
+        XCTAssertTrue(SpineWorker.message(for: cellular).hasPrefix("Waiting for Wi-Fi"))
+    }
+
+    func testGoogleFontsStatusSeparatesMissingFamiliesFromOutages() throws {
+        func failure(_ status: Int, retryAfter: String? = nil) throws -> CompanionError {
+            let response = try XCTUnwrap(
+                HTTPURLResponse(
+                    url: URL(string: "https://fonts.google.com/download/list")!,
+                    statusCode: status, httpVersion: nil,
+                    headerFields: retryAfter.map { ["Retry-After": $0] }))
+            return GoogleFonts.failure(for: response, now: now)
+        }
+        for status in [404, 410] {
+            guard case .invalidDesign = try failure(status) else {
+                return XCTFail("\(status) should only skip the family")
+            }
+        }
+        guard case .fontServiceUnavailable(nil) = try failure(503) else {
+            return XCTFail("A server error should stop the run")
+        }
+        guard case .fontServiceUnavailable(let seconds) = try failure(429, retryAfter: "120"),
+            case .fontServiceUnavailable(let date) = try failure(
+                503, retryAfter: "Wed, 21 Oct 2015 07:28:00 GMT")
+        else { return XCTFail("A rate limit should stop the run") }
+        XCTAssertEqual(seconds, now.addingTimeInterval(120))
+        XCTAssertEqual(date, Date(timeIntervalSince1970: 1_445_412_480))
     }
 
     func testSavedRunOutcomeSurvivesRelaunchUntilItsRetryDatePasses() throws {
@@ -142,10 +190,16 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(
             SpineWorker.modelStop(status(quota: .limitReached), mode: .foreground)?.retryAfter,
             now)
-        XCTAssertNotNil(
-            SpineWorker.modelStop(status(available: false, quota: .belowLimit), mode: .foreground))
-        XCTAssertNotNil(
-            SpineWorker.modelStop(status(reader: .none, quota: .belowLimit), mode: .foreground))
+        // An unavailable model waits a day instead of downloading the library every charge.
+        let dayLater = now.addingTimeInterval(SpineWorker.lastingStopDelay)
+        XCTAssertEqual(
+            SpineWorker.modelStop(
+                status(available: false, quota: .belowLimit), mode: .background, now: now)?
+                .retryAfter, dayLater)
+        XCTAssertEqual(
+            SpineWorker.modelStop(
+                status(reader: .none, quota: .belowLimit), mode: .foreground, now: now)?
+                .retryAfter, dayLater)
         XCTAssertNil(
             SpineWorker.modelStop(status(reader: .onDevice, quota: .belowLimit), mode: .foreground))
     }
@@ -175,6 +229,25 @@ final class GenerationTests: XCTestCase {
         XCTAssertThrowsError(try answer(weight: "black"))
         XCTAssertNoThrow(
             try BookAnalyzer.designSchema(palette: palette, inks: inks, families: families))
+    }
+
+    func testTitleNoFamilyCoversUsesTheStyleSystemTypeface() throws {
+        let palette = ["#1F3A5A", "#D8CBB0"].compactMap(ColorValue.init(hex:))
+        let choice = BookAnalyzer.DesignChoice(
+            background: palette[0], ink: ColorValue(hex: "#F4EEE2")!, accent: palette[1],
+            weight: 600, families: ["Lora"])
+        let book = CloudBook(
+            id: 9, title: "\u{68EE}\u{306E}\u{5BB6}", author: "An Author", coverURL: nil,
+            detailCoverURL: nil)
+        let hash = String(repeating: "a", count: 64)
+        let design = try BookAnalyzer.design(
+            choice: choice, style: .bookSerif, font: nil, uppercase: false, palette: palette,
+            book: book, accountID: "42", workItemHash: hash, coverHash: hash)
+        XCTAssertEqual(design.typeface, "serif")
+        XCTAssertEqual(design.weight, 600)
+        XCTAssertNil(design.fontFamily)
+        XCTAssertNil(design.fontPostScriptName)
+        XCTAssertNil(design.instanceWeight)
     }
 
     func testCandidateFamiliesAreOneStyleInAReproducibleOrderPerBook() {

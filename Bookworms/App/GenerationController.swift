@@ -34,6 +34,9 @@ final class GenerationController {
     @ObservationIgnored private var userRun: Task<Void, Never>?
     @ObservationIgnored private var continuedTask: BGContinuedProcessingTask?
     @ObservationIgnored private var installedSubscription = false
+    /// When this process last received a worklist push. A run that started earlier may have
+    /// missed the new work, so its end keeps the push's immediate charging task.
+    @ObservationIgnored private var worklistChangedAt: Date?
 
     /// Whether the last run may have left work, so the charging task is worth scheduling.
     private var workMayRemain: Bool {
@@ -63,12 +66,13 @@ final class GenerationController {
         isGenerating = true
         userRun = Task {
             await requestContinuedProcessing()
+            let started = Date.now
             await worker.reconcile(mode: .foreground)
             continuedTask?.setTaskCompleted(success: !Task.isCancelled)
             continuedTask = nil
             userRun = nil
             isGenerating = false
-            await scheduleChargingTask()
+            await scheduleChargingTask(hasNewWork: receivedWorklist(since: started))
         }
     }
 
@@ -83,14 +87,20 @@ final class GenerationController {
     /// cancellation reaches the worker's requests and downloads.
     func runChargingTask() async {
         guard generatesWhileCharging else { return }
+        let started = Date.now
         await worker.reconcile(mode: .background)
-        await scheduleChargingTask()
+        await scheduleChargingTask(hasNewWork: receivedWorklist(since: started))
     }
 
     /// Schedules generation after the Apple TV publishes a new worklist. Generation waits for the
     /// charging task.
     func worklistChanged() async {
+        worklistChangedAt = .now
         await scheduleChargingTask(hasNewWork: true)
+    }
+
+    private func receivedWorklist(since date: Date) -> Bool {
+        (worklistChangedAt ?? .distantPast) >= date
     }
 
     func scenePhaseChanged(to phase: ScenePhase) {
@@ -147,7 +157,8 @@ final class GenerationController {
         do {
             try await Self.submit(request)
         } catch {
-            // The Simulator does not support background processing.
+            // Submission fails in the Simulator and when Background App Refresh is off; the
+            // Spines tab explains the latter.
             generationLog.info("Charging task not scheduled: \(error, privacy: .public)")
         }
     }

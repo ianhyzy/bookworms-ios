@@ -1,5 +1,6 @@
 import FoundationModels
 import SwiftUI
+import UIKit
 
 /// The **Spines** tab: design coverage, generator progress, the Private Cloud Compute quota,
 /// the charging preference, and where the library comes from. The toolbar opens the Hardcover
@@ -7,7 +8,11 @@ import SwiftUI
 struct GenerationView: View {
     @Environment(AppModel.self) private var model
     @Environment(GenerationController.self) private var generation
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showsAccount = false
+    /// This app's Background App Refresh status. iOS refuses the charging task while it is off,
+    /// so the view rereads it on appearance, on return to the foreground, and when it changes.
+    @State private var backgroundRefresh = UIBackgroundRefreshStatus.available
 
     var body: some View {
         @Bindable var generation = generation
@@ -19,9 +24,13 @@ struct GenerationView: View {
                 Section {
                     Toggle("Generate while charging", isOn: $generation.generatesWhileCharging)
                 } footer: {
-                    Text(
-                        "iOS runs generation when this iPhone is charging and idle on a network, typically overnight. The Apple TV picks up new designs through iCloud."
-                    )
+                    if generation.generatesWhileCharging, let warning = backgroundRefreshWarning {
+                        Text(warning)
+                    } else {
+                        Text(
+                            "iOS runs generation when this iPhone is charging and idle on a network, typically overnight. The Apple TV picks up new designs through iCloud."
+                        )
+                    }
                 }
                 librarySource
             }
@@ -30,7 +39,21 @@ struct GenerationView: View {
                 Button("Hardcover account", systemImage: accountSymbol) { showsAccount = true }
             }
             .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
-            .task { await generation.refreshModelStatus() }
+            .task {
+                backgroundRefresh = UIApplication.shared.backgroundRefreshStatus
+                await generation.refreshModelStatus()
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active {
+                    backgroundRefresh = UIApplication.shared.backgroundRefreshStatus
+                }
+            }
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: UIApplication.backgroundRefreshStatusDidChangeNotification)
+            ) { _ in
+                backgroundRefresh = UIApplication.shared.backgroundRefreshStatus
+            }
             #if DEBUG
                 // `-BookwormsShowAccount YES` opens the account sheet for Simulator checks.
                 .onAppear {
@@ -44,15 +67,23 @@ struct GenerationView: View {
 
     private var summary: some View {
         let total = model.library?.books.count ?? 0
-        let designs = model.library?.designs.values.map(\.generatorVersion) ?? []
+        let designed = model.library?.designs.count ?? 0
         return Section {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("\(designs.count) of \(total) books designed")
+            ProgressView(value: Double(designed), total: Double(max(total, 1))) {
+                Text("\(designed) of \(total) books designed")
                     .font(.headline)
             }
-            .accessibilityElement(children: .combine)
-            ProgressView(value: Double(designs.count), total: Double(max(total, 1)))
-                .accessibilityLabel("Books designed")
+        }
+    }
+
+    /// Why the charging task cannot run, when Background App Refresh is off for this app.
+    private var backgroundRefreshWarning: String? {
+        switch backgroundRefresh {
+        case .denied:
+            "Turn on Background App Refresh for Bookworms in Settings to generate while charging."
+        case .restricted:
+            "Background App Refresh is restricted on this iPhone, so Bookworms generates spines only when you tap Generate now."
+        default: nil
         }
     }
 

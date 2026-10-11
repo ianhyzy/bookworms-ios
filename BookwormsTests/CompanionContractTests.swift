@@ -113,6 +113,17 @@ final class CompanionContractTests: XCTestCase {
         XCTAssertEqual(try legacyOnly.workSource(for: nil).snapshot.accountID, "hardcover")
         let empty = CloudLibraryArchive(version: 1, sources: [])
         XCTAssertThrowsError(try empty.workSource(for: nil))
+        // A CWA-only Apple TV uploaded its library; there is nothing to wait for.
+        let cwaOnly = CloudLibraryArchive(
+            version: 1,
+            sources: [
+                CloudSourceSnapshot(source: "cwa", accountID: "42", books: [book], syncedAt: older)
+            ])
+        XCTAssertThrowsError(try cwaOnly.workSource(for: nil)) { error in
+            guard case CompanionError.noHardcoverLibrary = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
     }
 
     func testCoverCandidatesPreferDetailImageAndDeduplicate() {

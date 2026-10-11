@@ -118,8 +118,16 @@ final class CoverChoiceTests: XCTestCase {
         try await store.save(choice())
         let library = try await store.loadLibrary()
         XCTAssertEqual(library?.books.map(\.chosenCoverURL), [chosen, nil])
-        let work = try await store.loadWork()
-        XCTAssertEqual(work?.books.first?.coverCandidates.first, chosen)
+        let loaded = try await store.loadWork()
+        let work = try XCTUnwrap(loaded)
+        XCTAssertEqual(work.books.first?.coverCandidates.first, chosen)
+        // A design from the old cover is stale once the reader picks another.
+        let designing = work.books[0]
+        let unchanged = try await store.isStillCurrent(work, book: designing)
+        XCTAssertTrue(unchanged)
+        try await store.save(choice(coverURL: URL(string: "https://covers.example.com/7/3.jpg")!))
+        let changed = try await store.isStillCurrent(work, book: designing)
+        XCTAssertFalse(changed)
 
         try await store.deleteCoverChoice(accountID: "42", bookID: 7)
         let restored = try await store.loadLibrary()

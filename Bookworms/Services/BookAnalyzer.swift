@@ -137,11 +137,13 @@ actor BookAnalyzer {
     /// The letterform style question comes first, alone with the cover, so no design text
     /// anchors it. One combined request then picks colors, weight, and a ranking of that style's
     /// families. Ranked families are downloaded and glyph-checked in order; if none is usable,
-    /// one more ranking without them is requested.
+    /// one more ranking without them is requested. When every checked family downloaded but
+    /// lacks a glyph, as for a title in a script no family covers, the design uses the style's
+    /// system typeface instead of a Google Fonts family.
     ///
-    /// Throws `CompanionError.quotaReached` or `.modelBusy` when the run should stop,
-    /// `.modelUnavailable` when no model can read the cover, and `.invalidDesign` when this book
-    /// cannot get a valid design. Font download network failures throw `URLError`.
+    /// Throws `CompanionError.quotaReached`, `.modelBusy`, or `.fontServiceUnavailable`, or an
+    /// offline `URLError`, when the run should stop; `.modelUnavailable` when no model can read
+    /// the cover; and `.invalidDesign` when this book cannot get a valid design.
     func design(
         book: CloudBook, accountID: String, workItemHash: String, cover: CoverImage
     ) async throws -> SpineDesignV1 {
@@ -218,21 +220,33 @@ actor BookAnalyzer {
         let uppercase = Self.prefersUppercase(observedText)
         let text = Self.renderedText(of: book, uppercase: uppercase)
         var ranked = choice.families
+        var missingGlyphs = false
+        var unavailable = false
         for attempt in 0..<2 {
             for name in ranked {
                 guard let family = SpineFamily(rawValue: name) else { continue }
-                if let font = try await usableFont(name, weight: choice.weight, text: text) {
-                    return try Self.design(
-                        choice: choice, family: family, font: font, uppercase: uppercase,
-                        palette: palette, book: book, accountID: accountID,
-                        workItemHash: workItemHash, coverHash: cover.hash)
+                if let font = try await downloadedFont(name, weight: choice.weight) {
+                    if font.covers(text) {
+                        return try Self.design(
+                            choice: choice, style: style, font: (family, font),
+                            uppercase: uppercase, palette: palette, book: book,
+                            accountID: accountID, workItemHash: workItemHash,
+                            coverHash: cover.hash)
+                    }
+                    missingGlyphs = true
+                } else {
+                    unavailable = true
                 }
                 families.removeAll { $0 == name }
             }
             guard attempt == 0, !families.isEmpty else { break }
             ranked = try await Self.rankFamilies(families, style: style, session: session)
         }
-        throw CompanionError.invalidDesign
+        // Glyph coverage never changes, so a retry would fail again; a failed download may not.
+        guard missingGlyphs, !unavailable else { throw CompanionError.invalidDesign }
+        return try Self.design(
+            choice: choice, style: style, font: nil, uppercase: uppercase, palette: palette,
+            book: book, accountID: accountID, workItemHash: workItemHash, coverHash: cover.hash)
     }
 
     /// Maps a model framework error to the companion's error, or returns `nil` for other errors.
@@ -385,9 +399,9 @@ actor BookAnalyzer {
     ) async throws -> SpineDesignV1? {
         if let family = source.fontFamily {
             let text = Self.renderedText(of: book, uppercase: source.uppercase)
-            guard try await usableFont(family, weight: source.weight, text: text) != nil else {
-                return nil
-            }
+            guard let font = try await downloadedFont(family, weight: source.weight),
+                font.covers(text)
+            else { return nil }
         }
         let design = SpineDesignV1(
             version: 1, accountID: accountID, bookID: book.id,
@@ -479,25 +493,31 @@ actor BookAnalyzer {
             .filter { families.contains($0) && allowsFamily($0) && seen.insert($0).inserted }
     }
 
-    /// Returns the downloaded font when it is allowed and covers `text`, or `nil` for a
-    /// disallowed or missing family, file, license, or glyph. Network failures propagate so the
-    /// worker can stop the queue.
-    private func usableFont(_ family: String, weight: Int, text: String) async throws
-        -> DownloadedFont?
-    {
+    /// Returns the downloaded font when the family is allowed, or `nil` for a disallowed or
+    /// missing family, file, or license. Callers check glyph coverage.
+    ///
+    /// Offline errors propagate unchanged. Other network failures, like a Google Fonts outage,
+    /// throw `CompanionError.fontServiceUnavailable`: they affect every family, so the worker
+    /// stops the run instead of failing each book after its model requests.
+    private func downloadedFont(_ family: String, weight: Int) async throws -> DownloadedFont? {
         guard Self.allowsFamily(family) else { return nil }
         do {
-            let font = try await fonts.download(family: family, weight: weight)
-            return font.covers(text) ? font : nil
+            return try await fonts.download(family: family, weight: weight)
         } catch let error as URLError {
-            throw error
+            if SpineWorker.offlineErrors.contains(error.code) { throw error }
+            throw CompanionError.fontServiceUnavailable(nil)
+        } catch CompanionError.fontServiceUnavailable(let retryAfter) {
+            throw CompanionError.fontServiceUnavailable(retryAfter)
         } catch {
             return nil
         }
     }
 
-    private static func design(
-        choice: DesignChoice, family: SpineFamily, font: DownloadedFont, uppercase: Bool,
+    /// Builds and validates the design from the model's choice, set in `font` or, when it is
+    /// `nil`, in the style's system typeface alone.
+    static func design(
+        choice: DesignChoice, style: SpineFontStyle,
+        font: (family: SpineFamily, instance: DownloadedFont)?, uppercase: Bool,
         palette: [ColorValue], book: CloudBook, accountID: String, workItemHash: String,
         coverHash: String
     ) throws -> SpineDesignV1 {
@@ -511,10 +531,10 @@ actor BookAnalyzer {
             workItemHash: workItemHash, coverHash: coverHash,
             generatorVersion: CloudContract.generatorVersion, generatedAt: Date(),
             backgroundHex: background.hex, foregroundHex: foreground.hex,
-            accentHex: accent.hex, typeface: family.style.fallbackTypeface,
+            accentHex: accent.hex, typeface: style.fallbackTypeface,
             weight: choice.weight, uppercase: uppercase,
-            fontFamily: family.rawValue, fontPostScriptName: font.postScriptName,
-            instanceWeight: font.weight)
+            fontFamily: font?.family.rawValue, fontPostScriptName: font?.instance.postScriptName,
+            instanceWeight: font?.instance.weight)
         try design.validate()
         return design
     }
