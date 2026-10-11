@@ -32,8 +32,9 @@ enum PileMovieTiming {
     /// The final frames, in which the camera keeps the settled pile's framing.
     static let holdFrames = 9
     /// The highest base a group starts from, in scene units. A group's highest layer starts 3.7
-    /// units above its base, so a tilted book there stays under `PileLayout.ceiling`.
-    static let highestBase: Float = PileLayout.ceiling - 4.5
+    /// units above its base, so a tilted book there stays well under `PileLayout.ceiling`, and
+    /// a book from there lands within `pushDelay`.
+    static let highestBase: Float = 17.5
     /// The linear damping of a video's books, as air drag. From 15 units up, a book lands at about
     /// the speed of a 7-unit drop without drag, rather than 50 percent faster, which flips many
     /// books face down.

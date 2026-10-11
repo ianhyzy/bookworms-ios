@@ -98,7 +98,7 @@ enum PileFlight {
     static let spring = Spring(duration: 0.8, bounce: 0.2)
     static let whipDuration: Float = 0.26
     /// How far the veil stays behind the book's middle: more than half the largest book's
-    /// diagonal, 3.74 units, so the book never passes through it.
+    /// diagonal, 3.72 units, so the book never passes through it.
     static let veilGap: Float = 2
 
     /// How far a book with `bounds` rises: until its bottom clears, by 0.15 units, the top of
@@ -231,9 +231,10 @@ extension PileTray {
     ///
     /// A pile against the far or side walls rises toward the top or sides of the screen, so
     /// those walls stand where the view's edges meet a pile `pileHeight` high: room for the
-    /// longest book, 2.8 units, standing on end on a 1.7-unit pile. A pile against the near
-    /// wall rises toward the middle of the screen, so that wall stands where the bottom edge
-    /// meets the table.
+    /// longest book, 2.8 units, standing on end on a 1.7-unit pile. `PileLayout.maximumVolume`
+    /// keeps a pile of long books from rising much higher. A pile against the near wall rises
+    /// toward the middle of the screen, so that wall stands where the bottom edge meets the
+    /// table.
     init?(
         aspect: Float, safeTop: Float, safeBottom: Float, pileHeight: Float = 4.5,
         camera: PileCamera = PileCamera()
@@ -301,16 +302,32 @@ enum PileLayout {
     /// fall below the next wave's lowest cells before those books start.
     static let waveInterval = Duration.milliseconds(800)
     static let spawnHeight: Float = 9
-    /// Above the highest start a drop plan gives, 11.4 units over `spawnHeight`.
-    static let ceiling: Float = 22
+    /// Above the highest start a drop plan gives, with room for a book lifted over others (see
+    /// `dropPlan`), and below the walls' tops.
+    static let ceiling: Float = 28
     /// Half the longest book's length (`BookShape.longest`) plus a little, which keeps a new
     /// book clear of the walls.
     static let reach: Float = 1.5
     /// The share of a still image's or a video's books that start turned over (see
-    /// `settleGroups`).
-    static let turnedOver = 0.1
+    /// `settleGroups`): about as many as land face down in the live pile.
+    static let turnedOver = 0.05
+    /// The most book volume a live drop takes, in liters, which an iPhone's tray holds between
+    /// the bars. A typical library's 300 books take about 200 liters.
+    static let maximumVolume: Float = 250
     /// The largest sideways gravity tilt allows, as a fraction of `gravity` (about 27 degrees).
     static let maximumTilt: Float = 0.5
+
+    /// The first of `books`, in order: at most `count` of them, and only as many as
+    /// `maximumVolume` holds, so a library of long books still fits between the bars.
+    static func dropped(_ books: [CloudBook], count: Int) -> ArraySlice<CloudBook> {
+        var volume: Float = 0
+        for (index, book) in books.prefix(count).enumerated() {
+            let size = BookShape(of: book, coverAspect: 2 / 3).size
+            volume += size.x * size.y * size.z
+            if volume > maximumVolume { return books.prefix(index) }
+        }
+        return books.prefix(count)
+    }
 
     /// A book lying front cover up with its head to the left (-x) and its spine toward the
     /// camera (+z), so its spine reads left to right like `SpineView`.
@@ -320,19 +337,23 @@ enum PileLayout {
     /// Drop poses above the tray, in waves of `waveSize` books, from `spawnHeight` up.
     ///
     /// Each wave fills a 2 × 8 grid of cells once, in a shuffled order. Cells start at six
-    /// heights 2.2 units apart, repeating every three rows, so books in a wave start apart:
-    /// cells at one height are three rows apart, farther than a book reaches. Each book starts
-    /// at a random yaw, front cover up but tumbled up to `tumble` radians (about 46 degrees by
-    /// default), and spinning up to 2 radians a second about each level axis and 3 about the
-    /// vertical, so it twirls more than it turns over as it falls. A tray too shallow to keep
-    /// `reach` from its walls drops every book over its middle.
+    /// heights 2.2 units apart, repeating every three rows, so books in a wave start spread out.
+    /// Each book starts at a random yaw, front cover up but tumbled up to `tumble` radians
+    /// (about 46 degrees by default), and spinning up to 2 radians a second about each level
+    /// axis and 3 about the vertical, so it twirls more than it turns over as it falls. A tray
+    /// too shallow to keep `reach` from its walls drops every book over its middle.
+    ///
+    /// Large books in nearby cells can still reach into each other, which the physics would
+    /// resolve with a visible jolt. So each book, lowest first, rises above every lower book of
+    /// its wave whose bounds, at the widest cover, overlap its own across the table. A typical
+    /// library lifts about one book in a hundred, mostly by a centimeter or two.
     static func dropPlan(
         _ books: [CloudBook], in tray: PileTray, seed: UInt64, tumble: Float = 0.8
     ) -> [PileSlot] {
         let columns = 2
         let rows = waveSize / columns
         var order: [Int] = []
-        return books.enumerated()
+        var slots = books.enumerated()
             .map { index, book in
                 let wave = index / waveSize
                 if index % waveSize == 0 {
@@ -361,22 +382,61 @@ enum PileLayout {
                         rotation: yaw * tumble * lyingFlat, translation: [x, y, z]),
                     spin: (SIMD3(random(8), random(9), random(10)) - 0.5) * [4, 6, 4])
             }
+        for start in stride(from: 0, to: slots.count, by: waveSize) {
+            let wave = (start..<min(start + waveSize, slots.count))
+                .sorted {
+                    (slots[$0].transform.translation.y, $0) < (
+                        slots[$1].transform.translation.y, $1
+                    )
+                }
+            let extents = wave.map { halfExtent(of: slots[$0]) }
+            for rank in wave.indices {
+                for below in 0..<rank {
+                    let position = slots[wave[rank]].transform.translation
+                    let lower = slots[wave[below]].transform.translation
+                    let reach = extents[rank] + extents[below]
+                    if abs(position.x - lower.x) < reach.x, abs(position.z - lower.z) < reach.z {
+                        slots[wave[rank]].transform.translation.y = max(
+                            position.y, lower.y + reach.y + 0.05)
+                    }
+                }
+            }
+        }
+        return slots
+    }
+
+    /// Half the size of the box around `slot`'s book, at the widest cover, as it starts.
+    private static func halfExtent(of slot: PileSlot) -> SIMD3<Float> {
+        let half = BookShape(of: slot.book, coverAspect: 0.85).size / 2
+        let turn = simd_float3x3(slot.transform.rotation)
+        return abs(turn.columns.0) * half.x + abs(turn.columns.1) * half.y
+            + abs(turn.columns.2) * half.z
     }
 
     /// Starting poses for a still image's pile, in groups that fall together, with heights
     /// above the pile so far.
     ///
     /// Books start over the middle 70 percent of `tray`, tilted a little and without spin. A
-    /// fall that short turns no book over, so `turnedOver` of them start front cover down, and
-    /// about as many land front cover up as after the live pile's longer, spinning fall. A
-    /// group's books start in up to three layers, 1.2, 2.45, and 3.7 units up, so they land
-    /// within the 0.4 seconds before the next group; layers 1.25 apart clear two tilted books.
-    /// A book takes the lowest layer that no book of its group within 3.8 units uses, since two
-    /// books farther apart cannot touch: each reaches at most half its diagonal, 1.85 units,
-    /// from its middle. A book with no free layer starts the next group.
+    /// fall that short turns no book over, so `turnedOver` of the books, rounded, start front
+    /// cover down, about as many as land face down in the live pile. The seed picks them from
+    /// the first half of `books`, which lands first and lower in the pile, so the top of the pile
+    /// keeps its covers up; a pile of fewer than 10 books turns none over. A group's books start
+    /// in up to three
+    /// layers, 1.2, 2.45, and 3.7 units up, so they land within the 0.4 seconds before the next
+    /// group; layers 1.25 apart clear two tilted books. A book takes the lowest layer that no
+    /// book of its group within 3.8 units uses, since two books farther apart cannot touch: each
+    /// reaches at most half its diagonal, 1.86 units, from its middle. A book with no free layer
+    /// starts the next group.
     static func settleGroups(_ books: [CloudBook], in tray: PileTray, seed: UInt64)
         -> [[PileSlot]]
     {
+        let turned =
+            books.count < 10
+            ? []
+            : Set(
+                books.prefix(books.count / 2).map(\.id)
+                    .sorted { ShareStyle.unit(seed, $0, 12) < ShareStyle.unit(seed, $1, 12) }
+                    .prefix(Int((Double(books.count) * turnedOver).rounded())))
         var groups: [[PileSlot]] = []
         var layers: [(spot: SIMD2<Float>, layer: Int)] = []
         for var slot in dropPlan(books, in: tray.scaled(by: 0.7), seed: seed, tumble: 0.25) {
@@ -391,7 +451,7 @@ enum PileLayout {
             layers.append((spot, layer))
             slot.transform.translation.y = 1.2 + Float(layer) * 1.25
             slot.spin = .zero
-            if ShareStyle.unit(seed, slot.book.id, 12) < turnedOver {
+            if turned.contains(slot.book.id) {
                 // Over about the book's length, so its outline stays where it was.
                 slot.transform.rotation *= simd_quatf(angle: .pi, axis: [0, 1, 0])
             }
@@ -917,16 +977,16 @@ final class BookPileScene {
     /// so far, tilted a little and without spin, so they land close to where they start and the
     /// side up they start: front cover up, except the few that `PileLayout.settleGroups` turns
     /// over. Each group falls for 0.4 seconds before the next one appears, and the pile settles
-    /// for 2.5 seconds inside the walls, which keep it compact. The walls stand at least 3.9 units apart, so
-    /// even a tray framed closely around one book lets it lie flat at any turn. The walls then
-    /// go for a last half second, so no book stays propped against one. Every 10 steps the
-    /// interface gets a turn, and a cancelled task stops with `CancellationError`.
+    /// for 2.5 seconds inside the walls, which keep it compact. The walls stand at least 3.9
+    /// units apart, so even a tray framed closely around one book lets it lie flat at any turn.
+    /// The walls then go for a last half second, so no book stays propped against one. Every 10
+    /// steps the interface gets a turn, and a cancelled task stops with `CancellationError`.
     func settle(
         _ books: [CloudBook], on tray: PileTray, camera: PileCamera, seed: UInt64,
         model: AppModel, step: () throws -> Void
     ) async throws {
         look(through: camera)
-        // Room for the largest book, 3.69 units corner to corner, tilted a little.
+        // Room for the largest book, 3.72 units corner to corner, tilted a little.
         build(tray.scaled(toFit: 3.9))
         await factory.prepare(books, prefetching: [], coverWait: .seconds(10), model: model)
         await stage.lit()
@@ -1604,7 +1664,8 @@ final class BookPileScene {
         /// Simulator hook: with `-BookwormsPileCoverLog YES`, appends how the books lie to
         /// `Library/Caches/Bookworms/pile-cover-up.log` under `label`: how many lie front cover
         /// up (`PileLayout.isCoverUp`), how many front cover down, and how many on an edge or
-        /// leaning, and how many book shapes, and so meshes, the pile uses.
+        /// leaning; how many book shapes, and so meshes, the pile uses; and the books' volume in
+        /// liters and the height of the pile's top.
         func logCovers(_ label: String) {
             guard UserDefaults.standard.bool(forKey: "BookwormsPileCoverLog") else { return }
             let flip = simd_quatf(angle: .pi, axis: [1, 0, 0])
@@ -1613,9 +1674,15 @@ final class BookPileScene {
             let down = turns.filter { PileLayout.isCoverUp($0 * flip) }.count
             let shapes = Set(factory.parts.values.map(\.shape)).count
             let share = turns.isEmpty ? 0 : 100 * up / turns.count
+            let liters = factory.parts.values
+                .map { $0.shape.size.x * $0.shape.size.y * $0.shape.size.z }
+                .reduce(0, +)
+            let top = shelf.visualBounds(relativeTo: root).max.y
+                .formatted(.number.precision(.fractionLength(1)))
             let line =
                 "\(label): \(turns.count) books, \(up) up (\(share)%), \(down) down, "
-                + "\(turns.count - up - down) other, \(shapes) shapes\n"
+                + "\(turns.count - up - down) other, \(shapes) shapes, "
+                + "\(Int(liters.rounded())) L, top \(top)\n"
             let url = URL.cachesDirectory.appending(path: "Bookworms/pile-cover-up.log")
             try? FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)

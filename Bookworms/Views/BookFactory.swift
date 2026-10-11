@@ -10,16 +10,15 @@ import UIKit
 /// main actor, because `ImageRenderer` draws synchronously. A book's parts are kept until its
 /// look or its wear changes or `release` drops them, so a new drop reuses them.
 ///
-/// GPU memory stays bounded by the texture sizes, which grow with the book's length, so every
-/// book is about as sharp on screen (see `textureScale(forLength:)`). At a `textureScale` of
-/// 1, a 24-centimeter book's cover is at most 224 pixels on its long side, cropped to its
-/// front board's 0.5 to 0.85 aspect: 149 × 224 × 4 bytes (178 KB with mipmaps) for a 2:3
-/// cover. Its spine is 384 pixels long and as thick as the book is in proportion. The longest
-/// books, 28 cm, take at most 213 × 261 pixels for the cover and 448 × 80 for the spine
-/// (488 KB with mipmaps). Three hundred books of a typical library's lengths therefore need
-/// about 70 MB, and at most 150 MB. Each texture has one material. Books share the page-edge
-/// texture, page and cloth materials by color, and meshes by shape, which adds about 25 KB per
-/// distinct shape.
+/// GPU memory stays bounded by the texture sizes, which grow with the book's length up to 24 cm,
+/// so books up to that length are about as sharp on screen (see `textureScale(forLength:)`).
+/// At a `textureScale` of 1, a book at least 24 cm long has a cover of at most 224 pixels on
+/// its long side, cropped to its front board's 0.5 to 0.85 aspect: 149 × 224 × 4 bytes
+/// (178 KB with mipmaps) for a 2:3 cover, and at most 192 × 224 (229 KB). Its spine is 384
+/// pixels long and as thick as the book is in proportion, at most a sixth of its length
+/// (131 KB). Three hundred books of a typical library's sizes therefore need about 60 MB, and
+/// at most 108 MB. Each texture has one material. Books share the page-edge texture, page and
+/// cloth materials by color, and meshes by shape, which adds about 25 KB per distinct shape.
 @MainActor
 final class BookFactory {
     /// A book's mesh, its materials in `BookSlot` order, and the look and wear they were drawn
@@ -95,10 +94,11 @@ final class BookFactory {
     }
 
     /// The pixels per point of the spine texture and the front drawn without a cover, for a book
-    /// `length` units long: `textureScale` in proportion to the length, so a book's textures
-    /// keep one sharpness per unit whatever its size.
+    /// `length` units long: `textureScale` in proportion to the length, up to 2.4 units, so
+    /// books up to that length keep one sharpness per unit, and longer books do not raise the
+    /// memory ceiling.
     func textureScale(forLength length: Float) -> CGFloat {
-        textureScale * CGFloat(length) / 2.4
+        textureScale * CGFloat(min(length, 2.4)) / 2.4
     }
 
     /// The longest side of `book`'s cover texture, in pixels: 224 at its length's texture
@@ -215,10 +215,12 @@ final class BookFactory {
             look: look, wear: wear, ribbon: wear.ribbon.flatMap { ribbon(shape, tenths: $0) })
     }
 
-    /// A rigid body for the book with `id`, from its parts: a box as large as the book, about
-    /// as heavy as one of paper, holding the book's model, lit by `lighting`'s image-based
-    /// light. Returns `nil` for a book without parts.
-    func makeBook(_ id: Int, mode: PhysicsBodyMode, lighting: Entity) -> ModelEntity? {
+    /// A rigid body for the book with `id`, from its parts: a box as large as the book, `mass`
+    /// kilograms or, by default, about as heavy as one of paper, holding the book's model, lit
+    /// by `lighting`'s image-based light. Returns `nil` for a book without parts.
+    func makeBook(
+        _ id: Int, mode: PhysicsBodyMode, lighting: Entity, mass: Float? = nil
+    ) -> ModelEntity? {
         guard let parts = parts[id] else { return nil }
         let size = parts.shape.size
         let box = ShapeResource.generateBox(size: size)
@@ -227,7 +229,7 @@ final class BookFactory {
         book.components.set(InputTargetComponent())
         // Paper weighs about 0.7 kg per liter, and a cubic decimeter is a liter.
         var body = PhysicsBodyComponent(
-            shapes: [box], mass: size.x * size.y * size.z * 0.7, material: Self.paper,
+            shapes: [box], mass: mass ?? size.x * size.y * size.z * 0.7, material: Self.paper,
             mode: mode)
         body.isContinuousCollisionDetectionEnabled = true
         body.linearDamping = 0.05

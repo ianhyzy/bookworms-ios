@@ -79,38 +79,53 @@ final class BookPileTests: XCTestCase {
             BookShape.size(pages: pages, coverAspect: 2 / 3, variety: variety)
         }
         let (novella, novel, brick) = (size(120), size(350), size(900))
-        // About 17, 20, and 23 cm long, and 8 mm, 16 mm, and 3.5 cm thick.
+        // 17, 19, and 23 cm long, and 8 mm, 16 mm, and 3.6 cm thick.
         XCTAssertEqual(novella.y, 1.7, accuracy: 0.001)
-        XCTAssertEqual(novel.y, 2.4 * (350 / 500 as Float).squareRoot(), accuracy: 0.001)
+        XCTAssertEqual(novel.y, 1.9, accuracy: 0.001)
         XCTAssertEqual(brick.y, 2.3, accuracy: 0.001)
-        XCTAssertEqual(novella.z, 0.077, accuracy: 0.001)
-        XCTAssertEqual(novel.z, 0.1575, accuracy: 0.001)
-        XCTAssertEqual(brick.z, 0.35, accuracy: 0.001)
-        XCTAssertEqual(brick.x, brick.y * 2 / 3, accuracy: 0.001)
-        // The floor keeps short books the same length; only their thickness differs.
-        XCTAssertEqual(size(100).y, size(250).y)
+        XCTAssertEqual(novella.z, 0.08, accuracy: 0.001)
+        XCTAssertEqual(novel.z, 0.16, accuracy: 0.001)
+        XCTAssertEqual(brick.z, 0.36, accuracy: 0.001)
+        // The 2:3 aspect rounds to 0.65.
+        XCTAssertEqual(brick.x, brick.y * 0.65, accuracy: 0.001)
+        // The floor keeps short books the same length; only their thickness differs. Length
+        // keeps growing up to 800 pages.
+        XCTAssertEqual(size(100).y, size(200).y)
         XCTAssertLessThan(size(100).z, size(250).z)
+        XCTAssertLessThan(size(500).y, size(700).y)
+        XCTAssertLessThan(size(700).y, size(800).y)
         // A book without a page count is as large as a 320-page book.
         XCTAssertEqual(size(nil), size(320))
 
-        // Variety lengthens a book by up to 22 percent and thickens it by up to 25 percent.
+        // Variety lengthens a book by up to 22 percent and thickens it by up to 25 percent, in
+        // three levels.
         let varied = size(350, [1, 1])
-        XCTAssertEqual(varied.y, novel.y * 1.22, accuracy: 0.001)
-        XCTAssertEqual(varied.z, novel.z * 1.25, accuracy: 0.001)
+        XCTAssertEqual(varied.y, 2.3, accuracy: 0.001)
+        XCTAssertEqual(varied.z, 0.2, accuracy: 0.001)
+        XCTAssertEqual(size(350, [0.2, 0.2]), novel)
+        XCTAssertEqual(size(350, [0.4, 0.6]), size(350, [0.5, 0.5]))
+        XCTAssertEqual(size(350, [0.8, 0.9]), varied)
 
         // Thickness stops at 4 cm before variety. A book at least 6 times as long as it is
-        // thick would be 30 cm, so the length cap makes it chunky instead.
+        // thick would be 31 cm, so the length cap makes it chunky instead.
         XCTAssertEqual(size(1_400).z, 0.4, accuracy: 0.001)
         let chunky = size(1_400, [0, 1])
-        XCTAssertEqual(chunky.z, 0.5, accuracy: 0.001)
+        XCTAssertEqual(chunky.z, 0.52, accuracy: 0.001)
         XCTAssertEqual(chunky.y, BookShape.longest, accuracy: 0.001)
-        for pages in stride(from: 100, through: 1_400, by: 50) {
-            for variety in [SIMD2<Float>(0, 0), [1, 0], [0, 1], [1, 1]] {
+        var sizes = Set<SIMD3<Float>>()
+        for pages in stride(from: 100, through: 1_400, by: 10) {
+            for variety in [SIMD2<Float>(0, 0), [0.5, 0.5], [1, 0], [0, 1], [1, 1]] {
                 let book = size(pages, variety)
                 XCTAssertLessThanOrEqual(book.y, BookShape.longest + 0.0001)
                 XCTAssertGreaterThanOrEqual(book.y, min(6 * book.z, BookShape.longest) - 0.0001)
+                // Length rounds to 1 cm and thickness to 4 mm.
+                XCTAssertEqual(book.y * 10, (book.y * 10).rounded(), accuracy: 0.001)
+                XCTAssertEqual(book.z * 25, (book.z * 25).rounded(), accuracy: 0.001)
+                sizes.insert(book)
             }
         }
+        // About 60 sizes for each cover aspect, so many books share a mesh.
+        XCTAssertLessThan(sizes.count, 75)
     }
 
     func testCameraLooksAtItsTarget() {
@@ -167,22 +182,42 @@ final class BookPileTests: XCTestCase {
         XCTAssertEqual(plan.map(\.transform), again.map(\.transform))
         XCTAssertNotEqual(plan.map(\.transform), other.map(\.transform))
 
-        for slot in plan {
-            let position = slot.transform.translation
-            // Clear of the walls by half a book, and between the drop height and the ceiling.
-            XCTAssertEqual(Self.tray.clamp(position, margin: PileLayout.reach), position)
-            XCTAssertGreaterThanOrEqual(position.y, PileLayout.spawnHeight)
-            XCTAssertLessThan(position.y + 1.3, PileLayout.ceiling)
-        }
-        // No two books of a wave start inside each other, at the widest cover.
-        for seed in 0..<20 as Range<UInt64> {
-            let plan = PileLayout.dropPlan(Self.books, in: Self.tray, seed: seed)
-            for wave in stride(from: 0, to: plan.count, by: PileLayout.waveSize) {
-                let slots = plan[wave..<min(wave + PileLayout.waveSize, plan.count)]
-                for (index, slot) in slots.enumerated() {
-                    for other in slots.dropFirst(index + 1) {
-                        XCTAssertFalse(
-                            overlap(slot, other), "seed \(seed): \(slot.book.id), \(other.book.id)")
+        // No two books of a wave start inside each other, at the widest cover, even when every
+        // book is as large as a book gets. Each starts clear of the walls by half a book, and
+        // between the drop height and the ceiling.
+        let largest = BookShape(
+            size: BookShape.size(pages: 1_400, coverAspect: 0.85, variety: [1, 1]),
+            binding: .hardcover
+        )
+        .size
+        XCTAssertTrue(all(abs(largest - [2.4, 2.8, 0.52]) .< 0.001), "\(largest)")
+        XCTAssertEqual(simd_length(largest), 3.72, accuracy: 0.01)
+        let bricks = (2_000...).lazy
+            .map { id in
+                CloudBook(
+                    id: id, title: "Fictional Brick \(id)", author: "An Author", coverURL: nil,
+                    detailCoverURL: nil, pages: 1_400)
+            }
+            .filter { BookShape(of: $0, coverAspect: 0.85).size == largest }
+            .prefix(40)
+        for books in [Self.books, Array(bricks)] {
+            for seed in 0..<200 as Range<UInt64> {
+                let plan = PileLayout.dropPlan(books, in: Self.tray, seed: seed)
+                for slot in plan {
+                    let position = slot.transform.translation
+                    let reach = simd_length(BookShape(of: slot.book, coverAspect: 0.85).size) / 2
+                    XCTAssertEqual(Self.tray.clamp(position, margin: PileLayout.reach), position)
+                    XCTAssertGreaterThanOrEqual(position.y, PileLayout.spawnHeight)
+                    XCTAssertLessThan(position.y + reach, PileLayout.ceiling)
+                }
+                for wave in stride(from: 0, to: plan.count, by: PileLayout.waveSize) {
+                    let slots = plan[wave..<min(wave + PileLayout.waveSize, plan.count)]
+                    for (index, slot) in slots.enumerated() {
+                        for other in slots.dropFirst(index + 1) {
+                            XCTAssertFalse(
+                                overlap(slot, other),
+                                "seed \(seed): \(slot.book.id), \(other.book.id)")
+                        }
                     }
                 }
             }
@@ -237,20 +272,55 @@ final class BookPileTests: XCTestCase {
             XCTAssertLessThanOrEqual(abs(slot.spin.z), 2)
             XCTAssertLessThanOrEqual(abs(slot.spin.y), 3)
         }
-        // A still image turns about a tenth of its books over, and starts the rest cover up.
-        var turned = 0
-        var count = 0
-        for seed in 0..<10 as Range<UInt64> {
-            for slot in PileLayout.settleGroups(Self.books, in: Self.tray, seed: seed).joined() {
-                let rotation = slot.transform.rotation
-                let flipped = rotation * simd_quatf(angle: .pi, axis: [1, 0, 0])
-                XCTAssertTrue(
-                    PileLayout.isCoverUp(rotation) || PileLayout.isCoverUp(flipped))
-                if PileLayout.isCoverUp(flipped) { turned += 1 }
-                count += 1
+        // A still image turns over a twentieth of its books, from the half that lands under the
+        // rest, whatever the seed, and starts the rest cover up. A small pile turns none over.
+        for count in [9, 10, 39, 40] {
+            let books = Array(Self.books.prefix(count))
+            var picks = Set<Int>()
+            for seed in 0..<20 as Range<UInt64> {
+                let turned = PileLayout.settleGroups(books, in: Self.tray, seed: seed).joined()
+                    .filter { slot in
+                        let rotation = slot.transform.rotation
+                        let flipped = rotation * simd_quatf(angle: .pi, axis: [1, 0, 0])
+                        XCTAssertTrue(
+                            PileLayout.isCoverUp(rotation) || PileLayout.isCoverUp(flipped))
+                        return PileLayout.isCoverUp(flipped)
+                    }
+                    .map(\.book.id)
+                XCTAssertEqual(turned.count, count < 10 ? 0 : (count + 10) / 20, "\(count)")
+                let lower = Set(books.prefix(count / 2).map(\.id))
+                XCTAssertTrue(Set(turned).isSubset(of: lower))
+                picks.formUnion(turned)
             }
+            // The seed decides which books turn over.
+            XCTAssertTrue(count < 10 || picks.count > 2)
         }
-        XCTAssertEqual(Double(turned) / Double(count), PileLayout.turnedOver, accuracy: 0.04)
+    }
+
+    func testLiveDropsStopAtTheVolumeBudget() {
+        func book(_ id: Int, pages: Int) -> CloudBook {
+            CloudBook(
+                id: id, title: "Fictional Book \(id)", author: "An Author", coverURL: nil,
+                detailCoverURL: nil, pages: pages)
+        }
+        func liters(_ books: some Sequence<CloudBook>) -> Float {
+            books.map { BookShape(of: $0, coverAspect: 2 / 3).size }
+                .map { $0.x * $0.y * $0.z }
+                .reduce(0, +)
+        }
+        // Three hundred typical books all drop.
+        let typical = (1...400).map { book($0, pages: 150 + ($0 * 97) % 400) }
+        XCTAssertEqual(PileLayout.dropped(typical, count: 300).count, 300)
+        // Long books drop in order until the next would pass the budget.
+        let long = (1...300).map { book($0, pages: 600 + ($0 * 337) % 600) }
+        let dropped = PileLayout.dropped(long, count: 300)
+        XCTAssertLessThan(dropped.count, 200)
+        XCTAssertEqual(dropped.map(\.id), long.prefix(dropped.count).map(\.id))
+        XCTAssertLessThanOrEqual(liters(dropped), PileLayout.maximumVolume)
+        XCTAssertGreaterThan(liters(long.prefix(dropped.count + 1)), PileLayout.maximumVolume)
+        // Spread evenly over an iPhone's tray, the budget would stand under 2.6 units deep,
+        // which leaves the pile's peaks and a book on end room under the walls' `pileHeight`.
+        XCTAssertLessThan(PileLayout.maximumVolume / Self.tray.area, 2.6)
     }
 
     func testCoverUpMeansWithin45DegreesOfUp() {

@@ -7,7 +7,8 @@ struct PileViewport: Equatable {
     var insets: EdgeInsets
 }
 
-/// The library as a physics toy: the first `maximumBooks` books drop onto a table and pile up.
+/// The library as a physics toy: the first books, up to `maximumBooks` of them and
+/// `PileLayout.maximumVolume` liters, drop onto a table and pile up.
 ///
 /// Drag a book to pick it up and throw it, tap one for its details, pinch to zoom, and turn two
 /// fingers to look around the pile. When the phone reports motion, the shelf's **Tilt** tips the
@@ -119,7 +120,7 @@ struct BookPileView: View {
     }
 
     var body: some View {
-        let dropped = Array(books.prefix(Self.maximumBooks))
+        let dropped = Array(PileLayout.dropped(books, count: Self.maximumBooks))
         ZStack {
             if sharesPile {
                 Color.clear
@@ -300,10 +301,12 @@ struct BookPileView: View {
         isShown && !reduceMotion && !sharesPile && lifted == nil && scenePhase == .active
     }
 
-    /// The number of books, such as "39 books", or "300 of 1,024 books" past `maximumBooks`.
+    /// The number of books, such as "39 books", or "300 of 1,024 books" when the pile drops
+    /// only the first books.
     private var count: String {
-        if books.count > Self.maximumBooks {
-            return "\(Self.maximumBooks) of \(books.count.formatted()) books"
+        let dropped = PileLayout.dropped(books, count: Self.maximumBooks).count
+        if dropped < books.count {
+            return "\(dropped.formatted()) of \(books.count.formatted()) books"
         }
         return books.count == 1 ? "1 book" : "\(books.count.formatted()) books"
     }

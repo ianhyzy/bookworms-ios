@@ -73,7 +73,11 @@ final class ThreeDTests: XCTestCase {
 
     func testBookMeshesFillTheirBoxWithEveryMaterialSlot() {
         for binding in [BookBinding.hardcover, .paperback] {
-            for size: SIMD3<Float> in [[1.5, 2.25, 0.18], [1.2, 2.1, 0.1], [2.05, 2.4, 0.48]] {
+            // A typical book, a thin one, a thick one, the largest, and a short paperback.
+            for size: SIMD3<Float> in [
+                [1.5, 2.25, 0.18], [1.2, 2.1, 0.1], [2.05, 2.4, 0.48], [2.4, 2.8, 0.52],
+                [1.15, 1.7, 0.08],
+            ] {
                 let shape = BookShape(size: size, binding: binding)
                 let mesh = BookGeometry.book(shape)
                 checkMesh(mesh, within: shape.size / 2, slots: [0, 1, 2, 3])
@@ -205,9 +209,9 @@ final class ThreeDTests: XCTestCase {
     func testLampLightsThePoolAndTheFacesTowardTheCamera() {
         let pool: SIMD3<Float> = [0, 0, 1]
         let placement = DeskStage.lampPlacement(pool: pool, radius: 7)
-        // High above the pile's highest drop, and toward the camera, so faces turned toward
-        // the camera (+z) catch its light.
-        XCTAssertGreaterThan(placement.position.y, PileLayout.ceiling + 8)
+        // High above the ceiling, which every drop starts under, and toward the camera, so
+        // faces turned toward the camera (+z) catch its light.
+        XCTAssertGreaterThan(placement.position.y, PileLayout.ceiling + 4)
         XCTAssertGreaterThan(placement.position.z, pool.z + 7)
         XCTAssertEqual(placement.aim, pool)
         func angle(to point: SIMD3<Float>) -> Float {

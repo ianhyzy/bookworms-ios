@@ -73,8 +73,10 @@ enum DominoLayout {
     /// books on a turn keep their inner corners apart (see `turnSpacing`).
     static let turnRadius: Float = 2
     static let shortestRow: Float = 6
-    /// How deep the rows may reach, which keeps the path and the books that fall past its ends
-    /// on the 90-unit table.
+    /// How deep the rows may reach, and the longest a row may be. Rows stop at this length, so a
+    /// very long chain, such as 300 thick books finished months apart, reaches about 80 units
+    /// deep, which still keeps the path and the books that fall past its ends on the 90-unit
+    /// table.
     static let deepest: Float = 72
     /// The space a turn keeps between the inner corners of neighboring books.
     static let clearance: Float = 0.05
@@ -85,10 +87,11 @@ enum DominoLayout {
     /// A toppling book pivots on its leading bottom edge, the back cover's, so its head reaches
     /// at most `height` past that edge: its reach. Books finished within `slumpDays` of each
     /// other stand 15 percent of the height apart on the same day, growing evenly to 54
-    /// percent at 29 days, so the falling book strikes the next one at least 84 percent of the
-    /// way up and knocks it over. A slump leaves 1.25 times the height, a quarter of a book
-    /// beyond reach, and another quarter for each doubling of its length, up to 1.75 times the
-    /// height at 120 days or more. The falling book lands short, and the chain stops there.
+    /// percent at 29 days, so the falling book strikes the next one at least 84 percent of its
+    /// own height up, or at the next book's top edge when that book is shorter, and knocks it
+    /// over. A slump leaves 1.25 times the height, a quarter of a book beyond reach, and
+    /// another quarter for each doubling of its length, up to 1.75 times the height at 120 days
+    /// or more. The falling book lands short, and the chain stops there.
     static func gap(days: Int, height: Float) -> Float {
         let days = Float(max(0, days))
         let slump = Float(slumpDays)
@@ -158,7 +161,8 @@ enum DominoLayout {
     }
 
     /// The length of each row for a path of `length`, so the path's width is about `aspect`
-    /// times its depth, and its rows reach no deeper than `deepest`.
+    /// times its depth, and its rows reach no deeper than `deepest`, unless that takes rows
+    /// longer than `deepest`: rows stop at that length, and the path reaches deeper.
     ///
     /// Rows of length L, each taking L plus a half turn of the path, span L + 2R across and
     /// about 2R for each row in depth, where R is `turnRadius`. The aspect fit solves
@@ -172,6 +176,13 @@ enum DominoLayout {
         let shallow = 2 * radius * length / deepest - .pi * radius
         return min(deepest, max(shortestRow, fitted, shallow))
     }
+
+    /// A domino's mass in kilograms: 0.2 per unit of `height`, whatever the book's thickness.
+    ///
+    /// Neighbors then weigh within a factor of 1.7 of each other. A book as heavy as paper of
+    /// its volume can weigh a sixth as much as the next one, and bounces back off it instead
+    /// of knocking it over.
+    static func mass(height: Float) -> Float { 0.2 * height }
 
     /// The widest a book of `height` can be: as wide as the widest cover aspect that
     /// `Book3DView.aspect(of:)` allows, rounded up to the next mesh step.
@@ -209,21 +220,15 @@ enum DominoLayout {
         return points
     }
 
-    /// The book a push tips, given `next`, the first of `count` books that has not fallen, and
-    /// `pushed`, the book the last push tipped, if it has not fallen since.
+    /// The book a push tips, given `next`, the first of `count` books that has not fallen.
     ///
-    /// It is the first book that stands upright from `next`, or from the book after `pushed`,
-    /// looking at most two books further, or the last book looked at. A book that leans on the
-    /// one after it without knocking it over is not upright: pushing it again would only press
-    /// it against that book, so the push tips the book it leans on instead. A light book can
-    /// also bounce off a much heavier one and stand up again, so the next push tips the book
-    /// after it. Either way, each push moves the chain on.
-    static func pushTarget(
-        next: Int, count: Int, pushed: Int? = nil, isUpright: (Int) -> Bool
-    ) -> Int {
-        let start = min(max(next, (pushed ?? -1) + 1), count - 1)
-        var index = start
-        while index + 1 < min(count, start + 3), !isUpright(index) { index += 1 }
+    /// It is the first book from `next` that stands upright, looking at most two books past
+    /// `next`, or the last book looked at. A book that leans on the one after it without
+    /// knocking it over is not upright: pushing it again would only press it against that
+    /// book, so the push tips the book it leans on instead, and each push moves the chain on.
+    static func pushTarget(next: Int, count: Int, isUpright: (Int) -> Bool) -> Int {
+        var index = next
+        while index + 1 < min(count, next + 3), !isUpright(index) { index += 1 }
         return index
     }
 
@@ -304,7 +309,7 @@ final class DominoScene {
     let status = DominoStatus()
 
     /// How fast a push tips a book forward, in radians per second.
-    private static let pushSpeed: Float = 3.5
+    private static let pushSpeed: Float = 2.5
     private static let stallTime: TimeInterval = 1
     /// The cosine of the tilt past which a book counts as fallen.
     private static let fallenTilt: Float = 0.9
@@ -343,8 +348,6 @@ final class DominoScene {
     private var indices: [Entity.ID: Int] = [:]
     /// The index of the next book to fall.
     private var next = 0
-    /// The book the last push tipped, until a book falls.
-    private var pushed: Int?
     private var started = false
     /// Seconds of simulation since the books stood up, and when the front last moved.
     private var clock: TimeInterval = 0
@@ -479,7 +482,6 @@ final class DominoScene {
         indices = [:]
         spawned = 0
         next = 0
-        pushed = nil
         started = false
         follows = false
         clock = 0
@@ -519,7 +521,9 @@ final class DominoScene {
 
     private func spawn(_ slot: DominoSlot) {
         guard
-            let book = factory.makeBook(slot.book.id, mode: .dynamic, lighting: stage.lighting)
+            let book = factory.makeBook(
+                slot.book.id, mode: .dynamic, lighting: stage.lighting,
+                mass: DominoLayout.mass(height: slot.size.y))
         else { return }
         // A hair above the table, so it settles onto it rather than starting inside it.
         book.transform = Transform(
@@ -574,7 +578,7 @@ final class DominoScene {
 
     /// The book a push tips (see `DominoLayout.pushTarget`).
     private var target: Int {
-        DominoLayout.pushTarget(next: next, count: books.count, pushed: pushed) {
+        DominoLayout.pushTarget(next: next, count: books.count) {
             books[$0].transform.rotation.act([0, 1, 0]).y > Self.uprightTilt
         }
     }
@@ -583,13 +587,8 @@ final class DominoScene {
     /// the chain waits for a push. While books fall, it does nothing.
     func pushNext() {
         guard status.phase.waitsForPush, next < books.count else { return }
-        let index = target
-        // The books before it lean or stand without falling, so they count as passed, as a book
-        // the chain skips does.
-        next = max(next, index)
-        pushed = index
-        let book = books[index]
-        let slot = slots[index]
+        let book = books[target]
+        let slot = slots[target]
         let forward = SIMD3(slot.heading.x, 0, slot.heading.y)
         let spin = simd_cross([0, 1, 0], forward) * Self.pushSpeed
         // About the leading bottom edge, the back cover's, so the book tips over instead of
@@ -676,7 +675,6 @@ final class DominoScene {
         for index in next..<min(next + 3, books.count)
         where books[index].transform.rotation.act([0, 1, 0]).y < Self.fallenTilt {
             next = index + 1
-            pushed = nil
             lastAdvance = clock
             started = true
         }

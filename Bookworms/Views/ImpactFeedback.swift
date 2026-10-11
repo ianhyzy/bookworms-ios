@@ -40,8 +40,10 @@ enum ImpactSound {
     static let level: Float = 0.6
     /// The variations of each kind, which differ in pitch and noise.
     static let variants = 4
-    /// Books at least this heavy, in kilograms, thud; lighter books slap. In the scene, a
-    /// 320-page book of average size weighs about 0.43 kg, and one of about 450 pages 0.5 kg.
+    /// Books at least this heavy, in kilograms, thud; lighter books slap. In the pile, a
+    /// 320-page book of average size weighs about 0.33 kg, and one of about 480 pages 0.5 kg,
+    /// so about a third of a typical library thuds. A domino weighs 0.34 to 0.56 kg by its
+    /// height (`DominoLayout.mass(height:)`).
     static let heavyMass: Float = 0.5
     /// Hits weaker than this are neither heard nor felt, so a settling pile stays quiet.
     static let threshold: Float = 0.04
