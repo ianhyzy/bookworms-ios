@@ -179,7 +179,7 @@ enum ShareAspect: String, CaseIterable, Identifiable {
         switch self {
         case .story: EdgeInsets(top: 250, leading: 64, bottom: 250, trailing: 64)
         case .portrait: EdgeInsets(top: 88, leading: 64, bottom: 88, trailing: 64)
-        case .square: EdgeInsets(top: 64, leading: 64, bottom: 64, trailing: 64)
+        case .square: EdgeInsets(top: 64, leading: 64, bottom: 88, trailing: 64)
         }
     }
 }
@@ -207,6 +207,9 @@ struct ShareInput {
     func look(for book: CloudBook) -> SpineLook {
         looks[book.id] ?? SpineLook(book: book, design: nil, face: nil)
     }
+
+    /// The card's color family, from the drawn books' spine colors.
+    var theme: ShareTheme { ShareTheme(looks: books.map(look(for:))) }
 
     /// The frame's name, such as "2025" or "August 2025", or for a lifetime the years the books
     /// span, such as "2019–2026".
@@ -292,7 +295,6 @@ extension CloudBook {
 /// Colors, type, and repeatable variation that the share cards share.
 enum ShareStyle {
     static let cream = ColorValue(red: 250, green: 242, blue: 222)
-    static let night = ColorValue(red: 10, green: 10, blue: 12)
     static let gold = LinearGradient(
         colors: [
             Color(red: 0.98, green: 0.85, blue: 0.47), Color(red: 0.88, green: 0.64, blue: 0.22),
@@ -301,34 +303,6 @@ enum ShareStyle {
     /// Headings and numbers: New York, the system serif.
     static func serif(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .serif)
-    }
-
-    /// Darkens `color` toward near-black by at least `amount`, and further until cream text on
-    /// it reaches 7:1 contrast, so text stays legible on any spine color.
-    static func backdrop(_ color: ColorValue, _ amount: Double) -> ColorValue {
-        var amount = amount
-        var result = color.mixed(with: night, amount)
-        while result.contrast(with: cream) < 7, amount < 1 {
-            amount = min(1, amount + 0.05)
-            result = color.mixed(with: night, amount)
-        }
-        return result
-    }
-
-    /// The most typical color: the one with the most others near it in OKLab.
-    ///
-    /// The comparison is quadratic, which is fine for a library of a few hundred books.
-    static func leadColor(_ colors: [ColorValue]) -> ColorValue {
-        let labs = colors.map(SpineContrast.lab)
-        var best = (index: 0, neighbors: -1)
-        for (index, lab) in labs.enumerated() {
-            let neighbors = labs.count(where: { other in
-                let (dl, da, db) = (lab.l - other.l, lab.a - other.a, lab.b - other.b)
-                return dl * dl + da * da + db * db < 0.01
-            })
-            if neighbors > best.neighbors { best = (index, neighbors) }
-        }
-        return colors.isEmpty ? night : colors[best.index]
     }
 
     /// Returns a repeatable value in `0..<1` for a seed, book, and purpose (SplitMix64).
@@ -383,17 +357,17 @@ enum ShareStyle {
         return result + "…"
     }
 
-    /// The book's format when it is not print, its finish date (or start date, for a current
-    /// read or a book not yet finished), and its length, joined with middle dots. Missing parts
-    /// are left out.
+    /// The book's format when it is not print alone, labeled as the Shelf labels it, its finish
+    /// date (or start date, for a current read or a book not yet finished), and its length,
+    /// joined with middle dots. Missing parts are left out. An audiobook's length is its
+    /// listening time; any other book's is its page count.
     ///
     /// A reread keeps its previous finish date while it is a current read, so `isReading` shows
     /// the start date instead.
     static func details(_ book: CloudBook, isReading: Bool = false) -> String {
-        let format = book.format?.lowercased()
+        let format = ShelfLabels.format(book.format)
         var parts: [String] = []
-        if format == "listened" { parts.append("Audiobook") }
-        if format == "ebook" { parts.append("Ebook") }
+        if let format, format != "Physical" { parts.append(format) }
         // Dates are calendar days at noon UTC; the format keeps UTC so they show the recorded day.
         if !isReading, let date = book.finishedDate {
             parts.append(date.formatted(ShelfLabels.finishedFormat))
@@ -402,7 +376,7 @@ enum ShareStyle {
         {
             parts.append("Started " + date.formatted(ShelfLabels.finishedFormat))
         }
-        if format == "listened", let seconds = book.audioSeconds, seconds > 0 {
+        if format == "Audiobook", let seconds = book.audioSeconds, seconds > 0 {
             parts.append(
                 Duration.seconds(seconds)
                     .formatted(.units(allowed: [.hours, .minutes], width: .narrow)))
@@ -410,6 +384,126 @@ enum ShareStyle {
             parts.append("\(pages.formatted()) pages")
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// One color family for a card's backdrop, glow, and panels, from its books' spine colors.
+///
+/// Covers and spines keep their own colors, which is where a card's variety comes from. The
+/// rest of the card shares the books' dominant hue, so unrelated spine colors never sit side by
+/// side as saturated panels. Each color has a fixed OKLCH lightness and a chroma limit, and
+/// darkens further when needed to keep cream text at 7:1 contrast or better.
+struct ShareTheme: Equatable {
+    /// The OKLCH hue in degrees, in `0..<360`.
+    let hue: Double
+    /// The OKLCH chroma each color takes, up to that color's own limit.
+    let chroma: Double
+
+    /// A warm charcoal, for books without a clearly colored spine.
+    static let neutral = ShareTheme(hue: 60, chroma: 0.012)
+
+    /// Hue offsets that tell panels apart within the family, 32 degrees from end to end.
+    private static let panelOffsets: [Double] = [0, 16, -16, 8]
+
+    /// Dark yellows and yellow-greens, which look muddy at more than 0.035 chroma.
+    private static let muddyHues = 85.0...125.0
+
+    init(hue: Double, chroma: Double) {
+        self.hue = hue
+        self.chroma = chroma
+    }
+
+    /// The theme of the spines' background and accent colors.
+    init(looks: [SpineLook]) {
+        self.init(colors: looks.flatMap { [$0.background, $0.accent] })
+    }
+
+    /// The dominant hue of `colors` and the typical chroma near it. The same colors always give
+    /// the same theme.
+    ///
+    /// Each color with an OKLCH chroma of at least 0.03 adds its chroma to one of 24 hue bins,
+    /// and each bin also counts half of its neighbors. The theme's hue is the chroma-weighted
+    /// circular mean of the colors within 30 degrees of the fullest bin, and its chroma is their
+    /// median. Without such colors, the theme is `neutral`. Dark yellows and yellow-greens
+    /// (hues 85 to 125) look muddy, so such a theme turns to amber with less chroma. A panel
+    /// whose hue offset turns it into that band keeps its hue but takes the lower chroma.
+    init(colors: [ColorValue]) {
+        let colorful = colors.compactMap { color -> (hue: Double, chroma: Double)? in
+            let lab = SpineContrast.lab(color)
+            let chroma = (lab.a * lab.a + lab.b * lab.b).squareRoot()
+            return chroma >= 0.03 ? (Self.degrees(atan2(lab.b, lab.a)), chroma) : nil
+        }
+        guard !colorful.isEmpty else {
+            self = .neutral
+            return
+        }
+        var bins = [Double](repeating: 0, count: 24)
+        for color in colorful { bins[Int(color.hue / 15) % 24] += color.chroma }
+        let smoothed = bins.indices.map {
+            2 * bins[$0] + bins[($0 + 23) % 24] + bins[($0 + 1) % 24]
+        }
+        // `max(by:)` keeps the first of equal bins. The fullest bin's colors, and those of a
+        // neighbor that filled it, lie within 30 degrees of its center, so `near` has colors.
+        let fullest = smoothed.indices.max { smoothed[$0] < smoothed[$1] } ?? 0
+        let center = (Double(fullest) + 0.5) * 15
+        let near = colorful.filter { abs(Self.difference($0.hue, center)) <= 30 }
+        let x = near.reduce(0) { $0 + $1.chroma * cos($1.hue * .pi / 180) }
+        let y = near.reduce(0) { $0 + $1.chroma * sin($1.hue * .pi / 180) }
+        let chromas = near.map(\.chroma).sorted()
+        let middle = chromas.count / 2
+        let hue = Self.degrees(atan2(y, x))
+        let chroma =
+            chromas.count.isMultiple(of: 2)
+            ? (chromas[middle - 1] + chromas[middle]) / 2 : chromas[middle]
+        let isMuddy = Self.muddyHues.contains(hue)
+        self.init(hue: isMuddy ? 75 : hue, chroma: isMuddy ? min(chroma, 0.035) : chroma)
+    }
+
+    /// The backdrop's lighter end: the top of a linear gradient or the center of a radial one.
+    var backdropLight: ColorValue { color(lightness: 0.30, chromaLimit: 0.06) }
+    /// The backdrop's darker end, and the field behind long text.
+    var backdropDark: ColorValue { color(lightness: 0.15, chromaLimit: 0.035) }
+    /// A glow behind featured covers.
+    var glow: ColorValue { color(lightness: 0.40, chromaLimit: 0.09) }
+
+    /// A panel behind a total or a row. Panels with different indexes differ only slightly in
+    /// hue, so a row of them reads as one family.
+    func panel(_ index: Int = 0) -> ColorValue {
+        color(
+            lightness: 0.34, chromaLimit: 0.075,
+            hueOffset: Self.panelOffsets[index % Self.panelOffsets.count])
+    }
+
+    /// The signed difference from `other` to `hue`, in degrees, in `-180...180`.
+    static func difference(_ hue: Double, _ other: Double) -> Double {
+        let difference = (hue - other).truncatingRemainder(dividingBy: 360)
+        return difference > 180
+            ? difference - 360 : difference < -180 ? difference + 360 : difference
+    }
+
+    private static func degrees(_ radians: Double) -> Double {
+        let degrees = radians * 180 / .pi
+        return degrees < 0 ? degrees + 360 : degrees
+    }
+
+    /// The theme's hue, turned by `hueOffset`, at `lightness` with at most `chromaLimit` chroma,
+    /// or 0.035 when the turned hue is muddy.
+    /// The lightness drops until cream text on the color reaches 7:1.
+    private func color(lightness: Double, chromaLimit: Double, hueOffset: Double = 0)
+        -> ColorValue
+    {
+        let turned = (self.hue + hueOffset + 360).truncatingRemainder(dividingBy: 360)
+        let chroma = min(
+            self.chroma, chromaLimit, Self.muddyHues.contains(turned) ? 0.035 : chromaLimit)
+        let hue = turned * .pi / 180
+        let (a, b) = (chroma * cos(hue), chroma * sin(hue))
+        var lightness = lightness
+        var result = SpineContrast.color(SpineContrast.Lab(l: lightness, a: a, b: b))
+        while result.contrast(with: ShareStyle.cream) < 7, lightness > 0.05 {
+            lightness -= 0.01
+            result = SpineContrast.color(SpineContrast.Lab(l: lightness, a: a, b: b))
+        }
+        return result
     }
 }
 

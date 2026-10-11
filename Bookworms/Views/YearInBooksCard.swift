@@ -31,20 +31,17 @@ struct YearInBooksCard: View {
     var body: some View {
         let aspect = input.aspect
         let stats = YearInBooks(frame: input.frame, library: input.books)
-        // Lifted toward cream, so a year of black spines gets a charcoal backdrop, not a black one.
-        let lead = ShareStyle.leadColor(stats.books.map { input.look(for: $0).background })
-            .mixed(with: ShareStyle.cream, 0.15)
+        let theme = input.theme
         let entries = aspect == .square ? [] : recordEntries(stats)
         ZStack {
             RadialGradient(
-                colors: [
-                    ShareStyle.backdrop(lead, 0.55).color, ShareStyle.backdrop(lead, 0.88).color,
-                ], center: UnitPoint(x: 0.5, y: 0.2), startRadius: 0,
+                colors: [theme.backdropLight.color, theme.backdropDark.color],
+                center: UnitPoint(x: 0.5, y: 0.2), startRadius: 0,
                 endRadius: aspect.size.height * 0.9)
             // With records first, so they show whenever their smallest covers fit.
             ViewThatFits(in: .vertical) {
-                if !entries.isEmpty { sections(stats, lead: lead, records: entries) }
-                sections(stats, lead: lead, records: [])
+                if !entries.isEmpty { sections(stats, theme: theme, records: entries) }
+                sections(stats, theme: theme, records: [])
             }
             .foregroundStyle(ShareStyle.cream.color)
             .padding(aspect.insets)
@@ -57,7 +54,7 @@ struct YearInBooksCard: View {
     /// records' covers, and the gaps split what remains. Fixed sections keep their natural
     /// height, so nothing is squeezed into truncation.
     private func sections(
-        _ stats: YearInBooks, lead: ColorValue, records: [(labels: [String], book: CloudBook)]
+        _ stats: YearInBooks, theme: ShareTheme, records: [(labels: [String], book: CloudBook)]
     ) -> some View {
         let aspect = input.aspect
         let area = aspect.size.height - aspect.insets.top - aspect.insets.bottom
@@ -69,14 +66,14 @@ struct YearInBooksCard: View {
                 .minimumScaleFactor(0.6)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: gap)
-            tiles(stats, lead: lead)
+            tiles(stats, theme: theme)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: gap)
             chart(stats, maximumHeight: area * (aspect == .story ? 0.34 : 0.4))
                 .layoutPriority(2)
             if !stats.genres.isEmpty || stats.topAuthor != nil || !stats.formats.isEmpty {
                 Spacer(minLength: gap)
-                highlights(stats)
+                highlights(stats, panel: theme.panel())
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !records.isEmpty {
@@ -94,7 +91,8 @@ struct YearInBooksCard: View {
 
     // MARK: - Totals
 
-    private func tiles(_ stats: YearInBooks, lead: ColorValue) -> some View {
+    /// The totals on panels from `theme`, which differ only slightly in hue.
+    private func tiles(_ stats: YearInBooks, theme: ShareTheme) -> some View {
         let isCompact = input.aspect == .square
         let count = stats.books.count
         var tiles = [Tile(value: count.formatted(), label: count == 1 ? "Book" : "Books")]
@@ -103,7 +101,11 @@ struct YearInBooksCard: View {
                 Tile(
                     value: stats.pages.formatted(),
                     label: stats.booksWithPages < count
-                        ? "Pages in \(stats.booksWithPages) of \(count) books" : "Pages"))
+                        // Square's narrow tiles leave out the total, which the Books tile shows.
+                        ? isCompact
+                            ? "Pages in \(Self.count(stats.booksWithPages, "book"))"
+                            : "Pages in \(stats.booksWithPages.formatted()) of \(count.formatted()) books"
+                        : "Pages"))
         }
         if input.showsRatings, let average = stats.averageRating {
             tiles.append(
@@ -122,8 +124,6 @@ struct YearInBooksCard: View {
                         ? "Busiest \(unit)"
                         : "Busiest \(unit) · \(Self.count(busiest.books.count, "book"))"))
         }
-        let palette = palette(stats.books)
-        let tints = palette.isEmpty ? [lead] : palette
         // Two tiles a row, or every tile in one row on a square; a lone last tile spans its row.
         let numbered = Array(tiles.enumerated())
         let perRow = isCompact ? tiles.count : 2
@@ -135,7 +135,7 @@ struct YearInBooksCard: View {
             ForEach(rows, id: \.first?.offset) { row in
                 HStack(spacing: 16) {
                     ForEach(row, id: \.offset) { index, tile in
-                        tileView(tile, tint: tints[index % tints.count], isCompact: isCompact)
+                        tileView(tile, panel: theme.panel(index), isCompact: isCompact)
                     }
                 }
                 .fixedSize(horizontal: false, vertical: true)
@@ -143,8 +143,9 @@ struct YearInBooksCard: View {
         }
     }
 
-    /// The busiest column's name, such as "August", "Aug 8–14", or "2023", and its unit.
-    private static func busiest(_ span: YearInBooks.Column.Span, isCompact: Bool) -> (
+    /// The busiest column's name, such as "August", "Aug 8–14", "Feb 29", or "2023", and its
+    /// unit.
+    static func busiest(_ span: YearInBooks.Column.Span, isCompact: Bool) -> (
         value: String, unit: String
     ) {
         switch span {
@@ -154,41 +155,13 @@ struct YearInBooksCard: View {
             return (names[month - 1], "month")
         case .days(let days, let month):
             let name = calendar.shortStandaloneMonthSymbols[month - 1]
-            return ("\(name) \(days.lowerBound)–\(days.upperBound)", "week")
+            return ("\(name) \(Self.days(days))", "week")
         case .year(let year):
             return (String(year), "year")
         }
     }
 
-    /// Up to four of the frame's most colorful spine colors, distinct enough to tell apart, most
-    /// colorful first. Near-gray colors are left out, so a frame of plain spines gets the lead
-    /// color.
-    private func palette(_ books: [CloudBook]) -> [ColorValue] {
-        let candidates =
-            books.flatMap { book in
-                let look = input.look(for: book)
-                return [look.background, look.accent]
-            }
-            .map { color in
-                let lab = SpineContrast.lab(color)
-                return (
-                    color: color, lab: lab, chroma: (lab.a * lab.a + lab.b * lab.b).squareRoot()
-                )
-            }
-            .filter { $0.chroma > 0.06 }
-            .sorted { ($0.chroma, $0.color.hex) > ($1.chroma, $1.color.hex) }
-        var chosen: [(color: ColorValue, lab: SpineContrast.Lab)] = []
-        for (color, lab, _) in candidates where chosen.count < 4 {
-            let isDistinct = chosen.allSatisfy { other in
-                let (dl, da, db) = (lab.l - other.lab.l, lab.a - other.lab.a, lab.b - other.lab.b)
-                return dl * dl + da * da + db * db > 0.02
-            }
-            if isDistinct { chosen.append((color, lab)) }
-        }
-        return chosen.map(\.color)
-    }
-
-    private func tileView(_ tile: Tile, tint: ColorValue, isCompact: Bool) -> some View {
+    private func tileView(_ tile: Tile, panel: ColorValue, isCompact: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             if isCompact {
                 Text(tile.value)
@@ -213,7 +186,7 @@ struct YearInBooksCard: View {
         .padding(.horizontal, isCompact ? 20 : 28)
         .padding(.vertical, 18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(ShareStyle.backdrop(tint, 0.45).color, in: .rect(cornerRadius: 28))
+        .background(panel.color, in: .rect(cornerRadius: 28))
     }
 
     // MARK: - Chart
@@ -228,14 +201,19 @@ struct YearInBooksCard: View {
         let most = CGFloat(max(1, columns.map(\.books.count).max() ?? 0))
         let gap: CGFloat = columns.count > 12 ? 6 : 12
         let height = min(maximumHeight, Self.chartOverhead + Self.maximumThickness * most)
+        let isSparse = Self.isSparse(columns)
         return GeometryReader { proxy in
             let count = CGFloat(max(1, columns.count))
             let columnWidth = (proxy.size.width - (count - 1) * gap) / count
+            // The minimum height keeps this positive. A crowded column's spines can thin below a
+            // pixel, but the stack never grows past the chart.
             let thickness = min(
-                Self.maximumThickness, max(2, (proxy.size.height - Self.chartOverhead) / most))
+                Self.maximumThickness, (proxy.size.height - Self.chartOverhead) / most)
             // Narrow columns label every second or third column, always including the latest,
-            // and drop the counts, which would run into each other.
-            let labelEvery = max(1, Int((52 / (columnWidth + gap)).rounded(.up)))
+            // and drop the counts, which would run into each other. Full years need more room
+            // than "’25".
+            let labelWidth: CGFloat = isSparse ? 76 : 52
+            let labelEvery = max(1, Int((labelWidth / (columnWidth + gap)).rounded(.up)))
             let showsCounts = columnWidth >= 44
             HStack(alignment: .bottom, spacing: gap) {
                 ForEach(Array(columns.enumerated()), id: \.offset) { index, column in
@@ -255,7 +233,7 @@ struct YearInBooksCard: View {
                         Capsule()
                             .fill(ShareStyle.cream.color.opacity(0.3))
                             .frame(height: 4)
-                        Text(isLabeled ? Self.label(column.span) : "")
+                        Text(isLabeled ? Self.label(column.span, isSparse: isSparse) : "")
                             .font(.system(size: 30, weight: .medium))
                             .opacity(0.75)
                             .fixedSize()
@@ -269,13 +247,28 @@ struct YearInBooksCard: View {
         .frame(minHeight: min(height, Self.chartOverhead + 60), maxHeight: height)
     }
 
-    /// A column's label: a month's initial, a week's days such as "8–14", or a year as "’19".
-    private static func label(_ span: YearInBooks.Column.Span) -> String {
+    /// A column's label: a month's initial, a week's days such as "8–14" or "29", or a year as
+    /// "’19". `isSparse` labels years in full, since charted years that are far apart can share
+    /// their last two digits.
+    static func label(_ span: YearInBooks.Column.Span, isSparse: Bool = false) -> String {
         switch span {
         case .month(let month): calendar.veryShortStandaloneMonthSymbols[month - 1]
-        case .days(let days, _): "\(days.lowerBound)–\(days.upperBound)"
-        case .year(let year): "’" + String(format: "%02d", year % 100)
+        case .days(let days, _): Self.days(days)
+        case .year(let year): isSparse ? String(year) : "’" + String(format: "%02d", year % 100)
         }
+    }
+
+    /// A run of days such as "8–14", or one day alone, such as a leap February's "29".
+    private static func days(_ days: ClosedRange<Int>) -> String {
+        days.count == 1 ? String(days.lowerBound) : "\(days.lowerBound)–\(days.upperBound)"
+    }
+
+    /// Whether a lifetime charts only the years with books, which happens past
+    /// `YearInBooks.maximumYearSpan`.
+    static func isSparse(_ columns: [YearInBooks.Column]) -> Bool {
+        guard case .year(let first) = columns.first?.span, case .year(let last) = columns.last?.span
+        else { return false }
+        return last - first >= YearInBooks.maximumYearSpan
     }
 
     /// One book as a blank spine, its length and offset varied by the seed so a stack looks
@@ -288,17 +281,20 @@ struct YearInBooksCard: View {
             look: input.look(for: book)
         )
         .frame(width: length, height: thickness)
-        // A hairline keeps a dark spine visible on a dark backdrop.
+        // A hairline keeps a dark spine visible on a dark backdrop. Thin spines go without, or
+        // the outline would cover them.
         .overlay {
-            RoundedRectangle(cornerRadius: 2)
-                .strokeBorder(ShareStyle.cream.color.opacity(0.15), lineWidth: 1)
+            if thickness >= 3 {
+                RoundedRectangle(cornerRadius: 2)
+                    .strokeBorder(ShareStyle.cream.color.opacity(0.15), lineWidth: 1)
+            }
         }
         .offset(x: shift)
     }
 
     // MARK: - Highlights and records
 
-    private func highlights(_ stats: YearInBooks) -> some View {
+    private func highlights(_ stats: YearInBooks, panel: ColorValue) -> some View {
         let hasSecondRow = stats.topAuthor != nil || !stats.formats.isEmpty
         return VStack(alignment: .leading, spacing: 22) {
             if !stats.genres.isEmpty {
@@ -339,8 +335,7 @@ struct YearInBooksCard: View {
         .lineLimit(1)
         .padding(28)
         .frame(maxWidth: .infinity, alignment: .leading)
-        // A light wash, so the panel shows on any backdrop and cream text keeps its contrast.
-        .background(ShareStyle.cream.color.opacity(0.08), in: .rect(cornerRadius: 28))
+        .background(panel.color, in: .rect(cornerRadius: 28))
     }
 
     private func highlight(_ label: String, @ViewBuilder value: () -> some View) -> some View {

@@ -16,7 +16,7 @@ struct ReviewCard: View {
     private func card(_ book: CloudBook, review: String) -> some View {
         let aspect = input.aspect
         let look = input.look(for: book)
-        let edge = ShareStyle.backdrop(look.background, 0.8)
+        let theme = input.theme
         let coverHeight: CGFloat =
             switch aspect {
             case .story: 440
@@ -24,15 +24,12 @@ struct ReviewCard: View {
             case .square: 270
             }
         return ZStack {
-            // A glow from the spine's colors behind the cover, fading to a dark field for the text.
+            // A glow in the spine's color family behind the cover, fading to a dark field for the
+            // text.
             RadialGradient(
                 stops: [
-                    .init(
-                        color:
-                            ShareStyle.backdrop(look.background.mixed(with: look.accent, 0.3), 0.3)
-                            .color,
-                        location: 0),
-                    .init(color: edge.color, location: 1),
+                    .init(color: theme.glow.color, location: 0),
+                    .init(color: theme.backdropDark.color, location: 1),
                 ],
                 center: UnitPoint(x: 0.25, y: aspect == .story ? 0.25 : 0.2), startRadius: 0,
                 endRadius: aspect.size.width)
@@ -104,12 +101,10 @@ struct HotTakesCard: View {
     var body: some View {
         let aspect = input.aspect
         let isHero = input.books.count == 1
-        let stops = input.books.map {
-            ShareStyle.backdrop(input.look(for: $0).background, 0.6).color
-        }
+        let theme = input.theme
         ZStack {
             LinearGradient(
-                colors: stops.count > 1 ? stops : [stops.first ?? .black, stops.first ?? .black],
+                colors: [theme.backdropLight.color, theme.backdropDark.color],
                 startPoint: .top, endPoint: .bottom)
             VStack(
                 alignment: isHero && aspect != .square ? .center : .leading,
@@ -129,7 +124,17 @@ struct HotTakesCard: View {
                 if isHero, let book = input.books.first {
                     hero(book)
                 } else {
-                    ForEach(input.books) { book in row(book) }
+                    let panel = theme.panel().color
+                    // One slot for every cover, as wide as the widest, so each row's text starts
+                    // at the same x.
+                    let slot = input.books
+                        .map {
+                            ShareCover.aspect(of: input.covers[$0.id], style: input.coverStyle)
+                        }
+                        .max()
+                    ForEach(input.books) { book in
+                        row(book, coverAspect: slot ?? 2 / 3, panel: panel)
+                    }
                 }
             }
             .foregroundStyle(ShareStyle.cream.color)
@@ -189,7 +194,9 @@ struct HotTakesCard: View {
         }
     }
 
-    private func row(_ book: CloudBook) -> some View {
+    /// One take in a row on `panel`, its cover centered in a slot `coverAspect` times as wide as
+    /// the cover is tall.
+    private func row(_ book: CloudBook, coverAspect: CGFloat, panel: Color) -> some View {
         let look = input.look(for: book)
         let isSquare = input.aspect == .square
         let base: CGFloat =
@@ -200,13 +207,15 @@ struct HotTakesCard: View {
             }
         // Two takes get taller rows than three, so the card stays full.
         let height = input.books.count == 2 ? base * 1.25 : base
+        let coverHeight = height - 56
         return HStack(spacing: 28) {
             ShareCover(
                 book: book, look: look, cover: input.covers[book.id], style: input.coverStyle,
-                height: height - 56,
+                height: coverHeight,
                 yaw: 0.5 + (ShareStyle.unit(input.seed, book.id, 6) - 0.5) * 0.12
             )
             .shadow(color: .black.opacity(0.45), radius: 16, y: 12)
+            .frame(width: coverHeight * coverAspect)
             VStack(alignment: .leading, spacing: 10) {
                 Text(book.spineTitle)
                     .font(ShareStyle.serif(isSquare ? 38 : 42, .semibold))
@@ -223,7 +232,7 @@ struct HotTakesCard: View {
         }
         .padding(28)
         .frame(height: height)
-        .background(ShareStyle.backdrop(look.background, 0.5).color, in: .rect(cornerRadius: 28))
+        .background(panel, in: .rect(cornerRadius: 28))
     }
 
     /// The gap in stars between the reader's rating and Hardcover's average, in gold.

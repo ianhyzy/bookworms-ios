@@ -304,6 +304,66 @@ final class ShareRenderTests: XCTestCase {
         XCTAssertTrue(ShareStyle.details(reread).contains("2021"), "Just Finished shows the finish")
     }
 
+    /// The format reads as the Shelf labels it, including a book read in print and on audio,
+    /// and only an audiobook gives its listening time instead of its pages.
+    func testDetailsLabelEveryFormatAsTheShelfDoes() {
+        func details(_ format: String) -> String {
+            ShareStyle.details(
+                CloudBook(
+                    id: 61, title: "Fictional Format", author: "Author", coverURL: nil,
+                    detailCoverURL: nil, format: format, pages: 300, finished: "2025-01-02",
+                    audioSeconds: 36_000))
+        }
+        let both = details("Both")
+        XCTAssertTrue(both.hasPrefix("Physical & audiobook · "), both)
+        XCTAssertTrue(both.hasSuffix("300 pages"), both)
+        let audio = details("audio")
+        XCTAssertTrue(audio.hasPrefix("Audiobook · "), audio)
+        XCTAssertFalse(audio.contains("pages"), audio)
+        XCTAssertTrue(details("e-book").hasPrefix("Ebook · "))
+        XCTAssertFalse(details("Read").contains("Physical"), "Print alone goes unlabeled")
+    }
+
+    /// Clashing spine colors give one family of panels, gray spines give a warm neutral, and
+    /// cream text keeps 7:1 contrast on every theme color.
+    func testThemeKeepsOneColorFamilyWithReadableText() {
+        let clashing = ShareTheme(colors: [
+            ColorValue(red: 200, green: 30, blue: 40), ColorValue(red: 30, green: 60, blue: 200),
+            ColorValue(red: 40, green: 160, blue: 60), ColorValue(red: 230, green: 200, blue: 40),
+        ])
+        let hues = (0..<4)
+            .map { index in
+                let lab = SpineContrast.lab(clashing.panel(index))
+                return atan2(lab.b, lab.a) * 180 / .pi
+            }
+        let span = hues.flatMap { hue in hues.map { abs(ShareTheme.difference(hue, $0)) } }.max()
+        XCTAssertLessThanOrEqual(span ?? 0, 34, "Panel hues \(hues)")
+
+        let grays = [
+            ColorValue(red: 255, green: 255, blue: 255), ColorValue(red: 0, green: 0, blue: 0),
+            ColorValue(red: 128, green: 128, blue: 128),
+            ColorValue(red: 120, green: 118, blue: 115),
+        ]
+        XCTAssertEqual(ShareTheme(colors: grays), .neutral)
+        XCTAssertEqual(ShareTheme(colors: []), .neutral)
+        let yellow = ShareTheme(colors: [ColorValue(red: 200, green: 190, blue: 60)])
+        XCTAssertFalse((85...125).contains(yellow.hue), "Muddy yellows turn to amber")
+        // A sage theme (hue 126) turns its third panel to hue 110, inside the muddy band.
+        let sage = SpineContrast.lab(
+            ShareTheme(colors: [ColorValue(red: 140, green: 160, blue: 110)]).panel(2))
+        XCTAssertLessThanOrEqual((sage.a * sage.a + sage.b * sage.b).squareRoot(), 0.04)
+
+        let swept = stride(from: 0.0, to: 360, by: 10).map { ShareTheme(hue: $0, chroma: 0.3) }
+        for theme in [clashing, .neutral] + swept {
+            let colors =
+                [theme.backdropLight, theme.backdropDark, theme.glow] + (0..<4).map(theme.panel)
+            for color in colors {
+                XCTAssertGreaterThanOrEqual(
+                    color.contrast(with: ShareStyle.cream), 7, "\(theme) \(color.hex)")
+            }
+        }
+    }
+
     /// Ratings in 2025 differ from the fixture's community averages by +3.26 (book 4), +2.22 (8),
     /// −0.71 (1), −0.72 (2), −1.75 (5), and −2.8 (10); book 7's average has too few ratings to
     /// count.
