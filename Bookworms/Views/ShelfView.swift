@@ -217,8 +217,8 @@ struct ShelfView: View {
     #if DEBUG
         /// Simulator screenshot hooks, read once the library loads:
         /// `-BookwormsShelfScrollTo <index>` centers the book at that index, and
-        /// `-BookwormsOpenBook <bookID>` opens that book's details. In 3D, the pile opens the
-        /// book itself once its drop finishes.
+        /// `-BookwormsOpenBook <bookID>` opens that book's details. In 3D, the Pile view opens
+        /// the book itself once its drop finishes, and other views ignore it.
         private func applyDebugArguments() {
             guard let library = model.library else { return }
             let books = shownBooks(in: library)
@@ -477,10 +477,10 @@ enum ShelfPresentation: String, CaseIterable, Identifiable {
     var title: String { carousel?.title ?? "3D" }
 }
 
-/// The scenes 3D can show. Each shows the shelf's books in its sort and filter order, within
-/// the time frame that all of them share. Adding a view takes a case here, titled by its raw
-/// value, and its arm in `ShelfView.content`; **Sort and filter** offers **View** once there
-/// are two.
+/// The scenes 3D can show. Each shows the shelf's filtered books within the time frame that all
+/// of them share, and picks its own order: the Pile follows the shelf's sort, and Dominoes the
+/// finish dates. Adding a view takes a case here, titled by its raw value, and its arm in
+/// `ShelfView.content`; **Sort and filter** offers **View** once there are two.
 enum ThreeDView: String, CaseIterable, Identifiable {
     case pile
     case dominoes

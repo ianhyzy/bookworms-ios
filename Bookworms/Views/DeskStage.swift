@@ -19,6 +19,7 @@ final class DeskStage {
     let root = Entity()
     /// Holds the image-based light, which lit entities receive through `light(_:)`.
     let lighting = Entity()
+    private let lamp = SpotLight()
     private let dust = Entity()
     private var isBuilt = false
     private var environment: Task<Void, Never>?
@@ -37,7 +38,7 @@ final class DeskStage {
 
     /// Adds the table and the lamp, whose pool of light covers a circle of `radius` around
     /// `center` on the table, and starts building the room's light (see `lit`). Later calls
-    /// do nothing.
+    /// do nothing; `aim(pool:radius:)` moves the pool.
     func build(pool center: SIMD3<Float>, radius: Float) {
         guard !isBuilt else { return }
         isBuilt = true
@@ -47,8 +48,14 @@ final class DeskStage {
                 ImageBasedLightComponent(source: .single(resource), intensityExponent: 2.2))
         }
         root.addChild(makeTable())
+        root.addChild(lamp)
+        aim(pool: center, radius: radius)
+    }
+
+    /// Moves the lamp so its pool of light covers a circle of `radius` around `center` on the
+    /// table, and spreads the dust over it. The table and the room's light stay as they are.
+    func aim(pool center: SIMD3<Float>, radius: Float) {
         let placement = Self.lampPlacement(pool: center, radius: radius)
-        let lamp = SpotLight()
         lamp.light = SpotLightComponent(
             color: Self.lampColor, intensity: 7e6 * pow(placement.distance / 19, 2),
             innerAngleInDegrees: placement.innerAngle, outerAngleInDegrees: placement.outerAngle,
@@ -65,7 +72,6 @@ final class DeskStage {
         shadow.lightSize = 1.5
         lamp.shadow = shadow
         lamp.look(at: placement.aim, from: placement.position, relativeTo: nil)
-        root.addChild(lamp)
         dust.components.set(Self.dustMotes(radius: radius))
         dust.position = center + [0, 3.5, 0]
     }

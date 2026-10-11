@@ -79,16 +79,16 @@ enum DominoLayout {
     /// The space a turn keeps between the inner corners of neighboring books.
     static let clearance: Float = 0.05
 
-    /// The gap from a book's front cover to the next book's back cover, for a book of `height`
+    /// The gap from a book's back cover to the next book's front cover, for a book of `height`
     /// whose finish came `days` before the next book's.
     ///
-    /// A toppling book pivots on its front bottom edge, so its head reaches at most `height`
-    /// past that edge: its reach. Books finished within `slumpDays` of each other stand 15
-    /// percent of the height apart on the same day, growing evenly to 54 percent at 29 days,
-    /// so the falling book strikes the next one at least 84 percent of the way up and knocks
-    /// it over. A slump leaves 1.25 times the height, a quarter of a book beyond reach, and
-    /// another quarter for each doubling of its length, up to 1.75 times the height at 120
-    /// days or more. The falling book lands short, and the chain stops there.
+    /// A toppling book pivots on its leading bottom edge, the back cover's, so its head reaches
+    /// at most `height` past that edge: its reach. Books finished within `slumpDays` of each
+    /// other stand 15 percent of the height apart on the same day, growing evenly to 54
+    /// percent at 29 days, so the falling book strikes the next one at least 84 percent of the
+    /// way up and knocks it over. A slump leaves 1.25 times the height, a quarter of a book
+    /// beyond reach, and another quarter for each doubling of its length, up to 1.75 times the
+    /// height at 120 days or more. The falling book lands short, and the chain stops there.
     static func gap(days: Int, height: Float) -> Float {
         let days = Float(max(0, days))
         let slump = Float(slumpDays)
@@ -98,16 +98,16 @@ enum DominoLayout {
 
     /// `books` in finish order, oldest first, with the whole days from each finish to the next.
     /// Books without a finish date, such as current reads, stand last, as if finished `now`.
-    /// Past `maximumBooks`, only the most recent books stand. The last book's days are 0.
+    /// Books finished on the same day stand in ID order, so the order of `books` does not
+    /// matter. Past `maximumBooks`, only the most recent books stand. The last book's days are 0.
     static func chain(_ books: [CloudBook], now: Date) -> [(book: CloudBook, days: Int)] {
         let ordered = Array(
-            books.enumerated()
-                .sorted {
-                    ($0.element.finishedDate ?? .distantFuture, $0.offset)
-                        < ($1.element.finishedDate ?? .distantFuture, $1.offset)
-                }
-                .map(\.element)
-                .suffix(maximumBooks))
+            books.sorted {
+                ($0.finishedDate ?? .distantFuture, $0.id) < (
+                    $1.finishedDate ?? .distantFuture, $1.id
+                )
+            }
+            .suffix(maximumBooks))
         let dates = ordered.map { $0.finishedDate ?? now }
         return ordered.indices.map { index in
             let next = index + 1 < dates.count ? dates[index + 1] : dates[index]
@@ -221,6 +221,22 @@ enum DominoLayout {
         return index
     }
 
+    /// The chain's phase once every book stands, given `next`, the first of `count` books that
+    /// has not fallen; whether a push or a book falling on its own has `started` the chain; and
+    /// whether no book has started to fall for a while (`settled`). `days(index)` gives the
+    /// days from the finish of the book at `index` to the next book's.
+    ///
+    /// Once no book is left standing, the chain is running or done, whether or not it was
+    /// pushed, so a chain without books, or one that fell on its own, never waits for a push.
+    static func phase(
+        next: Int, count: Int, started: Bool, settled: Bool, days: (Int) -> Int
+    ) -> DominoPhase {
+        if next >= count { return settled ? .done : .running }
+        guard started else { return .standing }
+        guard settled else { return .running }
+        return .stalled(fallen: next, days: next > 0 ? days(next - 1) : 0)
+    }
+
     /// A book standing on its tail with its front cover facing back along `heading`, so it
     /// falls onto its back cover with the cover up. Its axes run spine to fore edge, tail to
     /// head, and back to front cover, as `BookShape` lays them out.
@@ -244,6 +260,14 @@ enum DominoPhase: Equatable {
     case stalled(fallen: Int, days: Int)
     /// Every book has fallen.
     case done
+
+    /// Whether the chain waits for a push: before the first one, or after it stopped.
+    var waitsForPush: Bool {
+        switch self {
+        case .standing, .stalled: true
+        default: false
+        }
+    }
 }
 
 /// The chain's phase, kept apart from the scene so that views update only when it changes.
@@ -258,12 +282,13 @@ final class DominoStatus {
 ///
 /// The chain's front is the book after the last one that tilted past about 26 degrees. Each
 /// frame checks only the next three books, so the work per frame does not grow with the
-/// chain, and a book that the chain skips counts as passed. The chain is stalled once no book
-/// has started to fall for `stallTime`. While the chain waits for a push, a warm glow on the
-/// table marks the book a push tips (`DominoLayout.pushTarget`), and pulses unless Reduce
-/// Motion is on. After a push, without Reduce Motion, the camera eases after the front, and
-/// once every book has fallen it eases back to the whole path. A pinch or drag stops it
-/// following until the next push.
+/// chain, and a book that the chain skips counts as passed. A book that falls before the first
+/// push starts the chain as a push does. The chain is stalled once no book has started to
+/// fall for `stallTime`. While the chain waits for a push, a warm glow on the table marks the
+/// book a push tips (`DominoLayout.pushTarget`), and pulses unless Reduce Motion is on. After
+/// a push, without Reduce Motion, the camera eases after the front, and once every book has
+/// fallen it eases back to the whole path. A pinch or drag stops it following until the next
+/// push.
 @MainActor
 final class DominoScene {
     /// The scene root, which runs the physics simulation.
@@ -285,18 +310,19 @@ final class DominoScene {
     /// The cosine of the tilt under which a book counts as upright, about 6 degrees: more
     /// than a book rocks when it stands up, and less than it leans against the next book.
     private static let uprightTilt: Float = 0.995
-    /// The marker's collision group, which collides with nothing, so books pass through its
-    /// box while taps still find it.
-    private static let markerGroup = CollisionGroup(rawValue: 1 << 20)
 
     private let camera = PerspectiveCamera()
     private let factory = BookFactory()
-    private var stage = DeskStage()
+    private let stage = DeskStage()
     private var poolRadius: Float?
     private let shelf = Entity()
-    /// Marks the book a push tips with `glow`, and takes that book's taps with a box a little
-    /// larger than the book, since a thin book is hard to hit from the overview.
+    /// Marks the book a push tips with `glow`, and takes that book's taps with `hitBox`.
     private let marker = Entity()
+    /// A box a little larger than the marked book, since a thin book is hard to hit from the
+    /// overview. `tap(at:in:)` finds it with a raycast. It is a trigger, so books pass through
+    /// it, and its overlaps play no sound. Its filter is the default one, because a raycast
+    /// skips a shape whose filter collides with nothing.
+    private let hitBox = Entity()
     private let glow: ModelEntity
     private let pulse: AnimationResource?
     /// The index of the book `marker` marks, if it shows.
@@ -321,7 +347,10 @@ final class DominoScene {
     private var aspect: Float = 0.5
     private var follows = false
     private var reducesMotion = false
-    private var cameraMove: (start: PileCamera, focus: SIMD3<Float>)?
+    /// The camera and the table point under the fingers when they started moving the camera,
+    /// whether they pinch, and the drag's translation then.
+    private var cameraMove:
+        (start: PileCamera, focus: SIMD3<Float>, pinches: Bool, translation: CGSize)?
     private var updates: EventSubscription?
     private var collisions: EventSubscription?
 
@@ -348,7 +377,8 @@ final class DominoScene {
                 from: 0.5, to: 1, duration: 0.9, timing: .easeInOut, bindTarget: .opacity,
                 repeatMode: .autoReverse))
         marker.addChild(glow)
-        marker.components.set(InputTargetComponent())
+        marker.addChild(hitBox)
+        hitBox.components.set(InputTargetComponent())
         marker.isEnabled = false
         root.addChild(marker)
         factory.coverArrived = { [weak self] id, material in self?.retexture(id, cover: material) }
@@ -362,7 +392,7 @@ final class DominoScene {
             self?.update(event.deltaTime)
         }
         collisions = content.subscribe(to: CollisionEvents.Began.self) { [weak self] event in
-            guard let self else { return }
+            guard let self, event.entityA != hitBox, event.entityB != hitBox else { return }
             feedback.collide(event, pan: pan)
         }
     }
@@ -383,11 +413,11 @@ final class DominoScene {
     /// Stands `books` along a new path, or continues standing them up after an earlier call
     /// for the same chain and generation, such as one interrupted by pushed details.
     ///
-    /// The chain is `DominoLayout.chain(_:now:)`, so the shelf's sort order does not matter. A
-    /// new chain or generation removes every book, frames the whole path between the bars of
-    /// `viewport`, and lays the lamp's pool over it. Books stand up `batchSize` at a time, each
-    /// batch waiting at most `coverWait` for its covers. Returns when every book stands or the
-    /// task is cancelled.
+    /// The chain is `DominoLayout.chain(_:now:)`, so the order of `books`, the shelf's sort
+    /// order, does not matter. A new chain or generation removes every book, frames the whole
+    /// path between the bars of `viewport`, and lays the lamp's pool over it. Books stand up
+    /// `batchSize` at a time, each batch waiting at most `coverWait` for its covers. Returns
+    /// when every book stands or the task is cancelled.
     func setUp(_ books: [CloudBook], generation: Int, viewport: PileViewport, model: AppModel)
         async
     {
@@ -451,18 +481,16 @@ final class DominoScene {
         status.phase = .settingUp
     }
 
-    /// Lays the lamp's pool over a circle of `radius` about the table's center, replacing the
-    /// stage when the radius changes, since a stage builds its lamp once.
+    /// Lays the lamp's pool over a circle of `radius` about the table's center: the first
+    /// call builds the stage, and later ones only re-aim its lamp.
     private func light(radius: Float) {
         guard poolRadius != radius else { return }
-        if poolRadius != nil {
-            stage.root.removeFromParent()
-            stage = DeskStage()
-            root.addChild(stage.root)
+        if poolRadius == nil {
+            stage.build(pool: .zero, radius: radius)
+        } else {
+            stage.aim(pool: .zero, radius: radius)
         }
         poolRadius = radius
-        stage.build(pool: .zero, radius: radius)
-        stage.setDust(!reducesMotion)
     }
 
     /// Frames every book of the chain, standing or fallen (`DominoLayout.outline`), between
@@ -504,21 +532,35 @@ final class DominoScene {
 
     // MARK: Interaction
 
-    /// Pushes the chain on when `entity` is the marker, the next book to fall, or a book
-    /// between it and the marked book, and returns `nil`. Returns any other book's ID, for its
-    /// details, and `nil` for the table. A push does nothing until every book stands.
-    func tap(_ entity: Entity) -> Int? {
-        let index = entity == marker ? marked : indices[entity.id]
-        guard let index else { return nil }
-        guard index >= next, index <= target else { return slots[index].book.id }
+    /// Returns the ID of the book under `point`, in a view of `size`, when the chain has
+    /// passed it, fallen or standing, for its details. A tap on `hitBox` or on any book the
+    /// chain has not reached pushes the chain on (see `pushNext`), so a near miss beside a
+    /// thin book still pushes, and returns `nil`, as does a tap on the table.
+    ///
+    /// It casts its own ray from the camera: a targeted tap gesture fires only on a touch that
+    /// lands on a book, even where `hitBox` lies around it.
+    func tap(at point: CGPoint, in size: CGSize) -> Int? {
+        guard size.width > 0, size.height > 0, let scene = root.scene else { return nil }
+        let ray = ray(through: point, in: size)
+        guard
+            let entity =
+                scene.raycast(
+                    origin: ray.origin, direction: ray.direction, length: 300, query: .nearest,
+                    relativeTo: root
+                )
+                .first?
+                .entity,
+            let index = entity == hitBox ? marked : indices[entity.id]
+        else { return nil }
+        if index < next { return slots[index].book.id }
         pushNext()
         return nil
     }
 
-    /// The ID of the book an entity belongs to, including the marked book for the marker, or
-    /// `nil` for the table.
+    /// The ID of the book an entity belongs to, the marked book's for `hitBox`, or `nil` for
+    /// the table.
     func bookID(for entity: Entity) -> Int? {
-        (entity == marker ? marked : indices[entity.id]).map { slots[$0].book.id }
+        (entity == hitBox ? marked : indices[entity.id]).map { slots[$0].book.id }
     }
 
     /// The book a push tips (see `DominoLayout.pushTarget`).
@@ -528,15 +570,16 @@ final class DominoScene {
         }
     }
 
-    /// Tips the book a push tips (see `target`) forward along the path, with a light tap, once
-    /// every book stands.
+    /// Tips the book a push tips (see `target`) forward along the path, with a light tap, while
+    /// the chain waits for a push. While books fall, it does nothing.
     func pushNext() {
-        guard isReady, next < books.count else { return }
+        guard status.phase.waitsForPush, next < books.count else { return }
         let book = books[target]
         let slot = slots[target]
         let forward = SIMD3(slot.heading.x, 0, slot.heading.y)
         let spin = simd_cross([0, 1, 0], forward) * Self.pushSpeed
-        // About the front bottom edge, so the book tips over instead of sliding back.
+        // About the leading bottom edge, the back cover's, so the book tips over instead of
+        // sliding back.
         let arm = SIMD3(0, slot.size.y / 2, 0) - forward * slot.size.z / 2
         book.components.set(
             PhysicsMotionComponent(linearVelocity: simd_cross(spin, arm), angularVelocity: spin))
@@ -550,17 +593,26 @@ final class DominoScene {
 
     /// Zooms toward the point under `focus` by `magnification`, or slides the camera across
     /// the table with a one-finger `translation`, keeping the path in view.
+    ///
+    /// A drag that becomes a pinch, or a pinch that becomes a drag, starts a new move from the
+    /// camera as it is, about the new focus and from the drag's translation so far, so the
+    /// camera does not jump.
     func moveCamera(translation: CGSize, magnification: CGFloat, focus: CGPoint?, in size: CGSize) {
         guard size.width > 0, size.height > 0 else { return }
+        if let move = cameraMove, move.pinches != (focus != nil) { cameraMove = nil }
         if cameraMove == nil {
             follows = false
-            let point = focus ?? CGPoint(x: size.width / 2, y: size.height / 2)
-            let ndc = SIMD2(
-                Float(point.x / size.width) * 2 - 1, 1 - Float(point.y / size.height) * 2)
-            let ray = view.ray(ndc: ndc, aspect: aspect)
-            cameraMove = (view, PileCamera.intersect(ray, height: 0) ?? view.target)
+            let ray = ray(
+                through: focus ?? CGPoint(x: size.width / 2, y: size.height / 2), in: size)
+            cameraMove = (
+                view, PileCamera.intersect(ray, height: 0) ?? view.target, focus != nil,
+                translation
+            )
         }
         guard let move = cameraMove else { return }
+        let translation = CGSize(
+            width: translation.width - move.translation.width,
+            height: translation.height - move.translation.height)
         var camera = move.start
         camera.zoom = min(
             max(move.start.zoom * Float(magnification), min(overview.zoom, 1)),
@@ -583,6 +635,14 @@ final class DominoScene {
 
     func endCameraMove() { cameraMove = nil }
 
+    /// The ray from the camera through `point` in a view of `size`.
+    private func ray(through point: CGPoint, in size: CGSize) -> (
+        origin: SIMD3<Float>, direction: SIMD3<Float>
+    ) {
+        let ndc = SIMD2(Float(point.x / size.width) * 2 - 1, 1 - Float(point.y / size.height) * 2)
+        return view.ray(ndc: ndc, aspect: aspect)
+    }
+
     private func look(through camera: PileCamera) {
         view = camera
         self.camera.transform = camera.transform
@@ -603,8 +663,12 @@ final class DominoScene {
         where books[index].transform.rotation.act([0, 1, 0]).y < Self.fallenTilt {
             next = index + 1
             lastAdvance = clock
+            started = true
         }
-        let phase = phase
+        let phase = DominoLayout.phase(
+            next: next, count: books.count, started: started,
+            settled: clock - lastAdvance > Self.stallTime
+        ) { slots[$0].days }
         if status.phase != phase { status.phase = phase }
         switch phase {
         case .standing, .stalled: mark(target)
@@ -613,19 +677,12 @@ final class DominoScene {
         if follows, cameraMove == nil { steer(Float(deltaTime)) }
     }
 
-    private var phase: DominoPhase {
-        guard isReady else { return .settingUp }
-        guard started else { return .standing }
-        let settled = clock - lastAdvance > Self.stallTime
-        if next == books.count { return settled ? .done : .running }
-        guard settled else { return .running }
-        return .stalled(fallen: next, days: next > 0 ? slots[next - 1].days : 0)
-    }
-
     // MARK: Marking the next book
 
-    /// Moves the marker to the book at `index`, or hides it for `nil`.
+    /// Moves the marker to the book at `index`, or hides it for `nil` or an index past the
+    /// last book.
     private func mark(_ index: Int?) {
+        let index = index.flatMap { slots.indices.contains($0) ? $0 : nil }
         guard index != marked else { return }
         marked = index
         guard let index else {
@@ -644,10 +701,10 @@ final class DominoScene {
         // Past the book's covers by less than the closest gap, 15 percent of a book's height,
         // so the box does not cover a neighbor's taps on a row.
         let box = slot.size + [0.4, 0.3, 0.3]
-        marker.components.set(
+        hitBox.components.set(
             CollisionComponent(
                 shapes: [.generateBox(size: box).offsetBy(translation: [0, box.y / 2, 0])],
-                mode: .trigger, filter: CollisionFilter(group: Self.markerGroup, mask: [])))
+                mode: .trigger))
         if !marker.isEnabled {
             marker.isEnabled = true
             startGlow()
@@ -721,10 +778,7 @@ final class DominoScene {
             else { return }
             while !Task.isCancelled, status.phase != .done {
                 try? await Task.sleep(for: .seconds(delay))
-                switch status.phase {
-                case .standing, .stalled: pushNext()
-                default: break
-                }
+                pushNext()
             }
         }
     #endif

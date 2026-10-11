@@ -6,15 +6,15 @@ import SwiftUI
 /// a slump is a gap that a falling book cannot cross.
 ///
 /// A tap on the first book topples the chain, which stops at each slump until the reader taps
-/// the next book, which a glow marks, to nudge it on. Tapping any other book, or touching and
-/// holding any book, calls `open` to push its details, and the chain is as the reader left it
-/// on return. Pinch to zoom, and drag to look along the path. **Set up again** stands every
-/// book again.
+/// the next book, which a glow marks, to nudge it on. A tap on any book the chain has not
+/// reached also pushes it on. Tapping a book the chain has passed, or touching and holding any
+/// book, calls `open` to push its details, and the chain is as the reader left it on return.
+/// Pinch to zoom, and drag to look along the path. **Set up again** stands every book again.
 /// Collisions play taps and, while the shelf's **Sounds** is on, clacks (`ImpactFeedback`).
 ///
-/// Leaving other than for details, such as for another tab, frees the books and textures, and
-/// they stand again on return. While a pile image renders, the scene leaves the view, as
-/// `BookPileView` explains.
+/// Leaving stops the haptic and audio engines. Leaving other than for details, such as for
+/// another tab, also frees the books and textures, and they stand again on return. While a
+/// pile image renders, the scene leaves the view, as `BookPileView` explains.
 struct DominoesView: View {
     let books: [CloudBook]
     /// The name of the books' time frame.
@@ -63,7 +63,9 @@ struct DominoesView: View {
         .accessibilityValue("\(title). \(status)")
         .accessibilityHint("To go through books one at a time, choose Stack or Shelf.")
         .accessibilityActions {
-            if canPush { Button("Push the next book") { scene.pushNext() } }
+            if scene.status.phase.waitsForPush {
+                Button("Push the next book") { scene.pushNext() }
+            }
             Button("Set up again") { generation += 1 }
         }
         .overlay(alignment: .bottom) { hint }
@@ -90,6 +92,8 @@ struct DominoesView: View {
         .onDisappear {
             isShown = false
             scene.endCameraMove()
+            // `onChange(of: playsFeedback)` does not run for a view that is being removed.
+            scene.feedback.stop()
             guard !showsBook else { return }
             scene.release()
         }
@@ -104,8 +108,11 @@ struct DominoesView: View {
         .onChange(of: reduceMotion, initial: true) { scene.setReduceMotion(reduceMotion) }
         .onChange(of: movesCamera) { if !movesCamera { scene.endCameraMove() } }
         .onChange(of: scene.status.phase) {
-            if case .stalled = scene.status.phase {
-                AccessibilityNotification.Announcement(status).post()
+            // Physics runs on under pushed details, which VoiceOver reads instead.
+            guard isShown else { return }
+            switch scene.status.phase {
+            case .stalled, .done: AccessibilityNotification.Announcement(status).post()
+            default: break
             }
         }
         .toolbar {
@@ -145,13 +152,6 @@ struct DominoesView: View {
         }
     }
 
-    private var canPush: Bool {
-        switch scene.status.phase {
-        case .standing, .stalled: true
-        default: false
-        }
-    }
-
     /// The chain's phase as VoiceOver reads it.
     private var status: String {
         switch scene.status.phase {
@@ -179,16 +179,17 @@ struct DominoesView: View {
         return books.count == 1 ? "1 book" : "\(books.count.formatted()) books"
     }
 
-    /// A tap pushes the next book or opens another book's details; touching and holding opens
-    /// any book's details.
+    /// A tap pushes the chain on or opens the details of a book it has passed (see
+    /// `DominoScene.tap(at:in:)`); touching and holding opens any book's details.
     private var touchBook: some Gesture {
         LongPressGesture(minimumDuration: 0.5)
             .targetedToAnyEntity()
-            .exclusively(before: SpatialTapGesture().targetedToAnyEntity())
+            .exclusively(before: SpatialTapGesture())
             .onEnded { value in
                 switch value {
                 case .first(let press): showDetails(scene.bookID(for: press.entity))
-                case .second(let tap): showDetails(scene.tap(tap.entity))
+                case .second(let tap):
+                    showDetails(scene.tap(at: tap.location, in: viewport?.size ?? .zero))
                 }
             }
     }

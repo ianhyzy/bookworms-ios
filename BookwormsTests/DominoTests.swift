@@ -36,9 +36,11 @@ final class DominoTests: XCTestCase {
                 previous = gap
             }
             // A slump lies beyond the falling book's reach, its height, by a quarter book or more.
-            XCTAssertEqual(DominoLayout.gap(days: 30, height: height), height * 1.25, accuracy: 1e-4)
+            XCTAssertEqual(
+                DominoLayout.gap(days: 30, height: height), height * 1.25, accuracy: 1e-4)
             XCTAssertEqual(DominoLayout.gap(days: 60, height: height), height * 1.5, accuracy: 1e-4)
-            XCTAssertEqual(DominoLayout.gap(days: 900, height: height), height * 1.75, accuracy: 1e-4)
+            XCTAssertEqual(
+                DominoLayout.gap(days: 900, height: height), height * 1.75, accuracy: 1e-4)
         }
     }
 
@@ -52,6 +54,18 @@ final class DominoTests: XCTestCase {
         let chain = DominoLayout.chain(books, now: now)
         XCTAssertEqual(chain.map { $0.book.id }, [3, 1, 4, 5, 2])
         XCTAssertEqual(chain.map { $0.days }, [64, 0, 52, 61, 0])
+    }
+
+    func testSameDayBooksKeepTheirOrderWhateverTheShelfSort() {
+        let books = [
+            book(7, finished: "2025-03-10"), book(2, finished: nil),
+            book(5, finished: "2025-03-10"),
+            book(9, finished: nil), book(1, finished: "2025-01-05"),
+        ]
+        let now = Date.now
+        let chain = DominoLayout.chain(books, now: now).map { $0.book.id }
+        XCTAssertEqual(chain, [1, 5, 7, 2, 9])
+        XCTAssertEqual(DominoLayout.chain(books.reversed(), now: now).map { $0.book.id }, chain)
     }
 
     func testLongChainsKeepTheMostRecentBooks() {
@@ -85,10 +99,11 @@ final class DominoTests: XCTestCase {
     func testSlumpsAreOutOfReachAndOtherGapsWithinIt() {
         // Gaps of 0 to 100 days, and thick and thin books, around several turns.
         var day = 0
-        let books = (0..<80).map { index in
-            defer { day += (index * 37) % 101 }
-            return book(index, day: day, pages: 60 + index * 17)
-        }
+        let books = (0..<80)
+            .map { index in
+                defer { day += (index * 37) % 101 }
+                return book(index, day: day, pages: 60 + index * 17)
+            }
         let plan = DominoLayout.plan(DominoLayout.chain(books, now: .now), aspect: 0.5)
         XCTAssertGreaterThan(plan.slots.last?.distance ?? 0, 3 * plan.path.period)
         for (slot, next) in zip(plan.slots, plan.slots.dropFirst()) {
@@ -149,7 +164,7 @@ final class DominoTests: XCTestCase {
             }
             XCTAssertGreaterThanOrEqual(tops.count, 2)
         }
-        // The last book lands its height past its front bottom edge.
+        // The last book lands its height past its leading bottom edge.
         let last = try XCTUnwrap(slots.last)
         let landing = try XCTUnwrap(points.last)
         XCTAssertEqual(landing.y, 0)
@@ -165,6 +180,26 @@ final class DominoTests: XCTestCase {
         // It looks at most two books past the next one, and never past the last book.
         XCTAssertEqual(DominoLayout.pushTarget(next: 0, count: 4) { _ in false }, 2)
         XCTAssertEqual(DominoLayout.pushTarget(next: 3, count: 4) { _ in false }, 3)
+    }
+
+    func testPhaseFollowsTheFront() {
+        let days = [3, 45, 0]
+        func phase(next: Int, count: Int = 3, started: Bool, settled: Bool) -> DominoPhase {
+            DominoLayout.phase(next: next, count: count, started: started, settled: settled) {
+                days[$0]
+            }
+        }
+        XCTAssertEqual(phase(next: 0, started: false, settled: true), .standing)
+        XCTAssertEqual(phase(next: 1, started: true, settled: false), .running)
+        XCTAssertEqual(phase(next: 2, started: true, settled: true), .stalled(fallen: 2, days: 45))
+        XCTAssertEqual(phase(next: 3, started: true, settled: false), .running)
+        XCTAssertEqual(phase(next: 3, started: true, settled: true), .done)
+        // A chain that fell without a push, or has no books, never waits for one.
+        XCTAssertEqual(phase(next: 3, started: false, settled: false), .running)
+        XCTAssertEqual(phase(next: 3, started: false, settled: true), .done)
+        XCTAssertEqual(phase(next: 0, count: 0, started: false, settled: true), .done)
+        XCTAssertFalse(phase(next: 0, count: 0, started: false, settled: false).waitsForPush)
+        XCTAssertTrue(DominoPhase.stalled(fallen: 1, days: 2).waitsForPush)
     }
 
     func testThreeDOffersDominoes() {
