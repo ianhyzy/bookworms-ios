@@ -17,6 +17,8 @@ enum PileSnapshotRenderer {
 
     @MainActor @Observable fileprivate final class Activity {
         var isRendering = false
+        /// Renders waiting for their turn, in the order they asked.
+        @ObservationIgnored var waiting = [(id: UUID, turn: CheckedContinuation<Void, any Error>)]()
     }
 
     private static let activity = Activity()
@@ -41,10 +43,10 @@ enum PileSnapshotRenderer {
     /// A cancelled render stops waiting for fonts and covers at once. The renderer, the scene,
     /// and their textures are released when this returns.
     ///
-    /// One image renders at a time: a call waits for the previous one, which can still be
-    /// finishing its frame after its task was cancelled. `isRendering` stays set from the start
-    /// of the render until the image is ready, and the simulation starts a few frames after it
-    /// is set, so views have time to react.
+    /// One image renders at a time: a call waits for the renders that asked first, including
+    /// one that is still finishing its frame after its task was cancelled. `isRendering` stays
+    /// set from the start of the render until the image is ready, and the simulation starts a
+    /// few frames after it is set, so views have time to react.
     ///
     /// - Throws: `CancellationError` when the task is cancelled, and `PileSnapshotError` when
     ///   Metal fails or the rendered frame is one flat color.
@@ -66,22 +68,48 @@ enum PileSnapshotRenderer {
         return image
     }
 
-    /// Waits for the render in progress, if any, then sets `isRendering` and gives views 100
-    /// milliseconds to react. A render calls this first and `release()` when it ends, on every
-    /// path; a cancelled wait leaves `isRendering` as it was.
+    /// Waits for the render in progress and the renders that asked earlier, if any, then sets
+    /// `isRendering` and gives views 100 milliseconds to react. A render calls this first and
+    /// `release()` when it ends, on every path. A render cancelled while it waits leaves the line.
+    ///
+    /// Turns go first come, first served. A still image's loop releases and claims again in
+    /// one turn of the main actor, so a lock that anyone could take once free would let a run of
+    /// images, such as those a generation run's saved designs trigger, keep a video waiting.
     static func claim() async throws {
-        while activity.isRendering { try await Task.sleep(for: .milliseconds(50)) }
-        activity.isRendering = true
+        if activity.isRendering {
+            let id = UUID()
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { turn in
+                    activity.waiting.append((id, turn))
+                }
+            } onCancel: {
+                Task { @MainActor in
+                    guard let index = activity.waiting.firstIndex(where: { $0.id == id }) else {
+                        return
+                    }
+                    activity.waiting.remove(at: index).turn.resume(throwing: CancellationError())
+                }
+            }
+        } else {
+            activity.isRendering = true
+        }
         do {
             try await Task.sleep(for: .milliseconds(100))
         } catch {
-            activity.isRendering = false
+            release()
             throw error
         }
     }
 
-    /// Ends the render that `claim()` started.
-    static func release() { activity.isRendering = false }
+    /// Ends the render that `claim()` started, and hands the turn to the next render waiting,
+    /// if any, with `isRendering` still set.
+    static func release() {
+        if activity.waiting.isEmpty {
+            activity.isRendering = false
+        } else {
+            activity.waiting.removeFirst().turn.resume()
+        }
+    }
 
     /// Drops and settles the books, then renders one frame and copies it into a `CGImage`.
     ///

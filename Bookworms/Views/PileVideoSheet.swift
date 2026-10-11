@@ -1,15 +1,19 @@
 import AVKit
 import Photos
 import SwiftUI
+import UIKit
 
 /// Films the pile as a six-second video, then shares the movie or saves it as a Live Photo.
 ///
 /// The video renders as soon as the sheet opens, with its progress and its latest frame in the
-/// preview (see `PileSnapshotRenderer.renderMovie`). It waits for a pile image that is still rendering, and
-/// a pile image waits for it. Closing the sheet cancels a render in progress, and the video's
-/// files are deleted once the sheet is gone. The finished clip loops in the preview, except with
-/// Reduce Motion on, when it waits for Play. **Share** offers the movie file, and **Save as Live
-/// Photo** asks to add to Photos, then saves the clip's last frame paired with the clip.
+/// preview (see `PileSnapshotRenderer.renderMovie`). Pile images and videos take turns in the
+/// order they start. The screen stays awake while the video renders. When the app stops being
+/// active, the render stops, since iOS suspends the GPU and the encoder in the background; it
+/// starts again when the app is active again, and the seed makes the same clip. Closing the
+/// sheet cancels a render in progress, and the video's files are deleted once the sheet is
+/// gone. The finished clip loops in the preview, except with Reduce Motion on, when it waits
+/// for Play. **Share** offers the movie file, and **Save as Live Photo** asks to add to Photos,
+/// then saves the clip's last frame paired with the clip.
 struct PileVideoSheet: View {
     let books: [CloudBook]
     /// The name of the books' time frame, which heads the video.
@@ -20,6 +24,7 @@ struct PileVideoSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
     /// `nil` while the render waits its turn and loads fonts and covers, then the fraction of
     /// frames done.
     @State private var progress: Double?
@@ -71,8 +76,12 @@ struct PileVideoSheet: View {
                 }
             }
         }
-        .task { await render() }
-        // The shelf's dark scheme reaches this content but not the sheet's own background.
+        // Stops the render when the app stops being active, and starts it again on return; a
+        // finished clip stays.
+        .task(id: scenePhase == .active) {
+            if scenePhase == .active { await render() }
+        }
+        // Dark from either tab, like Share pile: the clip's heading and table are dark.
         .preferredColorScheme(.dark)
     }
 
@@ -80,9 +89,8 @@ struct PileVideoSheet: View {
         ZStack {
             // Fills the video's shape before there is one.
             Rectangle().fill(.quaternary)
-            if let movie, let player {
+            if let player {
                 VideoPlayer(player: player)
-                    .accessibilityLabel("\(movie.name) video")
             } else if failed {
                 ContentUnavailableView(
                     "Couldn't film the pile", systemImage: "exclamationmark.triangle",
@@ -134,6 +142,12 @@ struct PileVideoSheet: View {
     }
 
     private func render() async {
+        guard movie == nil, !failed else { return }
+        let application = UIApplication.shared
+        let wasIdleTimerDisabled = application.isIdleTimerDisabled
+        // No one touches the screen while it renders, which takes up to a minute.
+        application.isIdleTimerDisabled = true
+        defer { application.isIdleTimerDisabled = wasIdleTimerDisabled }
         do {
             let made = try await PileSnapshotRenderer.renderMovie(
                 books: books, title: title, aspect: aspect, seed: seed, model: model,
@@ -154,7 +168,9 @@ struct PileVideoSheet: View {
         } catch is CancellationError {
             return
         } catch {
-            failed = true
+            // A frame that fails as the app leaves, after the render was cancelled, is no
+            // failure: the render starts again on return.
+            if !Task.isCancelled { failed = true }
         }
     }
 

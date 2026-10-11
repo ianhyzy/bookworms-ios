@@ -1362,8 +1362,8 @@ extension BookPileScene {
     /// The books get `PileMovieTiming`'s drag, so a fall from behind the heading lands softly
     /// enough to leave most covers up.
     func drop(_ group: [PileSlot], base: Float, above falling: Set<Entity.ID>) -> Set<Entity.ID> {
-        let top = shelf.children.filter { !falling.contains($0.id) }
-            .map { $0.visualBounds(relativeTo: root).max.y }.max() ?? 0
+        let landed = shelf.children.filter { !falling.contains($0.id) }
+        let top = landed.map { $0.visualBounds(relativeTo: root).max.y }.max() ?? 0
         let count = shelf.children.count
         for var slot in group {
             slot.transform.translation.y += max(top, base, 0)

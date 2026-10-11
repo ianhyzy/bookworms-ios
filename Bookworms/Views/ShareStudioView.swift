@@ -34,6 +34,8 @@ struct ShareStudioView: View {
     @State private var failed = false
     @State private var showsAccount = false
     @State private var filmsPile = false
+    /// The Pile template's books and heading when **Video** was tapped, which the video films.
+    @State private var film: (books: [CloudBook], title: String) = ([], "")
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init() {
@@ -118,7 +120,6 @@ struct ShareStudioView: View {
         }
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
         .sheet(isPresented: $filmsPile) {
-            let film = pileFilm
             PileVideoSheet(books: film.books, title: film.title, aspect: aspect, seed: seed)
         }
         .task(id: request.options) {
@@ -192,7 +193,7 @@ struct ShareStudioView: View {
                 }
             }
             if template == .hotTakes || template.hasRatingOption || showsShuffle {
-                Section("Options") { options }
+                Section("Options") { options(hasNoBooks: hasNoBooks) }
             }
         }
         .navigationTitle("Share")
@@ -476,7 +477,7 @@ struct ShareStudioView: View {
     }
 
     @ViewBuilder
-    private var options: some View {
+    private func options(hasNoBooks: Bool) -> some View {
         if template == .hotTakes {
             Picker("Show", selection: $direction) {
                 ForEach(HotTakeDirection.allCases) { Text($0.title).tag($0) }
@@ -490,19 +491,18 @@ struct ShareStudioView: View {
             Button("Shuffle", systemImage: "shuffle") { seed = .random(in: 1 ... .max) }
         }
         if template == .pile {
-            Button("Video", systemImage: "video") { filmsPile = true }
-                .disabled(pileFilm.books.isEmpty)
+            Button("Video", systemImage: "video") {
+                let frame = shownFrame
+                let books = ShareTemplate.pile.books(from: library, in: frame, direction: direction)
+                let input = ShareInput(
+                    template: .pile, aspect: aspect, books: books, frame: frame,
+                    coverStyle: coverStyle, direction: direction, showsRatings: showsRatings,
+                    seed: seed)
+                film = (books, input.period)
+                filmsPile = true
+            }
+            .disabled(hasNoBooks)
         }
-    }
-
-    /// The Pile template's books and heading, which its video films.
-    private var pileFilm: (books: [CloudBook], title: String) {
-        let frame = shownFrame
-        let books = ShareTemplate.pile.books(from: library, in: frame, direction: direction)
-        let input = ShareInput(
-            template: .pile, aspect: aspect, books: books, frame: frame, coverStyle: coverStyle,
-            direction: direction, showsRatings: showsRatings, seed: seed)
-        return (books, input.period)
     }
 
     /// Whether the seed changes the image. It varies spine stacks, the Top Five fan, a pile's

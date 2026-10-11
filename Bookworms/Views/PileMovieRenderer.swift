@@ -33,37 +33,34 @@ extension PileSnapshotRenderer {
     ///
     /// The simulation runs on the main actor, `PileMovieTiming.stepsPerFrame` steps per frame.
     /// Each frame renders into a Metal texture, which a blit copies into memory (`FrameTarget`);
-    /// the heading and credit are drawn over it there, and `PileMovieWriter` encodes it.
-    /// Hits that `ImpactFeedback` would play are recorded, and each frame's share of the
-    /// soundtrack is mixed from them (`ImpactMix`) as soon as the frame shows.
+    /// `PileMovieWriter` copies it into a pixel buffer, draws the heading and credit over it
+    /// there, and encodes it. Hits that `ImpactFeedback` would play are recorded, and each
+    /// frame's share of the soundtrack is mixed from them (`ImpactMix`) as soon as the frame
+    /// shows.
+    ///
+    /// The render's turn ends with the last frame, so finishing the movie and the still never
+    /// holds up the live pile or a share image. Each frame must render and reach the encoder
+    /// within `frameTimeout`, and the movie must finish within it too.
     ///
     /// `progress` gets `nil` while fonts and covers load, then the fraction of frames done.
-    /// `preview` gets every sixth finished frame, and the last, for the sheet to show meanwhile.
-    /// The scene, its textures, and the renderer are released when this returns, and a failed
-    /// or cancelled render deletes its files. A render first deletes the clips that an earlier
-    /// session left behind.
+    /// `preview` gets every sixth finished frame at half size, and the last at full size, for
+    /// the sheet to show meanwhile. The scene, its textures, and the renderer are released when
+    /// the last frame is done, and a failed or cancelled render deletes its files. The first
+    /// render of a launch deletes the clips that earlier launches left behind.
     ///
     /// - Throws: `CancellationError` when the task is cancelled, and `PileSnapshotError` when
-    ///   Metal or the writer fails, a frame does not render within 10 seconds, or the first
-    ///   frame is one flat color.
+    ///   Metal or the writer fails, a frame misses `frameTimeout`, or the first frame is one
+    ///   flat color.
     static func renderMovie(
         books: [CloudBook], title: String, aspect: ShareAspect, seed: UInt64, model: AppModel,
         progress: (Double?) -> Void, preview: (CGImage) -> Void
     ) async throws -> PileMovie {
         progress(nil)
-        try await claim()
-        defer { release() }
         let dropped = Array(books.prefix(maximumBooks).reversed())
         guard let layout = PileSnapshotLayout(aspect: aspect, count: dropped.count) else {
             throw PileSnapshotError.drawingFailed
         }
-        // A clip outlives its sheet only when the app ends with the sheet open. Renders take
-        // turns, and each sheet deletes its clip as it closes, so no other clip is in use now.
-        let files = FileManager.default
-        for stale in (try? files.contentsOfDirectory(at: .temporaryDirectory, includingPropertiesForKeys: nil)) ?? []
-        where stale.lastPathComponent.hasPrefix("PileVideo-") {
-            try? files.removeItem(at: stale)
-        }
+        removeStaleClips()
         let folder = URL.temporaryDirectory.appending(path: "PileVideo-\(UUID().uuidString)")
         let name = "Pile \(title)"
         let file = name.replacing("/", with: "-").replacing(":", with: "-")
@@ -72,15 +69,44 @@ extension PileSnapshotRenderer {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let movie = folder.appending(path: "\(file).mov")
             let still = folder.appending(path: "\(file).jpg")
-            let poster = try await film(
-                dropped, title: title, count: books.count, layout: layout, seed: seed,
-                model: model, to: movie, identifier: identifier, progress: progress,
-                preview: preview)
-            try await writeStill(poster, identifier: identifier, to: still)
-            return PileMovie(movie: movie, still: still, poster: poster, name: name)
+            try await claim()
+            let filmed: (writer: PileMovieWriter, poster: CGImage)
+            do {
+                defer { release() }
+                filmed = try await film(
+                    dropped, title: title, count: books.count, layout: layout, seed: seed,
+                    model: model, to: movie, identifier: identifier, progress: progress,
+                    preview: preview)
+            }
+            try await filmed.writer.finish(before: .now + frameTimeout)
+            try await writeStill(filmed.poster, identifier: identifier, to: still)
+            return PileMovie(movie: movie, still: still, poster: filmed.poster, name: name)
         } catch {
             try? FileManager.default.removeItem(at: folder)
             throw error
+        }
+    }
+
+    /// How long one frame may take to render and reach the encoder: far longer than a frame
+    /// takes, even the first, which compiles shaders.
+    private static let frameTimeout = Duration.seconds(10)
+
+    /// Whether this launch has deleted the clips that earlier ones left behind.
+    private static var removedStaleClips = false
+
+    /// Deletes the clips that earlier launches left behind, once per launch. A clip outlives
+    /// its sheet only when the app ends with the sheet open; a clip of this launch can still be
+    /// playing, sharing, or saving.
+    private static func removeStaleClips() {
+        guard !removedStaleClips else { return }
+        removedStaleClips = true
+        let files = FileManager.default
+        let leftovers =
+            (try? files.contentsOfDirectory(
+                at: .temporaryDirectory, includingPropertiesForKeys: nil))
+            ?? []
+        for stale in leftovers where stale.lastPathComponent.hasPrefix("PileVideo-") {
+            try? files.removeItem(at: stale)
         }
     }
 
@@ -93,12 +119,12 @@ extension PileSnapshotRenderer {
     }
 
     /// Drops the books in front of the camera, writes each frame and its sound to `url`, and
-    /// returns the last frame.
+    /// returns the writer, for the caller to finish the movie, and the last frame.
     private static func film(
         _ books: [CloudBook], title: String, count: Int, layout: PileSnapshotLayout,
         seed: UInt64, model: AppModel, to url: URL, identifier: String,
         progress: (Double?) -> Void, preview: (CGImage) -> Void
-    ) async throws -> CGImage {
+    ) async throws -> (writer: PileMovieWriter, poster: CGImage) {
         let width = Int(layout.aspect.size.width)
         let height = Int(layout.aspect.size.height)
         let target = try FrameTarget(width: width, height: height)
@@ -132,38 +158,40 @@ extension PileSnapshotRenderer {
         }
         let groups = PileLayout.settleGroups(books, in: layout.tray, seed: seed)
         let schedule = PileMovieTiming.schedule(groups: groups.count)
-        var falling: Set<Entity.ID> = []
-        // Out of view, the earlier groups drop from just above the pile, as for an image. The
-        // walls stay up through the clip: without them, a big pile slumps across the table.
+        // Out of view, the earlier groups drop as for an image, from just above every book so
+        // far, so none starts inside a stack that has just landed. The walls stay up through
+        // the clip: without them, a big pile slumps across the table.
         if schedule.preroll > 0 {
             let steps = PileMovieTiming.groupFrames * PileMovieTiming.stepsPerFrame
             for group in groups.prefix(schedule.preroll) {
-                falling = scene.drop(group, base: 0, above: falling)
+                _ = scene.drop(group, base: 0, above: [])
                 for _ in 0..<steps { try step() }
                 try Task.checkCancellation()
                 await Task.yield()
             }
             for _ in 0..<PileMovieTiming.prerollSettleSteps { try step() }
-            // The last group has landed.
-            falling = []
         }
 
+        let headingY = 1 - 2 * Float(layout.pileTop / layout.aspect.size.height)
+        let nearestZ = groups[schedule.preroll...].joined().map(\.transform.translation.z).max()
         let base = PileMovieTiming.dropBase(
-            camera: layout.camera,
-            headingY: 1 - 2 * Float(layout.pileTop / layout.aspect.size.height),
-            nearestZ: groups[schedule.preroll...].joined().map(\.transform.translation.z).max() ?? 0)
+            camera: layout.camera, headingY: headingY, nearestZ: nearestZ ?? 0)
         let lastDrop = schedule.frames.last ?? 0
 
         let writer = try PileMovieWriter(
             url: url, width: width, height: height, identifier: identifier)
         let last = PileMovieTiming.frameCount - 1
         do {
-            try await writer.start(stillFrame: last)
+            try await writer.start(stillFrame: last, before: .now + frameTimeout)
             var next = schedule.preroll
+            var falling: Set<Entity.ID> = []
             var poster: CGImage?
             scene.feedback.startRecording()
             for frame in 0...last {
                 try Task.checkCancellation()
+                // Every wait of the frame ends by this deadline, so a frame that never renders
+                // or an encoder that stops taking frames cannot hold the render's turn.
+                let deadline = ContinuousClock.now + frameTimeout
                 while next < groups.count, schedule.frames[next - schedule.preroll] <= frame {
                     falling = scene.drop(groups[next], base: base, above: falling)
                     next += 1
@@ -182,27 +210,25 @@ extension PileSnapshotRenderer {
                 try renderer.updateAndRender(
                     deltaTime: PileMovieTiming.stepDuration, cameraOutput: target.output,
                     actionsAfterRender: [.signal(target.event, value: signal)])
-                try await target.read(after: signal)
+                try await target.read(after: signal, before: deadline)
                 if frame == 0, target.isBlank { throw PileSnapshotError.drawingFailed }
-                let pixels = target.buffer.contents()
-                let snapshot = PileMovieOverlay.draw(
-                    overlay, over: pixels, width: width, height: height,
-                    bytesPerRow: target.bytesPerRow, snapshot: frame % 6 == 0 || frame == last)
-                if let snapshot { preview(snapshot) }
-                if frame == last { poster = snapshot }
-                try await writer.appendFrame(pixels, bytesPerRow: target.bytesPerRow, at: frame)
                 let start = frame * PileMovieTiming.samplesPerFrame
-                try await writer.appendSound(
+                writer.appendSound(
                     ImpactMix.samples(
                         scene.feedback.recorded,
                         in: start..<start + PileMovieTiming.samplesPerFrame),
                     at: start)
+                let snapshot = try await writer.appendFrame(
+                    target.buffer.contents(), bytesPerRow: target.bytesPerRow, overlay: overlay,
+                    at: frame, snapshot: frame == last ? 1 : frame % 6 == 0 ? 2 : nil,
+                    before: deadline)
+                if let snapshot { preview(snapshot) }
+                if frame == last { poster = snapshot }
                 progress(Double(frame + 1) / Double(PileMovieTiming.frameCount))
             }
             _ = scene.feedback.finishRecording()
-            try await writer.finish()
             guard let poster else { throw PileSnapshotError.drawingFailed }
-            return poster
+            return (writer, poster)
         } catch {
             writer.cancel()
             throw error
@@ -228,9 +254,9 @@ extension PileSnapshotRenderer {
 /// copies each frame into a shared buffer once the render signals `event`. The frames have
 /// Display P3 primaries with the sRGB transfer curve.
 ///
-/// If the render never signals, the copy would wait forever, and with it the render lock that
-/// the live pile and every share image wait on. `read(after:)` therefore signals the event
-/// itself after `timeout`, or as soon as its task is cancelled.
+/// If the render never signals, the copy would wait forever, and with it the render's turn
+/// that the live pile and every share image wait on. `read(after:before:)` therefore signals
+/// the event itself at its deadline.
 @MainActor
 private struct FrameTarget {
     let event: any MTLSharedEvent
@@ -259,17 +285,13 @@ private struct FrameTarget {
         output = try RealityRenderer.CameraOutput(.singleProjection(colorTexture: texture))
     }
 
-    /// How long a frame may take to render: far longer than a frame takes, even the first,
-    /// which compiles shaders.
-    private static let timeout = Duration.seconds(10)
-
     /// Copies the frame into `buffer` once the render signals `event` with `value`, and waits
-    /// for the copy.
+    /// for the copy, even when the task is cancelled, so the render never ends while RealityKit
+    /// still draws into the texture.
     ///
-    /// - Throws: `PileSnapshotError` when the frame did not render within `timeout` or the copy
-    ///   failed. A cancelled task returns early with whatever the buffer holds; the caller
-    ///   checks for cancellation next.
-    func read(after value: UInt64) async throws {
+    /// - Throws: `PileSnapshotError` when the frame did not render by `deadline` or the copy
+    ///   failed.
+    func read(after value: UInt64, before deadline: ContinuousClock.Instant) async throws {
         guard let commands = queue.makeCommandBuffer() else {
             throw PileSnapshotError.drawingFailed
         }
@@ -285,18 +307,14 @@ private struct FrameTarget {
         blit.endEncoding()
         let event = self.event
         let watchdog = Task {
-            guard (try? await Task.sleep(for: Self.timeout)) != nil, event.signaledValue < value
+            guard (try? await Task.sleep(until: deadline)) != nil, event.signaledValue < value
             else { return false }
             event.signaledValue = value
             return true
         }
-        await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                commands.addCompletedHandler { _ in continuation.resume() }
-                commands.commit()
-            }
-        } onCancel: {
-            event.signaledValue = value
+        await withCheckedContinuation { continuation in
+            commands.addCompletedHandler { _ in continuation.resume() }
+            commands.commit()
         }
         watchdog.cancel()
         guard await !watchdog.value, commands.status == .completed else {

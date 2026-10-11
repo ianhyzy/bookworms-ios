@@ -138,9 +138,10 @@ final class PileMovieTests: XCTestCase {
     }
 
     func testTheMixStaysWithinFullScale() {
-        let pileUp = (0..<20).map {
-            record(time: 0.01, kind: .thud, variant: $0 % 4, volume: 1, pan: 1)
-        }
+        let pileUp = (0..<20)
+            .map {
+                record(time: 0.01, kind: .thud, variant: $0 % 4, volume: 1, pan: 1)
+            }
         let mix = ImpactMix.samples(pileUp, in: 0..<PileMovieTiming.samplesPerFrame * 4)
         XCTAssertEqual(mix.map(abs).max() ?? 0, 1, accuracy: 1e-6)
     }
