@@ -10,7 +10,9 @@ import SwiftUI
 /// it over, the glow marks the book to tap to nudge it on. A tap on any book the chain has not
 /// reached also pushes it on. Tapping a book the chain has passed, or touching and holding any
 /// book, calls `open` to push its details, and the chain is as the reader left it on return.
-/// Pinch to zoom, and drag to look along the path. **Set up again** stands every book again.
+/// **Camera** in the shelf's **Sort and filter** chooses how the camera films the chain
+/// (`DominoCameraMode`). Pinch to zoom, and drag to look along the path; either takes the
+/// camera over until the next push. **Set up again** stands every book again.
 /// Collisions play taps and, while the shelf's **Sounds** is on, clacks (`ImpactFeedback`).
 ///
 /// Leaving stops the haptic and audio engines. Leaving other than for details, such as for
@@ -27,6 +29,8 @@ struct DominoesView: View {
     @Environment(\.scenePhase) private var scenePhase
     /// Set by **Sounds** in the shelf's **Sort and filter** menu.
     @AppStorage("BookwormsThreeDSounds") private var sounds = true
+    /// Set by **Camera** in the shelf's **Sort and filter** menu.
+    @AppStorage("BookwormsDominoCamera") private var cameraMode = DominoCameraMode.overview
     @State private var scene = DominoScene()
     @State private var viewport: PileViewport?
     /// Counts **Set up again** presses; each stands the books again.
@@ -107,6 +111,7 @@ struct DominoesView: View {
             if playsFeedback { scene.feedback.start() } else { scene.feedback.stop() }
         }
         .onChange(of: reduceMotion, initial: true) { scene.setReduceMotion(reduceMotion) }
+        .onChange(of: cameraMode, initial: true) { scene.setCameraMode(cameraMode) }
         .onChange(of: movesCamera) { if !movesCamera { scene.endCameraMove() } }
         .onChange(of: scene.status.phase) {
             // Physics runs on under pushed details, which VoiceOver reads instead.
