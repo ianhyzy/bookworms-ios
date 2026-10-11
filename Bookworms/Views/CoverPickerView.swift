@@ -41,10 +41,14 @@ struct CoverPickerView: View {
                     }
                 }
         }
-        .task { await load() }
-        // Inherits this sheet's color scheme, as this sheet inherits the shelf's. Closing it
-        // loads again, because a sign-in or reconnect there can make covers available.
-        .sheet(isPresented: $showsAccount, onDismiss: { Task { await load() } }) {
+        // A sign-in or reconnect changes the library revision, even when it finishes after the
+        // account sheet closes, so covers load again. A grid already shown stays.
+        .task(id: model.account.libraryRevision) {
+            if case .success = covers { return }
+            await load()
+        }
+        // Inherits this sheet's color scheme, as this sheet inherits the shelf's.
+        .sheet(isPresented: $showsAccount) {
             HardcoverAccountView().preferredColorScheme(colorScheme)
         }
         .alert(
@@ -225,6 +229,9 @@ private struct CoverCell: View {
                 thumbnail
                 Text([format, year].compactMap(\.self).joined(separator: " · "))
                     .font(.caption)
+                    // Larger, a word such as "Hardcover" breaks mid-word in a two-column cell;
+                    // the accessibility label carries the full text.
+                    .dynamicTypeSize(...DynamicTypeSize.accessibility2)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
