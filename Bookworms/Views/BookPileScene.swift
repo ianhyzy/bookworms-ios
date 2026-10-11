@@ -1353,22 +1353,28 @@ extension BookPileScene {
         await stage.lit()
     }
 
-    /// Drops `group`, from `PileLayout.settleGroups`, `lift` units higher than `settle` starts
-    /// it, so a video shows the books falling, and returns the new books' entity IDs.
+    /// Drops `group`, from `PileLayout.settleGroups`, with heights counted from the top of the
+    /// pile or from `base`, whichever is higher, and returns the new books' entity IDs. A video
+    /// passes the base that starts its books out of view (see `PileMovieTiming.dropBase`).
     ///
-    /// Heights count from the top of the pile without `falling`, the IDs the previous call
-    /// returned, since those books can still be in the air; counting them would start each
-    /// group higher than the last. `lift` must let them land before they reach the new books
-    /// (see `PileMovieTiming.lift`).
-    func drop(_ group: [PileSlot], lift: Float, above falling: Set<Entity.ID>) -> Set<Entity.ID> {
+    /// The pile's top leaves out `falling`, the IDs the previous call returned, since those
+    /// books can still be in the air; counting them would start each group higher than the last.
+    /// The books get `PileMovieTiming`'s drag, so a fall from behind the heading lands softly
+    /// enough to leave most covers up.
+    func drop(_ group: [PileSlot], base: Float, above falling: Set<Entity.ID>) -> Set<Entity.ID> {
         let top = shelf.children.filter { !falling.contains($0.id) }
             .map { $0.visualBounds(relativeTo: root).max.y }.max() ?? 0
         let count = shelf.children.count
         for var slot in group {
-            slot.transform.translation.y += max(0, top) + lift
+            slot.transform.translation.y += max(top, base, 0)
             spawn(slot, mode: .dynamic)
         }
-        return Set(shelf.children.dropFirst(count).map(\.id))
+        let books = shelf.children.dropFirst(count)
+        for book in books {
+            book.components[PhysicsBodyComponent.self]?.linearDamping = PileMovieTiming.airDrag
+            book.components[PhysicsBodyComponent.self]?.angularDamping = PileMovieTiming.spinDrag
+        }
+        return Set(books.map(\.id))
     }
 
     /// Plays a collision through `feedback`, panned to where it shows, for a renderer that

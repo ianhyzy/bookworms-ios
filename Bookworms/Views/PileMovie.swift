@@ -5,11 +5,16 @@ import ImageIO
 import UniformTypeIdentifiers
 
 /// The timeline of a pile video: its frames, the physics steps behind each, when each group of
-/// books drops, and where each hit's sound starts.
+/// books drops and from how high, how the camera closes in, and where each hit's sound starts.
 ///
 /// Each 1/30-second frame advances the simulation by two 1/60-second steps, the step still
 /// images settle with, and then shows it. Frame `f` therefore shows the simulation at
 /// `(f + 1) / 30` seconds, and a hit during its steps first shows in it.
+///
+/// Groups drop from the first frame, 0.4 seconds apart, from behind the heading (see
+/// `dropBase`), so each book falls into view rather than appearing in the air. Once the last
+/// group has landed, the camera eases from the drop's framing to the settled pile's, as a still
+/// image frames it, and keeps it for the last frames, which the Live Photo's still shows.
 enum PileMovieTiming {
     static let framesPerSecond: Int32 = 30
     /// Six seconds of frames.
@@ -18,31 +23,62 @@ enum PileMovieTiming {
     static let stepDuration: TimeInterval = 1.0 / 60
     /// Frames from one group of books to the next: 0.4 seconds, as still images drop them.
     static let groupFrames = 12
-    /// The frame the first shown group drops at, after a moment of the table or the pile so far.
-    static let firstDrop = 6
-    /// Frames after the last group drops, in which it lands and the pile settles.
-    static let settleFrames = 60
-    /// How much higher than a still image's groups a video's groups start, in scene units, so
-    /// they fall into view.
-    ///
-    /// A group's heights count from the pile without the previous group, which can still be
-    /// falling (see `BookPileScene.drop(_:lift:above:)`), so every group must land within two
-    /// group intervals. Under `PileLayout.gravity`, a book that starts at most 3.7 + `lift`
-    /// units up does while `lift` stays below about 13.
-    static let lift: Float = 5
+    /// The latest frame a group drops at, which leaves time for it to land and for the camera
+    /// to close in.
+    static let lastDrop = 84
+    /// Frames from the last group's drop to the camera's move: longer than the longest fall (see
+    /// `highestBase` and `airDrag`).
+    static let pushDelay = 36
+    /// The final frames, in which the camera keeps the settled pile's framing.
+    static let holdFrames = 9
+    /// The highest base a group starts from, in scene units. A group's highest layer starts 3.7
+    /// units above its base, so a tilted book there stays under `PileLayout.ceiling`.
+    static let highestBase: Float = PileLayout.ceiling - 4.5
+    /// The linear damping of a video's books, as air drag. From 15 units up, a book lands at about
+    /// the speed of a 7-unit drop without drag, rather than 50 percent faster, which flips many
+    /// books face down.
+    static let airDrag: Float = 1.5
+    /// The angular damping of a video's books, which keeps a hard landing from tumbling them.
+    static let spinDrag: Float = 2
     /// Steps in which the groups that drop before the clip settle: one second.
     static let prerollSettleSteps = 60
     /// Audio sample frames per video frame: 1,470 at 44.1 kHz.
     static let samplesPerFrame = Int(ImpactSound.sampleRate) / Int(framesPerSecond)
 
     /// The most groups a clip shows falling. Earlier groups drop before it starts.
-    static var shownGroups: Int { (frameCount - settleFrames - firstDrop) / groupFrames + 1 }
+    static var shownGroups: Int { lastDrop / groupFrames + 1 }
 
     /// How many of `groups` drop before the clip starts, so that the rest land in view, and the
     /// frame each of the rest drops at.
     static func schedule(groups: Int) -> (preroll: Int, frames: [Int]) {
         let preroll = max(0, groups - shownGroups)
-        return (preroll, (0..<(groups - preroll)).map { firstDrop + $0 * groupFrames })
+        return (preroll, (0..<(groups - preroll)).map { $0 * groupFrames })
+    }
+
+    /// The height a clip's groups start from, at least, so its books start hidden behind the
+    /// heading, whose bottom edge is `headingY` in normalized device coordinates.
+    ///
+    /// The base puts the nearest book's near edge, `nearestZ` plus `PileLayout.reach`, on that
+    /// edge when the book starts in its group's lowest layer, 1.2 units above the base (see
+    /// `PileLayout.settleGroups`). Higher or farther points show higher on screen, behind the
+    /// heading, while they stay below the camera; above it, they are out of view. `camera` must
+    /// not turn. The base stays within 0...`highestBase`.
+    static func dropBase(camera: PileCamera, headingY: Float, nearestZ: Float) -> Float {
+        let (origin, direction) = camera.ray(ndc: [0, headingY], aspect: 1)
+        let edge = nearestZ + PileLayout.reach
+        let hidden = origin.y + direction.y * (edge - origin.z) / direction.z
+        return min(max(hidden - 1.2, 0), highestBase)
+    }
+
+    /// How far the camera has moved from the drop's framing to the settled pile's at frame
+    /// `frame`, from 0 to 1, when the last group drops at frame `lastDrop`. The move starts
+    /// `pushDelay` frames after that drop, eases in and out, and arrives `holdFrames` before the
+    /// end, so a clip with fewer groups closes in more slowly.
+    static func push(atFrame frame: Int, lastDrop: Int) -> Float {
+        let start = lastDrop + pushDelay
+        let end = frameCount - 1 - holdFrames
+        let progress = min(1, max(0, Float(frame - start) / Float(end - start)))
+        return progress * progress * (3 - 2 * progress)
     }
 
     /// When frame `frame` shows.

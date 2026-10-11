@@ -30,26 +30,76 @@ final class PileMovieTests: XCTestCase {
         XCTAssertEqual(PileMovieTiming.frame(showing: 0.05), 1)
     }
 
-    func testTheClipShowsTheLastGroupsAndLeavesTimeToSettle() {
-        XCTAssertEqual(PileMovieTiming.shownGroups, 10)
+    func testTheClipShowsTheLastGroupsAndLeavesTimeToCloseIn() {
+        XCTAssertEqual(PileMovieTiming.shownGroups, 8)
         let few = PileMovieTiming.schedule(groups: 3)
         XCTAssertEqual(few.preroll, 0)
-        XCTAssertEqual(few.frames, [6, 18, 30])
+        XCTAssertEqual(few.frames, [0, 12, 24])
         let many = PileMovieTiming.schedule(groups: 14)
-        XCTAssertEqual(many.preroll, 4)
-        XCTAssertEqual(many.frames.count, 10)
-        XCTAssertEqual(many.frames.first, PileMovieTiming.firstDrop)
-        XCTAssertLessThanOrEqual(
-            many.frames.last ?? .max, PileMovieTiming.frameCount - PileMovieTiming.settleFrames)
+        XCTAssertEqual(many.preroll, 6)
+        XCTAssertEqual(many.frames.count, 8)
+        XCTAssertEqual(many.frames.last, PileMovieTiming.lastDrop)
         XCTAssertEqual(PileMovieTiming.schedule(groups: 0).frames, [])
+        // The camera has at least 1.2 seconds to close in.
+        XCTAssertGreaterThanOrEqual(
+            PileMovieTiming.frameCount - 1 - PileMovieTiming.holdFrames - PileMovieTiming.lastDrop
+                - PileMovieTiming.pushDelay, 36)
     }
 
-    func testAGroupLandsBeforeTheGroupAfterNextDrops() {
-        // `BookPileScene.drop` leaves only the previous group out of the pile's height, so a
-        // group must land from its highest start within two group intervals.
-        let interval = Float(2 * PileMovieTiming.groupFrames) / Float(PileMovieTiming.framesPerSecond)
-        let fall = 0.5 * PileLayout.gravity * interval * interval
-        XCTAssertLessThan(3.7 + PileMovieTiming.lift, fall)
+    func testTheHighestStartLandsBeforeTheCameraMoves() {
+        XCTAssertLessThanOrEqual(PileMovieTiming.highestBase + 3.7 + 0.8, PileLayout.ceiling)
+        // Steps a fall from the highest start under gravity and air drag.
+        let step = Float(PileMovieTiming.stepDuration)
+        var height = PileMovieTiming.highestBase + 3.7
+        var speed: Float = 0
+        var steps = 0
+        while height > 0 {
+            speed = (speed + PileLayout.gravity * step) / (1 + PileMovieTiming.airDrag * step)
+            height -= speed * step
+            steps += 1
+        }
+        XCTAssertLessThan(steps, PileMovieTiming.pushDelay * PileMovieTiming.stepsPerFrame)
+    }
+
+    func testTheCameraEasesInOnThePileAndHoldsForTheStill() {
+        let last = PileMovieTiming.frameCount - 1
+        for lastDrop in [0, 48, PileMovieTiming.lastDrop] {
+            let start = lastDrop + PileMovieTiming.pushDelay
+            let pushes = (0...last).map { PileMovieTiming.push(atFrame: $0, lastDrop: lastDrop) }
+            XCTAssertTrue(pushes[...start].allSatisfy { $0 == 0 })
+            XCTAssertTrue(pushes[(last - PileMovieTiming.holdFrames)...].allSatisfy { $0 == 1 })
+            XCTAssertEqual(pushes, pushes.sorted())
+            // Eases in and out: the first and last steps are the smallest.
+            let steps = zip(pushes.dropFirst(), pushes).map { $0 - $1 }.filter { $0 > 0 }
+            XCTAssertLessThan(steps.first!, steps[steps.count / 2])
+            XCTAssertLessThan(steps.last!, steps[steps.count / 2])
+        }
+    }
+
+    func testBooksStartHiddenBehindTheHeading() throws {
+        for aspect in ShareAspect.allCases {
+            for count in [1, 12, 40, 150] {
+                let layout = try XCTUnwrap(PileSnapshotLayout(aspect: aspect, count: count))
+                let size = aspect.size
+                let headingY = 1 - 2 * Float(layout.pileTop / size.height)
+                let nearestZ = layout.tray.scaled(by: 0.7).nearZ - PileLayout.reach
+                let base = PileMovieTiming.dropBase(
+                    camera: layout.camera, headingY: headingY, nearestZ: nearestZ)
+                XCTAssertTrue((0...PileMovieTiming.highestBase).contains(base))
+                guard base < PileMovieTiming.highestBase else { continue }
+                // The nearest book's near edge, in the lowest layer, starts on the heading's
+                // edge, and farther or higher points start above it, out of view.
+                let aspectRatio = Float(size.width / size.height)
+                let edge = SIMD3(0, base + 1.2, nearestZ + PileLayout.reach)
+                XCTAssertEqual(
+                    layout.camera.project(edge, aspect: aspectRatio).y, headingY, accuracy: 1e-3,
+                    "\(aspect) \(count)")
+                for point in [edge + [2, 0, -3], edge + [0, 2.5, 0], edge + [-1.5, 1, -1]] {
+                    XCTAssertGreaterThan(
+                        layout.camera.project(point, aspect: aspectRatio).y, headingY)
+                }
+            }
+        }
     }
 
     func testEachSoundStartsOnItsFrameWithItsVolumeAndPan() {

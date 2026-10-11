@@ -4,8 +4,8 @@ import SwiftUI
 
 /// Films the pile as a six-second video, then shares the movie or saves it as a Live Photo.
 ///
-/// The video renders as soon as the sheet opens, with its progress in the preview (see
-/// `PileSnapshotRenderer.renderMovie`). It waits for a pile image that is still rendering, and
+/// The video renders as soon as the sheet opens, with its progress and its latest frame in the
+/// preview (see `PileSnapshotRenderer.renderMovie`). It waits for a pile image that is still rendering, and
 /// a pile image waits for it. Closing the sheet cancels a render in progress, and the video's
 /// files are deleted once the sheet is gone. The finished clip loops in the preview, except with
 /// Reduce Motion on, when it waits for Play. **Share** offers the movie file, and **Save as Live
@@ -23,6 +23,8 @@ struct PileVideoSheet: View {
     /// `nil` while the render waits its turn and loads fonts and covers, then the fraction of
     /// frames done.
     @State private var progress: Double?
+    /// The latest frame rendered, shown under the progress until the clip is ready.
+    @State private var frame: CGImage?
     @State private var movie: PileMovie?
     @State private var failed = false
     @State private var footage = Footage()
@@ -86,6 +88,9 @@ struct PileVideoSheet: View {
                     "Couldn't film the pile", systemImage: "exclamationmark.triangle",
                     description: Text("Close this, then try Shuffle or another size."))
             } else {
+                if let frame {
+                    Image(decorative: frame, scale: 1).resizable()
+                }
                 Group {
                     if let progress {
                         ProgressView(value: progress) {
@@ -100,6 +105,8 @@ struct PileVideoSheet: View {
                 .padding()
                 .background(.regularMaterial, in: .rect(cornerRadius: 12))
                 .padding()
+                // Below the pile once frames show, so the books stay in sight.
+                .frame(maxHeight: .infinity, alignment: frame == nil ? .center : .bottom)
             }
         }
         .aspectRatio(aspect.size.width / aspect.size.height, contentMode: .fit)
@@ -129,8 +136,9 @@ struct PileVideoSheet: View {
     private func render() async {
         do {
             let made = try await PileSnapshotRenderer.renderMovie(
-                books: books, title: title, aspect: aspect, seed: seed, model: model
-            ) { progress = $0 }
+                books: books, title: title, aspect: aspect, seed: seed, model: model,
+                progress: { progress = $0 }, preview: { frame = $0 })
+            frame = nil
             // A render cancelled after its last check still returns.
             guard !Task.isCancelled else { return made.remove() }
             footage.movie = made
