@@ -119,9 +119,10 @@ struct DominoesView: View {
             ToolbarItem(placement: .topBarLeading) {
                 Button("Set up again", systemImage: "arrow.counterclockwise") { generation += 1 }
             }
-            ToolbarItem(placement: .subtitle) {
-                Text("\(title) · \(count)")
-            }
+        }
+        // Outside the viewport reading, so the path starts below the button.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            FrameChip(title: title, shown: chainLength, total: books.count)
         }
     }
 
@@ -172,12 +173,7 @@ struct DominoesView: View {
 
     /// The number of books, such as "39 books", or "300 of 1,024 books" past the most a chain
     /// stands.
-    private var count: String {
-        if books.count > chainLength {
-            return "\(chainLength) of \(books.count.formatted()) books"
-        }
-        return books.count == 1 ? "1 book" : "\(books.count.formatted()) books"
-    }
+    private var count: String { FrameChip.books(chainLength, of: books.count) }
 
     /// A tap pushes the chain on or opens the details of a book it has passed (see
     /// `DominoScene.tap(at:in:)`); touching and holding opens any book's details.

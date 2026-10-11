@@ -248,11 +248,12 @@ struct BookPileView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Share", systemImage: "square.and.arrow.up") { sharesPile = true }
                 }
-                // Names the time frame, which the toolbar's menu saves across launches.
-                ToolbarItem(placement: .subtitle) {
-                    Text("\(title) · \(count)")
-                }
             }
+        }
+        // Outside the viewport reading, so the pile's walls keep the books below the button,
+        // which hides with the other controls while a lifted book's details show.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if lifted == nil { FrameChip(title: title, shown: dropped.count, total: books.count) }
         }
         .sheet(isPresented: $sharesPile) { PileSnapshotSheet(books: books, title: title) }
     }
@@ -295,10 +296,7 @@ struct BookPileView: View {
 
     /// The number of books, such as "39 books", or "300 of 1,024 books" past `maximumBooks`.
     private var count: String {
-        if books.count > Self.maximumBooks {
-            return "\(Self.maximumBooks) of \(books.count.formatted()) books"
-        }
-        return books.count == 1 ? "1 book" : "\(books.count.formatted()) books"
+        FrameChip.books(min(books.count, Self.maximumBooks), of: books.count)
     }
 
     private var dropTitle: String { reduceMotion ? "Stack again" : "Drop again" }
@@ -446,13 +444,20 @@ extension TimeFrame {
         }
     }
 
-    /// The pile's frame for a saved setting, or `nil` for every book.
+    /// The `UserDefaults` key of the 3D views' time frame, which `ShelfView` reads and
+    /// `FrameChip` sets.
+    static let pileSettingKey = "BookwormsPileFrame"
+    /// The saved time frame until the reader chooses one: the current year.
+    static var defaultPileSetting: String { thisYear.setting }
+
+    /// The pile's frame for a saved setting, or `nil` for every book, which an empty setting
+    /// names. No menu saves "lifetime", but a launch argument can, so it names every book too.
     ///
     /// A saved year or month in which no book was finished, such as one from another library,
     /// gives way to the newest year or month that has one, so the pile keeps the reader's kind
     /// of frame.
     static func pileFrame(setting: String, in books: [CloudBook]) -> TimeFrame? {
-        guard let saved = TimeFrame(setting: setting) else { return nil }
+        guard let saved = TimeFrame(setting: setting), saved != .lifetime else { return nil }
         let periods = periods(in: books)
         switch saved {
         case .year(let year) where !periods.years.contains(year):

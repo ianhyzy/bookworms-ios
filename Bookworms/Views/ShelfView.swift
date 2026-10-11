@@ -12,9 +12,10 @@ struct ShelfView: View {
     @AppStorage("BookwormsShelfDesignedOnly") private var designedOnly = false
     /// The 3D view the shelf shows.
     @AppStorage("BookwormsThreeDView") private var threeDView = ThreeDView.pile
-    /// The 3D views' time frame as `TimeFrame.setting` writes it; empty for every book. Until the
-    /// reader chooses one, the views show the current year.
-    @AppStorage("BookwormsPileFrame") private var pileFrameSetting = TimeFrame.thisYear.setting
+    /// The 3D views' time frame as `TimeFrame.setting` writes it; empty for every book.
+    /// `FrameChip` sets it. Until the reader chooses one, the views show the current year.
+    @AppStorage(TimeFrame.pileSettingKey)
+    private var pileFrameSetting = TimeFrame.defaultPileSetting
     /// How the pile follows the phone's tilt, which `BookPileView` reads.
     @AppStorage("BookwormsPileTiltMode") private var tilt = PileTilt.table
     /// Whether the pile drops period by period, which `BookPileView` reads.
@@ -77,19 +78,31 @@ struct ShelfView: View {
                             : "Books you finish appear here after your Apple TV syncs."))
             } else if books.isEmpty {
                 // Only Designed only empties the shelf: a pile's time frame always has books.
-                ContentUnavailableView {
-                    Label(
-                        frame.map { "No designed spines in \($0.title)" }
-                            ?? "No designed spines yet", systemImage: "wand.and.sparkles")
-                } description: {
-                    Text("Spines appear here once they are designed.")
-                } actions: {
-                    if let frame {
-                        Button("Show all books from \(frame.title)") { designedOnly = false }
+                // Scrolls so that at accessibility sizes the actions stay above the tab bar.
+                ScrollView {
+                    ContentUnavailableView {
+                        Label(
+                            frame.map { "No designed spines in \($0.title)" }
+                                ?? "No designed spines yet", systemImage: "wand.and.sparkles")
+                    } description: {
+                        Text("Spines appear here once they are designed.")
+                    } actions: {
+                        if let frame {
+                            Button("Show all books from \(frame.title)") { designedOnly = false }
+                        }
+                        Button("Show all books") {
+                            designedOnly = false
+                            if frame != nil { pileFrameSetting = "" }
+                        }
                     }
-                    Button("Show all books") {
-                        designedOnly = false
-                        if frame != nil { pileFrameSetting = "" }
+                }
+                .defaultScrollAnchor(.center, for: .alignment)
+                // Keeps the time frame button, the only way to another period with designed
+                // spines.
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if mode == .pile {
+                        FrameChip(
+                            title: frame?.title ?? Self.years(of: model.books), shown: 0, total: 0)
                     }
                 }
             } else if let carousel = mode.carousel {
@@ -142,7 +155,6 @@ struct ShelfView: View {
                             }
                             .pickerStyle(.menu)
                         }
-                        pileFrameOptions
                         Section {
                             Toggle("Sounds", systemImage: "speaker.wave.2", isOn: $sounds)
                             if threeDView == .pile && !reduceMotion {
@@ -161,36 +173,6 @@ struct ShelfView: View {
                     }
                     Toggle("Designed only", isOn: $designedOnly)
                 }
-            }
-        }
-    }
-
-    /// Chooses the pile's books: every book, or the books finished in one year or month.
-    /// Choosing drops the chosen books in a new pile.
-    private var pileFrameOptions: some View {
-        let periods = TimeFrame.periods(in: model.books)
-        let frame = Binding {
-            pileFrame
-        } set: {
-            pileFrameSetting = $0?.setting ?? ""
-        }
-        return Section("Time frame") {
-            Picker("Books", selection: frame) {
-                Text("All books").tag(TimeFrame?.none)
-            }
-            if !periods.years.isEmpty {
-                Picker("Year", selection: frame) {
-                    ForEach(periods.years, id: \.self) { year in
-                        Text(String(year)).tag(TimeFrame?.some(.year(year)))
-                    }
-                }
-                .pickerStyle(.menu)
-                Picker("Month", selection: frame) {
-                    ForEach(periods.months, id: \.self) { month in
-                        Text(month.title).tag(TimeFrame?.some(month))
-                    }
-                }
-                .pickerStyle(.menu)
             }
         }
     }
@@ -257,6 +239,98 @@ struct ShelfView: View {
             }
         }
     #endif
+}
+
+/// The 3D views' time frame and book count, such as "2025" and "39", in a glass button under
+/// the navigation bar. The button opens the time frame menu: **All books**, or a **Year** or
+/// **Month** with finished books. Every 3D view shares the choice, and the app saves it.
+///
+/// A view places the button with `safeAreaInset(edge: .top, spacing: 0)` outside its viewport
+/// reading, so its scene frames the books below the button.
+struct FrameChip: View {
+    /// The time frame's name, such as "2025", or the years that every book spans.
+    let title: String
+    /// The books the view shows, at most its cap.
+    let shown: Int
+    /// The books in the time frame that the view could show.
+    let total: Int
+
+    @Environment(AppModel.self) private var model
+    @AppStorage(TimeFrame.pileSettingKey) private var setting = TimeFrame.defaultPileSetting
+
+    var body: some View {
+        Menu {
+            options
+        } label: {
+            HStack(spacing: 12) {
+                Label(title, systemImage: "calendar")
+                Label(
+                    total > shown
+                        ? "\(shown.formatted()) of \(total.formatted())" : total.formatted(),
+                    systemImage: "books.vertical")
+                Image(systemName: "chevron.up.chevron.down")
+                    .imageScale(.small)
+                    .foregroundStyle(.secondary)
+            }
+            .font(.subheadline.weight(.semibold))
+            .monospacedDigit()
+            // A long span and a capped count, such as "2009–2026" and "300 of 412", shrink
+            // rather than wrap at the largest text size.
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
+        }
+        .buttonStyle(.glass)
+        // At least 44 points tall, the minimum touch target.
+        .controlSize(.large)
+        // Stops growing at the largest standard size so accessibility sizes leave the scene its
+        // room; the large content viewer shows the text at those sizes.
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .accessibilityShowsLargeContentViewer {
+            Label("\(title), \(Self.books(shown, of: total))", systemImage: "calendar")
+        }
+        .accessibilityLabel("Time frame")
+        .accessibilityValue("\(title), \(Self.books(shown, of: total))")
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+    }
+
+    /// **All books**, and the years and months with finished books, newest first. Choosing one
+    /// shows that period's books, which the Pile drops in a new pile.
+    @ViewBuilder private var options: some View {
+        // Reading finish dates parses them, so the chosen frame resolves once, not for each
+        // picker.
+        let periods = TimeFrame.periods(in: model.books)
+        let current = TimeFrame.pileFrame(setting: setting, in: model.books)
+        let frame = Binding {
+            current
+        } set: {
+            setting = $0?.setting ?? ""
+        }
+        Picker("Books", selection: frame) {
+            Text("All books").tag(TimeFrame?.none)
+        }
+        if !periods.years.isEmpty {
+            Picker("Year", selection: frame) {
+                ForEach(periods.years, id: \.self) { year in
+                    Text(String(year)).tag(TimeFrame?.some(.year(year)))
+                }
+            }
+            .pickerStyle(.menu)
+            Picker("Month", selection: frame) {
+                ForEach(periods.months, id: \.self) { month in
+                    Text(month.title).tag(TimeFrame?.some(month))
+                }
+            }
+            .pickerStyle(.menu)
+        }
+    }
+
+    /// The number of books, such as "39 books", or "300 of 1,024 books" when the view shows
+    /// fewer than the time frame has.
+    static func books(_ shown: Int, of total: Int) -> String {
+        if total > shown { return "\(shown.formatted()) of \(total.formatted()) books" }
+        return total == 1 ? "1 book" : "\(total.formatted()) books"
+    }
 }
 
 /// Why there is no library to show, from the library load and the Hardcover account.
