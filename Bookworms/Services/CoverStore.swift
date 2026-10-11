@@ -3,9 +3,12 @@ import UIKit
 
 /// Serves cover images for display, from memory, then disk, then the network.
 ///
-/// Downloads go through `CoverDownloader`'s HTTPS and size limits. The raw bytes are kept in
-/// Caches so later launches decode locally; the system may evict them, which only costs a
-/// download. Decoded images are bounded in memory by `NSCache`.
+/// Downloads go through `CoverDownloader`'s HTTPS and size limits. When the first cover
+/// candidate that `CoverURLPolicy` allows is missing, unreadable, or its server reports a
+/// temporary error, a later candidate shows instead. The raw bytes of that first allowed
+/// candidate are kept in Caches so later launches decode locally; the system may evict them,
+/// which only costs a download. A fallback candidate's image is kept only in memory, so the next
+/// launch tries the first candidate again. Decoded images are bounded in memory by `NSCache`.
 actor CoverStore {
     private let downloader = CoverDownloader()
     private let folder = URL.cachesDirectory.appending(path: "Bookworms/covers")
@@ -37,12 +40,19 @@ actor CoverStore {
         if let data = try? Data(contentsOf: file) { return data }
         if let task = inFlight[key] { return await task.value }
         let task = Task { [downloader, folder] () -> Data? in
-            guard let data = try? await downloader.fetchData(book.coverCandidates) else {
+            guard
+                let cover = try? await downloader.fetchData(
+                    book.coverCandidates, fallsBackOnServerError: true)
+            else {
                 return nil
             }
-            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            try? data.write(to: file, options: .atomic)
-            return data
+            // The file holds the first candidate the policy allows; a fallback's bytes stay out.
+            if cover.url == book.coverCandidates.first(where: { CoverURLPolicy.allows($0) }) {
+                try? FileManager.default.createDirectory(
+                    at: folder, withIntermediateDirectories: true)
+                try? cover.data.write(to: file, options: .atomic)
+            }
+            return cover.data
         }
         inFlight[key] = task
         let data = await task.value
