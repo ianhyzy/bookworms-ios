@@ -238,6 +238,9 @@ final class ImpactFeedback {
     /// progress.
     func startRecording() { recording = (clock, []) }
 
+    /// The hits recorded so far, in the order they happened, while a recording runs.
+    var recorded: [ImpactRecord] { recording?.records ?? [] }
+
     /// Stops recording and returns the hits in the order they happened.
     func finishRecording() -> [ImpactRecord] {
         defer { recording = nil }

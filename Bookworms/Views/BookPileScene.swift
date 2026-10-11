@@ -1547,6 +1547,50 @@ final class BookPileScene {
     #endif
 }
 
+extension BookPileScene {
+    /// Sets the scene up for a video of `books` dropping onto `tray`, seen through `camera` in
+    /// a frame of width-to-height `aspect`, as `settle` sets it up for a still image: it builds
+    /// every book, giving covers up to 10 seconds, and waits for the room's light.
+    func prepareFilm(
+        _ books: [CloudBook], on tray: PileTray, camera: PileCamera, aspect: Float,
+        model: AppModel
+    ) async {
+        look(through: camera)
+        self.aspect = aspect
+        build(tray.scaled(toFit: 3.4))
+        await factory.prepare(books, prefetching: [], coverWait: .seconds(10), model: model)
+        await stage.lit()
+    }
+
+    /// Drops `group`, from `PileLayout.settleGroups`, with heights counted from the top of the
+    /// pile or from `base`, whichever is higher, and returns the new books' entity IDs. A video
+    /// passes the base that starts its books out of view (see `PileMovieTiming.dropBase`).
+    ///
+    /// The pile's top leaves out `falling`, the IDs the previous call returned, since those
+    /// books can still be in the air; counting them would start each group higher than the last.
+    /// The books get `PileMovieTiming`'s drag, so a fall from behind the heading lands softly
+    /// enough to leave most covers up.
+    func drop(_ group: [PileSlot], base: Float, above falling: Set<Entity.ID>) -> Set<Entity.ID> {
+        let landed = shelf.children.filter { !falling.contains($0.id) }
+        let top = landed.map { $0.visualBounds(relativeTo: root).max.y }.max() ?? 0
+        let count = shelf.children.count
+        for var slot in group {
+            slot.transform.translation.y += max(top, base, 0)
+            spawn(slot, mode: .dynamic)
+        }
+        let books = shelf.children.dropFirst(count)
+        for book in books {
+            book.components[PhysicsBodyComponent.self]?.linearDamping = PileMovieTiming.airDrag
+            book.components[PhysicsBodyComponent.self]?.angularDamping = PileMovieTiming.spinDrag
+        }
+        return Set(books.map(\.id))
+    }
+
+    /// Plays a collision through `feedback`, panned to where it shows, for a renderer that
+    /// steps the scene without a view.
+    func collide(_ event: CollisionEvents.Began) { feedback.collide(event, pan: pan) }
+}
+
 extension ClosedRange where Bound == Float {
     fileprivate func clamp(_ value: Float) -> Float {
         Swift.min(Swift.max(value, lowerBound), upperBound)

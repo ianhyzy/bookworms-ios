@@ -7,7 +7,8 @@ import UIKit
 /// Each size change or shuffle renders a new image and cancels one in progress. A change to the
 /// books, such as a design a generation run saves every few seconds under **Designed only**,
 /// draws again once the image in progress, if any, is ready. The previous image stays in view
-/// under a progress indicator until the new one is ready, and sharing waits for it.
+/// under a progress indicator until the new one is ready, and sharing waits for it. **Video**
+/// films the same books in the same size and drop (`PileVideoSheet`).
 struct PileSnapshotSheet: View {
     let books: [CloudBook]
     let title: String
@@ -27,6 +28,7 @@ struct PileSnapshotSheet: View {
     @State private var drawing = 0
     /// Counts book changes that arrived while no loop ran; each starts a loop.
     @State private var redraws = 0
+    @State private var filmsPile = false
 
     private struct Options: Equatable {
         var aspect: ShareAspect
@@ -71,7 +73,10 @@ struct PileSnapshotSheet: View {
                     ForEach(ShareAspect.allCases) { Text($0.title).tag($0) }
                 }
                 .pickerStyle(.segmented)
-                Button("Shuffle", systemImage: "shuffle") { seed = .random(in: 1 ... .max) }
+                HStack(spacing: 24) {
+                    Button("Shuffle", systemImage: "shuffle") { seed = .random(in: 1 ... .max) }
+                    Button("Video", systemImage: "video") { filmsPile = true }
+                }
             }
             .padding()
             .navigationTitle("Share pile")
@@ -92,6 +97,17 @@ struct PileSnapshotSheet: View {
             }
         }
         .task(id: LoopKey(options: options.restartKey, redraws: redraws)) { await render() }
+        .sheet(isPresented: $filmsPile) {
+            PileVideoSheet(books: latest, title: title, aspect: aspect, seed: seed)
+        }
+        #if DEBUG
+            .task {
+                // Lets this sheet finish presenting before it presents another.
+                guard PileVideoDebug.opensSheet else { return }
+                try? await Task.sleep(for: .seconds(1))
+                filmsPile = true
+            }
+        #endif
         .onChange(of: books.map(\.id)) {
             latest = books
             if drawing == 0 { redraws += 1 }

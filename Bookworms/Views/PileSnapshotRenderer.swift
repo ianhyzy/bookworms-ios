@@ -17,11 +17,14 @@ enum PileSnapshotRenderer {
 
     @MainActor @Observable fileprivate final class Activity {
         var isRendering = false
+        /// Renders waiting for their turn, in the order they asked.
+        @ObservationIgnored var waiting = [(id: UUID, turn: CheckedContinuation<Void, any Error>)]()
     }
 
     private static let activity = Activity()
 
-    /// Whether an image is rendering. Views that read it update when it changes.
+    /// Whether an image or a video (`renderMovie`) is rendering. Views that read it update when
+    /// it changes.
     ///
     /// `RealityRenderer` steps the same RealityKit engine that draws every `RealityView`, and
     /// RealityKit's render thread can crash drawing a view's meshes while this renderer steps
@@ -40,20 +43,18 @@ enum PileSnapshotRenderer {
     /// A cancelled render stops waiting for fonts and covers at once. The renderer, the scene,
     /// and their textures are released when this returns.
     ///
-    /// One image renders at a time: a call waits for the previous one, which can still be
-    /// finishing its frame after its task was cancelled. `isRendering` stays set from the start
-    /// of the render until the image is ready, and the simulation starts a few frames after it
-    /// is set, so views have time to react.
+    /// One image renders at a time: a call waits for the renders that asked first, including
+    /// one that is still finishing its frame after its task was cancelled. `isRendering` stays
+    /// set from the start of the render until the image is ready, and the simulation starts a
+    /// few frames after it is set, so views have time to react.
     ///
     /// - Throws: `CancellationError` when the task is cancelled, and `PileSnapshotError` when
     ///   Metal fails or the rendered frame is one flat color.
     static func render(
         books: [CloudBook], title: String, aspect: ShareAspect, seed: UInt64, model: AppModel
     ) async throws -> UIImage {
-        while activity.isRendering { try await Task.sleep(for: .milliseconds(50)) }
-        activity.isRendering = true
-        defer { activity.isRendering = false }
-        try await Task.sleep(for: .milliseconds(100))
+        try await claim()
+        defer { release() }
         let dropped = Array(books.prefix(maximumBooks).reversed())
         guard let layout = PileSnapshotLayout(aspect: aspect, count: dropped.count) else {
             throw PileSnapshotError.drawingFailed
@@ -65,6 +66,49 @@ enum PileSnapshotRenderer {
         renderer.isOpaque = true
         guard let image = renderer.uiImage else { throw PileSnapshotError.drawingFailed }
         return image
+    }
+
+    /// Waits for the render in progress and the renders that asked earlier, if any, then sets
+    /// `isRendering` and gives views 100 milliseconds to react. A render calls this first and
+    /// `release()` when it ends, on every path. A render cancelled while it waits leaves the line.
+    ///
+    /// Turns go first come, first served. A still image's loop releases and claims again in
+    /// one turn of the main actor, so a lock that anyone could take once free would let a run of
+    /// images, such as those a generation run's saved designs trigger, keep a video waiting.
+    static func claim() async throws {
+        if activity.isRendering {
+            let id = UUID()
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { turn in
+                    activity.waiting.append((id, turn))
+                }
+            } onCancel: {
+                Task { @MainActor in
+                    guard let index = activity.waiting.firstIndex(where: { $0.id == id }) else {
+                        return
+                    }
+                    activity.waiting.remove(at: index).turn.resume(throwing: CancellationError())
+                }
+            }
+        } else {
+            activity.isRendering = true
+        }
+        do {
+            try await Task.sleep(for: .milliseconds(100))
+        } catch {
+            release()
+            throw error
+        }
+    }
+
+    /// Ends the render that `claim()` started, and hands the turn to the next render waiting,
+    /// if any, with `isRendering` still set.
+    static func release() {
+        if activity.waiting.isEmpty {
+            activity.isRendering = false
+        } else {
+            activity.waiting.removeFirst().turn.resume()
+        }
     }
 
     /// Drops and settles the books, then renders one frame and copies it into a `CGImage`.
@@ -266,8 +310,10 @@ extension PileCamera {
 }
 
 /// The share image: the rendered pile under its heading, with the credit in the bottom margin.
-private struct PileSnapshotCard: View {
-    let pile: CGImage
+struct PileSnapshotCard: View {
+    /// The rendered pile, or `nil` for the heading and credit alone, over a clear background,
+    /// which a pile video draws over each frame.
+    let pile: CGImage?
     let title: String
     let count: Int
     let layout: PileSnapshotLayout
@@ -277,8 +323,7 @@ private struct PileSnapshotCard: View {
 
     var body: some View {
         let size = layout.aspect.size
-        Image(decorative: pile, scale: 1)
-            .resizable()
+        background
             .frame(width: size.width, height: size.height)
             .overlay(alignment: .top) {
                 // A walnut wall behind the table holds the heading. It hides the far table,
@@ -328,5 +373,13 @@ private struct PileSnapshotCard: View {
                     .padding(.bottom, 18)
             }
             .environment(\.colorScheme, .dark)
+    }
+
+    @ViewBuilder private var background: some View {
+        if let pile {
+            Image(decorative: pile, scale: 1).resizable()
+        } else {
+            Color.clear
+        }
     }
 }

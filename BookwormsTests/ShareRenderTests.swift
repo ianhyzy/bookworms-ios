@@ -214,6 +214,28 @@ final class ShareRenderTests: XCTestCase {
         XCTAssertFalse(PileSnapshotRenderer.isRendering)
     }
 
+    /// A render that releases its turn and claims again at once, as a still image's loop does,
+    /// goes after a render that was already waiting, and the flag stays set between them.
+    @MainActor
+    func testPileRendersTakeTurnsInOrder() async throws {
+        try await PileSnapshotRenderer.claim()
+        let waiting = Task { @MainActor in
+            try await PileSnapshotRenderer.claim()
+            defer { PileSnapshotRenderer.release() }
+            return ContinuousClock.now
+        }
+        // Lets the waiting render join the line.
+        try await Task.sleep(for: .milliseconds(50))
+        PileSnapshotRenderer.release()
+        XCTAssertTrue(PileSnapshotRenderer.isRendering, "The turn passes without a gap")
+        try await PileSnapshotRenderer.claim()
+        let again = ContinuousClock.now
+        PileSnapshotRenderer.release()
+        let waited = try await waiting.value
+        XCTAssertLessThan(waited, again)
+        XCTAssertFalse(PileSnapshotRenderer.isRendering)
+    }
+
     /// Without a library, signed out explains both sources; signed in follows the download.
     func testNoLibraryStatusFollowsTheSignInAndDownload() {
         func status(
