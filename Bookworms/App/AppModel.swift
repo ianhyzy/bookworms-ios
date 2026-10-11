@@ -33,14 +33,18 @@ final class AppModel {
 
     @ObservationIgnored private let cacheURL = URL.cachesDirectory.appending(
         path: "Bookworms/library-snapshot.json")
+    /// When a load last returned a result; a failed load does not count.
     @ObservationIgnored private var lastReload: Date?
-    /// Set when a saved design names a book or account the shown library lacks.
+    /// Set when a saved design names a book or account the shown library lacks, or a failed load
+    /// showed the phone library without designs.
     @ObservationIgnored private var needsReload = false
     /// Designs saved while a reload's fetch runs, merged into its result so none are lost.
     @ObservationIgnored private var appliedDuringLoad: [SpineDesignV1] = []
     /// Covers chosen while a reload's fetch runs, applied to its result for the same reason.
     @ObservationIgnored private var coversChosenDuringLoad:
         [(accountID: String, bookID: Int, url: URL?)] = []
+    /// The cache write that `apply(_:)` deferred until a run's saves pause.
+    @ObservationIgnored private var persistTask: Task<Void, Never>?
 
     private init() {
         if let path = UserDefaults.standard.string(forKey: "BookwormsPreviewFolder") {
@@ -79,7 +83,9 @@ final class AppModel {
     /// No library (an iCloud account without an Apple TV upload, or a sign-in without a
     /// downloaded copy) clears the shown and cached library, and so does a missing iCloud
     /// account when signed out, so another account's reading history never stays visible.
-    /// Other errors keep the cached library and report the error.
+    /// Other errors keep the shown library and report the error. When signed in without that
+    /// account's library on screen, such an error shows the downloaded Hardcover library without
+    /// designs until the next reload, and does not cache it.
     func reload() async {
         guard !isLoading else { return }
         isLoading = true
@@ -99,23 +105,37 @@ final class AppModel {
                     where chosen.accountID == snapshot.accountID {
                         snapshot.setChosenCover(chosen.url, bookID: chosen.bookID)
                     }
+                    // A design saved during the load for a book the result lacks needs another
+                    // reload to show.
+                    needsReload = appliedDuringLoad.contains { snapshot.designs[$0.bookID] == nil }
                     setLibrary(snapshot)
                     persist()
                 } else {
                     clearLibrary()
+                    needsReload = false
                 }
+                lastReload = .now
                 loadError = isPreview ? nil : account.syncError
             }
         } catch CompanionError.noICloudAccount, CompanionError.iCloudRestricted {
             clearLibrary()
             loadError = "Sign in to iCloud with the account your Apple TV uses."
+            lastReload = .now
+            needsReload = false
         } catch {
-            loadError =
-                (error as? LocalizedError)?.errorDescription ?? "Could not read the library."
+            loadError = error.localizedDescription
+            if !isPreview, revision == account.libraryRevision,
+                let accountID = account.summary?.accountID, library?.accountID != accountID,
+                let phone = PhoneLibrary.load(), phone.accountID == accountID
+            {
+                setLibrary(
+                    LibrarySnapshot(
+                        accountID: phone.accountID, syncedAt: phone.syncedAt, books: phone.books,
+                        designs: [:]))
+                needsReload = true
+            }
         }
         isLoading = false
-        lastReload = .now
-        needsReload = false
         // The change's own reload returned early because this one was running.
         if revision != account.libraryRevision { return await reload() }
         // Fonts load after `isLoading` clears, so a slow download never blocks the next reload.
@@ -131,9 +151,12 @@ final class AppModel {
         Task { await reload() }
     }
 
-    /// Reloads when the library is more than five minutes old or a saved design named a book
-    /// it lacks. Called when the app becomes active and when a generation run ends.
+    /// Reloads when the last load that returned a result is more than five minutes old or a
+    /// saved design named a book the library lacks. Called when the app becomes active and when
+    /// a generation run ends. First writes any cache update that `apply(_:)` deferred, so a run's
+    /// designs reach the cache when it ends.
     func reloadIfStale() async {
+        if persistTask != nil { persist() }
         guard needsReload || lastReload.map({ -$0.timeIntervalSinceNow > 300 }) ?? true else {
             return
         }
@@ -141,6 +164,9 @@ final class AppModel {
     }
 
     /// Shows a design the generator just saved, without a reload.
+    ///
+    /// The library cache is written once saves pause for 20 seconds or `reloadIfStale()` runs,
+    /// so a run does not encode and write the whole library on the main actor for each design.
     func apply(_ design: SpineDesignV1) {
         if isLoading { appliedDuringLoad.append(design) }
         guard var library, design.accountID == library.accountID,
@@ -152,7 +178,12 @@ final class AppModel {
         }
         library.designs[design.bookID] = design
         setLibrary(library)
-        persist()
+        persistTask?.cancel()
+        persistTask = Task {
+            try? await Task.sleep(for: .seconds(20))
+            guard !Task.isCancelled else { return }
+            persist()
+        }
         Task { await fonts.load([design]) }
     }
 
@@ -197,6 +228,9 @@ final class AppModel {
     }
 
     private func clearLibrary() {
+        // A deferred write would restore the cleared library.
+        persistTask?.cancel()
+        persistTask = nil
         library = nil
         books = []
         try? FileManager.default.removeItem(at: cacheURL)
@@ -216,7 +250,10 @@ final class AppModel {
         }
     }
 
+    /// Writes the shown library to the launch cache, replacing any deferred write.
     private func persist() {
+        persistTask?.cancel()
+        persistTask = nil
         guard !isPreview, let library, let data = try? JSONEncoder().encode(library) else {
             return
         }

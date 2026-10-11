@@ -52,22 +52,24 @@ actor CoverDownloader {
 
     /// Downloads the first usable candidate and decodes it at up to 1024 pixels.
     ///
-    /// Tries the next candidate only when a cover is missing or unreadable. A network error
-    /// propagates, so a brief outage does not swap in the other URL and change the cover hash.
+    /// Tries the next candidate only when a cover is missing or unreadable. A network error or a
+    /// temporary server error (HTTP 408, 429, or 5xx) propagates as a `URLError`, so a brief
+    /// outage does not swap in the other URL and change the cover hash.
     func fetch(_ urls: [URL]) async throws -> CoverImage {
-        let data = try await fetchData(urls)
+        let data = try await fetchData(urls).data
         guard let image = Self.image(from: data, maximumPixelSize: 1024) else {
             throw CompanionError.invalidCover
         }
         return CoverImage(image: image, hash: CloudContract.digest(data))
     }
 
-    /// Downloads the first usable candidate's bytes after checking that they decode as an image.
-    func fetchData(_ urls: [URL]) async throws -> Data {
+    /// Downloads the first usable candidate's bytes after checking that they decode as an image,
+    /// and returns them with the candidate they came from. Falls back as `fetch(_:)` describes.
+    func fetchData(_ urls: [URL]) async throws -> (url: URL, data: Data) {
         var lastError: Error = CompanionError.invalidCover
         for url in urls where CoverURLPolicy.allows(url) {
             do {
-                return try await fetchOne(url)
+                return (url, try await fetchOne(url))
             } catch let error as CompanionError {
                 lastError = error
             }
@@ -99,9 +101,15 @@ actor CoverDownloader {
         request.setValue(
             "image/avif,image/webp,image/jpeg,image/png,image/heic", forHTTPHeaderField: "Accept")
         let (bytes, response) = try await session.bytes(for: request)
-        guard let response = response as? HTTPURLResponse, response.statusCode == 200,
-            CoverURLPolicy.allows(response.url)
-        else { throw CompanionError.invalidCover }
+        guard let response = response as? HTTPURLResponse else { throw CompanionError.invalidCover }
+        // A busy or failing server says nothing about the cover, so `fetchData` must not fall
+        // back to another candidate; it stops at any error that is not a `CompanionError`.
+        if [408, 429].contains(response.statusCode) || (500...599).contains(response.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+        guard response.statusCode == 200, CoverURLPolicy.allows(response.url) else {
+            throw CompanionError.invalidCover
+        }
         guard response.expectedContentLength <= Int64(maximumBytes) else {
             throw CompanionError.coverTooLarge
         }
