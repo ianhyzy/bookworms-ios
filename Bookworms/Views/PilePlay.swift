@@ -4,7 +4,7 @@ import UIKit
 
 /// How the pile follows the phone's tilt, which **Tilt** in **Sort and filter** sets.
 enum PileTilt: String, CaseIterable, Identifiable {
-    /// The table stays level.
+    /// The table stays level, and the pile reads no motion, so shakes do nothing either.
     case off
     /// Tilting tips the table a little, from how the phone was held when tilting began.
     case table
@@ -24,8 +24,8 @@ enum PileTilt: String, CaseIterable, Identifiable {
 }
 
 extension PileLayout {
-    /// The least user acceleration, in g, that counts as a hard shake. Walking and tapping
-    /// stay well below it.
+    /// The least user acceleration, in g, that counts as a hard shake. It assumes that walking
+    /// and tapping stay below it, which a device check must confirm.
     static let shakeThreshold: Float = 1.8
     /// The least time from one shake's throw to the next, in seconds, so one jolt that spans
     /// several motion samples throws once.
@@ -131,12 +131,15 @@ enum PileSeasons {
 ///
 /// Its sides are the planes through the camera along the bars' edges and the screen's sides,
 /// so books inside it stay on screen, and books that fall onto the glass lie flat against it.
-/// The pile's walls still stand, so the books stay inside both.
+/// The pile's walls still stand, so the books stay inside both. The box fits only the camera
+/// it was built with, so the scene keeps the view from turning while it is in use.
 struct PileBox {
     /// The faces other than the table, each as its four corners: the glass, then the sides.
     let faces: [[SIMD3<Float>]]
-    /// Every face's plane, the table's too, as a unit normal pointing into the box and an
-    /// offset: a point `p` is inside when `simd_dot(normal, p) >= offset` for each plane.
+    /// Each face's plane, in `faces` order, as a unit normal pointing into the box and an
+    /// offset: a point `p` is inside when `simd_dot(normal, p) >= offset` for each plane. The
+    /// table has no plane here: its own collider keeps books above it, and a book lying on it
+    /// sits closer to it than any useful margin.
     let planes: [(normal: SIMD3<Float>, offset: Float)]
 
     /// Fits the box to what `camera` sees between `safeTop` and `safeBottom`, as normalized
@@ -166,8 +169,8 @@ struct PileBox {
             }
         let middle: SIMD3<Float> = (glass + table).reduce(.zero, +) / 8
         faces = [glass] + sides
-        planes = (faces + [table])
-            .map { face in
+        planes =
+            faces.map { face in
                 var normal = simd_normalize(simd_cross(face[1] - face[0], face[3] - face[0]))
                 if simd_dot(normal, middle - face[0]) < 0 { normal = -normal }
                 return (normal, simd_dot(normal, face[0]))
@@ -184,13 +187,13 @@ struct PileBox {
             safeBottom: -1 + 2 * Float(viewport.insets.bottom) / height, glassDepth: glassDepth)
     }
 
-    /// Whether `point` lies inside the box, at least `margin` from every face.
+    /// Whether `point` lies inside the glass and the sides, at least `margin` from each.
     func contains(_ point: SIMD3<Float>, margin: Float) -> Bool {
         planes.allSatisfy { simd_dot($0.normal, point) >= $0.offset + margin }
     }
 
-    /// `point` moved inside the box, about `margin` from its faces, by pushing it back across
-    /// each face it is outside of. A few passes settle a point near a corner.
+    /// `point` moved inside the glass and the sides, about `margin` from them, by pushing it
+    /// back across each face it is outside of. A few passes settle a point near a corner.
     func clamp(_ point: SIMD3<Float>, margin: Float) -> SIMD3<Float> {
         var point = point
         for _ in 0..<4 {
@@ -251,7 +254,11 @@ final class PileCalendar {
     private var lamp = PileCalendar.resting
     private var target = PileCalendar.resting
 
-    init() { label.isEnabled = false }
+    init() {
+        label.isEnabled = false
+        // A glow casts no shadow, and one from the lamp would darken the table under the label.
+        label.components.set(DynamicLightShadowComponent(castsShadow: false))
+    }
 
     /// The label for a period named `text` in `season`'s color, for `show`. The image renders
     /// off the main actor, so prepare it before the period's books fall.

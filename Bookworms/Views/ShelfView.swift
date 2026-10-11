@@ -141,10 +141,10 @@ struct ShelfView: View {
                         pileFrameOptions
                         Section {
                             Toggle("Sounds", systemImage: "speaker.wave.2", isOn: $sounds)
-                            if !reduceMotion {
+                            if threeDView == .pile && !reduceMotion {
                                 Toggle(byPeriodTitle, systemImage: "calendar", isOn: $dropsByPeriod)
                             }
-                            if BookPileScene.canTilt && !reduceMotion {
+                            if threeDView == .pile && BookPileScene.canTilt && !reduceMotion {
                                 Picker("Tilt", systemImage: "gyroscope", selection: $tilt) {
                                     ForEach(PileTilt.allCases) { Text($0.title).tag($0) }
                                 }

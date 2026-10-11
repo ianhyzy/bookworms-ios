@@ -11,13 +11,13 @@ struct PileViewport: Equatable {
 ///
 /// Drag a book to pick it up and throw it, tap one for its details, pinch to zoom, and turn two
 /// fingers to look around the pile. When the phone reports motion, the shelf's **Tilt** tips the
-/// table or makes the phone the pile's box (`PileTilt`), and a hard shake throws the books.
-/// With the shelf's drop by period on, the books drop a month, week, or year at a time (see
-/// `PileLayout.periods`). Collisions play haptic taps and, while the shelf's **Sounds** is on,
-/// knocks (`ImpactFeedback`), only while the pile shows in the active app. With Reduce Motion
-/// on, books appear in tidy stacks instead of falling, tilt and shaking are off, and no dust
-/// drifts in the lamp's beam. The table fills the screen, but walls keep the books between the
-/// bars.
+/// table or makes the phone the pile's box (`PileTilt`), and in either a hard shake throws the
+/// books. With the shelf's drop by period on, the books drop a month, week, or year at a time
+/// (see `PileLayout.periods`). Collisions play haptic taps and, while the shelf's **Sounds** is
+/// on, knocks (`ImpactFeedback`), only while the pile shows in the active app. With Reduce
+/// Motion on, books appear in tidy stacks instead of falling, tilt and shaking are off, and no
+/// dust drifts in the lamp's beam. The table fills the screen, but walls keep the books between
+/// the bars.
 ///
 /// A tapped book rises out of the pile and flies to where `BookDetailView` draws its book, and
 /// the details fade in over the darkened pile once it lands. The details' own book is a
@@ -284,7 +284,8 @@ struct BookPileView: View {
     /// The frame a drop goes through period by period, or `nil` for a drop in waves.
     private var periods: TimeFrame? { dropsByPeriod && !reduceMotion ? frame ?? .lifetime : nil }
     private var playsFeedback: Bool { isShown && !sharesPile && scenePhase == .active }
-    /// Whether to sample motion, for tilt and shakes, which work with **Tilt** off too.
+    /// Whether the pile may sample motion, for tilt and shakes, which **Tilt**'s **Off** turns
+    /// off too (see `BookPileScene.setTilt`).
     private var tracksMotion: Bool {
         isShown && !reduceMotion && !sharesPile && lifted == nil && scenePhase == .active
     }

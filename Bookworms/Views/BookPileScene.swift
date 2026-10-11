@@ -740,10 +740,12 @@ final class BookPileScene {
         build(viewport)
         guard let tray else { return }
         let periods = tidy ? nil : periods
-        let key = PlanKey(ids: books.map(\.id), tidy: tidy, periods: periods, generation: generation)
+        let key = PlanKey(
+            ids: books.map(\.id), tidy: tidy, periods: periods, generation: generation)
         guard key != planKey else { return }
         if !tidy, periods == nil, let planKey, !planKey.tidy, planKey.periods == nil,
-            planKey.generation == generation, let added = PileLayout.added(to: planKey.ids, in: books)
+            planKey.generation == generation,
+            let added = PileLayout.added(to: planKey.ids, in: books)
         {
             // Plans the waiting books again with the new ones, so the next wave starts in a
             // fresh set of cells.
@@ -983,7 +985,10 @@ final class BookPileScene {
             drag.book.components.set(PhysicsMotionComponent(linearVelocity: velocity))
             self.drag?.velocity = velocity
         }
-        if tilt == .box { updateBox() }
+        if tilt == .box {
+            updateBox()
+            if !isFlying { squareView(by: Float(deltaTime)) }
+        }
         if let reading = motionReading() {
             switch tilt {
             case .table:
@@ -1051,7 +1056,8 @@ final class BookPileScene {
         book.components[PhysicsBodyComponent.self]?.mode = mode
     }
 
-    /// Zooms toward the point under `focus` and turns the camera about the pile.
+    /// Zooms toward the point under `focus` and turns the camera about the pile. In **Phone is
+    /// the box**, the camera only zooms, since the box fits the unturned view.
     func moveCamera(magnification: CGFloat, rotation: Angle, focus: CGPoint?, in size: CGSize) {
         guard let tray, size.width > 0, size.height > 0 else { return }
         if cameraMove == nil {
@@ -1063,7 +1069,7 @@ final class BookPileScene {
         }
         guard let move = cameraMove else { return }
         view.zoom = PileCamera.zoomRange.clamp(move.start.zoom * Float(magnification))
-        view.yaw = move.start.yaw - Float(rotation.radians)
+        if tilt != .box { view.yaw = move.start.yaw - Float(rotation.radians) }
         // Keeps the focus point in place while zooming. Zoomed out fully, the camera returns
         // to the tray's center, and zoomed in it may move only as far as the tray reaches.
         let target = move.focus + (move.start.target - move.focus) * move.start.zoom / view.zoom
@@ -1076,6 +1082,16 @@ final class BookPileScene {
     }
 
     func endCameraMove() { cameraMove = nil }
+
+    /// Eases a turned view back to the nearest whole turn, where the box of **Phone is the
+    /// box** fits it: its glass parallel to the screen and its sides along the screen's edges.
+    private func squareView(by deltaTime: Float) {
+        let square = (view.yaw / (2 * .pi)).rounded() * 2 * .pi
+        guard view.yaw != square else { return }
+        view.yaw += (square - view.yaw) * min(1, deltaTime * 4)
+        if abs(view.yaw - square) < 0.002 { view.yaw = square }
+        camera.transform = view.transform
+    }
 
     // MARK: Details
 
@@ -1368,10 +1384,12 @@ final class BookPileScene {
     // MARK: Tilt and shake
 
     /// Sets how the pile follows the phone's tilt, and starts or stops sampling motion, which
-    /// tilt and shakes need. Without sampling, or in `.off`, gravity points straight down. A
-    /// new mode or a new start of sampling in `.table` takes a new reference.
+    /// tilt and shakes need. `.off` samples nothing. Without sampling, gravity points straight
+    /// down, except in a closed box, which keeps its last gravity until sampling resumes, since
+    /// the phone has not moved for it. A new mode or a new start of sampling in `.table` takes
+    /// a new reference.
     func setTilt(_ tilt: PileTilt, tracking: Bool) {
-        let tracking = tracking && Self.canTilt
+        let tracking = tracking && tilt != .off && Self.canTilt
         if tilt != self.tilt || tracking != tracksMotion { tiltReference = nil }
         self.tilt = tilt
         if tracking != tracksMotion {
@@ -1385,7 +1403,9 @@ final class BookPileScene {
             }
         }
         // In `.box`, the next update gives the box's gravity once the box is closed.
-        if !tracking || tilt != .table { setGravity([0, -PileLayout.gravity, 0]) }
+        let keepsGravity =
+            (tracking && tilt == .table) || (tilt == .box && boxWalls.parent != nil)
+        if !keepsGravity { setGravity([0, -PileLayout.gravity, 0]) }
         updateBox()
     }
 
@@ -1432,8 +1452,9 @@ final class BookPileScene {
     /// it, and while a book flies to or from its details, with gravity straight down until it
     /// closes again.
     ///
-    /// Books outside the box when it closes, such as one high on the pile against the far
-    /// wall, which the box's top cuts off, move just inside it. They are off screen there.
+    /// Books past the glass or the sides when it closes, such as one high on the pile against
+    /// the far wall, which the box's top side cuts off, move just inside them. They are off
+    /// screen there. Books lying on the table stay put.
     private func updateBox() {
         let closes =
             tilt == .box && !holdsStill && !isFlying && spawned == plan.count

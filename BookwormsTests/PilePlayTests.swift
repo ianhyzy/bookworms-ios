@@ -41,6 +41,18 @@ final class PilePlayTests: XCTestCase {
         XCTAssertEqual(right.y, 0, accuracy: 0.001)
     }
 
+    func testFaceDownBoxGravityFallsStraightOntoTheGlass() throws {
+        let aspect: Float = 402.0 / 874
+        for camera in [PileCamera(), PileCamera(yaw: 0.6)] {
+            let box = try XCTUnwrap(
+                PileBox(aspect: aspect, safeTop: 0.7, safeBottom: -0.8, camera: camera))
+            let gravity = PileLayout.boxGravity(device: [0, 0, 1], camera: camera.rotation)
+            // Against the glass's inward normal, with no share along the glass.
+            XCTAssertEqual(
+                simd_dot(simd_normalize(gravity), box.planes[0].normal), -1, accuracy: 0.0001)
+        }
+    }
+
     func testOnlyAHardShakeThrowsBooksAgainstTheJolt() throws {
         let camera = PileCamera().rotation
         let up = SIMD3<Float>(0, 1, 0)
@@ -74,11 +86,15 @@ final class PilePlayTests: XCTestCase {
             XCTAssertLessThan(ndc.y, top)
             XCTAssertGreaterThan(ndc.y, bottom)
         }
-        // The tray lies inside the box on the table.
+        // The tray lies inside the box, so books lying on the table stay put when it closes,
+        // at the scene's margin.
         let tray = try XCTUnwrap(PileTray(aspect: aspect, safeTop: top, safeBottom: bottom))
         for corner in tray.scaled(by: 0.95).corners {
-            XCTAssertTrue(box.contains(corner + [0, 0.1, 0], margin: 0))
+            XCTAssertTrue(box.contains(corner + [0, 0.1, 0], margin: 0.3))
         }
+        let middle = SIMD3<Float>(0, 0.1, (tray.farZ + tray.nearZ) / 2)
+        XCTAssertTrue(box.contains(middle, margin: 0.3))
+        assertNear(box.clamp(middle, margin: 0.3), middle)
         // A point between the glass and the camera moves inside.
         let outside = camera.transform.translation + forward * 5
         XCTAssertFalse(box.contains(outside, margin: 0))
