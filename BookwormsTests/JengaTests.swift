@@ -89,9 +89,12 @@ final class JengaTests: XCTestCase {
         for layer in layers(JengaLayout.tower(books(54))) {
             let outer = layer.filter { $0.place != 1 }
             let middle = try XCTUnwrap(layer.first { $0.place == 1 })
-            XCTAssertEqual(Set(layer.map(\.place)), [0, 1, 2])
+            XCTAssertEqual(layer.map(\.place), [0, 1, 2])
             XCTAssertEqual(outer[0].shape.size.z, outer[1].shape.size.z, accuracy: 0.0001)
             XCTAssertLessThanOrEqual(middle.shape.size.z, outer[0].shape.size.z + 0.0001)
+            // Loose by at most a step, so the tower barely leans when a rail is gone.
+            XCTAssertGreaterThanOrEqual(
+                middle.shape.size.z, outer[0].shape.size.z - JengaLayout.looseness - 0.0001)
             let own = layer.map { BookShape(of: $0.book, coverAspect: 2.0 / 3).size.z }
             XCTAssertEqual(
                 BookShape(of: middle.book, coverAspect: 2.0 / 3).size.z, own.min() ?? 0,

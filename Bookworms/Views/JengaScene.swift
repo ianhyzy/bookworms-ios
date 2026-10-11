@@ -28,15 +28,24 @@ enum JengaLayout {
     /// Room between layers, so rounding never starts two blocks overlapping. A layer settles
     /// this far onto the one below without a sound.
     static let clearance: Float = 0.001
+    /// How much thinner than the rails a loose middle block is: one thickness step (2 mm). The
+    /// layer above clears it, and if the reader takes out a rail, the tower leans onto the
+    /// middle block by about 1.5 degrees rather than by the books' own difference, which can
+    /// tip it over.
+    static let looseness: Float = BookShape.step.z
 
     /// The pull's stiffness and damping, per kilogram: a critically damped spring that brings a
     /// free block to the finger in about a fifth of a second.
     static let stiffness: Float = 600
     static let damping: Float = 49
-    /// The strongest pull, in kilogram-units per second squared: about ten times a typical
-    /// block's weight under the pile's gravity. A loose block slides at once. Friction can hold
-    /// a block under many layers, or the pull drags the layers above it along.
-    static let maximumForce: Float = 120
+    /// The strongest pull, in kilogram-units per second squared: about twice a typical
+    /// block's weight under the pile's gravity, and about what the simulation's friction holds
+    /// on a rail with several layers on it. A loose block slides at once, a rail near the top
+    /// grinds out, and a rail deep in the tower creeps or holds and can drag the layers above.
+    static let maximumForce: Float = 24
+    /// The held block's angular damping, which keeps it about level while it overhangs the
+    /// tower, as fingers would.
+    static let heldAngularDamping: Float = 40
 
     /// How far, in units, a block the reader did not touch must drop below where it was built
     /// to count as fallen, and how many must fall before the tower has.
@@ -63,11 +72,13 @@ enum JengaLayout {
     /// blocks. The covers are cropped to that width.
     ///
     /// Books differ in thickness up to fourfold, and a layer that rested on its thickest block
-    /// would rock. The thinnest book of a layer therefore lies in the middle at its own
-    /// thickness, and the outer two share their mean thickness, so the next layer lies level
-    /// on them, as on two rails. A thinner middle book is loose, as in the game. A top layer of
-    /// one book lies in the middle; of two, outside. Outer blocks turn their spines outward,
-    /// so the tower's sides show a spine on every other layer and page edges on the rest.
+    /// would rock. The thinnest book of a layer therefore lies in the middle, and the outer two
+    /// share their mean thickness, so the next layer lies level on them, as on two rails. A
+    /// middle book thinner than the rails is `looseness` thinner than them, so it is loose, as
+    /// in the game, but the tower barely leans when a rail is gone. A top layer of one book
+    /// lies in the middle; of two, outside. Outer blocks turn their spines outward, so the
+    /// tower's sides show a spine on every other layer and page edges on the rest. Each
+    /// layer's blocks come in order of `place`.
     static func tower(_ books: [CloudBook]) -> [JengaBlock] {
         let step = BookShape.step
         func snap(_ value: Float, _ step: Float) -> Float { (value / step).rounded() * step }
@@ -94,8 +105,12 @@ enum JengaLayout {
             let across: SIMD3<Float> = layer.isMultiple(of: 2) ? [0, 0, 1] : [1, 0, 0]
             let spacing = (length - width) / 2
             var top = base
-            for (book, (place, size)) in zip(group, zip(places, sizes)) {
-                let thickness = place == 1 ? min(size.z, rail ?? size.z) : rail ?? size.z
+            let laid = zip(group, zip(places, sizes)).sorted { $0.1.0 < $1.1.0 }
+            for (book, (place, size)) in laid {
+                let thickness =
+                    place == 1
+                    ? rail.map { min($0, max(size.z, $0 - looseness)) } ?? size.z
+                    : rail ?? size.z
                 let shape = BookShape(size: [width, length, thickness], binding: book.binding)
                 // The book's x axis runs from spine to fore edge, so the block at the far side
                 // of `across` turns around to show its spine there too.
@@ -274,7 +289,9 @@ final class JengaScene {
     private static let labelRoom: CGFloat = 72
 
     private let camera = PerspectiveCamera()
-    private let factory = BookFactory()
+    /// Twice the pile's texture sizes: the camera frames a few dozen books closely, and covers
+    /// are cropped to a narrow strip. Fifty-four books need about 35 MB.
+    private let factory = BookFactory(textureScale: 2)
     private let stage = DeskStage()
     private let tower = Entity()
     private var view = JengaCamera()
@@ -311,6 +328,8 @@ final class JengaScene {
         let grab: Float
         let mass: Float
         let length: Float
+        /// The block's own angular damping, which it gets back when let go.
+        let angularDamping: Float
         /// How far along `axis` from `start` the finger wants the block.
         var target: Float = 0
         /// How far the block had slid at the last frame.
@@ -466,7 +485,17 @@ final class JengaScene {
     }
 
     /// Lets go of the held block, which keeps moving as the physics carries it.
-    func endSlide() { grip = nil }
+    func endSlide() {
+        if let grip { Self.setAngularDamping(grip.angularDamping, of: grip.block) }
+        grip = nil
+    }
+
+    /// Damps a body's turning, as fingers holding a block keep it level.
+    private static func setAngularDamping(_ damping: Float, of block: ModelEntity) {
+        guard var body = block.components[PhysicsBodyComponent.self] else { return }
+        body.angularDamping = damping
+        block.components.set(body)
+    }
 
     /// A hold on `block` along its long axis, from where `ray` meets the axis, or from the
     /// block's middle without a ray. Returns `nil` for a block standing on end, which has no
@@ -485,10 +514,14 @@ final class JengaScene {
             grab = along
         }
         taken.insert(block.id)
+        let body = block.components[PhysicsBodyComponent.self]
+        // Held level, a block that overhangs the tower does not tip and dig its end into the
+        // layer below, which would drag that layer out with it.
+        Self.setAngularDamping(JengaLayout.heldAngularDamping, of: block)
         return Grip(
             block: block, id: id, axis: axis, start: start, grab: grab,
-            mass: block.components[PhysicsBodyComponent.self]?.massProperties.mass ?? 0.3,
-            length: length)
+            mass: body?.massProperties.mass ?? 0.3, length: length,
+            angularDamping: body?.angularDamping ?? 0)
     }
 
     /// Pulls the held block toward the finger for `deltaTime`, and taps while it grinds.
@@ -564,9 +597,14 @@ final class JengaScene {
     func endCameraMove() { cameraMove = nil }
 
     #if DEBUG
-        /// Simulator hook: `-BookwormsJengaPull <index>` slides the block at that index,
-        /// counted from the bottom, out of the tower through the finger's pull, three seconds
-        /// after the tower is built.
+        /// Called with the ID of the book `-BookwormsJengaPull` holds, and with `nil` when it
+        /// lets go, so the view shows the held book's label as for a finger.
+        var debugHold: ((Int?) -> Void)?
+
+        /// Simulator hook: `-BookwormsJengaPull <index>` slides the block at that index out of
+        /// the tower toward the camera through the finger's pull, three seconds after the tower
+        /// is built. Blocks count from the bottom, three to a layer, so the middle block of
+        /// layer `n` is `3n + 1`.
         private func runDebugPull() async {
             guard
                 let index = UserDefaults.standard.string(forKey: "BookwormsJengaPull")
@@ -581,10 +619,14 @@ final class JengaScene {
                 let hold = makeGrip(block, id: id, touching: nil)
             else { return }
             grip = hold
+            debugHold?(id)
+            defer { debugHold?(nil) }
+            let toward: Float =
+                simd_dot(view.transform.translation - hold.start, hold.axis) < 0 ? -1 : 1
             for step in 1...90 {
                 try? await Task.sleep(for: .milliseconds(16))
                 guard grip?.block === block else { return }
-                grip?.target = Float(step) / 90 * hold.length * 1.3
+                grip?.target = toward * Float(step) / 90 * hold.length * 1.3
             }
             endSlide()
         }

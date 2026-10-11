@@ -106,6 +106,9 @@ struct JengaView: View {
         .onAppear {
             showsBook = false
             isShown = true
+            #if DEBUG
+                scene.debugHold = { id in held = id.flatMap { id in books.first { $0.id == id } } }
+            #endif
         }
         .onDisappear {
             isShown = false
