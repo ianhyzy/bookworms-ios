@@ -1338,6 +1338,44 @@ final class BookPileScene {
     #endif
 }
 
+extension BookPileScene {
+    /// Sets the scene up for a video of `books` dropping onto `tray`, seen through `camera` in
+    /// a frame of width-to-height `aspect`, as `settle` sets it up for a still image: it builds
+    /// every book, giving covers up to 10 seconds, and waits for the room's light.
+    func prepareFilm(
+        _ books: [CloudBook], on tray: PileTray, camera: PileCamera, aspect: Float,
+        model: AppModel
+    ) async {
+        look(through: camera)
+        self.aspect = aspect
+        build(tray.scaled(toFit: 3.4))
+        await factory.prepare(books, prefetching: [], coverWait: .seconds(10), model: model)
+        await stage.lit()
+    }
+
+    /// Drops `group`, from `PileLayout.settleGroups`, `lift` units higher than `settle` starts
+    /// it, so a video shows the books falling, and returns the new books' entity IDs.
+    ///
+    /// Heights count from the top of the pile without `falling`, the IDs the previous call
+    /// returned, since those books can still be in the air; counting them would start each
+    /// group higher than the last. `lift` must let them land before they reach the new books
+    /// (see `PileMovieTiming.lift`).
+    func drop(_ group: [PileSlot], lift: Float, above falling: Set<Entity.ID>) -> Set<Entity.ID> {
+        let top = shelf.children.filter { !falling.contains($0.id) }
+            .map { $0.visualBounds(relativeTo: root).max.y }.max() ?? 0
+        let count = shelf.children.count
+        for var slot in group {
+            slot.transform.translation.y += max(0, top) + lift
+            spawn(slot, mode: .dynamic)
+        }
+        return Set(shelf.children.dropFirst(count).map(\.id))
+    }
+
+    /// Plays a collision through `feedback`, panned to where it shows, for a renderer that
+    /// steps the scene without a view.
+    func collide(_ event: CollisionEvents.Began) { feedback.collide(event, pan: pan) }
+}
+
 extension ClosedRange where Bound == Float {
     fileprivate func clamp(_ value: Float) -> Float {
         Swift.min(Swift.max(value, lowerBound), upperBound)

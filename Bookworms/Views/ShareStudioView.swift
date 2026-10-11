@@ -33,6 +33,7 @@ struct ShareStudioView: View {
     /// Whether the last render failed, so no image is shown or shared.
     @State private var failed = false
     @State private var showsAccount = false
+    @State private var filmsPile = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init() {
@@ -116,6 +117,10 @@ struct ShareStudioView: View {
             }
         }
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
+        .sheet(isPresented: $filmsPile) {
+            let film = pileFilm
+            PileVideoSheet(books: film.books, title: film.title, aspect: aspect, seed: seed)
+        }
         .task(id: request.options) {
             // A saved design draws after the image in progress instead of restarting it.
             for await _ in Observations({ [model] in model.library?.designs }) { await render() }
@@ -484,6 +489,20 @@ struct ShareStudioView: View {
         if showsShuffle {
             Button("Shuffle", systemImage: "shuffle") { seed = .random(in: 1 ... .max) }
         }
+        if template == .pile {
+            Button("Video", systemImage: "video") { filmsPile = true }
+                .disabled(pileFilm.books.isEmpty)
+        }
+    }
+
+    /// The Pile template's books and heading, which its video films.
+    private var pileFilm: (books: [CloudBook], title: String) {
+        let frame = shownFrame
+        let books = ShareTemplate.pile.books(from: library, in: frame, direction: direction)
+        let input = ShareInput(
+            template: .pile, aspect: aspect, books: books, frame: frame, coverStyle: coverStyle,
+            direction: direction, showsRatings: showsRatings, seed: seed)
+        return (books, input.period)
     }
 
     /// Whether the seed changes the image. It varies spine stacks, the Top Five fan, a pile's

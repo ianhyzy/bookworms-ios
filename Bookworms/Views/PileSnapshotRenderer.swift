@@ -21,7 +21,8 @@ enum PileSnapshotRenderer {
 
     private static let activity = Activity()
 
-    /// Whether an image is rendering. Views that read it update when it changes.
+    /// Whether an image or a video (`renderMovie`) is rendering. Views that read it update when
+    /// it changes.
     ///
     /// `RealityRenderer` steps the same RealityKit engine that draws every `RealityView`, and
     /// RealityKit's render thread can crash drawing a view's meshes while this renderer steps
@@ -50,10 +51,8 @@ enum PileSnapshotRenderer {
     static func render(
         books: [CloudBook], title: String, aspect: ShareAspect, seed: UInt64, model: AppModel
     ) async throws -> UIImage {
-        while activity.isRendering { try await Task.sleep(for: .milliseconds(50)) }
-        activity.isRendering = true
-        defer { activity.isRendering = false }
-        try await Task.sleep(for: .milliseconds(100))
+        try await claim()
+        defer { release() }
         let dropped = Array(books.prefix(maximumBooks).reversed())
         guard let layout = PileSnapshotLayout(aspect: aspect, count: dropped.count) else {
             throw PileSnapshotError.drawingFailed
@@ -66,6 +65,23 @@ enum PileSnapshotRenderer {
         guard let image = renderer.uiImage else { throw PileSnapshotError.drawingFailed }
         return image
     }
+
+    /// Waits for the render in progress, if any, then sets `isRendering` and gives views 100
+    /// milliseconds to react. A render calls this first and `release()` when it ends, on every
+    /// path; a cancelled wait leaves `isRendering` as it was.
+    static func claim() async throws {
+        while activity.isRendering { try await Task.sleep(for: .milliseconds(50)) }
+        activity.isRendering = true
+        do {
+            try await Task.sleep(for: .milliseconds(100))
+        } catch {
+            activity.isRendering = false
+            throw error
+        }
+    }
+
+    /// Ends the render that `claim()` started.
+    static func release() { activity.isRendering = false }
 
     /// Drops and settles the books, then renders one frame and copies it into a `CGImage`.
     ///
@@ -266,8 +282,10 @@ extension PileCamera {
 }
 
 /// The share image: the rendered pile under its heading, with the credit in the bottom margin.
-private struct PileSnapshotCard: View {
-    let pile: CGImage
+struct PileSnapshotCard: View {
+    /// The rendered pile, or `nil` for the heading and credit alone, over a clear background,
+    /// which a pile video draws over each frame.
+    let pile: CGImage?
     let title: String
     let count: Int
     let layout: PileSnapshotLayout
@@ -277,8 +295,7 @@ private struct PileSnapshotCard: View {
 
     var body: some View {
         let size = layout.aspect.size
-        Image(decorative: pile, scale: 1)
-            .resizable()
+        background
             .frame(width: size.width, height: size.height)
             .overlay(alignment: .top) {
                 // A walnut wall behind the table holds the heading. It hides the far table,
@@ -328,5 +345,13 @@ private struct PileSnapshotCard: View {
                     .padding(.bottom, 18)
             }
             .environment(\.colorScheme, .dark)
+    }
+
+    @ViewBuilder private var background: some View {
+        if let pile {
+            Image(decorative: pile, scale: 1).resizable()
+        } else {
+            Color.clear
+        }
     }
 }
