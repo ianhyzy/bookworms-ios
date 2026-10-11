@@ -307,12 +307,14 @@ final class DominoStatus {
 /// fall for `stallTime`. While the chain waits for a push, a warm glow on the table marks the
 /// book a push tips (`DominoLayout.pushTarget`), and pulses unless Reduce Motion is on.
 ///
-/// The camera follows `DominoCameraMode`. Overview frames the whole path, after a push eases
-/// after the front, and once every book has fallen eases back to the whole path. Follow hands
-/// the camera to `DominoCameraRig`, which films the chain from beside it from the moment the
-/// books stand. A pinch or drag stops either from following until the next push. With Reduce
-/// Motion on, the camera follows nothing, and Follow shows the overview. Switching cameras, or
-/// pinching while the Follow camera films, blends the view from where it was.
+/// The camera follows `DominoCameraMode`. Overview frames the whole path; after a push it eases
+/// a little closer, close enough to fit a row, and across the rows with the front where the
+/// path is deeper than the view, and once every book has fallen it eases back to the whole
+/// path. Follow hands the camera to `DominoCameraRig`, built once the books stand, which films
+/// the chain from beside it. Both cameras run while the chain runs, so switching between them
+/// blends from one moving view to the other, over a time that keeps the blend's turn and travel
+/// gentle. A pinch or drag takes over from either, from the view as it shows, until the next
+/// push. With Reduce Motion on, the camera follows nothing, and Follow shows the overview.
 ///
 /// Once the chain has started, a cobweb tears when either of its books tilts past `tearTilt`,
 /// as the near book's back cover starts to sweep into it. Like the front, each frame checks
@@ -330,20 +332,15 @@ final class DominoScene {
     private static let stallTime: TimeInterval = 1
     /// The cosine of the tilt past which a book counts as fallen.
     private static let fallenTilt: Float = 0.9
-    /// The zoom at which the overview camera follows the front, unless the whole path shows
-    /// closer.
-    private static let followZoom: Float = 1.15
     /// The overview's zoom as a share of the zoom that fits the path, so the path has room
-    /// around it.
+    /// around it, and the Follow camera's finale's.
     private static let overviewRoom: Float = 0.88
-    /// How long the view blends to a camera that takes over, in seconds.
-    private static let handoffTime: Float = 0.7
-    /// The overview camera's springs for its target across the table, its zoom, and its yaw,
-    /// in radians per second, and the rates at which their goals lag the true ones. The
-    /// target trails the front by about 0.4 seconds; zoom and yaw ease more slowly, so zooming
-    /// in from the whole path to the front takes a couple of seconds.
-    private static let steerStiffness: SIMD4<Float> = [5, 5, 2, 2]
-    private static let steerLag: SIMD4<Float> = [15, 15, 2.5, 2.5]
+    private static let finaleRoom: Float = 0.95
+    /// How fast a blend from one camera to another turns and travels on average, in radians
+    /// and units per second, and the shortest and longest it takes, in seconds.
+    private static let handoffTurnRate: Float = 0.3
+    private static let handoffSpeed: Float = 15
+    private static let handoffTime: ClosedRange<Float> = 0.7...5
     private static let coverWait = Duration.seconds(1.5)
     /// How many books are built and stood up at a time.
     private static let batchSize = 16
@@ -354,6 +351,7 @@ final class DominoScene {
     /// its back cover starts to sweep into the web.
     private static let tearTilt: Float = 0.9986
 
+    /// The camera that shows.
     private let camera = PerspectiveCamera()
     private let factory = BookFactory()
     private let stage = DeskStage()
@@ -392,23 +390,32 @@ final class DominoScene {
     private var view = PileCamera()
     /// The camera that shows the whole path.
     private var overview = PileCamera()
+    /// The zoom at which the overview camera follows the front: close enough to fit a row and
+    /// its turns, and the books that land past them, across the view, or the overview's.
+    private var followZoom: Float = 1
     private var aspect: Float = 0.5
     /// Whether the camera mode drives the camera, rather than the reader's last pinch or drag.
     private var follows = false
     private var reducesMotion = false
     private var cameraMode = DominoCameraMode.overview
+    /// The path, the part of the view the Follow camera composes in, and its finale, from
+    /// `frame`, for the Follow camera, which `makeRig` builds once the books stand. Until
+    /// then, the Follow camera holds the finale.
+    private var path: DominoPath?
+    private var area: DominoCameraRig.Area?
+    private var finale = DominoCameraPose(eye: [0, 30, 0], target: .zero)
     /// The Follow camera for the current chain.
     private var rig: DominoCameraRig?
-    /// The view when another camera took over, and the seconds since, while the view blends
-    /// from it.
-    private var handoff: (from: Transform, time: Float)?
-    /// The goal that `steer` moves the overview camera's target, zoom, and yaw toward, lagging
-    /// the true goal, and how fast it moves them.
-    private var steerGoal: SIMD4<Float>?
-    private var steerVelocity = SIMD4<Float>.zero
+    /// The view the camera blends from while another one takes over, the seconds since, and
+    /// how long the blend takes.
+    private var handoff: (from: Shot, time: Float, duration: Float)?
+    /// The overview camera's motion while it follows the chain, or `nil` to start it afresh
+    /// from `view`.
+    private var steering: DominoOverviewSpring?
     #if DEBUG
-        /// The camera log's lines (see `logCamera`).
+        /// The camera log's lines, and whether it has ended (see `logCamera`).
         private var cameraLog: [String] = []
+        private var cameraLogEnded = false
     #endif
     /// The camera and the table point under the fingers when they started moving the camera,
     /// whether they pinch, and the drag's translation then.
@@ -422,13 +429,20 @@ final class DominoScene {
         let generation: Int
     }
 
+    /// A view to blend from: one that holds still, or a camera mode's, which moves on.
+    private enum Shot {
+        case still(Transform)
+        case live(DominoCameraMode)
+    }
+
     init() {
         var simulation = PhysicsSimulationComponent()
         simulation.gravity = [0, -PileLayout.gravity, 0]
         simulation.solverIterations = .init(positionIterations: 12, velocityIterations: 2)
         root.components.set(simulation)
+        // Far enough for the Follow camera's finale, which can stand 250 units from a long path.
         camera.camera = PerspectiveCameraComponent(
-            near: 0.5, far: 300, fieldOfViewInDegrees: PileCamera.fieldOfView * 180 / .pi,
+            near: 0.5, far: 500, fieldOfViewInDegrees: PileCamera.fieldOfView * 180 / .pi,
             fieldOfViewOrientation: .vertical)
         camera.transform = view.transform
         root.addChild(camera)
@@ -461,7 +475,8 @@ final class DominoScene {
     }
 
     /// Hides the dust, holds the marker's glow steady, and stops the camera from following the
-    /// chain while `reduces`. Turning it on with the Follow camera cuts to the overview.
+    /// chain while `reduces`, leaving it where it is. Turning it on with the Follow camera cuts
+    /// to the overview; turning it off blends to the Follow camera.
     func setReduceMotion(_ reduces: Bool) {
         let before = mode
         reducesMotion = reduces
@@ -469,16 +484,21 @@ final class DominoScene {
         if reduces {
             follows = false
             handoff = nil
+            if before == .follow { view = overview }
+        } else if mode != before {
+            switchCamera(from: before)
         }
-        if mode != before { resumeCamera() }
         if marker.isEnabled { startGlow() }
     }
 
-    /// Films the chain with `mode` from now on, taking over from the current view.
-    func setCameraMode(_ mode: DominoCameraMode) {
+    /// Films the chain with `mode` from now on, blending from the current view when `blends`,
+    /// and cutting to it otherwise, as when the view first appears.
+    func setCameraMode(_ mode: DominoCameraMode, blends: Bool) {
         let before = self.mode
         cameraMode = mode
-        if self.mode != before { resumeCamera() }
+        guard self.mode != before else { return }
+        switchCamera(from: before)
+        if !blends { handoff = nil }
     }
 
     private var isReady: Bool { !plan.isEmpty && spawned == plan.count }
@@ -528,6 +548,7 @@ final class DominoScene {
             for slot in batch { spawn(slot, cobweb: cobwebs[slot.book.id]) }
             spawned = end
         }
+        if rig == nil { rig = makeRig() }
         #if DEBUG
             showDebugCobweb()
             await runDebugPushes()
@@ -553,12 +574,16 @@ final class DominoScene {
         next = 0
         started = false
         follows = false
+        rig = nil
+        handoff = nil
+        steering = nil
         clock = 0
         lastAdvance = 0
         cameraMove = nil
         mark(nil)
         #if DEBUG
             cameraLog = []
+            cameraLogEnded = false
         #endif
         factory.release(keeping: ids)
         status.phase = .settingUp
@@ -578,7 +603,8 @@ final class DominoScene {
     }
 
     /// Frames every book of `plan`, standing or fallen (`DominoLayout.outline`), between the
-    /// bars and above the hint at the bottom of `viewport`, with room around them, and sets up
+    /// bars and above the hint at the bottom of `viewport`, with room around them, for the
+    /// overview and, from the side the Follow camera films from, for its finale, and sets up
     /// the Follow camera to compose between the bars.
     private func frame(_ plan: DominoPlan, in viewport: PileViewport) {
         let size = viewport.size
@@ -588,20 +614,29 @@ final class DominoScene {
             x: insets.leading + 16, y: insets.top + 8,
             width: size.width - insets.leading - insets.trailing - 32,
             height: size.height - insets.top - insets.bottom - 88)
-        overview = PileCamera()
-            .framing(DominoLayout.outline(of: plan.slots), in: rect, of: size, zoomRange: 0.2...2.5)
+        let outline = DominoLayout.outline(of: plan.slots)
+        overview = PileCamera().framing(outline, in: rect, of: size, zoomRange: 0.2...2.5)
         overview.zoom *= Self.overviewRoom
+        var high = PileCamera(yaw: DominoCameraRig.finaleYaw, pitch: DominoCameraRig.finalePitch)
+            .framing(outline, in: rect, of: size, zoomRange: 0.1...2.5)
+        high.zoom *= Self.finaleRoom
+        finale = DominoCameraPose(eye: high.transform.translation, target: high.target)
+        // The view's width at the follow zoom fits the row with 10 percent to spare.
+        let tallest = plan.slots.map(\.size.y).max() ?? 0
+        let span = plan.path.rowLength + 2 * plan.path.radius + 2 * tallest
+        followZoom = max(
+            overview.zoom,
+            PileCamera.distance * 2 * tan(PileCamera.fieldOfView / 2) * aspect * 0.9 / span)
         view = overview
         handoff = nil
-        steerGoal = nil
-        steerVelocity = .zero
+        steering = nil
         rig = nil
-        guard let first = plan.slots.first else { return }
+        path = plan.path
         // No hint shows while the chain falls, so the Follow camera composes down to the tab
         // bar, in normalized device coordinates.
         let width = Float(size.width)
         let height = Float(size.height)
-        let area = DominoCameraRig.Area(
+        area = DominoCameraRig.Area(
             low: [
                 2 * Float(insets.leading + 16) / width - 1,
                 1 - 2 * Float(size.height - insets.bottom - 8) / height,
@@ -609,21 +644,23 @@ final class DominoScene {
             high: [
                 1 - 2 * Float(insets.trailing + 16) / width, 1 - 2 * Float(insets.top + 8) / height,
             ])
-        let cobwebs = zip(plan.slots, plan.slots.dropFirst())
-            .compactMap { near, far in
-                DominoLayout.cobweb(days: far.day - near.day)
-                    .map {
-                        DominoCameraRig.Cobweb(
-                            distance: (near.distance + far.distance) / 2, density: $0)
-                    }
-            }
-        rig = DominoCameraRig(
-            path: plan.path, offset: plan.path.point(at: first.distance).position - first.position,
-            length: plan.slots.last?.distance ?? 0,
-            tallest: plan.slots.map(\.size.y).max() ?? 0, cobwebs: cobwebs,
-            finale: DominoCameraPose(eye: overview.transform.translation, target: overview.target),
-            fieldOfView: PileCamera.fieldOfView, aspect: aspect, area: area)
         follows = mode == .follow
+    }
+
+    /// The Follow camera for the books that stand and the cobwebs that hang between them, which
+    /// can differ from the plan's where RealityKit could not build a book.
+    private func makeRig() -> DominoCameraRig? {
+        guard let path, let area, let first = slots.first, let last = slots.last else { return nil }
+        let webs = cobwebs.compactMap { web -> DominoCameraRig.Cobweb? in
+            let near = slots[web.book]
+            let far = slots[web.book + 1]
+            return DominoLayout.cobweb(days: far.day - near.day)
+                .map { .init(distance: (near.distance + far.distance) / 2, density: $0) }
+        }
+        return DominoCameraRig(
+            path: path, offset: path.point(at: first.distance).position - first.position,
+            length: last.distance, tallest: slots.map(\.size.y).max() ?? 0, cobwebs: webs,
+            finale: finale, fieldOfView: PileCamera.fieldOfView, aspect: aspect, area: area)
     }
 
     /// Stands the book of `slot`, with `cobweb` hanging between it and the book before it.
@@ -742,7 +779,7 @@ final class DominoScene {
             PhysicsMotionComponent(linearVelocity: simd_cross(spin, arm), angularVelocity: spin))
         started = true
         lastAdvance = clock
-        if !follows { resumeCamera() }
+        if !follows, !reducesMotion { resumeFollowing() }
         feedback.impact(
             impulse: 0, mass: book.components[PhysicsBodyComponent.self]?.massProperties.mass ?? 0,
             position: book.position(relativeTo: root), pan: pan, minimum: 0.2)
@@ -758,13 +795,10 @@ final class DominoScene {
         guard size.width > 0, size.height > 0 else { return }
         if let move = cameraMove, move.pinches != (focus != nil) { cameraMove = nil }
         if cameraMove == nil {
-            if follows && mode == .follow {
-                // Takes over from the Follow camera with an overview camera looking the same
-                // way, and blends the view to it.
-                handoff = (camera.transform, 0)
-                view = overviewCamera(matching: camera.transform)
-            }
+            // Takes over from the view as it shows, so the camera neither jumps nor tilts.
+            if follows || handoff != nil { view = overviewCamera(matching: camera.transform) }
             follows = false
+            handoff = nil
             let ray = ray(
                 through: focus ?? CGPoint(x: size.width / 2, y: size.height / 2), in: size)
             cameraMove = (
@@ -778,7 +812,7 @@ final class DominoScene {
             height: translation.height - move.translation.height)
         var camera = move.start
         camera.zoom = min(
-            max(move.start.zoom * Float(magnification), min(overview.zoom, 1)),
+            max(move.start.zoom * Float(magnification), min(overview.zoom, 1, move.start.zoom)),
             PileCamera.zoomRange.upperBound)
         // Keeps the focus point in place while zooming.
         var target = move.focus + (move.start.target - move.focus) * move.start.zoom / camera.zoom
@@ -789,10 +823,10 @@ final class DominoScene {
         target -=
             simd_quatf(angle: camera.yaw, axis: [0, 1, 0])
             .act(
-                SIMD3(
-                    Float(translation.width), 0, Float(translation.height) / sin(PileCamera.pitch))
+                SIMD3(Float(translation.width), 0, Float(translation.height) / sin(camera.pitch))
             ) * scale
-        let bound = extent + 2
+        // A camera taken over from Follow can look past the path's ends; it may stay there.
+        let bound = pointwiseMax(extent + 2, abs(SIMD2(move.start.target.x, move.start.target.z)))
         camera.target = [
             min(max(target.x, -bound.x), bound.x), 0, min(max(target.z, -bound.y), bound.y),
         ]
@@ -825,8 +859,8 @@ final class DominoScene {
         return min(1, max(-1, x)) * 0.8
     }
 
-    /// An overview camera that looks the same way as `transform`, at the table under the
-    /// view's middle, from about as far, so pinches and drags can take over from it.
+    /// An overview camera with the yaw, pitch, and eye of `transform`, looking at the table
+    /// under the view's middle, so pinches and drags can take over from the view as it shows.
     private func overviewCamera(matching transform: Transform) -> PileCamera {
         let forward = transform.rotation.act([0, 0, -1])
         let target =
@@ -834,7 +868,8 @@ final class DominoScene {
         let zoom = PileCamera.distance / max(simd_distance(target, transform.translation), 1)
         return PileCamera(
             target: [target.x, 0, target.z], yaw: atan2(-forward.x, -forward.z),
-            zoom: min(max(zoom, min(overview.zoom, 1)), PileCamera.zoomRange.upperBound))
+            zoom: min(zoom, PileCamera.zoomRange.upperBound),
+            pitch: asin(min(max(-forward.y, -1), 1)))
     }
 
     // MARK: Following the chain
@@ -972,38 +1007,81 @@ final class DominoScene {
     /// where the reader leaves it.
     private var mode: DominoCameraMode { reducesMotion ? .overview : cameraMode }
 
-    /// Hands the camera back to `mode` from the current view. Once the books stand, the Follow
-    /// camera continues from it at rest; before, and for the overview camera, which follows the
-    /// front only once the chain has started, the view blends from it unless Reduce Motion is
-    /// on.
-    private func resumeCamera() {
+    /// Hands the camera from `before` to `mode`, blending from the view as it shows: from the
+    /// camera `before` as it moves on, when it was filming and no blend was under way, and from
+    /// the view held still otherwise. The overview camera follows the front only once the
+    /// chain has started.
+    private func switchCamera(from before: DominoCameraMode) {
+        let source: Shot =
+            follows && cameraMove == nil && handoff == nil
+            ? .live(before) : .still(camera.transform)
+        let wasFollowing = follows
         switch mode {
         case .follow:
             follows = true
-            // Until the books stand, the rig waits at its first pose, so the view blends to it.
-            guard isReady else {
-                handoff = (camera.transform, 0)
-                return
-            }
-            rig?
-                .reset(
-                    to: DominoCameraPose(
-                        eye: camera.transform.translation,
-                        target: camera.transform.translation
-                            + camera.transform.rotation.act([0, 0, -PileCamera.distance])))
         case .overview:
-            follows = started && !reducesMotion
-            steerGoal = nil
-            steerVelocity = .zero
-            if !follows { view = overview }
-            if !reducesMotion { handoff = (camera.transform, 0) }
+            follows = started
+            if !follows {
+                view = overview
+            } else if !wasFollowing {
+                steering = nil
+            }
+        }
+        blend(from: source)
+    }
+
+    /// Hands the camera back to the camera mode from where a pinch or drag left it, at rest:
+    /// the overview camera eases on from the view, and the Follow camera from the view looking
+    /// at the table under its middle.
+    private func resumeFollowing() {
+        follows = true
+        steering = nil
+        handoff = nil
+        guard mode == .follow else { return }
+        rig?.reset(to: DominoCameraPose(eye: view.transform.translation, target: view.target))
+    }
+
+    /// Blends the view from `source` to the camera in effect, taking long enough that the
+    /// blend turns and travels no faster than `handoffTurnRate` and `handoffSpeed` on average.
+    private func blend(from source: Shot) {
+        guard !reducesMotion else {
+            handoff = nil
+            return
+        }
+        let from = transform(of: source)
+        let to = current
+        let turn = 2 * acos(min(abs(simd_dot(from.rotation.vector, to.rotation.vector)), 1))
+        let duration = max(
+            turn / Self.handoffTurnRate,
+            simd_distance(from.translation, to.translation) / Self.handoffSpeed)
+        handoff = (
+            source, 0, min(max(duration, Self.handoffTime.lowerBound), Self.handoffTime.upperBound)
+        )
+    }
+
+    /// The view of the camera in effect, before any blend: the camera mode's while it films,
+    /// and the overview camera's otherwise, as the reader's pinches and drags leave it.
+    private var current: Transform {
+        follows && cameraMove == nil ? transform(of: .live(mode)) : view.transform
+    }
+
+    private func transform(of shot: Shot) -> Transform {
+        switch shot {
+        case .still(let transform):
+            return transform
+        case .live(.overview):
+            return view.transform
+        case .live(.follow):
+            let pose = rig?.pose ?? finale
+            return Transform(rotation: pose.rotation, translation: pose.eye)
         }
     }
 
-    /// Moves the camera for this frame: the Follow camera's next pose while it films, and the
-    /// overview camera otherwise, easing after the front while it follows. While a camera
-    /// takes over, the view blends to it from where it was.
+    /// Moves the camera for this frame. While a camera takes over, the view blends to it.
     private func updateCamera(_ deltaTime: Float) {
+        // After a long frame, such as the first after the app returns, the camera moves as
+        // after a quarter second, which also bounds the rig's steps.
+        let deltaTime = min(deltaTime, 0.25)
         // The rig also smooths the front for the overview camera, so it runs in either mode.
         // Every book has fallen once the last one tilts past `fallenTilt`; the rig's reveal
         // starts slowly enough for it to land.
@@ -1013,63 +1091,70 @@ final class DominoScene {
                 by: deltaTime)
             self.rig = rig
         }
-        var shown = view.transform
-        if follows, cameraMove == nil {
-            if mode == .follow, let rig {
-                shown = Transform(rotation: rig.pose.rotation, translation: rig.pose.eye)
-            } else if isReady {
-                steer(deltaTime)
-                shown = view.transform
-            }
-        }
-        if let from = handoff {
-            let time = from.time + deltaTime
-            let share = DominoCameraRig.ease(min(time / Self.handoffTime, 1))
+        // The overview camera follows in either mode too, so a switch to it blends from where
+        // it would be.
+        if follows, isReady, cameraMove == nil { steer(deltaTime) }
+        var shown = current
+        if let blend = handoff {
+            let time = blend.time + deltaTime
+            let share = DominoCameraRig.ease(min(time / blend.duration, 1))
+            let from = transform(of: blend.from)
             shown = Transform(
-                rotation: simd_slerp(from.from.rotation, shown.rotation, share),
-                translation: from.from.translation
-                    + (shown.translation - from.from.translation) * share)
-            handoff = time < Self.handoffTime ? (from.from, time) : nil
+                rotation: simd_slerp(from.rotation, shown.rotation, share),
+                translation: from.translation + (shown.translation - from.translation) * share)
+            handoff = time < blend.duration ? (blend.from, time, blend.duration) : nil
         }
+        #if DEBUG
+            let moved =
+                shown.translation != camera.transform.translation
+                || shown.rotation != camera.transform.rotation
+        #endif
         camera.transform = shown
         #if DEBUG
-            logCamera(deltaTime)
+            logCamera(deltaTime, moved: moved)
         #endif
     }
 
-    /// Moves the overview camera toward the front, closer in, or back to the whole path once
-    /// every book has fallen, with a critically damped spring. The front is the rig's smoothed
-    /// one (`DominoCameraRig.estimate`), so the camera neither steps from book to book nor
-    /// starts with a jolt. It snaps the last hundredth of a unit, so a camera that has arrived
-    /// stops moving.
+    /// Moves the overview camera toward `overviewGoal` (`DominoOverviewSpring`).
     private func steer(_ deltaTime: Float) {
-        var goal = overview
-        if status.phase != .done, let rig {
-            let front = rig.point(at: rig.estimate)
-            goal = PileCamera(
-                target: [front.x, 0, front.y], zoom: max(overview.zoom, Self.followZoom))
-        }
-        guard goal != view else { return }
-        // Target across the table, the zoom's logarithm, so the view zooms at an even pace,
-        // and yaw.
-        let state = SIMD4(view.target.x, view.target.z, log(view.zoom), view.yaw)
-        let aim = SIMD4(goal.target.x, goal.target.z, log(goal.zoom), goal.yaw)
-        // The spring follows the goal through a lag, so it starts gently when the goal jumps,
-        // as it does at a push.
-        let rate = Self.steerLag * deltaTime
-        let share = SIMD4(1 - exp(-rate.x), 1 - exp(-rate.y), 1 - exp(-rate.z), 1 - exp(-rate.w))
-        let lagged = (steerGoal ?? state) + (aim - (steerGoal ?? state)) * share
-        steerGoal = lagged
-        let stiffness = Self.steerStiffness
-        steerVelocity +=
-            (stiffness * stiffness * (lagged - state) - 2 * stiffness * steerVelocity) * deltaTime
-        var moved = state + steerVelocity * deltaTime
-        if simd_length(aim - moved) < 0.001, simd_length(steerVelocity) < 0.001 {
-            moved = aim
-            steerVelocity = .zero
-        }
+        var spring = steering ?? DominoOverviewSpring(Self.lanes(of: view))
+        spring.step(
+            toward: Self.lanes(of: overviewGoal),
+            lag: status.phase == .done
+                ? DominoOverviewSpring.settlingLag : DominoOverviewSpring.followingLag,
+            by: deltaTime)
+        steering = spring
+        let lanes = spring.value
         look(
-            through: PileCamera(target: [moved.x, 0, moved.y], yaw: moved.w, zoom: exp(moved.z)))
+            through: PileCamera(
+                target: [lanes[0], 0, lanes[1]], yaw: lanes[3], zoom: exp(lanes[2]),
+                pitch: lanes[4]))
+    }
+
+    /// Where the overview camera heads: while the chain runs, `followZoom`, centered along the
+    /// rows, since the view's width fits a row, and across them at the rig's smoothed front,
+    /// held where the view shows no table past the path's first and last rows; otherwise the
+    /// whole path.
+    private var overviewGoal: PileCamera {
+        guard started, status.phase != .done, let rig else { return overview }
+        let front = rig.trackPoint(around: rig.estimate, spread: rig.path.period)
+        // Half the depth of table the view shows, about: half its height at the target,
+        // foreshortened by the pitch.
+        let reach =
+            PileCamera.distance / followZoom * tan(PileCamera.fieldOfView / 2)
+            / sin(PileCamera.pitch)
+        let bound = max(extent.y - reach, 0)
+        return PileCamera(
+            target: [
+                overview.target.x, 0,
+                min(max(front.y, overview.target.z - bound), overview.target.z + bound),
+            ],
+            zoom: followZoom)
+    }
+
+    /// The overview camera's lanes for `DominoOverviewSpring`.
+    private static func lanes(of camera: PileCamera) -> SIMD8<Float> {
+        [camera.target.x, camera.target.z, log(camera.zoom), camera.yaw, camera.pitch, 0, 0, 0]
     }
 
     #if DEBUG
@@ -1102,13 +1187,19 @@ final class DominoScene {
             }
         }
 
-        /// Simulator hook: with `-BookwormsDominoCameraLog YES`, writes each frame's time step,
-        /// the front, and the camera's position and direction to
-        /// `Library/Caches/Bookworms/domino-camera.csv` once every book stands, every second.
-        private func logCamera(_ deltaTime: Float) {
-            guard isReady, UserDefaults.standard.bool(forKey: "BookwormsDominoCameraLog") else {
-                return
-            }
+        /// Whether `-BookwormsDominoCameraLog YES` asks for the camera log, read once.
+        private static let logsCamera = UserDefaults.standard.bool(
+            forKey: "BookwormsDominoCameraLog")
+        /// The most lines the camera log keeps: two minutes at 60 frames a second.
+        private static let cameraLogLimit = 7200
+
+        /// Simulator hook: with `-BookwormsDominoCameraLog YES`, logs each frame's time step,
+        /// the front, and the camera's position and direction once every book stands, and
+        /// writes the log to `Library/Caches/Bookworms/domino-camera.csv` every 60 frames. The
+        /// log ends once every book has fallen and the camera has stopped (`moved`), or at
+        /// `cameraLogLimit` lines.
+        private func logCamera(_ deltaTime: Float, moved: Bool) {
+            guard Self.logsCamera, isReady, !cameraLogEnded else { return }
             let eye = camera.transform.translation
             let forward = camera.transform.rotation.act([0, 0, -1])
             let values = [
@@ -1116,8 +1207,12 @@ final class DominoScene {
                 forward.y, forward.z, status.phase == .done ? 1 : 0,
             ]
             cameraLog.append(values.map { String(format: "%.5f", $0) }.joined(separator: ","))
-            guard cameraLog.count.isMultiple(of: 60) else { return }
+            cameraLogEnded =
+                (status.phase == .done && !moved) || cameraLog.count >= Self.cameraLogLimit
+            guard cameraLogEnded || cameraLog.count.isMultiple(of: 60) else { return }
             let url = URL.cachesDirectory.appending(path: "Bookworms/domino-camera.csv")
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try? (["dt,front,estimate,x,y,z,fx,fy,fz,done"] + cameraLog).joined(separator: "\n")
                 .write(to: url, atomically: true, encoding: .utf8)
         }

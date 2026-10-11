@@ -111,7 +111,9 @@ struct DominoesView: View {
             if playsFeedback { scene.feedback.start() } else { scene.feedback.stop() }
         }
         .onChange(of: reduceMotion, initial: true) { scene.setReduceMotion(reduceMotion) }
-        .onChange(of: cameraMode, initial: true) { scene.setCameraMode(cameraMode) }
+        .onChange(of: cameraMode, initial: true) { old, new in
+            scene.setCameraMode(new, blends: old != new)
+        }
         .onChange(of: movesCamera) { if !movesCamera { scene.endCameraMove() } }
         .onChange(of: scene.status.phase) {
             // Physics runs on under pushed details, which VoiceOver reads instead.
