@@ -49,7 +49,9 @@ final class HardcoverAccount {
     @ObservationIgnored private let tokens: HardcoverTokenStore
     @ObservationIgnored private let client: HardcoverClient
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let libraryURL: URL
     @ObservationIgnored private var signInTask: Task<Void, Never>?
+    @ObservationIgnored private var syncTask: Task<PhoneLibrary, any Error>?
     nonisolated static let summaryKey = "HardcoverAccount"
 
     /// The signed-in account's ID, or `nil` when signed out. Readable from any isolation.
@@ -63,13 +65,14 @@ final class HardcoverAccount {
             .accountID
     }
 
-    /// Tests pass their own token service and user defaults.
+    /// Tests pass their own token service, user defaults, and library file.
     init(
         tokens: HardcoverTokenStore = HardcoverTokenStore(), client: HardcoverClient? = nil,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard, libraryURL: URL = PhoneLibrary.url
     ) {
         self.tokens = tokens
         self.defaults = defaults
+        self.libraryURL = libraryURL
         #if DEBUG
             let stub = UserDefaults.standard.bool(forKey: "BookwormsStubSignIn")
             self.client =
@@ -94,8 +97,13 @@ final class HardcoverAccount {
     ///
     /// The `me` query checks the account before the token is saved. Signing in to another
     /// account drops the cached library; reconnecting the same account keeps it until the next
-    /// sync.
+    /// sync. A sign-in already in progress continues, so the code the reader may be entering
+    /// stays valid; only a failed or finished sign-in starts over.
     func startSignIn() {
+        switch signIn {
+        case .requestingCode, .waiting, .connecting: return
+        case .failed, nil: break
+        }
         signInTask?.cancel()
         signIn = .requestingCode
         signInTask = Task { [client] in
@@ -114,7 +122,7 @@ final class HardcoverAccount {
                 try Task.checkCancellation()
                 try tokens.save(token)
                 let accountID = String(user.id)
-                if summary?.accountID != accountID { PhoneLibrary.delete() }
+                if summary?.accountID != accountID { PhoneLibrary.delete(at: libraryURL) }
                 save(Summary(accountID: accountID, username: user.username))
                 isSignedIn = true
                 needsReconnect = false
@@ -140,21 +148,21 @@ final class HardcoverAccount {
         isSyncing = true
         syncError = nil
         let revision = libraryRevision
-        let download: Result<PhoneLibrary, any Error>
-        do {
-            download = .success(try await client.library(token: token))
-        } catch {
-            download = .failure(error)
-        }
+        let task = Task { [client] in try await client.library(token: token) }
+        syncTask = task
+        let download = await task.result
+        // Sign-out cancels the download and clears `isSyncing`, so a later sync may own it now.
+        guard syncTask == task else { return }
+        syncTask = nil
         isSyncing = false
         guard revision == libraryRevision else {
-            // A sign-in or sign-out during the download owns the cache now, and the new
-            // account's own sync was skipped while this one ran.
+            // A sign-in during the download owns the cache now, and the new account's own sync
+            // was skipped while this one ran.
             return await syncIfStale()
         }
         do {
             let library = try download.get()
-            try library.save()
+            try library.save(to: libraryURL)
             save(
                 Summary(
                     accountID: library.accountID, username: library.username,
@@ -172,16 +180,20 @@ final class HardcoverAccount {
     func syncIfStale() async {
         guard isSignedIn, !needsReconnect else { return }
         if let syncedAt = summary?.syncedAt, -syncedAt.timeIntervalSinceNow < Self.staleInterval,
-            FileManager.default.fileExists(atPath: PhoneLibrary.url.path())
+            FileManager.default.fileExists(atPath: libraryURL.path())
         {
             return
         }
         await sync()
     }
 
-    /// Deletes the saved login and the cached library from this iPhone. Hardcover is unchanged.
+    /// Deletes the saved login and the cached library from this iPhone and stops a download in
+    /// progress. Hardcover is unchanged.
     func signOut() {
         cancelSignIn()
+        syncTask?.cancel()
+        syncTask = nil
+        isSyncing = false
         tokens.delete()
         isSignedIn = false
         needsReconnect = false
@@ -191,7 +203,7 @@ final class HardcoverAccount {
     }
 
     private func forgetLibrary() {
-        PhoneLibrary.delete()
+        PhoneLibrary.delete(at: libraryURL)
         summary = nil
         defaults.removeObject(forKey: Self.summaryKey)
     }
@@ -230,13 +242,13 @@ struct PhoneLibrary: Codable, Equatable, Sendable {
         return try? JSONDecoder().decode(PhoneLibrary.self, from: data)
     }
 
-    func save() throws {
+    func save(to url: URL = Self.url) throws {
         try FileManager.default.createDirectory(
-            at: Self.url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try JSONEncoder().encode(self).write(to: Self.url, options: .atomic)
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(self).write(to: url, options: .atomic)
     }
 
-    static func delete() {
+    static func delete(at url: URL = Self.url) {
         try? FileManager.default.removeItem(at: url)
     }
 }

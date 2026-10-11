@@ -11,16 +11,18 @@ final class HardcoverTests: XCTestCase {
 
     func testPollingWaitsTheIntervalSlowsDownAndReturnsTheToken() async throws {
         let script = PollScript([
-            .success(.pending), .failure(URLError(.networkConnectionLost)), .success(.slowDown),
-            .success(.pending), .success(.success(token: "fictional-token")),
+            .success(.pending), .failure(URLError(.networkConnectionLost)),
+            .failure(HardcoverError.http(503)), .failure(HardcoverError.http(429)),
+            .success(.slowDown), .success(.pending), .success(.success(token: "fictional-token")),
         ])
         let token = try await HardcoverClient.awaitApproval(
             of: authorization(interval: 5, expiresIn: 900), poll: { try await script.next() },
             sleep: { await script.sleep($0) })
         XCTAssertEqual(token, "fictional-token")
         let sleeps = await script.sleeps
-        // A network failure keeps polling; `slow_down` adds 5 seconds to every later wait.
-        XCTAssertEqual(sleeps, [5, 5, 5, 10, 10].map { .seconds($0) })
+        // Network and server failures keep polling; HTTP 429 and `slow_down` each add 5 seconds
+        // to every later wait.
+        XCTAssertEqual(sleeps, [5, 5, 5, 5, 10, 15, 15].map { .seconds($0) })
     }
 
     func testPollingStopsWhenDeniedOrExpired() async {
@@ -149,13 +151,40 @@ final class HardcoverTests: XCTestCase {
         XCTAssertEqual(user, HardcoverUser(id: 4242, username: "fictional_reader"))
     }
 
+    func testQueriesRetryServerErrorsAndShortRateLimits() async throws {
+        let script = ReplyScript([(503, nil), (429, "0"), (200, nil)])
+        let client = HardcoverClient { request in
+            let (status, retryAfter) = await script.next()
+            return Self.respond(status, Self.me, retryAfter: retryAfter, to: request)
+        }
+        let user = try await client.account(token: "fictional-token")
+        XCTAssertEqual(user.id, 4242)
+        let unused = await script.replies.count
+        XCTAssertEqual(unused, 0)
+
+        // A rate limit longer than 30 seconds ends the request at once.
+        let limited = ReplyScript([(429, "120"), (200, nil)])
+        let limitedClient = HardcoverClient { request in
+            let (status, retryAfter) = await limited.next()
+            return Self.respond(status, Self.me, retryAfter: retryAfter, to: request)
+        }
+        do {
+            _ = try await limitedClient.account(token: "fictional-token")
+            XCTFail("Expected HTTP 429")
+        } catch {
+            XCTAssertEqual(error as? HardcoverError, .http(429))
+        }
+        let left = await limited.replies.count
+        XCTAssertEqual(left, 1)
+    }
+
     @MainActor
     func testRejectedLoginAsksToReconnectAndKeepsTheLogin() async throws {
-        let (tokens, defaults) = try Self.signedInStores()
+        let (tokens, defaults, library) = try Self.signedInStores()
         defer { tokens.delete() }
         let account = HardcoverAccount(
             tokens: tokens, client: HardcoverClient(transport: Self.reply(401, "")),
-            defaults: defaults)
+            defaults: defaults, libraryURL: library)
         let revision = account.libraryRevision
         XCTAssertTrue(account.isSignedIn)
 
@@ -169,12 +198,16 @@ final class HardcoverTests: XCTestCase {
     @MainActor
     func testLoginWithoutItsAccountSummaryIsSignedOut() throws {
         // The Keychain keeps a login after the app is deleted; user defaults do not.
-        let (tokens, defaults) = try Self.signedInStores()
+        let (tokens, defaults, library) = try Self.signedInStores()
         defer { tokens.delete() }
         defaults.removeObject(forKey: HardcoverAccount.summaryKey)
-        let account = HardcoverAccount(tokens: tokens, defaults: defaults)
+        try PhoneLibrary(accountID: "4242", username: nil, syncedAt: .now, books: [])
+            .save(to: library)
+        let account = HardcoverAccount(tokens: tokens, defaults: defaults, libraryURL: library)
         XCTAssertFalse(account.isSignedIn)
         XCTAssertNil(tokens.read(), "A leftover login is deleted")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: library.path()), "A leftover library is deleted")
     }
 
     // MARK: - Library
@@ -295,9 +328,10 @@ final class HardcoverTests: XCTestCase {
     }
 
     /// A saved login and its account summary, in a Keychain service and a user defaults suite
-    /// that only these tests use.
+    /// that only these tests use, and a library file path of the test's own, so no test touches
+    /// the host app's cached library.
     @MainActor
-    private static func signedInStores() throws -> (HardcoverTokenStore, UserDefaults) {
+    private static func signedInStores() throws -> (HardcoverTokenStore, UserDefaults, URL) {
         let tokens = HardcoverTokenStore(
             service: "gay.ian.Bookworms.iOS.tests.\(UUID().uuidString)")
         try tokens.save("fictional-token")
@@ -309,7 +343,9 @@ final class HardcoverTests: XCTestCase {
                 .encode(
                     HardcoverAccount.Summary(accountID: "4242", username: "fictional_reader")),
             forKey: HardcoverAccount.summaryKey)
-        return (tokens, defaults)
+        let library = URL.temporaryDirectory.appending(
+            path: "hardcover-library-\(UUID().uuidString).json")
+        return (tokens, defaults, library)
     }
 
     /// A transport that answers every request with `status` and `body`.
@@ -317,11 +353,12 @@ final class HardcoverTests: XCTestCase {
         { respond(status, body, to: $0) }
     }
 
-    private static func respond(_ status: Int, _ body: String, to request: URLRequest) -> (
-        Data, URLResponse
-    ) {
+    private static func respond(
+        _ status: Int, _ body: String, retryAfter: String? = nil, to request: URLRequest
+    ) -> (Data, URLResponse) {
         let response = HTTPURLResponse(
-            url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
+            url: request.url!, statusCode: status, httpVersion: nil,
+            headerFields: retryAfter.map { ["Retry-After": $0] })!
         return (Data(body.utf8), response)
     }
 
@@ -379,4 +416,15 @@ private actor PollScript {
     func next() throws -> DevicePollResult { try replies.removeFirst().get() }
 
     func sleep(_ duration: Duration) { sleeps.append(duration) }
+}
+
+/// Replays HTTP statuses in order, each with an optional `Retry-After` value.
+private actor ReplyScript {
+    private(set) var replies: [(status: Int, retryAfter: String?)]
+
+    init(_ replies: [(status: Int, retryAfter: String?)]) {
+        self.replies = replies
+    }
+
+    func next() -> (status: Int, retryAfter: String?) { replies.removeFirst() }
 }

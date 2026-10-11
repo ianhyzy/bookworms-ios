@@ -158,8 +158,9 @@ actor HardcoverClient {
     /// access token.
     ///
     /// Waits the code's interval (5 seconds when Hardcover gives none) before each poll, and 5
-    /// seconds longer after each `slow_down`, as RFC 8628 requires. Network failures keep polling
-    /// because the code stays valid; the code's lifetime bounds the wait.
+    /// seconds longer after each `slow_down`, as RFC 8628 requires, or after each HTTP 429.
+    /// Network failures, server errors, and rate limits keep polling because the code stays
+    /// valid; the code's lifetime bounds the wait.
     static func awaitApproval(
         of authorization: DeviceAuthorization,
         poll: @Sendable () async throws -> DevicePollResult,
@@ -171,7 +172,16 @@ actor HardcoverClient {
             try await sleep(.seconds(interval))
             waited += interval
             let result: DevicePollResult
-            do { result = try await poll() } catch is URLError { continue }
+            do {
+                result = try await poll()
+            } catch is URLError {
+                continue
+            } catch HardcoverError.http(let status)
+                where status == 429 || (500...599).contains(status)
+            {
+                if status == 429 { interval += 5 }
+                continue
+            }
             switch result {
             case .pending: continue
             case .slowDown: interval += 5
@@ -291,8 +301,7 @@ actor HardcoverClient {
         request.httpBody = try JSONEncoder()
             .encode(
                 GraphQLRequest(query: document, variables: variables))
-        let (data, response) = try await transport(request)
-        guard let http = response as? HTTPURLResponse else { throw HardcoverError.rejected }
+        let (data, http) = try await send(request)
         switch http.statusCode {
         case 200: break
         case 401: throw HardcoverError.invalidToken
@@ -315,6 +324,43 @@ actor HardcoverClient {
         }
         guard let result = envelope.data else { throw HardcoverError.rejected }
         return result
+    }
+
+    /// Sends a GraphQL request and returns Hardcover's reply, retrying up to twice when a failure
+    /// may pass.
+    ///
+    /// Server errors, timeouts, and dropped connections retry after about 2 and then 4 seconds,
+    /// plus up to a second of jitter. A rate limit retries once its `Retry-After` passes if that
+    /// is at most 30 seconds away; a longer or missing `Retry-After` returns the reply at once.
+    /// Cancellation ends a wait with `CancellationError` and is never retried.
+    private func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        var retries = 0
+        while true {
+            let backoff = Double(2 << retries) + .random(in: 0...1)
+            let wait: Double
+            do {
+                let (data, response) = try await transport(request)
+                guard let http = response as? HTTPURLResponse else { throw HardcoverError.rejected }
+                let retryAfter = http.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init)
+                switch http.statusCode {
+                case 500...599 where retries < 2:
+                    wait = backoff
+                case 429 where retries < 2:
+                    guard let retryAfter, retryAfter <= 30 else { return (data, http) }
+                    wait = max(retryAfter, 0)
+                default:
+                    return (data, http)
+                }
+            } catch let error as URLError
+                where retries < 2
+                && [.timedOut, .networkConnectionLost, .cannotConnectToHost, .badServerResponse]
+                    .contains(error.code)
+            {
+                wait = backoff
+            }
+            retries += 1
+            try await Task.sleep(for: .seconds(wait))
+        }
     }
 
     /// Returns the token without surrounding whitespace or a `Bearer` prefix, or `nil` when it
