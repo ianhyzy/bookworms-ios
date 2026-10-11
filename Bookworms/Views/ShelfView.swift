@@ -117,7 +117,7 @@ struct ShelfView: View {
                 }
             } else {
                 let title = frame?.title ?? Self.years(of: books)
-                switch threeDView {
+                switch shownView {
                 case .pile:
                     BookPileView(
                         books: books, title: title, frame: frame, showsDetails: $pileShowsDetails
@@ -135,6 +135,20 @@ struct ShelfView: View {
         }
     }
 
+    /// The chosen 3D view, or the Pile when the saved choice is one the app does not offer.
+    private var shownView: ThreeDView {
+        ThreeDView.offered.contains(threeDView) ? threeDView : .pile
+    }
+
+    /// Reads `shownView` and saves the reader's choice, for the **View** picker.
+    private var shownViewChoice: Binding<ThreeDView> {
+        Binding {
+            shownView
+        } set: {
+            threeDView = $0
+        }
+    }
+
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
         if !pileShowsDetails {
             ToolbarItem(placement: .principal) {
@@ -149,18 +163,18 @@ struct ShelfView: View {
                     // In the menu rather than the bar, which the presentation picker and the
                     // pile's own buttons fill.
                     if mode == .pile {
-                        if ThreeDView.allCases.count > 1 {
-                            Picker("View", systemImage: "cube", selection: $threeDView) {
-                                ForEach(ThreeDView.allCases) { Text($0.title).tag($0) }
+                        if ThreeDView.offered.count > 1 {
+                            Picker("View", systemImage: "cube", selection: shownViewChoice) {
+                                ForEach(ThreeDView.offered) { Text($0.title).tag($0) }
                             }
                             .pickerStyle(.menu)
                         }
                         Section {
                             Toggle("Sounds", systemImage: "speaker.wave.2", isOn: $sounds)
-                            if threeDView == .pile && !reduceMotion {
+                            if shownView == .pile && !reduceMotion {
                                 Toggle(byPeriodTitle, systemImage: "calendar", isOn: $dropsByPeriod)
                             }
-                            if threeDView == .pile && BookPileScene.canTilt && !reduceMotion {
+                            if shownView == .pile && BookPileScene.canTilt && !reduceMotion {
                                 Picker("Tilt", systemImage: "gyroscope", selection: $tilt) {
                                     ForEach(PileTilt.allCases) { Text($0.title).tag($0) }
                                 }
@@ -573,12 +587,15 @@ enum ShelfPresentation: String, CaseIterable, Identifiable {
 
 /// The scenes 3D can show. Each takes the shelf's books within the time frame that all of them
 /// share, and orders them as the view needs. Adding a view takes a case here, titled by its raw
-/// value, and its arm in `ShelfView.content`; **Sort and filter** offers **View** once there
-/// are two.
+/// value, its arm in `ShelfView.content`, and an entry in `offered`; **Sort and filter** offers
+/// **View** once `offered` has two.
 enum ThreeDView: String, CaseIterable, Identifiable {
     case pile
     case dominoes
     case bookworm
+
+    /// The views the app shows. The Bookworm keeps its code but is not offered for now.
+    static let offered: [ThreeDView] = [.pile, .dominoes]
 
     var id: Self { self }
     var title: String { rawValue.capitalized }
