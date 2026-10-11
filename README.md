@@ -74,7 +74,7 @@ The **Shelf** tab shows every book as a spine in its saved design, or in a plain
 
 - **Stack** (default) lays the spines flat and scrolls them vertically as a 3D wheel.
 - **Shelf** stands the spines upright, as on the Apple TV, and scrolls them horizontally like Cover Flow.
-- **Pile** drops the shelf's books, or a year's or month's books, onto a wooden table as a physics toy, up to 300 at a time, and shares the pile as an image. See [Pile](#pile).
+- **Pile** drops every book, or a year's or month's books, onto a wooden table as a physics toy, and shares the pile as an image. See [Pile](#pile).
 - The caption shows the centered book's title, author, finish date, and your rating. Sort by finish date, title, author, or rating, or show designed books only.
 - Tap the centered spine for details: a 3D book you can turn with a drag, its reading details, the design's font and colors, **Change cover**, and **Share**.
 
@@ -90,16 +90,16 @@ The **Shelf** tab shows every book as a spine in its saved design, or in a plain
 
 ### Pile
 
-**Pile** shows up to 300 books, the first in the shelf's sort and filter order, as RealityKit rigid bodies that fall onto a table in waves of 16 and pile up.
+**Pile** shows the books in the shelf's sort and filter order as RealityKit rigid bodies that fall onto a table in waves of 16 and pile up.
 
-- In Pile mode, **Sort and filter** adds **Time frame**: **All books** (the default), a **Year**, or a **Month**. The year and month lists include only periods with finished books. Choosing one drops that period's finished books in a new pile, as **Drop again** does. The app saves the choice. If the saved year or month has no finished books in the current library, the pile uses the newest year or month instead. Under the presentation picker, the pile names its time frame and book count, such as "2025 · 39 books"; for **All books**, it names the years the books span. When the time frame has more than 300 books, the pile drops the first 300 and says so, such as "2009–2026 · 300 of 412 books". When **Designed only** leaves a year or month empty, the shelf says so and offers to show that period's books or all books.
+- In Pile mode, **Sort and filter** adds **Time frame**: **All books** (the default), a **Year**, or a **Month**. The year and month lists include only periods with finished books. Choosing one drops that period's finished books in a new pile, as **Drop again** does. The app saves the choice. If the saved year or month has no finished books in the current library, the pile uses the newest year or month instead. Under the presentation picker, the pile names its time frame and book count, such as "2025 · 39 books"; for **All books**, it names the years the books span. When **Designed only** leaves a year or month empty, the shelf says so and offers to show that period's books or all books.
 
 - Each book is a box the size of a real book: 21 to 24 cm tall, as wide as its cover's aspect ratio allows (2:3 without a cover), and as thick as its page count suggests. The front shows the cover, cropped to the book's shape as on its details screen, the spine shows the saved design rendered by `SpineView`, the page edges are cream, and the back is the spine's cloth color.
 - Drag a book to pick it up and throw it, tap one for its details, pinch to zoom toward a point, and turn two fingers to look around the pile. **Drop again** starts a new drop and redraws books whose design or font changed since the last one.
-- On an iPhone that reports motion, tilting the phone tips the table. The pile responds to the change from how you held the phone when tilting began, up to about 27 degrees, and books slide toward the edge of the screen you tip down, however you have turned the view. Turn **Tilt to move books** off in the **Sort and filter** menu to keep the table level.
+- On an iPhone that reports motion, tilting the phone tips the table. The pile responds to the change from how you held the phone when tilting began, up to about 27 degrees, and books slide toward the edge of the screen you tip down, however you have turned the view. Turn **Tilt to move books** off in the toolbar to keep the table level.
 - With **Reduce Motion** on, the books appear in tidy stacks, spines toward you, and tilt is off. The stacks hold still: picking up a book frees only that book and the books resting on it. **Stack again** replaces **Drop again**.
 - Invisible walls keep the books between the navigation bar and the tab bar. The view keeps its pile while you open a book and come back. Switching to another tab, **Stack**, or **Shelf** releases the books and their textures, and the books drop again when you return.
-- Each wave waits at most 1.5 seconds for its own covers, and the next wave's covers download while it falls. A book whose cover arrives later falls with its title on its cloth color, and the cover replaces the title when it arrives. Textures stay small: covers are at most 224 pixels and spines 384 pixels long. For the most books a pile holds, 300, that is an estimated 75 MB of GPU memory and at most 116 MB.
+- Each wave waits at most 1.5 seconds for its own covers, and the next wave's covers download while it falls. A book whose cover arrives later falls with its title on its cloth color, and the cover replaces the title when it arrives. Textures stay small: covers are at most 224 pixels and spines 384 pixels long, an estimated 75 MB of GPU memory for 300 books and at most 116 MB.
 
 VoiceOver reads the pile as one element with its book count, its time frame, and a **Drop again** action; choose **Stack** or **Shelf** to go through books one at a time. RealityKit shadows, frame rate, and the stability of tall stacks have been checked only in the Simulator; check them on a device.
 
