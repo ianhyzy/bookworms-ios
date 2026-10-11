@@ -17,7 +17,7 @@ struct ShelfView: View {
     @AppStorage("BookwormsPileFrame") private var pileFrameSetting = TimeFrame.thisYear.setting
     /// Whether tilting the phone tips the pile's table, which `BookPileView` reads.
     @AppStorage("BookwormsPileTilt") private var tilts = true
-    /// Whether collisions in 3D play sounds, which `BookPileView` reads.
+    /// Whether collisions in 3D play sounds, which the 3D views read.
     @AppStorage("BookwormsThreeDSounds") private var sounds = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The centered book, shared by both carousel modes so switching keeps the reader's place.
@@ -477,8 +477,8 @@ enum ShelfPresentation: String, CaseIterable, Identifiable {
     var title: String { carousel?.title ?? "3D" }
 }
 
-/// The scenes 3D can show. Each shows the shelf's books in its sort and filter order, within
-/// the time frame that all of them share. Adding a view takes a case here, titled by its raw
+/// The scenes 3D can show. Each takes the shelf's books within the time frame that all of them
+/// share, and orders them as the view needs. Adding a view takes a case here, titled by its raw
 /// value, and its arm in `ShelfView.content`; **Sort and filter** offers **View** once there
 /// are two.
 enum ThreeDView: String, CaseIterable, Identifiable {

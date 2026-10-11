@@ -14,9 +14,10 @@ import SwiftUI
 /// As `BookPileView` does, the view takes its entities out of its scene while a pile image
 /// renders, since RealityKit's render thread can crash drawing them meanwhile.
 struct BookwormView: View {
-    let books: [CloudBook]
-    /// The name of the books' time frame.
-    let title: String
+    /// The finished books the worm eats, in eating order (`BookwormLayout.eatingOrder`).
+    let meal: [CloudBook]
+    /// The time frame and book count, such as "2025 · 39 books".
+    let subtitle: String
 
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -28,6 +29,8 @@ struct BookwormView: View {
     @State private var generation = 0
     /// The book whose name shows after a tap.
     @State private var named: CloudBook?
+    /// Counts taps that name a book; each restarts the name's timer.
+    @State private var taps = 0
     /// Set between `onAppear` and `onDisappear`.
     @State private var isShown = false
 
@@ -37,17 +40,28 @@ struct BookwormView: View {
         let generation: Int
     }
 
+    /// Orders the meal when the shelf builds the view, rather than in the body, which taps and
+    /// other state changes re-evaluate, since reading a finish date parses it.
+    init(books: [CloudBook], title: String) {
+        meal = BookwormLayout.eatingOrder(books)
+        let finished = books.count { $0.finishedDate != nil }
+        let count =
+            finished > meal.count
+            ? "\(meal.count) of \(finished.formatted()) books"
+            : finished == 1 ? "1 book" : "\(finished.formatted()) books"
+        subtitle = "\(title) · \(count)"
+    }
+
     var body: some View {
         // The body reads none of the scene's state, so the worm's progress redraws only the
         // views that show it.
-        let meal = BookwormLayout.eatingOrder(books)
         Group {
             if meal.isEmpty {
                 ContentUnavailableView(
                     "No finished books", systemImage: "book.closed",
                     description: Text("The bookworm eats books you have finished."))
             } else {
-                stage(meal)
+                stage
             }
         }
         .toolbar {
@@ -58,13 +72,11 @@ struct BookwormView: View {
                 ToolbarItem(placement: .topBarTrailing) { PlayButton(scene: scene) }
             }
             // Names the time frame, which the toolbar's menu saves across launches.
-            ToolbarItem(placement: .subtitle) {
-                Text("\(title) · \(count(meal))")
-            }
+            ToolbarItem(placement: .subtitle) { Text(subtitle) }
         }
     }
 
-    private func stage(_ meal: [CloudBook]) -> some View {
+    private var stage: some View {
         ZStack {
             RealityView { content in
                 content.camera = .virtual
@@ -81,11 +93,12 @@ struct BookwormView: View {
             .ignoresSafeArea()
             .accessibilityElement()
             .accessibilityLabel("Bookworm")
+            .accessibilityValue(subtitle)
             .accessibilityHint(
                 "A worm eats your books in the order you finished them. To go through books one at a time, choose Stack or Shelf."
             )
-            .accessibilityAction(named: "Play or pause") { scene.isPlaying.toggle() }
-            .accessibilityAction(named: "Restart") { generation += 1 }
+            .modifier(
+                SceneActions(scene: scene, isAnimated: !reduceMotion) { generation += 1 })
             VStack {
                 if let named {
                     NamedBook(book: named)
@@ -114,7 +127,7 @@ struct BookwormView: View {
             await scene.start(meal, finished: reduceMotion, model: model)
         }
         // Hides the name three seconds after the last tap.
-        .task(id: named?.id) {
+        .task(id: taps) {
             guard named != nil else { return }
             try? await Task.sleep(for: .seconds(3))
             guard !Task.isCancelled else { return }
@@ -140,24 +153,15 @@ struct BookwormView: View {
 
     private var playsFeedback: Bool { isShown && scenePhase == .active }
 
-    /// The number of books, such as "39 books", or "100 of 412 books" past
-    /// `BookwormLayout.maximumBooks`.
-    private func count(_ meal: [CloudBook]) -> String {
-        let finished = books.count { $0.finishedDate != nil }
-        if finished > meal.count {
-            return "\(meal.count) of \(finished.formatted()) books"
-        }
-        return finished == 1 ? "1 book" : "\(finished.formatted()) books"
-    }
-
     private var nameBook: some Gesture {
         SpatialTapGesture()
             .targetedToAnyEntity()
             .onEnded { value in
                 guard let id = scene.bookID(for: value.entity),
-                    let book = books.first(where: { $0.id == id })
+                    let book = meal.first(where: { $0.id == id })
                 else { return }
                 scene.pop(value.entity)
+                taps += 1
                 withAnimation(.easeOut(duration: 0.2)) { named = book }
             }
     }
@@ -175,6 +179,26 @@ private struct PlayButton: View {
             scene.isPlaying.toggle()
         }
         .disabled(scene.isFinished || scene.isLoading)
+    }
+}
+
+/// The scene's VoiceOver actions, which read the scene's state so only they update. Without
+/// animation, as Reduce Motion asks, the worm shows finished and offers none. **Pause** or
+/// **Play** shows only while the worm can move, as the toolbar's button does.
+private struct SceneActions: ViewModifier {
+    let scene: BookwormScene
+    let isAnimated: Bool
+    let restart: () -> Void
+
+    func body(content: Content) -> some View {
+        content.accessibilityActions {
+            if isAnimated {
+                if !scene.isFinished && !scene.isLoading {
+                    Button(scene.isPlaying ? "Pause" : "Play") { scene.isPlaying.toggle() }
+                }
+                Button("Restart", action: restart)
+            }
+        }
     }
 }
 

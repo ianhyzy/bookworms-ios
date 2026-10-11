@@ -20,8 +20,8 @@ enum BookwormLayout {
     static let stackPitch = SIMD2<Float>(2.55, 2.2)
     static let bodyRadius: Float = 0.3
     static let headRadius: Float = 0.42
-    /// Half a stack's footprint, as (x, z): half a book's typical height, lying along x, and
-    /// half its typical width.
+    /// Half a stack's footprint, as (x, z), for a stack of typical books: half a book's height,
+    /// lying along x, and half its width.
     static let stackHalfSize = SIMD2<Float>(1.15, 0.75)
     /// How far apart the curled worm's coils lie: a body's width and a little room.
     static let coilGap: Float = bodyRadius * 2.2
@@ -42,15 +42,17 @@ enum BookwormLayout {
     }
 
     /// Where the worm's head, at `head`, stops to eat the stack whose middle is at `stack`,
-    /// both as (x, z): on the line between them, just outside the stack's footprint, so the
-    /// mouth reaches into the stack and the face stays in sight. A head already that close
-    /// stays where it is.
-    static func biteSpot(stack: SIMD2<Float>, from head: SIMD2<Float>) -> SIMD2<Float> {
+    /// both as (x, z): on the line between them, just outside the stack's footprint of half
+    /// size `halfSize`, so the mouth reaches into the stack and the face stays in sight. A head
+    /// already that close stays where it is.
+    static func biteSpot(
+        stack: SIMD2<Float>, from head: SIMD2<Float>, halfSize: SIMD2<Float> = stackHalfSize
+    ) -> SIMD2<Float> {
         let offset = stack - head
         let distance = simd_length(offset)
         guard distance > 1e-4 else { return head }
         let direction = offset / distance
-        let edge = simd_reduce_min(stackHalfSize / simd_max(abs(direction), .init(repeating: 1e-4)))
+        let edge = simd_reduce_min(halfSize / simd_max(abs(direction), .init(repeating: 1e-4)))
         let reach = edge + headRadius * 0.3
         return distance > reach + 0.1 ? stack - direction * reach : head
     }
@@ -266,7 +268,8 @@ struct WormTrail {
         var next = 0
         var covered: Float = 0
         var front = head
-        for back in points.reversed() where next < distances.count {
+        for back in points.reversed() {
+            if next == distances.count { break }
             let length = simd_distance(front, back)
             guard length > 1e-5 else { continue }
             let forward = (front - back) / length

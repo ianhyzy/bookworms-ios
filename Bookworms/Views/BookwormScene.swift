@@ -206,6 +206,8 @@ final class BookwormScene {
     /// arrives later shows its title until it does. Returns early if cancelled or restarted.
     func start(_ meal: [CloudBook], finished: Bool, model: AppModel) async {
         reset()
+        // Keeps only this meal's textures, so browsing time frames holds one meal's worth.
+        factory.release(keeping: finished ? [] : Set(meal.map(\.id)))
         let token = run
         let bricks = BookwormLayout.block(meal)
         guard !bricks.isEmpty else { return }
@@ -285,6 +287,8 @@ final class BookwormScene {
         meal = []
         phase = .idle
         clock = 0
+        // Opens eyes that a blink left half shut.
+        parts?.eyes.forEach { $0.scale = .init(repeating: 0.3) }
         worm.isEnabled = false
         eatenBooks = 0
         eatenPages = 0
@@ -536,9 +540,17 @@ final class BookwormScene {
         layoutBody()
     }
 
-    /// Where the head stops to eat the book at `index`.
+    /// Where the head stops to eat the book at `index`, outside the footprint of the largest
+    /// book in its stack. A book lying flat has its height along x and its width along z.
     private func biteSpot(_ index: Int) -> SIMD2<Float> {
-        BookwormLayout.biteSpot(stack: meal[index].spot, from: trail.head)
+        var half = SIMD2<Float>.zero
+        for course in meal where course.stack == meal[index].stack {
+            guard let size = factory.parts[course.book.id]?.shape.size else { continue }
+            half = pointwiseMax(half, SIMD2(size.y, size.x) / 2)
+        }
+        return BookwormLayout.biteSpot(
+            stack: meal[index].spot, from: trail.head,
+            halfSize: half == .zero ? BookwormLayout.stackHalfSize : half)
     }
 
     /// Moves the head `step` toward `target`, turning it toward the way it goes.

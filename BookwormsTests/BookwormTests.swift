@@ -83,6 +83,28 @@ final class BookwormTests: XCTestCase {
         XCTAssertEqual(BookwormLayout.block([]), [])
     }
 
+    func testEveryMealFillsContiguousStacksOfAtMostEightBooks() {
+        for count in 1...BookwormLayout.maximumBooks {
+            let bricks = BookwormLayout.block((1...count).map { book($0) })
+            let stacks = (count + BookwormLayout.booksPerStack - 1) / BookwormLayout.booksPerStack
+            let centers = BookwormLayout.stackCenters(count: stacks)
+            // Stack indices start at 0 and step up by at most one, so no stack is empty.
+            XCTAssertEqual(bricks.first?.stack, 0)
+            XCTAssertEqual(bricks.last?.stack, stacks - 1, "\(count) books")
+            for (below, above) in zip(bricks, bricks.dropFirst()) {
+                XCTAssertTrue((0...1).contains(above.stack - below.stack), "\(count) books")
+            }
+            for stack in 0..<stacks {
+                let held = bricks.filter { $0.stack == stack }
+                XCTAssertTrue(
+                    (1...BookwormLayout.booksPerStack).contains(held.count), "\(count) books")
+                for brick in held {
+                    XCTAssertEqual(SIMD2(brick.center.x, brick.center.z), centers[stack])
+                }
+            }
+        }
+    }
+
     func testSegmentsGrowLongerForEveryHundredPages() {
         XCTAssertEqual(BookwormLayout.segmentLength(pages: 0), 0.16, accuracy: 0.0001)
         XCTAssertEqual(BookwormLayout.segmentLength(pages: 99), 0.16, accuracy: 0.0001)
@@ -143,6 +165,10 @@ final class BookwormTests: XCTestCase {
             }
         }
         XCTAssertEqual(BookwormLayout.curl(lengths: []), [])
+        // A head alone lies one coil gap out on the near side.
+        let head = BookwormLayout.curl(lengths: [0.6])
+        XCTAssertEqual(head.count, 1)
+        XCTAssertLessThan(simd_distance(head[0], [0, BookwormLayout.coilGap]), 0.0001)
     }
 
     func testFramingFitsEveryPointTightlyBetweenTheBars() {
@@ -189,6 +215,11 @@ final class BookwormTests: XCTestCase {
         let slanted = BookwormLayout.biteSpot(stack: stack, from: stack + [3, 3])
         XCTAssertEqual(slanted.y - stack.y, half.y + reach * 0.7071, accuracy: 0.001)
         XCTAssertEqual(slanted.x - stack.x, slanted.y - stack.y, accuracy: 0.001)
+        // A stack of wide books keeps the head out past their wider footprint.
+        let wide = SIMD2<Float>(1.2, 1.02)
+        let fromFrontOfWide = BookwormLayout.biteSpot(
+            stack: stack, from: stack + [0, 5], halfSize: wide)
+        XCTAssertLessThan(simd_distance(fromFrontOfWide, stack + [0, wide.y + reach]), 0.0001)
         // A head already at the stack stays put.
         let close = stack + [0, 0.5]
         XCTAssertEqual(BookwormLayout.biteSpot(stack: stack, from: close), close)
