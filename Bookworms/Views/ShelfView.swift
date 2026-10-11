@@ -107,6 +107,8 @@ struct ShelfView: View {
                     BookPileView(books: books, title: title, showsDetails: $pileShowsDetails) {
                         path.append($0.id)
                     }
+                case .bookworm:
+                    BookwormView(books: books, title: title)
                 }
             }
         } else {
@@ -137,7 +139,7 @@ struct ShelfView: View {
                         pileFrameOptions
                         Section {
                             Toggle("Sounds", systemImage: "speaker.wave.2", isOn: $sounds)
-                            if BookPileScene.canTilt && !reduceMotion {
+                            if threeDView == .pile && BookPileScene.canTilt && !reduceMotion {
                                 Toggle(
                                     "Tilt to move books", systemImage: "gyroscope", isOn: $tilts)
                             }
@@ -481,6 +483,7 @@ enum ShelfPresentation: String, CaseIterable, Identifiable {
 /// are two.
 enum ThreeDView: String, CaseIterable, Identifiable {
     case pile
+    case bookworm
 
     var id: Self { self }
     var title: String { rawValue.capitalized }

@@ -1,0 +1,164 @@
+import Foundation
+import XCTest
+import simd
+
+@testable import Bookworms
+
+/// The Bookworm's layout and motion math: eating order, the block, the worm's trail, its
+/// segments, its curl, and its tally.
+final class BookwormTests: XCTestCase {
+    private func book(_ id: Int, finished: String? = "2025-01-01", pages: Int? = 320) -> CloudBook
+    {
+        var book = CloudBook(
+            id: id, title: "Fictional Book \(id)", author: "An Author", coverURL: nil,
+            detailCoverURL: nil)
+        book.finished = finished
+        book.pages = pages
+        return book
+    }
+
+    func testWormEatsFinishedBooksInFinishOrder() {
+        let books = [
+            book(1, finished: "2025-03-02"), book(2, finished: nil),
+            book(3, finished: "2025-01-15"), book(4, finished: "2025-03-02"),
+            book(5, finished: "2024-12-31"),
+        ]
+        // Books finished the same day keep the shelf's order.
+        XCTAssertEqual(BookwormLayout.eatingOrder(books).map(\.id), [5, 3, 1, 4])
+    }
+
+    func testWormEatsAtMostTheFirstHundredFinishedBooks() {
+        let books =
+            [book(0, finished: nil)]
+            + (1...130).map { id in
+                book(id, finished: "2025-01-" + String(format: "%02d", 28 - id % 28))
+            }
+        let meal = BookwormLayout.eatingOrder(books)
+        XCTAssertEqual(meal.count, BookwormLayout.maximumBooks)
+        XCTAssertEqual(Set(meal.map(\.id)), Set(1...100))
+    }
+
+    func testStacksRunInASerpentineOfNeighbors() {
+        let pitch = BookwormLayout.stackPitch
+        for count in 1...16 {
+            let centers = BookwormLayout.stackCenters(count: count)
+            XCTAssertEqual(centers.count, count)
+            XCTAssertLessThanOrEqual(Set(centers.map(\.x)).count, 3)
+            // The worm starts on the near side.
+            XCTAssertEqual(centers[0].y, centers.map(\.y).max())
+            for (from, to) in zip(centers, centers.dropFirst()) {
+                let step = abs(to - from)
+                let isNeighbor =
+                    (abs(step.x - pitch.x) < 0.0001 && step.y < 0.0001)
+                    || (abs(step.y - pitch.y) < 0.0001 && step.x < 0.0001)
+                XCTAssertTrue(isNeighbor, "\(count) stacks: \(from) to \(to)")
+            }
+        }
+    }
+
+    func testBlockStacksEachStackInEatingOrderFromTheTable() {
+        let meal = (1...20).map { book($0, pages: 100 + $0 * 40) }
+        let bricks = BookwormLayout.block(meal)
+        XCTAssertEqual(bricks.map(\.book.id), meal.map(\.id))
+        // Twenty books fill three stacks evenly.
+        XCTAssertEqual(
+            bricks.map(\.stack),
+            Array(repeating: 0, count: 7) + Array(repeating: 1, count: 7)
+                + Array(repeating: 2, count: 6))
+        let centers = BookwormLayout.stackCenters(count: 3)
+        for (index, brick) in bricks.enumerated() {
+            let thickness = BookShape(of: brick.book, coverAspect: 2 / 3).size.z
+            XCTAssertEqual(SIMD2(brick.center.x, brick.center.z), centers[brick.stack])
+            if index == 0 || bricks[index - 1].stack != brick.stack {
+                XCTAssertEqual(brick.center.y, thickness / 2, accuracy: 0.0001)
+            } else {
+                // Each book lies on the one before it.
+                let below = bricks[index - 1]
+                let belowThickness = BookShape(of: below.book, coverAspect: 2 / 3).size.z
+                XCTAssertEqual(
+                    brick.center.y - below.center.y, (thickness + belowThickness) / 2,
+                    accuracy: 0.0001)
+            }
+        }
+        XCTAssertEqual(BookwormLayout.block([]), [])
+    }
+
+    func testSegmentsGrowLongerForEveryHundredPages() {
+        XCTAssertEqual(BookwormLayout.segmentLength(pages: 0), 0.16, accuracy: 0.0001)
+        XCTAssertEqual(BookwormLayout.segmentLength(pages: 99), 0.16, accuracy: 0.0001)
+        XCTAssertEqual(BookwormLayout.segmentLength(pages: 100), 0.2, accuracy: 0.0001)
+        XCTAssertEqual(BookwormLayout.segmentLength(pages: 450), 0.32, accuracy: 0.0001)
+        XCTAssertEqual(
+            BookwormLayout.segmentLength(pages: nil), BookwormLayout.segmentLength(pages: 320))
+        XCTAssertEqual(
+            BookwormLayout.segmentLength(pages: 5000), BookwormLayout.segmentLength(pages: 1500))
+    }
+
+    func testTrailSamplesFollowThePathAndRunStraightBeforeIt() {
+        var trail = WormTrail(head: [0, 0], heading: [1, 0])
+        for step in 1...4 { trail.move(to: [Float(step) * 0.25, 0]) }
+        for step in 1...4 { trail.move(to: [1, Float(step) * 0.25]) }
+        var samples: [(point: SIMD2<Float>, forward: SIMD2<Float>)] = []
+        trail.sample([0, 0.5, 1.5, 2.5], into: &samples)
+        let expected: [(SIMD2<Float>, SIMD2<Float>)] = [
+            ([1, 1], [0, 1]), ([1, 0.5], [0, 1]), ([0.5, 0], [1, 0]),
+            // Past where the head started, the trail runs straight back.
+            ([-0.5, 0], [1, 0]),
+        ]
+        XCTAssertEqual(samples.count, expected.count)
+        for (sample, (point, forward)) in zip(samples, expected) {
+            XCTAssertLessThan(simd_distance(sample.point, point), 0.0001, "\(sample)")
+            XCTAssertLessThan(simd_distance(sample.forward, forward), 0.0001, "\(sample)")
+        }
+        // A short move keeps no new point, but the head still leads the trail.
+        trail.move(to: [1, 1.05])
+        XCTAssertEqual(trail.points.count, 9)
+        trail.sample([0.05], into: &samples)
+        XCTAssertLessThan(simd_distance(samples[0].point, [1, 1]), 0.0001)
+    }
+
+    func testCurlKeepsCoilsApartWithTheHeadOutsideFacingTheCamera() {
+        let lengths: [Float] =
+            [BookwormLayout.headRadius * 1.5] + (0..<40).map { _ in 0.28 } + [0.76, 0.16, 0.5, 0.3]
+        let points = BookwormLayout.curl(lengths: lengths)
+        XCTAssertEqual(points.count, lengths.count)
+        // The head lies on the near side, outermost.
+        XCTAssertEqual(points[0].x, 0, accuracy: 0.0001)
+        XCTAssertGreaterThan(points[0].y, 0)
+        var along: [Float] = [0]
+        for index in 1..<points.count {
+            let spacing = (lengths[index - 1] + lengths[index]) / 2
+            XCTAssertEqual(
+                simd_distance(points[index - 1], points[index]), spacing, accuracy: 0.02)
+            XCTAssertGreaterThanOrEqual(simd_length(points[index - 1]), simd_length(points[index]))
+            along.append(along[index - 1] + spacing)
+        }
+        // Parts more than two coil gaps apart along the body lie on other coils, or far around
+        // their own, so the body never crosses itself.
+        for first in points.indices {
+            for second in points.indices
+            where along[second] - along[first] >= 2 * BookwormLayout.coilGap {
+                XCTAssertGreaterThan(
+                    simd_distance(points[first], points[second]), BookwormLayout.coilGap * 0.95)
+            }
+        }
+        XCTAssertEqual(BookwormLayout.curl(lengths: []), [])
+    }
+
+    func testPaceKeepsLongMealsShort() {
+        XCTAssertEqual(BookwormLayout.pace(books: 1), 1)
+        XCTAssertEqual(BookwormLayout.pace(books: 30), 1)
+        XCTAssertEqual(BookwormLayout.pace(books: 90), 3)
+    }
+
+    func testCaptionCountsBooksAndPages() {
+        XCTAssertEqual(BookwormLayout.caption(books: 1, pages: 320), "Ate 1 book · 320 pages")
+        XCTAssertEqual(BookwormLayout.caption(books: 39, pages: 640), "Ate 39 books · 640 pages")
+        XCTAssertEqual(BookwormLayout.caption(books: 2, pages: 0), "Ate 2 books")
+    }
+
+    func testThreeDOffersTheBookworm() {
+        XCTAssertEqual(ThreeDView.bookworm.title, "Bookworm")
+        XCTAssertEqual(ThreeDView(rawValue: "bookworm"), .bookworm)
+    }
+}
