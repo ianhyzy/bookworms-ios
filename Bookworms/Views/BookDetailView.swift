@@ -2,10 +2,15 @@ import SwiftUI
 
 /// A book's details: a 3D model to turn with a drag, its reading record, its spine design, and
 /// **Change cover**.
+///
+/// With a `HostedBook`, the details draw no book, backdrop, or **Share** button of their own: a
+/// transparent stand-in takes the book's place and turns as it would, a scene behind the
+/// details draws the book there, and the host's bar offers **Share**.
 struct BookDetailView: View {
     /// The book as the shelf opened it. The view shows the library's current copy, so a new
     /// cover or design appears at once.
     let opened: CloudBook
+    let hostedBook: HostedBook?
 
     @Environment(AppModel.self) private var model
     @Environment(GenerationController.self) private var generation
@@ -18,8 +23,9 @@ struct BookDetailView: View {
     /// cover when the details opened, then the cover when a new design arrives.
     @State private var designedCover: URL?
 
-    init(book: CloudBook) {
+    init(book: CloudBook, hostedBook: HostedBook? = nil) {
         opened = book
+        self.hostedBook = hostedBook
         _designedCover = State(initialValue: book.chosenCoverURL)
     }
 
@@ -31,7 +37,7 @@ struct BookDetailView: View {
         let design = model.library?.designs[book.id]
         ScrollView {
             VStack(spacing: 24) {
-                TurningBook(book: book, look: look, cover: cover)
+                TurningBook(book: book, look: look, cover: cover, host: hostedBook)
                 header
                 Button("Change cover", systemImage: "photo.on.rectangle") { choosesCover = true }
                     .buttonStyle(.bordered)
@@ -44,10 +50,15 @@ struct BookDetailView: View {
             .padding(.horizontal, 20)
             .padding(.bottom, 24)
         }
-        .background { ShelfPalette.wall.ignoresSafeArea() }
+        .background {
+            if hostedBook == nil { ShelfPalette.wall.ignoresSafeArea() }
+        }
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button("Share", systemImage: "square.and.arrow.up") { model.share(book) }
+            // A host shows its own bar, which outlasts these details as they leave.
+            if hostedBook == nil {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Share", systemImage: "square.and.arrow.up") { model.share(book) }
+                }
             }
         }
         // A new cover choice changes the first candidate; the old cover shows until it loads.
@@ -197,17 +208,30 @@ struct BookPose: Equatable {
     }
 }
 
+/// Where a scene behind `BookDetailView` draws the details' book, and how it turns.
+struct HostedBook {
+    /// Receives the frame of the book's height, `TurningBook.bookHeight` points tall and
+    /// centered where the details center their book, in global coordinates, whenever it moves.
+    let place: (CGRect) -> Void
+    /// Receives the pose the details' book would show, whenever it changes.
+    let turn: (BookPose) -> Void
+}
+
 /// A `Book3DView` to turn with a drag. Yaw is unbounded and pitch stays within a gentle tilt.
 /// On release the book coasts with the swipe's momentum and its tilt eases back to rest, unless
-/// Reduce Motion is on, when it stays where the finger left it.
+/// Reduce Motion is on, when it stays where the finger left it. With a `host`, the book is a
+/// transparent stand-in that reports its frame and pose for the host to draw.
 ///
 /// The coast is a function of time that `TimelineView` samples, rather than a SwiftUI
 /// animation, so a drag that interrupts it starts from the pose on screen. The drag claims
 /// touches that start on the book, so the page scrolls from the text below.
 private struct TurningBook: View {
+    static let bookHeight: CGFloat = 380
+
     let book: CloudBook
     let look: SpineLook
     let cover: UIImage?
+    let host: HostedBook?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The pose under the finger, or the pose a coast comes to rest at.
@@ -221,20 +245,36 @@ private struct TurningBook: View {
     var body: some View {
         TimelineView(.animation(paused: coast == nil)) { context in
             let shown = coast?.pose(at: context.date) ?? pose
-            Book3DView(
-                book: book, look: look, cover: cover, height: 380, yaw: shown.yaw,
-                pitch: shown.pitch)
+            if let host {
+                Color.clear
+                    .frame(height: Self.bookHeight)
+                    .onGeometryChange(for: CGRect.self) {
+                        $0.frame(in: .global)
+                    } action: {
+                        host.place($0)
+                    }
+                    .onChange(of: shown, initial: true) { host.turn(shown) }
+                    .accessibilityElement()
+                    .accessibilityLabel("\(book.title), by \(book.author)")
+            } else {
+                Book3DView(
+                    book: book, look: look, cover: cover, height: Self.bookHeight,
+                    yaw: shown.yaw, pitch: shown.pitch)
+            }
         }
         .frame(maxWidth: .infinity)
         .frame(height: 460)
         .background {
-            // Larger than the stage so the glow's falloff never meets an edge.
-            RadialGradient(
-                colors: [ShelfPalette.lamp.opacity(0.22), .clear], center: .center,
-                startRadius: 0, endRadius: 280
-            )
-            .frame(width: 640, height: 640)
-            .accessibilityHidden(true)
+            // Larger than the stage so the glow's falloff never meets an edge. A host's book
+            // lies behind the details, where the glow would veil it.
+            if host == nil {
+                RadialGradient(
+                    colors: [ShelfPalette.lamp.opacity(0.22), .clear], center: .center,
+                    startRadius: 0, endRadius: 280
+                )
+                .frame(width: 640, height: 640)
+                .accessibilityHidden(true)
+            }
         }
         .contentShape(.rect)
         .gesture(spin)

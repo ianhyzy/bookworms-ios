@@ -19,6 +19,8 @@ struct ShelfView: View {
     /// The centered book, shared by both carousel modes so switching keeps the reader's place.
     @State private var centeredID: Int?
     @State private var path: [Int] = []
+    /// Set while the pile shows a lifted book's details, which replace the shelf's controls.
+    @State private var pileShowsDetails = false
     @State private var showsAccount = false
     @Namespace private var namespace
 
@@ -27,7 +29,8 @@ struct ShelfView: View {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background { ShelfPalette.wall.ignoresSafeArea() }
-                .navigationTitle("Shelf")
+                // The pile's details show no title, as pushed details do.
+                .navigationTitle(pileShowsDetails ? "" : "Shelf")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { toolbar }
                 .navigationDestination(for: Int.self) { id in
@@ -94,7 +97,10 @@ struct ShelfView: View {
                         .dynamicTypeSize(...DynamicTypeSize.accessibility3)
                 }
             } else {
-                BookPileView(books: books, title: frame?.title ?? Self.years(of: books)) {
+                BookPileView(
+                    books: books, title: frame?.title ?? Self.years(of: books),
+                    showsDetails: $pileShowsDetails
+                ) {
                     path.append($0.id)
                 }
             }
@@ -104,29 +110,32 @@ struct ShelfView: View {
     }
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            Picker("Presentation", selection: $mode) {
-                ForEach(ShelfPresentation.allCases) { Text($0.title).tag($0) }
+        if !pileShowsDetails {
+            ToolbarItem(placement: .principal) {
+                Picker("Presentation", selection: $mode) {
+                    ForEach(ShelfPresentation.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .fixedSize()
             }
-            .pickerStyle(.segmented)
-            .fixedSize()
-        }
-        ToolbarItem(placement: .topBarTrailing) {
-            Menu("Sort and filter", systemImage: "line.3.horizontal.decrease") {
-                // In the menu rather than the bar, which the presentation picker and the pile's
-                // own buttons fill.
-                if mode == .pile {
-                    pileFrameOptions
-                    if BookPileScene.canTilt && !reduceMotion {
-                        Section {
-                            Toggle("Tilt to move books", systemImage: "gyroscope", isOn: $tilts)
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu("Sort and filter", systemImage: "line.3.horizontal.decrease") {
+                    // In the menu rather than the bar, which the presentation picker and the
+                    // pile's own buttons fill.
+                    if mode == .pile {
+                        pileFrameOptions
+                        if BookPileScene.canTilt && !reduceMotion {
+                            Section {
+                                Toggle(
+                                    "Tilt to move books", systemImage: "gyroscope", isOn: $tilts)
+                            }
                         }
                     }
+                    Picker("Sort by", selection: $sort) {
+                        ForEach(ShelfSort.allCases) { Text($0.title).tag($0) }
+                    }
+                    Toggle("Designed only", isOn: $designedOnly)
                 }
-                Picker("Sort by", selection: $sort) {
-                    ForEach(ShelfSort.allCases) { Text($0.title).tag($0) }
-                }
-                Toggle("Designed only", isOn: $designedOnly)
             }
         }
     }
@@ -190,7 +199,8 @@ struct ShelfView: View {
     #if DEBUG
         /// Simulator screenshot hooks, read once the library loads:
         /// `-BookwormsShelfScrollTo <index>` centers the book at that index, and
-        /// `-BookwormsOpenBook <bookID>` opens that book's details.
+        /// `-BookwormsOpenBook <bookID>` opens that book's details. In 3D, the pile opens the
+        /// book itself once its drop finishes.
         private func applyDebugArguments() {
             guard let library = model.library else { return }
             let books = shownBooks(in: library)
@@ -200,7 +210,8 @@ struct ShelfView: View {
             {
                 centeredID = books[index].id
             }
-            if let id = defaults.string(forKey: "BookwormsOpenBook").flatMap(Int.init),
+            if mode != .pile,
+                let id = defaults.string(forKey: "BookwormsOpenBook").flatMap(Int.init),
                 path.isEmpty
             {
                 centeredID = id

@@ -282,6 +282,119 @@ final class BookPileTests: XCTestCase {
         XCTAssertEqual(turned.y, -PileLayout.gravity, accuracy: 0.001)
     }
 
+    func testDetailPoseFillsTheDetailsStage() {
+        let camera = PileCamera()
+        let aspect: Float = 402.0 / 874
+        let size = SIMD3<Float>(1.5, 2.25, 0.3)
+        // A 380-point book centered 350 points from the top of an 874-point view.
+        let center = SIMD2<Float>(0.1, 1 - 2 * 350.0 / 874)
+        let height: Float = 2 * 380.0 / 874
+        let upright = camera.detailPose(
+            center: center, height: height, size: size, pose: BookPose(yaw: 0, pitch: 0),
+            aspect: aspect)
+        let middle = camera.project(upright.translation, aspect: aspect)
+        XCTAssertEqual(middle.x, center.x, accuracy: 0.0001)
+        XCTAssertEqual(middle.y, center.y, accuracy: 0.0001)
+        // Facing the camera, the book's height spans the stage's height, as in `Book3DView`.
+        let half = upright.rotation.act([0, size.y / 2, 0])
+        let top = camera.project(upright.translation + half, aspect: aspect)
+        let bottom = camera.project(upright.translation - half, aspect: aspect)
+        XCTAssertEqual(top.y - bottom.y, height, accuracy: height * 0.01)
+        XCTAssertEqual(top.x, bottom.x, accuracy: 0.001)
+
+        // At rest, the front cover, the spine, and the head face the camera, as in the details.
+        let resting = camera.detailPose(
+            center: center, height: height, size: size, pose: .resting, aspect: aspect)
+        let toCamera = camera.transform.translation - resting.translation
+        func faces(_ axis: SIMD3<Float>) -> Bool {
+            simd_dot(resting.rotation.act(axis), toCamera) > 0
+        }
+        XCTAssertTrue(faces([0, 0, 1]))
+        XCTAssertTrue(faces([-1, 0, 0]))
+        XCTAssertTrue(faces([0, 1, 0]))
+        XCTAssertFalse(faces([1, 0, 0]))
+        XCTAssertFalse(faces([0, 0, -1]))
+    }
+
+    func testRiseClearsTheBooksOverTheLiftedOne() {
+        let book = BoundingBox(min: [-1, 0, -0.7], max: [1, 0.3, 0.7])
+        let onTop = BoundingBox(min: [-0.5, 0.3, -0.5], max: [0.8, 0.9, 0.5])
+        let beside = BoundingBox(min: [1.2, 0, -0.7], max: [3, 4, 0.7])
+        let below = BoundingBox(min: [-1, -0.4, -0.7], max: [1, 0, 0.7])
+        XCTAssertEqual(
+            PileFlight.rise(of: book, clearing: [onTop, beside, below]), 1.05, accuracy: 0.0001)
+        // A book with nothing over it still comes free of the table, and a tall pile caps it.
+        XCTAssertEqual(PileFlight.rise(of: book, clearing: [beside, below]), 0.4)
+        let tower = BoundingBox(min: [0, 0.3, 0], max: [0.5, 20, 0.5])
+        XCTAssertEqual(PileFlight.rise(of: book, clearing: [tower]), 6)
+    }
+
+    func testFlightLeavesTheRiseAtItsSpeedAndSettlesOnTheTarget() {
+        let rise: Float = 1.2
+        let end = PileFlight.riseDuration
+        XCTAssertEqual(PileFlight.climb(rise, at: 0), 0)
+        XCTAssertEqual(PileFlight.climb(rise, at: end), rise, accuracy: 0.0001)
+        let step = 0.0001
+        let riseSpeed =
+            (PileFlight.climb(rise, at: end) - PileFlight.climb(rise, at: end - step))
+            / Float(step)
+        XCTAssertEqual(riseSpeed, PileFlight.topSpeed(rise), accuracy: 0.05)
+
+        let clear = Transform(rotation: PileLayout.lyingFlat, translation: [1, 2, -2])
+        let target = Transform(
+            rotation: simd_quatf(angle: 2.5, axis: simd_normalize([0.3, 1, 0.2])),
+            translation: [0, 20, 10])
+        func pose(_ time: Double) -> Transform {
+            PileFlight.pose(
+                from: clear, speed: PileFlight.topSpeed(rise), to: target, time: time)
+        }
+        // The flight starts where the rise ends, at the rise's speed, with no hard stop.
+        XCTAssertEqual(simd_distance(pose(0).translation, clear.translation), 0, accuracy: 0.0001)
+        let velocity = (pose(step).translation - pose(0).translation) / Float(step)
+        XCTAssertEqual(
+            simd_distance(velocity, [0, PileFlight.topSpeed(rise), 0]), 0, accuracy: 0.2)
+        // It overshoots a little, then settles on the target.
+        let distance = simd_distance(target.translation, clear.translation)
+        let farthest = stride(from: 0, through: 2, by: 0.01)
+            .map {
+                simd_dot(
+                    pose($0).translation - clear.translation, target.translation - clear.translation
+                ) / distance
+            }
+            .max()!
+        XCTAssertGreaterThan(farthest, distance)
+        XCTAssertLessThan(farthest, distance * 1.05)
+        let landed = pose(3)
+        XCTAssertEqual(simd_distance(landed.translation, target.translation), 0, accuracy: 0.01)
+        // A quaternion and its negation are the same rotation.
+        XCTAssertEqual(
+            abs(simd_dot(landed.rotation.vector, target.rotation.vector)), 1, accuracy: 0.0001)
+    }
+
+    func testThrowBackLandsWhereTheBookLay() {
+        let start = SIMD3<Float>(0, 20, 10)
+        let resting = SIMD3<Float>(1, 0.3, -2)
+        let gravity = SIMD3<Float>(0, -PileLayout.gravity, 0)
+        let velocity = PileFlight.launch(from: start, to: resting, gravity: gravity)
+        let time = PileFlight.whipDuration
+        let landed = start + velocity * time + gravity * time * time / 2
+        XCTAssertEqual(simd_distance(landed, resting), 0, accuracy: 0.001)
+        // Fast enough to scatter the books it hits, and tumbling.
+        XCTAssertGreaterThan(simd_length(velocity), 40)
+        XCTAssertGreaterThan(simd_length(PileFlight.spin(for: velocity)), 10)
+        XCTAssertEqual(
+            simd_length(PileFlight.spin(for: [0, -50, 0])), simd_length(SIMD2<Float>(10, 8)),
+            accuracy: 0.001)
+    }
+
+    func testCameraMixesTowardAnother() {
+        let start = PileCamera(target: [2, 0, -1], yaw: 0.5, zoom: 2)
+        let end = PileCamera(yaw: 0.5)
+        XCTAssertEqual(start.mixed(with: end, 0), start)
+        XCTAssertEqual(start.mixed(with: end, 1), end)
+        XCTAssertEqual(start.mixed(with: end, 0.5).zoom, 1.5)
+    }
+
     func testCoversAreCroppedToTheBoxLikeTheDetailsView() {
         // A square cover on a box clamped to 0.85 keeps its middle 85 percent of width.
         XCTAssertEqual(

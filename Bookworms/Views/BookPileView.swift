@@ -15,18 +15,27 @@ struct PileViewport: Equatable {
 /// tidy stacks instead of falling, and tilt is off. The table fills the screen, but walls keep
 /// the books between the bars.
 ///
-/// Returning from a book's details finds the pile as the reader left it. Leaving it any other
-/// way, such as for another tab, frees its books and textures, and the books drop again on the
-/// reader's return. **Share** makes an image of `books`, up to
-/// `PileSnapshotRenderer.maximumBooks` of them, in a new pile headed `title`. While its sheet
-/// is open, the pile leaves the screen and keeps its books, and tilt pauses, as it does while
-/// the app is not active.
+/// A tapped book rises out of the pile and flies to where `BookDetailView` draws its book, and
+/// the details fade in over the dimmed pile once it lands. The details' own book is a
+/// transparent stand-in that places and turns the pile's book, so the same model scrolls and
+/// turns with the details. While they show, the pile's gestures, tilt, and controls, and the
+/// shelf's (through `showsDetails`), give way to **Back**. **Back** fades the details out and
+/// throws the book back into the pile. With Reduce Motion on, or when the pile cannot lift the
+/// book, a tap calls `open` to push the details instead. Returning from pushed details finds
+/// the pile as the reader left it. Leaving the pile any other way, such as for another tab,
+/// puts a lifted book back at once and frees the books and textures, and the books drop again
+/// on the reader's return.
+///
+/// **Share** makes an image of `books`, up to `PileSnapshotRenderer.maximumBooks` of them, in a
+/// new pile headed `title`. While its sheet is open, the pile leaves the screen and keeps its
+/// books, and tilt pauses, as it does while the app is not active.
 ///
 /// RealityKit's render thread can crash drawing this view while a share image's offscreen
 /// renderer steps the same engine, so while any pile image renders, such as the Share tab's
-/// Pile template, the table and books leave the view's scene. RealityKit keeps updating a
-/// `RealityView` in a tab that is not selected, and a view removed there lingers until its tab
-/// shows again and then takes its scene along, so the view itself stays.
+/// Pile template, the table and books leave the view's scene, and a lifted book goes back. A
+/// book cannot lift while they are out. RealityKit keeps updating a `RealityView` in a tab that
+/// is not selected, and a view removed there lingers until its tab shows again and then takes
+/// its scene along, so the view itself stays.
 struct BookPileView: View {
     /// The most books the pile drops. Tall enough stacks of more would reach the ceiling, and
     /// their textures would outgrow the memory `BookPileScene` budgets for.
@@ -35,19 +44,28 @@ struct BookPileView: View {
     let books: [CloudBook]
     /// The name of the books' time frame, which heads the share image.
     let title: String
+    /// Set while a lifted book's details show over the pile, when the shelf hides its controls.
+    @Binding var showsDetails: Bool
     let open: (CloudBook) -> Void
 
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.displayScale) private var displayScale
     /// Set by **Tilt to move books** in the shelf's **Sort and filter** menu.
     @AppStorage("BookwormsPileTilt") private var tilts = true
     @State private var scene = BookPileScene()
     @State private var viewport: PileViewport?
+    /// The canvas's frame in global coordinates, which the details' book frame converts from.
+    @State private var canvas = CGRect.zero
     /// Counts **Drop again** presses; each starts a new drop with new poses.
     @State private var generation = 0
-    /// Set while a book's details cover the pile.
+    /// Set while pushed details cover the pile.
     @State private var showsBook = false
+    /// The book lifted out of the pile, whose details show over it.
+    @State private var lifted: Lifted?
+    /// Counts lifts and returns, so a task that an earlier one started cannot change a later one.
+    @State private var liftRevision = 0
     /// Set between `onAppear` and `onDisappear`. The view stays in the hierarchy under a pushed
     /// book or in a tab that is not selected, where tilt must stay off.
     @State private var isShown = false
@@ -64,6 +82,27 @@ struct BookPileView: View {
         let tidy: Bool
         let generation: Int
         let viewport: PileViewport?
+    }
+
+    /// What the lifted book's textures show.
+    private struct Dressing: Equatable {
+        let book: CloudBook
+        let look: SpineLook
+    }
+
+    private var dressing: Dressing? {
+        guard let id = lifted?.book.id, let book = books.first(where: { $0.id == id }) else {
+            return nil
+        }
+        return Dressing(book: book, look: model.look(for: book))
+    }
+
+    private struct Lifted: Equatable {
+        let book: CloudBook
+        /// Whether the details show: set once the book lands, and cleared by **Back**.
+        var showsText = false
+        /// Set by **Back**. The details stay, hidden, until the book is back in the pile.
+        var isReturning = false
     }
 
     var body: some View {
@@ -86,9 +125,26 @@ struct BookPileView: View {
                 .gesture(throwBook)
                 .gesture(openBook)
                 .simultaneousGesture(moveCamera)
+                .allowsHitTesting(lifted == nil)
+                .onGeometryChange(for: CGRect.self) {
+                    $0.frame(in: .global)
+                } action: {
+                    canvas = $0
+                }
             }
         }
         .ignoresSafeArea()
+        .accessibilityElement()
+        .accessibilityLabel("Pile of \(count)")
+        .accessibilityValue(title)
+        .accessibilityHint(
+            "Drag a book to throw it, or tap one for its details. To go through books one at a time, choose Stack or Shelf."
+        )
+        .accessibilityAction(named: dropTitle) { generation += 1 }
+        .accessibilityHidden(lifted != nil)
+        .overlay {
+            if let lifted { details(lifted) }
+        }
         // Outside `ignoresSafeArea`, the proxy reports the safe area's size and the insets the
         // view extends past.
         .onGeometryChange(for: PileViewport.self) { proxy in
@@ -107,9 +163,22 @@ struct BookPileView: View {
                 viewport: viewport)
         ) {
             guard let viewport else { return }
+            scene.planDrop(
+                dropped, tidy: reduceMotion, generation: generation, viewport: viewport)
+            // A new pile, such as one without the lifted book, removed it.
+            if let lifted, scene.liftedID != lifted.book.id { putBack() }
             await scene.fill(
                 dropped, tidy: reduceMotion, generation: generation, viewport: viewport,
                 model: model)
+            #if DEBUG
+                await openDebugBook()
+            #endif
+        }
+        // Draws the lifted book as sharply as the details' own book, with its current cover and
+        // design.
+        .task(id: dressing) {
+            guard let dressing else { return }
+            await scene.dressLifted(dressing.book, scale: displayScale, model: model)
         }
         .onAppear {
             showsBook = false
@@ -120,43 +189,67 @@ struct BookPileView: View {
         }
         .onDisappear {
             isShown = false
+            putBack()
             scene.endDrag()
             scene.setTilt(false)
             if !showsBook { scene.release() }
         }
         // Leaves the view nothing to draw while a share image renders, in whichever tab.
         .onChange(of: PileSnapshotRenderer.isRendering) { _, isRendering in
-            if isRendering { scene.root.removeFromParent() }
+            guard isRendering else { return }
+            putBack()
+            scene.root.removeFromParent()
         }
         // Stops sampling motion while nothing reads it, and takes a new reference afterward.
         .onChange(of: tracksTilt) { scene.setTilt(tracksTilt) }
         .onChange(of: holdsBook) { if !holdsBook { scene.endDrag() } }
         .onChange(of: movesCamera) { if !movesCamera { scene.endCameraMove() } }
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button(dropTitle, systemImage: "arrow.counterclockwise") { generation += 1 }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("Share", systemImage: "square.and.arrow.up") { sharesPile = true }
-            }
-            // Names the time frame, which the toolbar's menu saves across launches.
-            ToolbarItem(placement: .subtitle) {
-                Text("\(title) · \(count)")
+            if let lifted, !lifted.isReturning {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Back", systemImage: "chevron.backward", action: returnBook)
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Share", systemImage: "square.and.arrow.up") {
+                        model.share(lifted.book)
+                    }
+                }
+            } else {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(dropTitle, systemImage: "arrow.counterclockwise") { generation += 1 }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Share", systemImage: "square.and.arrow.up") { sharesPile = true }
+                }
+                // Names the time frame, which the toolbar's menu saves across launches.
+                ToolbarItem(placement: .subtitle) {
+                    Text("\(title) · \(count)")
+                }
             }
         }
         .sheet(isPresented: $sharesPile) { PileSnapshotSheet(books: books, title: title) }
-        .accessibilityElement()
-        .accessibilityLabel("Pile of \(count)")
-        .accessibilityValue(title)
-        .accessibilityHint(
-            "Drag a book to throw it, or tap one for its details. To go through books one at a time, choose Stack or Shelf."
+    }
+
+    /// The lifted book's details, which fade in once the book lands. The pile's book shows
+    /// through their transparent stand-in for the details' own book.
+    private func details(_ lifted: Lifted) -> some View {
+        BookDetailView(
+            book: lifted.book,
+            hostedBook: HostedBook(
+                place: { [scene, canvas] frame in
+                    scene.placeLifted(
+                        frame.offsetBy(dx: -canvas.minX, dy: -canvas.minY), in: canvas.size)
+                },
+                turn: { [scene] in scene.turnLifted($0) })
         )
-        .accessibilityAction(named: dropTitle) { generation += 1 }
+        .opacity(lifted.showsText ? 1 : 0)
+        .allowsHitTesting(lifted.showsText)
+        .accessibilityHidden(!lifted.showsText)
     }
 
     private var tiltIsOn: Bool { tilts && !reduceMotion }
     private var tracksTilt: Bool {
-        isShown && tiltIsOn && !sharesPile && scenePhase == .active
+        isShown && tiltIsOn && !sharesPile && lifted == nil && scenePhase == .active
     }
 
     /// The number of books, such as "39 books", or "300 of 1,024 books" past `maximumBooks`.
@@ -186,9 +279,77 @@ struct BookPileView: View {
                 guard let id = scene.bookID(for: value.entity),
                     let book = books.first(where: { $0.id == id })
                 else { return }
-                showsBook = true
-                open(book)
+                show(book)
             }
+    }
+
+    /// Lifts `book` out of the pile to its details, or pushes them with Reduce Motion on or
+    /// when the pile cannot lift it. Does nothing while another book flies.
+    private func show(_ book: CloudBook) {
+        guard lifted == nil, !scene.isFlying else { return }
+        guard !reduceMotion, scene.lift(book.id) else {
+            showsBook = true
+            open(book)
+            return
+        }
+        liftRevision &+= 1
+        let revision = liftRevision
+        lifted = Lifted(book: book)
+        showsDetails = true
+        Task {
+            try? await Task.sleep(for: .seconds(PileFlight.landing))
+            guard liftRevision == revision else { return }
+            withAnimation(.easeOut(duration: 0.25)) { lifted?.showsText = true }
+            AccessibilityNotification.ScreenChanged(nil).post()
+            #if DEBUG
+                // Simulator hook: `-BookwormsPileBack <seconds>` goes back that long after the
+                // details appear.
+                guard
+                    let delay = UserDefaults.standard.string(forKey: "BookwormsPileBack")
+                        .flatMap(Double.init)
+                else { return }
+                try? await Task.sleep(for: .seconds(delay))
+                if liftRevision == revision { returnBook() }
+            #endif
+        }
+    }
+
+    /// Gives the pile its controls again and fades the details out, then throws the book back
+    /// into the pile.
+    ///
+    /// Changing the bars can hold up the screen for a moment, which a still book hides and a
+    /// flying one would show as a jump, so they change first. The details leave the hierarchy
+    /// once the book lands, since nothing can see or reach them by then.
+    private func returnBook() {
+        guard let current = lifted, !current.isReturning else { return }
+        liftRevision &+= 1
+        let revision = liftRevision
+        lifted?.isReturning = true
+        showsDetails = false
+        AccessibilityNotification.ScreenChanged(nil).post()
+        func throwBack() {
+            scene.throwBack()
+            Task {
+                try? await Task.sleep(for: .seconds(Double(PileFlight.whipDuration) + 0.2))
+                if liftRevision == revision { lifted = nil }
+            }
+        }
+        // Before the book lands, the details have not appeared.
+        guard current.showsText else { return throwBack() }
+        withAnimation(.easeIn(duration: 0.2)) {
+            lifted?.showsText = false
+        } completion: {
+            if liftRevision == revision { throwBack() }
+        }
+    }
+
+    /// Closes the details at once, if they show, and puts the book back in the pile.
+    private func putBack() {
+        guard lifted != nil else { return }
+        liftRevision &+= 1
+        lifted = nil
+        showsDetails = false
+        scene.dropLifted()
     }
 
     private var moveCamera: some Gesture {
@@ -202,6 +363,25 @@ struct BookPileView: View {
                     in: viewport?.size ?? .zero)
             }
     }
+
+    #if DEBUG
+        /// Whether `-BookwormsOpenBook` has opened its book, which it does once per launch.
+        @MainActor private static var openedDebugBook = false
+
+        /// Simulator hook: `-BookwormsOpenBook <book ID>` opens that book, as a tap does, four
+        /// seconds after the drop finishes.
+        private func openDebugBook() async {
+            guard !Self.openedDebugBook,
+                let id = UserDefaults.standard.string(forKey: "BookwormsOpenBook")
+                    .flatMap(Int.init),
+                let book = books.first(where: { $0.id == id })
+            else { return }
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            Self.openedDebugBook = true
+            show(book)
+        }
+    #endif
 }
 
 extension TimeFrame {
