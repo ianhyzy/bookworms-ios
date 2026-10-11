@@ -74,7 +74,7 @@ The **Shelf** tab shows every book as a spine in its saved design, or in a plain
 
 - **Stack** (default) lays the spines flat and scrolls them vertically as a 3D wheel.
 - **Shelf** stands the spines upright, as on the Apple TV, and scrolls them horizontally like Cover Flow.
-- **3D** shows the books in a 3D scene, on a wooden desk under a lamp at night. Its one view today is the Pile, which drops the current year's books, another year's or month's, or up to 300 books, onto the desk as a physics toy, and shares the pile as an image. See [Pile](#pile). **Sort and filter** offers a **View** menu only when 3D has more than one view; the app saves the choice, and every view shares the time frame.
+- **3D** shows the books in a 3D scene, on a wooden desk under a lamp at night. Its views are the Pile, which drops the current year's books, another year's or month's, or up to 300 books, onto the desk as a physics toy and shares the pile as an image, and Dominoes, which stands the time frame's books on end in the order you finished them, spaced by the days between finishes, and topples them. See [Pile](#pile) and [Dominoes](#dominoes). **Sort and filter** offers a **View** menu only when 3D has more than one view; the app saves the choice, and every view shares the time frame.
 - The caption shows the centered book's title, author, finish date, and your rating. Sort by finish date, title, author, or rating, or show designed books only.
 - Tap the centered spine for details: a 3D book you can turn with a drag, its reading details, the design's font and colors, **Change cover**, and **Share**.
 
@@ -130,6 +130,26 @@ With Reduce Motion off, tapping a book lifts it out of the pile and into its det
 - One pile image renders at a time, and a render waits for one that is still finishing after its task was cancelled. `RealityRenderer` steps the same RealityKit engine that draws the live pile, and RealityKit's render thread can crash drawing the pile's meshes meanwhile. While any pile image renders, from the sheet or the Share tab, the live pile's table and books therefore leave its scene, and the simulation starts 100 milliseconds later, so the view can react first. The pile's `RealityView` puts them back when the render ends. RealityKit keeps updating a `RealityView` in a tab that is not selected, so this matters when the Shelf tab was left in **3D**. The view itself stays: one removed while its tab is hidden lingers until the tab shows again and then takes its scene along.
 
 Offscreen rendering, physics stepping, and the image itself have been checked only in the Simulator. Check them on a device.
+
+### Dominoes
+
+**Dominoes**, the second view in **3D**, stands the time frame's books on end in the order you finished them, oldest first, and topples them. Choose it from **View** in **Sort and filter**. It shares the Pile's time frame (see [Pile](#pile)), and choosing another time frame stands that period's books in a new chain.
+
+- Up to 300 books stand, the most recently finished. Under **All books**, books without a finish date, such as current reads, stand last, as if finished today.
+- The path starts at the top left and winds across the table in rows 40 cm apart, joined by half turns. The rows are long enough for the path to take about the shape of the visible table, up to 7.2 m, and the path reaches about 7.2 m deep at most, so even 300 books fit on the 9-meter table. Each book faces back along the path, so it falls onto its back cover, front cover up.
+- The days between finishes space the books (`DominoLayout.gap(days:height:)`). A toppling book pivots on its front bottom edge, so its head reaches at most its own height, 21 to 24 cm, past that edge. That height is its reach.
+  - Books finished within 29 days of each other stand within reach. The gap from one book's front cover to the next book's back cover is 15 percent of the first book's height for books finished the same day and grows evenly to 54 percent at 29 days. A reading binge is a tight run that falls in a quick clatter, and the falling book strikes the next one at least 84 percent of the way up.
+  - Thirty days or more without a finish is a slump. Its gap is 1.25 times the first book's height, a quarter of a book beyond reach, plus another quarter for each doubling of the slump's length, up to 1.75 times at 120 days or more. The falling book lands short, and the chain stops there.
+  - On the turns, books stand farther apart where needed to keep their inner corners 5 mm apart. Those gaps stay within reach.
+- Tap the first book to topple the chain. The chain counts as stopped when no book has started to fall for a second, and a hint at the bottom of the screen says to tap the next standing book, which nudges the chain on. The chain can also stop outside a slump, such as on a turn, wherever a book stays standing; tap that book the same way.
+- Tap any other book, or touch and hold any book, for its details, which push as they do from **Stack** and **Shelf**. When you come back, the chain is as you left it. **Set up again** stands every book again.
+- The view first frames the whole path. After a push, the camera eases after the falling books, closer in, and once every book has fallen, it eases back to the whole path. Pinch to zoom toward a point, and drag to look along the path; either stops the camera from following until the next push. With **Reduce Motion** on, the camera stays where you leave it, and no dust drifts in the lamp's beam.
+- The lamp's pool of light covers the whole path. Books clack and play haptic taps as they do in the Pile, and a push plays a light tap. Turn **Sounds** off in **Sort and filter** to silence them. Tilt does not move the dominoes, so **Sort and filter** offers **Tilt to move books** only for the Pile.
+- Switching to another tab, **Stack**, **Shelf**, or the Pile releases the books and their textures, and they stand again when you return. While a pile image renders, the dominoes leave their scene, as the live pile does (see [Share the pile](#share-the-pile)).
+
+VoiceOver reads the chain as one element with its book count, its time frame, and how far it has fallen. It offers **Push the next book** while the chain waits for a push, and **Set up again**, and it announces when the chain stops. The chain's physics, such as whether every tight run and turn falls through and whether 300 standing books stay up, the camera's following, the frame rate, and the sounds have not been checked in the Simulator or on a device.
+
+In Debug builds, `-BookwormsShelfMode pile -BookwormsThreeDView dominoes` opens Dominoes, and `-BookwormsDominoPush <seconds>` pushes the next book whenever the chain has stood or stopped that long.
 
 ### Share
 
