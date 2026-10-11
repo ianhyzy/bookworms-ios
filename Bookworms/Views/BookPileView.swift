@@ -10,19 +10,21 @@ struct PileViewport: Equatable {
 /// The library as a physics toy: the first `maximumBooks` books drop onto a table and pile up.
 ///
 /// Drag a book to pick it up and throw it, tap one for its details, pinch to zoom, and turn two
-/// fingers to look around the pile. Tilting the phone tips the table, when the phone reports
-/// motion and the shelf's **Tilt to move books** is on. Collisions play haptic taps and, while
-/// the shelf's **Sounds** is on, knocks (`ImpactFeedback`), only while the pile shows in the
-/// active app. With Reduce Motion on, books appear in tidy stacks instead of falling, tilt is
-/// off, and no dust drifts in the lamp's beam. The table fills the screen, but walls keep the
-/// books between the bars.
+/// fingers to look around the pile. When the phone reports motion, the shelf's **Tilt** tips the
+/// table or makes the phone the pile's box (`PileTilt`), and in either a hard shake throws the
+/// books. With the shelf's drop by period on, the books drop a month, week, or year at a time
+/// (see `PileLayout.periods`). Collisions play haptic taps and, while the shelf's **Sounds** is
+/// on, knocks (`ImpactFeedback`), only while the pile shows in the active app. With Reduce
+/// Motion on, books appear in tidy stacks instead of falling, tilt and shaking are off, and no
+/// dust drifts in the lamp's beam. The table fills the screen, but walls keep the books between
+/// the bars.
 ///
 /// A tapped book rises out of the pile and flies to where `BookDetailView` draws its book, and
 /// the details fade in over the darkened pile once it lands. The details' own book is a
 /// transparent stand-in that places and turns the pile's book, so the same model scrolls and
-/// turns with the details. While they show, the pile's gestures, tilt, and controls, and the
-/// shelf's (through `showsDetails`), give way to **Back**. **Back** fades the details out,
-/// returns the controls, and throws the book back into the pile. With Reduce Motion on, or
+/// turns with the details. While they show, the pile's gestures, tilt, shaking, and controls,
+/// and the shelf's (through `showsDetails`), give way to **Back**. **Back** fades the details
+/// out, returns the controls, and throws the book back into the pile. With Reduce Motion on, or
 /// when the pile cannot lift the book, a tap calls `open` to push the details instead.
 /// Returning from pushed details, or from the Share tab that the lifted book's **Share** opens,
 /// finds the pile as the reader left it. Leaving the pile any other way, such as for another
@@ -31,7 +33,7 @@ struct PileViewport: Equatable {
 ///
 /// **Share** makes an image of `books`, up to `PileSnapshotRenderer.maximumBooks` of them, in a
 /// new pile headed `title`. While its sheet is open, the pile leaves the screen and keeps its
-/// books, and tilt pauses, as it does while the app is not active.
+/// books, and tilt and shaking pause, as they do while the app is not active.
 ///
 /// RealityKit's render thread can crash drawing this view while a share image's offscreen
 /// renderer steps the same engine, so while any pile image renders, such as the Share tab's
@@ -47,6 +49,8 @@ struct BookPileView: View {
     let books: [CloudBook]
     /// The name of the books' time frame, which heads the share image.
     let title: String
+    /// The books' time frame, or `nil` for every book, which a drop by period goes through.
+    var frame: TimeFrame? = nil
     /// Set while a lifted book's details show over the pile, when the shelf hides its controls.
     @Binding var showsDetails: Bool
     let open: (CloudBook) -> Void
@@ -55,8 +59,10 @@ struct BookPileView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
-    /// Set by **Tilt to move books** in the shelf's **Sort and filter** menu.
-    @AppStorage("BookwormsPileTilt") private var tilts = true
+    /// Set by **Tilt** in the shelf's **Sort and filter** menu.
+    @AppStorage("BookwormsPileTiltMode") private var tilt = PileTilt.table
+    /// Set by the drop by period toggle in the shelf's **Sort and filter** menu.
+    @AppStorage("BookwormsPileByPeriod") private var dropsByPeriod = false
     /// Set by **Sounds** in the shelf's **Sort and filter** menu.
     @AppStorage("BookwormsThreeDSounds") private var sounds = true
     @State private var scene = BookPileScene()
@@ -86,6 +92,7 @@ struct BookPileView: View {
     private struct DropRequest: Equatable {
         let ids: [Int]
         let tidy: Bool
+        let periods: TimeFrame?
         let generation: Int
         let viewport: PileViewport?
     }
@@ -165,17 +172,18 @@ struct BookPileView: View {
         }
         .task(
             id: DropRequest(
-                ids: dropped.map(\.id), tidy: reduceMotion, generation: generation,
-                viewport: viewport)
+                ids: dropped.map(\.id), tidy: reduceMotion, periods: periods,
+                generation: generation, viewport: viewport)
         ) {
             guard let viewport else { return }
             scene.planDrop(
-                dropped, tidy: reduceMotion, generation: generation, viewport: viewport)
+                dropped, tidy: reduceMotion, periods: periods, generation: generation,
+                viewport: viewport)
             // A new pile, such as one without the lifted book, removed it.
             if let lifted, scene.liftedID != lifted.book.id { putBack() }
             await scene.fill(
-                dropped, tidy: reduceMotion, generation: generation, viewport: viewport,
-                model: model)
+                dropped, tidy: reduceMotion, periods: periods, generation: generation,
+                viewport: viewport, model: model)
             #if DEBUG
                 await openDebugBook()
             #endif
@@ -196,9 +204,9 @@ struct BookPileView: View {
         .onDisappear {
             isShown = false
             scene.endDrag()
-            scene.setTilt(false)
-            // A view removed from the hierarchy, such as for Jenga, gets no `playsFeedback`
-            // change, so this releases the engines and the audio session.
+            scene.setTilt(tiltMode, tracking: false)
+            // A view removed from the hierarchy, such as for another 3D view, gets no
+            // `playsFeedback` change, so this releases the engines and the audio session.
             scene.feedback.stop()
             guard !showsBook else { return }
             putBack()
@@ -211,7 +219,8 @@ struct BookPileView: View {
             scene.root.removeFromParent()
         }
         // Stops sampling motion while nothing reads it, and takes a new reference afterward.
-        .onChange(of: tracksTilt) { scene.setTilt(tracksTilt) }
+        .onChange(of: tracksMotion) { scene.setTilt(tiltMode, tracking: tracksMotion) }
+        .onChange(of: tiltMode, initial: true) { scene.setTilt(tiltMode, tracking: tracksMotion) }
         .onChange(of: sounds, initial: true) { scene.feedback.playsSounds = sounds }
         // Keeps the haptic and audio engines only while collisions can be seen.
         .onChange(of: playsFeedback, initial: true) {
@@ -274,10 +283,14 @@ struct BookPileView: View {
         .accessibilityAction(.escape, returnBook)
     }
 
-    private var tiltIsOn: Bool { tilts && !reduceMotion }
+    private var tiltMode: PileTilt { reduceMotion ? .off : tilt }
+    /// The frame a drop goes through period by period, or `nil` for a drop in waves.
+    private var periods: TimeFrame? { dropsByPeriod && !reduceMotion ? frame ?? .lifetime : nil }
     private var playsFeedback: Bool { isShown && !sharesPile && scenePhase == .active }
-    private var tracksTilt: Bool {
-        isShown && tiltIsOn && !sharesPile && lifted == nil && scenePhase == .active
+    /// Whether the pile may sample motion, for tilt and shakes, which **Tilt**'s **Off** turns
+    /// off too (see `BookPileScene.setTilt`).
+    private var tracksMotion: Bool {
+        isShown && !reduceMotion && !sharesPile && lifted == nil && scenePhase == .active
     }
 
     /// The number of books, such as "39 books", or "300 of 1,024 books" past `maximumBooks`.

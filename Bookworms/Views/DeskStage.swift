@@ -85,6 +85,11 @@ final class DeskStage {
         entity.components.set(ImageBasedLightReceiverComponent(imageBasedLight: lighting))
     }
 
+    /// Gives the lamp `color`, such as a season's tint, or its usual `lampColor` for `nil`.
+    func setLampColor(_ color: UIColor?) {
+        lamp.light.color = color ?? Self.lampColor
+    }
+
     /// Shows or hides the dust drifting through the lamp's beam. Reduce Motion hides it, as
     /// motion the reader did not start.
     func setDust(_ enabled: Bool) {

@@ -115,7 +115,7 @@ struct YearInBooks: Equatable {
     }
 
     /// Sorts `books`, already in `frame` and earliest first, into the frame's chart columns.
-    private static func columns(for frame: TimeFrame, books: [CloudBook]) -> [Column] {
+    static func columns(for frame: TimeFrame, books: [CloudBook]) -> [Column] {
         // `finishedDate` validated each `finished` as `yyyy-MM-dd`, so these parse.
         func part(_ book: CloudBook, _ offset: Int, _ length: Int) -> Int {
             Int(book.finished?.dropFirst(offset).prefix(length) ?? "") ?? 0

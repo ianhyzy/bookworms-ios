@@ -287,6 +287,8 @@ struct PileSlot {
     let book: CloudBook
     var transform: Transform
     var spin: SIMD3<Float> = .zero
+    /// The book's index among a drop's `PilePeriod`s, when the pile drops period by period.
+    var period = 0
 }
 
 /// Book sizes, starting poses, and tilt gravity for the pile. Poses are repeatable for a seed.
@@ -488,12 +490,22 @@ enum PileLayout {
 /// `coverWait` for its covers, so the first books fall within a second or two while later
 /// covers download. A new drop reuses the parts of books whose look has not changed. While the
 /// view shows the scene, collisions play taps and sounds through `feedback`.
+///
+/// While it follows motion (`setTilt`), the pile tilts as `PileTilt` says, and a hard shake
+/// throws the books. In **Phone is the box**, the box's walls and glass (`PileBox`) close once
+/// nothing waits to fall, and gravity follows the phone while they are closed.
 @MainActor
 final class BookPileScene {
     /// The scene root, which runs the physics simulation.
     let root = Entity()
-    /// Whether the device reports motion, which tilt needs. The Simulator does not.
-    static let canTilt = CMMotionManager().isDeviceMotionAvailable
+    /// Whether the device reports motion, which tilt and shaking need. The Simulator does not,
+    /// unless a Debug build fakes it with `-BookwormsPileGravity`.
+    static let canTilt: Bool = {
+        #if DEBUG
+            if debugGravity != nil { return true }
+        #endif
+        return CMMotionManager().isDeviceMotionAvailable
+    }()
 
     private static let coverWait = Duration.seconds(1.5)
 
@@ -522,6 +534,18 @@ final class BookPileScene {
     /// start.
     private var holdsStill = false
     private var tiltReference: SIMD3<Double>?
+    private var tilt = PileTilt.off
+    /// Whether motion is sampled, for tilt and shakes.
+    private var tracksMotion = false
+    /// Counts down the seconds until a shake can throw the books again.
+    private var shakeRest: TimeInterval = 0
+    /// The box of **Phone is the box**, fitted with the tray, and its walls, which are in the
+    /// scene while it is closed.
+    private var box: PileBox?
+    private let boxWalls = Entity()
+    /// The drop's periods, when the pile drops period by period.
+    private var periods: [PilePeriod]?
+    private let calendar = PileCalendar()
     private var gravity = SIMD3<Float>(0, -PileLayout.gravity, 0)
     private var updates: EventSubscription?
     private var collisions: EventSubscription?
@@ -580,6 +604,7 @@ final class BookPileScene {
     private struct PlanKey: Equatable {
         let ids: [Int]
         let tidy: Bool
+        let periods: TimeFrame?
         let generation: Int
     }
 
@@ -610,6 +635,7 @@ final class BookPileScene {
         root.addChild(camera)
         root.addChild(stage.root)
         root.addChild(shelf)
+        root.addChild(calendar.label)
         factory.coverArrived = { [weak self] id, material in self?.retexture(id, cover: material) }
     }
 
@@ -647,6 +673,7 @@ final class BookPileScene {
     private func build(_ viewport: PileViewport) {
         guard tray == nil, let tray = PileTray(viewport: viewport) else { return }
         aspect = Float(viewport.size.width / viewport.size.height)
+        box = PileBox(viewport: viewport)
         build(tray)
     }
 
@@ -701,17 +728,23 @@ final class BookPileScene {
     /// Plans a drop of `books`, or tidy stacks when `tidy`, as `fill` does, without dropping
     /// any. Call it before `fill` to learn at once whether the plan kept the lifted book.
     ///
-    /// Books added to a dropped list, such as a newly designed book under **Designed only**,
-    /// join the books still waiting, when the list keeps the earlier books in their order. Any
-    /// other change starts a new pile, which removes every book, the lifted one too.
+    /// With `periods` set, the books drop period by period through that frame (see
+    /// `PileLayout.periods`). Otherwise, books added to a dropped list, such as a newly
+    /// designed book under **Designed only**, join the books still waiting, when the list keeps
+    /// the earlier books in their order. Any other change starts a new pile, which removes
+    /// every book, the lifted one too.
     func planDrop(
-        _ books: [CloudBook], tidy: Bool, generation: Int, viewport: PileViewport
+        _ books: [CloudBook], tidy: Bool, periods: TimeFrame? = nil, generation: Int,
+        viewport: PileViewport
     ) {
         build(viewport)
         guard let tray else { return }
-        let key = PlanKey(ids: books.map(\.id), tidy: tidy, generation: generation)
+        let periods = tidy ? nil : periods
+        let key = PlanKey(
+            ids: books.map(\.id), tidy: tidy, periods: periods, generation: generation)
         guard key != planKey else { return }
-        if !tidy, let planKey, !planKey.tidy, planKey.generation == generation,
+        if !tidy, periods == nil, let planKey, !planKey.tidy, planKey.periods == nil,
+            planKey.generation == generation,
             let added = PileLayout.added(to: planKey.ids, in: books)
         {
             // Plans the waiting books again with the new ones, so the next wave starts in a
@@ -720,6 +753,23 @@ final class BookPileScene {
             plan =
                 Array(plan[..<spawned])
                 + PileLayout.dropPlan(waiting, in: tray, seed: UInt64(generation))
+        } else if let periods {
+            reset(keeping: Set(key.ids))
+            let groups = PileLayout.periods(books, frame: periods)
+            // Each period fills a fresh set of cells, from its own seed.
+            plan = groups.enumerated()
+                .flatMap { index, group in
+                    PileLayout.dropPlan(
+                        group.books, in: tray, seed: UInt64(generation) &+ UInt64(index) &* 7919
+                    )
+                    .map { slot in
+                        var slot = slot
+                        slot.period = index
+                        return slot
+                    }
+                }
+            self.periods = groups
+            holdsStill = false
         } else {
             reset(keeping: Set(key.ids))
             plan =
@@ -729,6 +779,8 @@ final class BookPileScene {
             holdsStill = tidy
         }
         planKey = key
+        // Opens the box before the new books spawn above it.
+        updateBox()
     }
 
     /// Drops `books` onto the table, or stacks them when `tidy`, continuing a drop that an
@@ -737,23 +789,48 @@ final class BookPileScene {
     /// Books added to a dropped list fall onto the pile as it is, after the books still
     /// waiting. Returns when every book is in the pile or the task is cancelled. A cancelled
     /// drop, such as one interrupted by opening a book, resumes at its next wave.
+    ///
+    /// Period by period, a wave never spans two periods, and each period's first wave waits
+    /// `PileLayout.periodInterval` after the last period's, then shows the period's name and
+    /// season through `calendar`.
     func fill(
-        _ books: [CloudBook], tidy: Bool, generation: Int, viewport: PileViewport,
-        model: AppModel
+        _ books: [CloudBook], tidy: Bool, periods: TimeFrame? = nil, generation: Int,
+        viewport: PileViewport, model: AppModel
     ) async {
-        planDrop(books, tidy: tidy, generation: generation, viewport: viewport)
+        planDrop(books, tidy: tidy, periods: periods, generation: generation, viewport: viewport)
         guard tray != nil else { return }
-        let key = PlanKey(ids: books.map(\.id), tidy: tidy, generation: generation)
+        let key = PlanKey(
+            ids: books.map(\.id), tidy: tidy, periods: tidy ? nil : periods,
+            generation: generation)
         while spawned < plan.count {
-            let end = min(spawned + PileLayout.waveSize, plan.count)
+            let period = plan[spawned].period
+            let starts = self.periods != nil && (spawned == 0 || plan[spawned - 1].period != period)
+            let full = min(spawned + PileLayout.waveSize, plan.count)
+            let end = plan[spawned..<full].firstIndex { $0.period != period } ?? full
             let wave = plan[spawned..<end]
             let next = plan[end..<min(end + PileLayout.waveSize, plan.count)]
             await factory.prepare(
                 wave.map(\.book), prefetching: next.map(\.book), coverWait: Self.coverWait,
                 model: model)
-            if !tidy { try? await Task.sleep(until: lastWave + PileLayout.waveInterval) }
+            // Renders the period's name while its books wait to fall.
+            let group = starts ? self.periods?[period] : nil
+            var label: TextureResource?
+            if let group, let span = group.span {
+                label = await PileCalendar.texture(
+                    YearInBooksCard.busiest(span, isCompact: false).value, season: group.season)
+            }
+            if !tidy {
+                try? await Task.sleep(
+                    until: lastWave
+                        + (starts ? PileLayout.periodInterval : PileLayout.waveInterval))
+            }
             guard !Task.isCancelled, planKey == key else { return }
             for slot in wave { spawn(slot, mode: holdsStill ? .kinematic : .dynamic) }
+            if let group, let groups = self.periods {
+                calendar.show(
+                    isFlying ? nil : label, season: group.season,
+                    isLast: period == groups.count - 1, facing: view)
+            }
             spawned += wave.count
             lastWave = .now
         }
@@ -773,6 +850,9 @@ final class BookPileScene {
         whip = nil
         showVeil(0, behind: nil)
         spawned = 0
+        periods = nil
+        calendar.reset()
+        stage.setLampColor(nil)
         factory.release(keeping: ids)
         view = PileCamera()
         #if DEBUG
@@ -905,13 +985,26 @@ final class BookPileScene {
             drag.book.components.set(PhysicsMotionComponent(linearVelocity: velocity))
             self.drag?.velocity = velocity
         }
-        if motion.isDeviceMotionActive, let reading = motion.deviceMotion?.gravity {
-            let device = SIMD3(reading.x, reading.y, reading.z)
-            if tiltReference == nil { tiltReference = device }
-            setGravity(
-                PileLayout.gravity(
-                    device: device, reference: tiltReference ?? device, yaw: view.yaw))
+        if tilt == .box {
+            updateBox()
+            if !isFlying { squareView(by: Float(deltaTime)) }
         }
+        if let reading = motionReading() {
+            switch tilt {
+            case .table:
+                let device = reading.gravity
+                if tiltReference == nil { tiltReference = device }
+                setGravity(
+                    PileLayout.gravity(
+                        device: device, reference: tiltReference ?? device, yaw: view.yaw))
+            case .box where boxWalls.parent != nil:
+                setGravity(PileLayout.boxGravity(device: reading.gravity, camera: view.rotation))
+            default: break
+            }
+            shakeRest -= deltaTime
+            shake(reading.acceleration)
+        }
+        if let color = calendar.advance(by: Float(deltaTime)) { stage.setLampColor(color) }
     }
 
     /// Picks up `entity` if it is a book, or moves the held book under the finger on `ray`.
@@ -941,7 +1034,10 @@ final class BookPileScene {
                 target: [position.x, height, position.z])
         }
         guard let drag, let point = PileCamera.intersect(ray, height: drag.height) else { return }
-        self.drag?.target = tray.clamp(point + drag.offset, margin: 1)
+        let target = tray.clamp(point + drag.offset, margin: 1)
+        // A held book is kinematic, which walls do not stop.
+        self.drag?.target =
+            boxWalls.parent != nil ? box?.clamp(target, margin: 1.2) ?? target : target
     }
 
     /// Lets go of the held book with the velocity it had, tumbling forward a little.
@@ -960,7 +1056,8 @@ final class BookPileScene {
         book.components[PhysicsBodyComponent.self]?.mode = mode
     }
 
-    /// Zooms toward the point under `focus` and turns the camera about the pile.
+    /// Zooms toward the point under `focus` and turns the camera about the pile. In **Phone is
+    /// the box**, the camera only zooms, since the box fits the unturned view.
     func moveCamera(magnification: CGFloat, rotation: Angle, focus: CGPoint?, in size: CGSize) {
         guard let tray, size.width > 0, size.height > 0 else { return }
         if cameraMove == nil {
@@ -972,7 +1069,7 @@ final class BookPileScene {
         }
         guard let move = cameraMove else { return }
         view.zoom = PileCamera.zoomRange.clamp(move.start.zoom * Float(magnification))
-        view.yaw = move.start.yaw - Float(rotation.radians)
+        if tilt != .box { view.yaw = move.start.yaw - Float(rotation.radians) }
         // Keeps the focus point in place while zooming. Zoomed out fully, the camera returns
         // to the tray's center, and zoomed in it may move only as far as the tray reaches.
         let target = move.focus + (move.start.target - move.focus) * move.start.zoom / view.zoom
@@ -985,6 +1082,16 @@ final class BookPileScene {
     }
 
     func endCameraMove() { cameraMove = nil }
+
+    /// Eases a turned view back to the nearest whole turn, where the box of **Phone is the
+    /// box** fits it: its glass parallel to the screen and its sides along the screen's edges.
+    private func squareView(by deltaTime: Float) {
+        let square = (view.yaw / (2 * .pi)).rounded() * 2 * .pi
+        guard view.yaw != square else { return }
+        view.yaw += (square - view.yaw) * min(1, deltaTime * 4)
+        if abs(view.yaw - square) < 0.002 { view.yaw = square }
+        camera.transform = view.transform
+    }
 
     // MARK: Details
 
@@ -1006,6 +1113,7 @@ final class BookPileScene {
         else { return nil }
         endDrag()
         cameraMove = nil
+        calendar.endGlow()
         let others = shelf.children.filter { $0 !== book }
             .map { $0.visualBounds(relativeTo: root) }
         setMode(.kinematic, of: book)
@@ -1273,19 +1381,101 @@ final class BookPileScene {
             OpacityComponent(opacity: level * min(1, max(0, (pileDepth - veilDepth) / 4))))
     }
 
-    // MARK: Tilt
+    // MARK: Tilt and shake
 
-    /// Starts or stops following the phone's tilt. Stopping returns gravity to straight down.
-    func setTilt(_ enabled: Bool) {
-        if enabled {
-            guard Self.canTilt, !motion.isDeviceMotionActive else { return }
-            motion.deviceMotionUpdateInterval = 1 / 30
-            motion.startDeviceMotionUpdates()
-        } else {
-            motion.stopDeviceMotionUpdates()
-            tiltReference = nil
-            setGravity([0, -PileLayout.gravity, 0])
+    /// Sets how the pile follows the phone's tilt, and starts or stops sampling motion, which
+    /// tilt and shakes need. `.off` samples nothing. Without sampling, gravity points straight
+    /// down, except in a closed box, which keeps its last gravity until sampling resumes, since
+    /// the phone has not moved for it. A new mode or a new start of sampling in `.table` takes
+    /// a new reference.
+    func setTilt(_ tilt: PileTilt, tracking: Bool) {
+        let tracking = tracking && tilt != .off && Self.canTilt
+        if tilt != self.tilt || tracking != tracksMotion { tiltReference = nil }
+        self.tilt = tilt
+        if tracking != tracksMotion {
+            tracksMotion = tracking
+            if tracking {
+                // Shakes peak for a few hundredths of a second.
+                motion.deviceMotionUpdateInterval = 1 / 60
+                motion.startDeviceMotionUpdates()
+            } else {
+                motion.stopDeviceMotionUpdates()
+            }
         }
+        // In `.box`, the next update gives the box's gravity once the box is closed.
+        let keepsGravity =
+            (tracking && tilt == .table) || (tilt == .box && boxWalls.parent != nil)
+        if !keepsGravity { setGravity([0, -PileLayout.gravity, 0]) }
+        updateBox()
+    }
+
+    /// The device's gravity and the acceleration the user gives it, in g in the device's axes,
+    /// while motion is sampled.
+    private func motionReading() -> (gravity: SIMD3<Double>, acceleration: SIMD3<Double>)? {
+        guard tracksMotion else { return nil }
+        if let sample = motion.deviceMotion {
+            return (
+                [sample.gravity.x, sample.gravity.y, sample.gravity.z],
+                [sample.userAcceleration.x, sample.userAcceleration.y, sample.userAcceleration.z]
+            )
+        }
+        #if DEBUG
+            if let gravity = Self.debugGravity { return (gravity, .zero) }
+        #endif
+        return nil
+    }
+
+    /// Throws every free book against a hard shake's jolt (see `PileLayout.shakeKick`), each a
+    /// little differently and tumbling, at most once per `PileLayout.shakeRest`. The books'
+    /// hits play through `feedback` as any others do. Held, lifted, and returning books, and
+    /// Reduce Motion's still stacks, stay put.
+    private func shake(_ acceleration: SIMD3<Double>) {
+        guard shakeRest <= 0, !holdsStill,
+            let kick = PileLayout.shakeKick(
+                acceleration: acceleration, camera: view.rotation, up: -simd_normalize(gravity))
+        else { return }
+        shakeRest = PileLayout.shakeRest
+        let speed = simd_length(kick)
+        for case let book as ModelEntity in shelf.children
+        where book !== drag?.book && book !== whip?.flight.book
+            && book.components[PhysicsBodyComponent.self]?.mode == .dynamic
+        {
+            let mass = book.components[PhysicsBodyComponent.self]?.massProperties.mass ?? 0.5
+            book.applyLinearImpulse(
+                (kick + .random(in: -0.35...0.35) * speed) * mass, relativeTo: nil)
+            book.applyAngularImpulse(.random(in: -1...1) * mass * 2, relativeTo: nil)
+        }
+    }
+
+    /// Closes the box of **Phone is the box** once nothing waits to fall, a second after the
+    /// last wave, and opens it in the other modes, while books wait to fall, which start above
+    /// it, and while a book flies to or from its details, with gravity straight down until it
+    /// closes again.
+    ///
+    /// Books past the glass or the sides when it closes, such as one high on the pile against
+    /// the far wall, which the box's top side cuts off, move just inside them. They are off
+    /// screen there. Books lying on the table stay put.
+    private func updateBox() {
+        let closes =
+            tilt == .box && !holdsStill && !isFlying && spawned == plan.count
+            && ContinuousClock.now - lastWave > .seconds(1)
+        guard closes != (boxWalls.parent != nil) else { return }
+        guard closes else {
+            boxWalls.removeFromParent()
+            setGravity([0, -PileLayout.gravity, 0])
+            return
+        }
+        guard let box else { return }
+        if boxWalls.children.isEmpty { boxWalls.addChild(box.makeWalls(group: Self.wallGroup)) }
+        for case let book as ModelEntity in shelf.children where book !== drag?.book {
+            let position = book.position(relativeTo: root)
+            guard !box.contains(position, margin: 0.3) else { continue }
+            // ponytail: the book may land inside another and be pushed apart; check the
+            // books near it if that ever shows.
+            book.setPosition(box.clamp(position, margin: 1.2), relativeTo: root)
+            book.components.set(PhysicsMotionComponent())
+        }
+        root.addChild(boxWalls)
     }
 
     /// Changes gravity and wakes the books, which sleeping bodies need to notice the change.
@@ -1300,10 +1490,27 @@ final class BookPileScene {
     }
 
     #if DEBUG
+        /// Simulator hook: `-BookwormsPileGravity <x,y,z>` stands in for the device's gravity,
+        /// in g in its axes, while the pile samples motion, so the tilt modes work without
+        /// motion hardware. For example, `0,0,1` holds the phone face down.
+        private static let debugGravity = vector("BookwormsPileGravity")
+
+        /// The launch argument `key` as a vector of three comma-separated numbers. Spaces
+        /// around a number are ignored, so a value can start with a space before a minus sign,
+        /// which would otherwise make the argument parser read it as a key.
+        private static func vector(_ key: String) -> SIMD3<Double>? {
+            let parts = UserDefaults.standard.string(forKey: key)?.split(separator: ",")
+                .compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+            guard let parts, parts.count == 3 else { return nil }
+            return SIMD3(parts[0], parts[1], parts[2])
+        }
+
         /// Simulator hooks that run once a drop finishes: `-BookwormsPileFocus <book ID>` zooms
         /// all the way in on that book three seconds later, `-BookwormsPileTilt <x,y>` applies a
-        /// device tilt (the change in device gravity, in g), and `-BookwormsPileThrow YES`
-        /// throws the top book through the drag path.
+        /// device tilt (the change in device gravity, in g), `-BookwormsPileShake <x,y,z>`
+        /// shakes the phone with that user acceleration (in g, in the device's axes), and
+        /// `-BookwormsPileThrow YES` throws the top book through the drag path. The last three
+        /// wait four seconds.
         private func runDebugActions() async {
             let defaults = UserDefaults.standard
             if let id = defaults.string(forKey: "BookwormsPileFocus").flatMap(Int.init),
@@ -1318,13 +1525,15 @@ final class BookPileScene {
             let tilt = defaults.string(forKey: "BookwormsPileTilt")?.split(separator: ",")
                 .compactMap { Double($0) }
             let throwsBook = defaults.bool(forKey: "BookwormsPileThrow")
-            guard tilt?.count == 2 || throwsBook else { return }
+            let jolt = Self.vector("BookwormsPileShake")
+            guard tilt?.count == 2 || throwsBook || jolt != nil else { return }
             try? await Task.sleep(for: .seconds(4))
             if let tilt, tilt.count == 2 {
                 setGravity(
                     PileLayout.gravity(
                         device: [tilt[0], tilt[1] - 1, 0], reference: [0, -1, 0], yaw: view.yaw))
             }
+            if let jolt { shake(jolt) }
             guard throwsBook, let book = Array(shelf.children).last else { return }
             let start = book.position(relativeTo: root)
             drag(book, along: (start + [0, 20, 0], [0, -1, 0]))
