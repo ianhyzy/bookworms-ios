@@ -32,6 +32,15 @@ struct DownloadedFont: Sendable {
 /// downloaded again on next use. Requests send no credentials or cookies. Views create fonts from
 /// the file's descriptors and do not register them with Core Text.
 actor GoogleFonts {
+    /// Google Fonts rate limited or failed a request, with the `Retry-After` date when given.
+    ///
+    /// The outage affects every family, so callers retry later instead of trying another one. It
+    /// is not a `CompanionError`, which callers such as `SpineFonts` treat as a lasting problem
+    /// with one family.
+    struct Unavailable: Error {
+        let retryAfter: Date?
+    }
+
     private let root: URL
     private let session: URLSession
     private var catalogCache: (families: [String: Bool], fetchedAt: Date)?
@@ -51,8 +60,8 @@ actor GoogleFonts {
     /// Downloads `family` and returns the non-italic instance whose weight is closest to `weight`.
     ///
     /// Throws `CompanionError.invalidDesign` when the family is missing from the catalog, lacks an
-    /// open-source license, or has no usable file, and `.fontServiceUnavailable` when Google Fonts
-    /// rate limits or fails the request. Network failures throw `URLError`.
+    /// open-source license, or has no usable file, and `Unavailable` when Google Fonts rate limits
+    /// or fails the request. Network failures throw `URLError`.
     func download(family: String, weight: Int) async throws -> DownloadedFont {
         guard try await catalog()[family] == true else { throw CompanionError.invalidDesign }
         let directory = root.appending(path: CloudContract.digest("\(family):\(weight)"))
@@ -234,7 +243,9 @@ actor GoogleFonts {
 
     private func fetch(_ url: URL) async throws -> Data {
         let (data, response) = try await session.data(from: url)
-        guard let response = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard let response = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
         guard response.statusCode == 200 else { throw Self.failure(for: response) }
         guard response.url?.scheme == "https", data.count <= maximumBytes else {
             throw CompanionError.invalidDesign
@@ -244,15 +255,19 @@ actor GoogleFonts {
 
     /// Maps a response other than 200 to an error.
     ///
-    /// A missing family or file (404 or 410) is `.invalidDesign`, so the next ranked family is
-    /// tried. Any other status, such as a rate limit or a server error, is temporary and affects
-    /// every family, so it is `.fontServiceUnavailable` with the `Retry-After` date, when given.
-    static func failure(for response: HTTPURLResponse, now: Date = Date()) -> CompanionError {
-        if [404, 410].contains(response.statusCode) { return .invalidDesign }
-        let retryAfter = response.value(forHTTPHeaderField: "Retry-After").flatMap { value in
-            TimeInterval(value).map { now.addingTimeInterval($0) }
-                ?? (try? Date(value, strategy: .http))
-        }
-        return .fontServiceUnavailable(retryAfter)
+    /// A missing family or file (404 or 410) is `CompanionError.invalidDesign`, so the next
+    /// ranked family is tried. Any other status, such as a rate limit or a server error, is
+    /// `Unavailable`. `Retry-After` must be whole seconds or an HTTP date, and the date is capped
+    /// at `SpineWorker.lastingStopDelay` from `now`, so a hostile or broken header cannot postpone
+    /// generation indefinitely.
+    static func failure(for response: HTTPURLResponse, now: Date = Date()) -> any Error {
+        if [404, 410].contains(response.statusCode) { return CompanionError.invalidDesign }
+        let retryAfter = response.value(forHTTPHeaderField: "Retry-After")
+            .flatMap { value in
+                UInt(value).map { now.addingTimeInterval(TimeInterval($0)) }
+                    ?? (try? Date(value, strategy: .http))
+            }
+            .map { min($0, now.addingTimeInterval(SpineWorker.lastingStopDelay)) }
+        return Unavailable(retryAfter: retryAfter)
     }
 }

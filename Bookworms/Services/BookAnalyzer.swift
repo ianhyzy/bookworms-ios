@@ -506,8 +506,8 @@ actor BookAnalyzer {
         } catch let error as URLError {
             if SpineWorker.offlineErrors.contains(error.code) { throw error }
             throw CompanionError.fontServiceUnavailable(nil)
-        } catch CompanionError.fontServiceUnavailable(let retryAfter) {
-            throw CompanionError.fontServiceUnavailable(retryAfter)
+        } catch let error as GoogleFonts.Unavailable {
+            throw CompanionError.fontServiceUnavailable(error.retryAfter)
         } catch {
             return nil
         }

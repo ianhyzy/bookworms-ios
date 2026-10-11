@@ -124,7 +124,7 @@ final class GenerationTests: XCTestCase {
     }
 
     func testGoogleFontsStatusSeparatesMissingFamiliesFromOutages() throws {
-        func failure(_ status: Int, retryAfter: String? = nil) throws -> CompanionError {
+        func failure(_ status: Int, retryAfter: String? = nil) throws -> any Error {
             let response = try XCTUnwrap(
                 HTTPURLResponse(
                     url: URL(string: "https://fonts.google.com/download/list")!,
@@ -132,20 +132,31 @@ final class GenerationTests: XCTestCase {
                     headerFields: retryAfter.map { ["Retry-After": $0] }))
             return GoogleFonts.failure(for: response, now: now)
         }
+        func outage(_ status: Int, retryAfter: String? = nil) throws -> Date? {
+            try XCTUnwrap(
+                try failure(status, retryAfter: retryAfter) as? GoogleFonts.Unavailable,
+                "\(status) should stop the run"
+            )
+            .retryAfter
+        }
         for status in [404, 410] {
-            guard case .invalidDesign = try failure(status) else {
+            guard case .invalidDesign = try failure(status) as? CompanionError else {
                 return XCTFail("\(status) should only skip the family")
             }
         }
-        guard case .fontServiceUnavailable(nil) = try failure(503) else {
-            return XCTFail("A server error should stop the run")
+        // An outage is not a `CompanionError`, so the shelf's font loader retries the face.
+        XCTAssertFalse(try failure(503) is CompanionError)
+        XCTAssertNil(try outage(503))
+        XCTAssertEqual(try outage(429, retryAfter: "120"), now.addingTimeInterval(120))
+        XCTAssertEqual(
+            try outage(503, retryAfter: "Mon, 12 Jan 1970 14:46:40 GMT"),
+            now.addingTimeInterval(3_600))
+        for header in ["inf", "nan", "-30", "2.5", "1e9"] {
+            XCTAssertNil(try outage(429, retryAfter: header), header)
         }
-        guard case .fontServiceUnavailable(let seconds) = try failure(429, retryAfter: "120"),
-            case .fontServiceUnavailable(let date) = try failure(
-                503, retryAfter: "Wed, 21 Oct 2015 07:28:00 GMT")
-        else { return XCTFail("A rate limit should stop the run") }
-        XCTAssertEqual(seconds, now.addingTimeInterval(120))
-        XCTAssertEqual(date, Date(timeIntervalSince1970: 1_445_412_480))
+        let cap = now.addingTimeInterval(SpineWorker.lastingStopDelay)
+        XCTAssertEqual(try outage(429, retryAfter: "999999999"), cap)
+        XCTAssertEqual(try outage(429, retryAfter: "Fri, 31 Dec 2100 23:59:59 GMT"), cap)
     }
 
     func testSavedRunOutcomeSurvivesRelaunchUntilItsRetryDatePasses() throws {
