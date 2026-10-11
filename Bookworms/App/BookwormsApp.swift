@@ -70,10 +70,17 @@ struct RootView: View {
     var body: some View {
         @Bindable var model = model
         TabView(selection: $model.selectedTab) {
-            Tab("Shelf", systemImage: "books.vertical", value: .shelf) { ShelfView() }
+            // The shelf sets its own tint; this keeps the bar's lamp tint out of its account
+            // sheet, which follows the system appearance.
+            Tab("Shelf", systemImage: "books.vertical", value: .shelf) {
+                ShelfView().tint(.accentColor)
+            }
             Tab("Share", systemImage: "square.and.arrow.up", value: .share) { ShareStudioView() }
             Tab("Spines", systemImage: "wand.and.sparkles", value: .spines) { GenerationView() }
         }
+        // In light appearance, the bar over the shelf's dark wall leaves the default blue with
+        // almost no contrast, so the shelf's lamp marks its selected tab.
+        .tint(model.selectedTab == .shelf ? ShelfPalette.lamp : nil)
         .task { await model.reload() }
         .onChange(of: scenePhase) { _, phase in
             generation.scenePhaseChanged(to: phase)

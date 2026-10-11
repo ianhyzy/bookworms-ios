@@ -9,6 +9,7 @@ struct BookDetailView: View {
 
     @Environment(AppModel.self) private var model
     @Environment(GenerationController.self) private var generation
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var cover: UIImage?
     @State private var choosesCover = false
     /// When the reader last changed the cover here.
@@ -70,7 +71,7 @@ struct BookDetailView: View {
             Text("Redesign the spine?").font(.headline)
             Text("The spine was designed from the previous cover.")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(cardNote)
             if generation.status.isRunning {
                 LabeledContent("Designing spines") { ProgressView() }
             } else {
@@ -88,7 +89,7 @@ struct BookDetailView: View {
                         systemImage: "exclamationmark.triangle"
                     )
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(cardNote)
                 }
             }
         }
@@ -124,7 +125,16 @@ struct BookDetailView: View {
         if !rows.isEmpty {
             Card {
                 ForEach(rows, id: \.0) { row in
-                    LabeledContent(row.0, value: row.1)
+                    // Side by side at accessibility sizes, the label and value break mid-word.
+                    if typeSize.isAccessibilitySize {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.0).foregroundStyle(.secondary)
+                            Text(row.1)
+                        }
+                        .accessibilityElement(children: .combine)
+                    } else {
+                        LabeledContent(row.0, value: row.1)
+                    }
                     if row.0 != rows.last?.0 { Divider() }
                 }
             }
@@ -143,7 +153,11 @@ struct BookDetailView: View {
                         .font(look.font(size: 19))
                 }
                 Divider()
-                HStack(alignment: .top) {
+                let swatches =
+                    typeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+                    : AnyLayout(HStackLayout(alignment: .top))
+                swatches {
                     Swatch(name: "Background", hex: design.backgroundHex, color: look.background)
                     Swatch(name: "Text", hex: design.foregroundHex, color: look.foreground)
                     Swatch(name: "Accent", hex: design.accentHex, color: look.accent)
@@ -153,11 +167,11 @@ struct BookDetailView: View {
             if let design {
                 Text("Created \(design.generatedAt, format: .dateTime.year().month().day())")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(cardNote)
             } else {
                 Text("The spine shows a placeholder cloth until it is designed.")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(cardNote)
             }
         }
     }
@@ -298,6 +312,10 @@ struct Coast: Equatable {
     }
 }
 
+/// Small secondary text on a `Card`. The `.secondary` style reaches only about 4.1:1 on the
+/// card fill, below the 4.5:1 that footnote and caption text need.
+private let cardNote = ShelfPalette.paper.opacity(0.7)
+
 /// A grouped panel on the walnut backdrop.
 private struct Card<Content: View>: View {
     @ViewBuilder let content: Content
@@ -312,21 +330,31 @@ private struct Card<Content: View>: View {
 }
 
 /// One design color: a swatch, its role, and its hex value.
+///
+/// A column for a row of three; at accessibility sizes, where a column breaks the words, a row
+/// with the text beside the swatch.
 private struct Swatch: View {
     let name: String
     let hex: String
     let color: ColorValue
 
+    @Environment(\.dynamicTypeSize) private var typeSize
+
     var body: some View {
-        VStack(spacing: 6) {
+        let isRow = typeSize.isAccessibilitySize
+        let layout =
+            isRow ? AnyLayout(HStackLayout(spacing: 12)) : AnyLayout(VStackLayout(spacing: 6))
+        layout {
             Circle()
                 .fill(color.color)
                 .overlay { Circle().strokeBorder(.white.opacity(0.25), lineWidth: 1) }
                 .frame(width: 40, height: 40)
-            Text(name).font(.caption)
-            Text(hex).font(.caption.monospaced()).foregroundStyle(.secondary)
+            VStack(alignment: isRow ? .leading : .center, spacing: isRow ? 2 : 6) {
+                Text(name).font(.caption)
+                Text(hex).font(.caption.monospaced()).foregroundStyle(cardNote)
+            }
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: isRow ? nil : .infinity)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(name) color, \(hex)")
     }

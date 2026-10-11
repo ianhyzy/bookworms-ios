@@ -15,8 +15,9 @@ struct SpineView: View {
             let thickness = proxy.size.height
             let corner = min(4, thickness * 0.08)
             ZStack {
+                // Flat, because `SpineContrast` checks the lettering against this color alone.
                 RoundedRectangle(cornerRadius: corner)
-                    .fill(look.background.color.gradient)
+                    .fill(look.background.color)
                 relief.clipShape(RoundedRectangle(cornerRadius: corner))
                 bands(length: length, thickness: thickness)
                 lettering(length: length, thickness: thickness)
@@ -62,9 +63,11 @@ struct SpineView: View {
                 .lineLimit(thickness >= 64 ? 2 : 1)
                 .minimumScaleFactor(0.3)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            // A fixed share keeps the author visible however long the title is.
+            // A fixed share keeps the author visible however long the title is. The size stops
+            // growing with thickness at a share of the length, so a thick spine fits the same
+            // name a thinner one does.
             Text(Self.shortAuthor(book.author))
-                .font(look.font(size: max(7, titleSize * 0.55)))
+                .font(look.font(size: min(length * 0.04, max(7, titleSize * 0.55))))
                 .lineLimit(1)
                 .minimumScaleFactor(0.5)
                 .frame(width: length * 0.24, alignment: .trailing)
