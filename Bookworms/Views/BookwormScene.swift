@@ -288,7 +288,7 @@ final class BookwormScene {
         phase = .idle
         clock = 0
         // Opens eyes that a blink left half shut.
-        parts?.eyes.forEach { $0.scale = .init(repeating: 0.3) }
+        for eye in parts?.eyes ?? [] { eye.scale = .init(repeating: 0.3) }
         worm.isEnabled = false
         eatenBooks = 0
         eatenPages = 0
