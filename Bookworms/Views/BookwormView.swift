@@ -16,8 +16,10 @@ import SwiftUI
 struct BookwormView: View {
     /// The finished books the worm eats, in eating order (`BookwormLayout.eatingOrder`).
     let meal: [CloudBook]
-    /// The time frame and book count, such as "2025 · 39 books".
-    let subtitle: String
+    /// The name of the books' time frame.
+    let title: String
+    /// The finished books in the time frame, which the meal holds up to its cap.
+    let finished: Int
 
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -44,12 +46,8 @@ struct BookwormView: View {
     /// other state changes re-evaluate, since reading a finish date parses it.
     init(books: [CloudBook], title: String) {
         meal = BookwormLayout.eatingOrder(books)
-        let finished = books.count { $0.finishedDate != nil }
-        let count =
-            finished > meal.count
-            ? "\(meal.count) of \(finished.formatted()) books"
-            : finished == 1 ? "1 book" : "\(finished.formatted()) books"
-        subtitle = "\(title) · \(count)"
+        finished = books.count { $0.finishedDate != nil }
+        self.title = title
     }
 
     var body: some View {
@@ -71,8 +69,11 @@ struct BookwormView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) { PlayButton(scene: scene) }
             }
-            // Names the time frame, which the toolbar's menu saves across launches.
-            ToolbarItem(placement: .subtitle) { Text(subtitle) }
+        }
+        // Outside the viewport reading, so the block and the tapped book's name sit below the
+        // button.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            FrameChip(title: title, shown: meal.count, total: finished)
         }
     }
 
@@ -93,7 +94,7 @@ struct BookwormView: View {
             .ignoresSafeArea()
             .accessibilityElement()
             .accessibilityLabel("Bookworm")
-            .accessibilityValue(subtitle)
+            .accessibilityValue("\(title), \(FrameChip.books(meal.count, of: finished))")
             .accessibilityHint(
                 "A worm eats your books in the order you finished them. To go through books one at a time, choose Stack or Shelf."
             )
