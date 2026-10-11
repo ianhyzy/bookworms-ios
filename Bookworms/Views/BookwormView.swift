@@ -98,13 +98,15 @@ struct BookwormView: View {
         }
         // Outside `ignoresSafeArea`, the proxy reports the safe area's size and the insets the
         // scene extends past.
-        .onGeometryChange(for: Float.self) { proxy in
+        .onGeometryChange(for: PileViewport.self) { proxy in
             let insets = proxy.safeAreaInsets
-            let width = proxy.size.width + insets.leading + insets.trailing
-            let height = proxy.size.height + insets.top + insets.bottom
-            return height > 0 ? Float(width / height) : 0
+            return PileViewport(
+                size: CGSize(
+                    width: proxy.size.width + insets.leading + insets.trailing,
+                    height: proxy.size.height + insets.top + insets.bottom),
+                insets: insets)
         } action: {
-            scene.setAspect($0)
+            scene.setViewport($0)
         }
         .task(
             id: MealRequest(ids: meal.map(\.id), finished: reduceMotion, generation: generation)
@@ -155,6 +157,7 @@ struct BookwormView: View {
                 guard let id = scene.bookID(for: value.entity),
                     let book = books.first(where: { $0.id == id })
                 else { return }
+                scene.pop(value.entity)
                 withAnimation(.easeOut(duration: 0.2)) { named = book }
             }
     }

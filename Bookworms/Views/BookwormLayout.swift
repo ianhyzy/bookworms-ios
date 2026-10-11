@@ -20,8 +20,9 @@ enum BookwormLayout {
     static let stackPitch = SIMD2<Float>(2.55, 2.2)
     static let bodyRadius: Float = 0.3
     static let headRadius: Float = 0.42
-    /// How far the worm's head stops short of a stack's middle to eat it.
-    static let biteReach: Float = 0.7
+    /// Half a stack's footprint, as (x, z): half a book's typical height, lying along x, and
+    /// half its typical width.
+    static let stackHalfSize = SIMD2<Float>(1.15, 0.75)
     /// How far apart the curled worm's coils lie: a body's width and a little room.
     static let coilGap: Float = bodyRadius * 2.2
     /// The head's speed between stacks, in units per second, before `pace`.
@@ -38,6 +39,20 @@ enum BookwormLayout {
             .enumerated()
             .sorted { ($0.element.1, $0.offset) < ($1.element.1, $1.offset) }
             .map(\.element.0)
+    }
+
+    /// Where the worm's head, at `head`, stops to eat the stack whose middle is at `stack`,
+    /// both as (x, z): on the line between them, just outside the stack's footprint, so the
+    /// mouth reaches into the stack and the face stays in sight. A head already that close
+    /// stays where it is.
+    static func biteSpot(stack: SIMD2<Float>, from head: SIMD2<Float>) -> SIMD2<Float> {
+        let offset = stack - head
+        let distance = simd_length(offset)
+        guard distance > 1e-4 else { return head }
+        let direction = offset / distance
+        let edge = simd_reduce_min(stackHalfSize / simd_max(abs(direction), .init(repeating: 1e-4)))
+        let reach = edge + headRadius * 0.3
+        return distance > reach + 0.1 ? stack - direction * reach : head
     }
 
     /// How many times faster than its usual pace the worm eats `count` books, so a long meal
@@ -129,6 +144,81 @@ enum BookwormLayout {
         let (cosine, sine) = (cos(turn), sin(turn))
         return points.reversed()
             .map { SIMD2($0.x * cosine - $0.y * sine, $0.x * sine + $0.y * cosine) }
+    }
+
+    /// The closest camera that shows every one of `points`, looking down `pitch` radians below
+    /// the horizon, toward -z, with the vertical `fieldOfView`, in a view of width-to-height
+    /// `aspect`. Returns the point the camera looks at and its distance from it.
+    ///
+    /// The points land within `width` of the middle from side to side and between `bottom` and
+    /// `top` from top to bottom, in normalized device coordinates (-1 to 1 each way), so they
+    /// stay clear of the bars over the view's edges. The camera moves in its own image plane,
+    /// so each point's depth depends only on the distance, and the points fit at a distance
+    /// if and only if they fit at every greater one, which a bisection finds.
+    static func framing(
+        _ points: [SIMD3<Float>], pitch: Float, fieldOfView: Float, aspect: Float,
+        width: Float, bottom: Float, top: Float
+    ) -> (target: SIMD3<Float>, distance: Float) {
+        let back = SIMD3<Float>(0, sin(pitch), cos(pitch))
+        let up = SIMD3<Float>(0, cos(pitch), -sin(pitch))
+        let slope = tan(fieldOfView / 2)
+        // The camera's offset from the origin along its right and up axes that fits the points
+        // at `distance`, if any offset does.
+        func offset(at distance: Float) -> SIMD2<Float>? {
+            var low = SIMD2<Float>(repeating: -.infinity)
+            var high = SIMD2<Float>(repeating: .infinity)
+            for point in points {
+                let depth = distance - simd_dot(point, back)
+                guard depth > 0 else { return nil }
+                let reach = SIMD2(width * aspect, 1) * slope * depth
+                let projected = SIMD2(point.x, simd_dot(point, up))
+                low = pointwiseMax(low, projected - SIMD2(reach.x, top * reach.y))
+                high = pointwiseMin(high, projected - SIMD2(-reach.x, bottom * reach.y))
+            }
+            return any(low .> high) ? nil : (low + high) / 2
+        }
+        guard !points.isEmpty, aspect > 0, width > 0, top > bottom else { return (.zero, 30) }
+        var near: Float = 0
+        var far: Float = 500
+        for _ in 0..<32 {
+            let middle = (near + far) / 2
+            if offset(at: middle) == nil { near = middle } else { far = middle }
+        }
+        let shift = offset(at: far) ?? .zero
+        return (SIMD3(shift.x, 0, 0) + up * shift.y, far)
+    }
+
+    /// The triangles of a tube of radius `tube` bent along `arc` radians of a unit circle in
+    /// the xy-plane, centered on the circle's bottom (-y), so a full turn makes a glasses lens
+    /// and a shorter arc a smile. The ends stay open. Triangles wind counterclockwise seen from
+    /// outside, as RealityKit draws front faces.
+    static func ring(arc: Float, tube: Float) -> (
+        positions: [SIMD3<Float>], normals: [SIMD3<Float>], indices: [UInt32]
+    ) {
+        let along = 32
+        let around = 8
+        var positions: [SIMD3<Float>] = []
+        var normals: [SIMD3<Float>] = []
+        for step in 0...along {
+            let angle = arc * (Float(step) / Float(along) - 0.5)
+            let center = SIMD3<Float>(sin(angle), -cos(angle), 0)
+            for turn in 0...around {
+                let twist = 2 * Float.pi * Float(turn) / Float(around)
+                let normal = center * cos(twist) + [0, 0, sin(twist)]
+                positions.append(center + normal * tube)
+                normals.append(normal)
+            }
+        }
+        var indices: [UInt32] = []
+        let row = UInt32(around + 1)
+        for step in 0..<UInt32(along) {
+            for turn in 0..<UInt32(around) {
+                let corner = step * row + turn
+                indices += [corner, corner + row, corner + 1]
+                indices += [corner + 1, corner + row, corner + row + 1]
+            }
+        }
+        return (positions, normals, indices)
     }
 
     /// The tally under the worm, such as "Ate 39 books · 12,345 pages". Pages count only the

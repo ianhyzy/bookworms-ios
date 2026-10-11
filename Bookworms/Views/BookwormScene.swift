@@ -5,17 +5,21 @@ import UIKit
 /// The Bookworm's RealityKit content: the desk and its lamp (`DeskStage`), a block of books
 /// (`BookFactory`) laid out by `BookwormLayout`, and a cartoon worm that eats through them.
 ///
-/// The worm is a green head with eyes, a short green tail, and a body that gains one segment
-/// per book, in the book's spine color, as long as `BookwormLayout.segmentLength` gives for its
-/// pages. Every part is the same unit sphere mesh, scaled, and segments of one color share a
-/// material. The body follows the head's `WormTrail` and sways from side to side behind it.
-/// The worm has no physics: it passes through books, and only books collide.
+/// The worm is a green head with a face (eyes, round glasses, cheeks, and a smile), a short
+/// green tail, and a body that gains one segment per book, in the book's spine color, as long
+/// as `BookwormLayout.segmentLength` gives for its pages. Every round part is the same unit
+/// sphere mesh, scaled; the glasses and the smile share two ring meshes; and parts of one
+/// color share a material. The body follows the head's `WormTrail` and sways from side to
+/// side behind it. The worm has no physics: it passes through books, and only books collide.
 ///
-/// The head crawls to each stack in turn and eats it from the bottom up. A book being eaten
-/// turns kinematic and shrinks onto the table in a burst of paper crumbs while the books on it
-/// sink with its top, then leaves the scene, and the books above settle onto the table or the
-/// books below. After the last book, the worm curls up in the middle of the table, facing the
-/// camera. The caption reads `eatenBooks`, `eatenPages`, and `isFinished`.
+/// The camera frames the block between the bars (`BookwormLayout.framing`). The head crawls to
+/// each stack in turn, stops just outside it (`BookwormLayout.biteSpot`), and eats it from the
+/// bottom up, pecking as it chews. A book being eaten turns kinematic and shrinks into the
+/// mouth in a burst of paper crumbs while the books on it sink with its top, then leaves the
+/// scene, and the books above settle onto the table or the books below. After the last book,
+/// the worm curls up in the middle of the table, facing the camera, which moves in to frame
+/// it, and the worm blinks now and then. A tapped segment swells for a moment. The caption
+/// reads `eatenBooks`, `eatenPages`, and `isFinished`.
 @MainActor
 @Observable
 final class BookwormScene {
@@ -71,6 +75,12 @@ final class BookwormScene {
         let thickness: Float
     }
 
+    /// A camera's place: the point it looks at, and its distance from it.
+    private struct Shot {
+        var target = SIMD3<Float>.zero
+        var distance: Float = 30
+    }
+
     private enum Phase {
         case idle
         case crawling(to: Int, target: SIMD2<Float>)
@@ -83,6 +93,7 @@ final class BookwormScene {
     /// costs little.
     private struct Parts {
         let head: ModelEntity
+        let eyes: [Entity]
         let sphere: MeshResource
         let shape: ShapeResource
         let crumbs: Entity
@@ -106,11 +117,18 @@ final class BookwormScene {
     @ObservationIgnored private var curlStart: [SIMD2<Float>] = []
     @ObservationIgnored private var curlEnd: [SIMD2<Float>] = []
     @ObservationIgnored private var curlTurn = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
-    @ObservationIgnored private var aspect: Float = 0.5
-    /// The radius around the table's middle that the camera keeps in view.
-    @ObservationIgnored private var reach: Float = 5
+    @ObservationIgnored private var viewport = PileViewport(size: .zero, insets: .init())
+    /// The corners of boxes around the block and around the curled worm, which the camera
+    /// keeps in view before and after the curl, and the camera's place for each.
+    @ObservationIgnored private var blockBox: [SIMD3<Float>] = []
+    @ObservationIgnored private var curlBox: [SIMD3<Float>] = []
+    @ObservationIgnored private var shots = (block: Shot(), curl: Shot())
+    /// How far the camera has moved from the block's shot to the curl's, from 0 to 1.
+    @ObservationIgnored private var shotBlend: Float = 0
     /// Counts `start` and `release` calls, so a start that an earlier call began stops.
     @ObservationIgnored private var run = 0
+    /// The tapped segment that swells, and seconds since the tap.
+    @ObservationIgnored private var pop: (id: Entity.ID, elapsed: Float)?
     /// Buffers that `layoutBody` reuses every frame.
     @ObservationIgnored private var distances: [Float] = []
     @ObservationIgnored private var samples: [(point: SIMD2<Float>, forward: SIMD2<Float>)] = []
@@ -123,8 +141,12 @@ final class BookwormScene {
     private static let growDuration: Float = 0.35
     /// The worm's green, for its head and tail.
     private static let green = ColorValue(red: 122, green: 176, blue: 72)
-    /// Segments collide with nothing but stay in their own group, which tap hit tests need.
+    /// Segments are triggers in their own group that collide with nothing: their mask holds
+    /// only a group no entity is in. Tap hit tests skip an entity whose mask is empty.
     private static let wormGroup = CollisionGroup(rawValue: 1 << 2)
+    private static let nothing = CollisionGroup(rawValue: 1 << 3)
+    /// How long a tapped segment swells and settles, in seconds.
+    private static let popDuration: Float = 0.4
 
     init() {
         var simulation = PhysicsSimulationComponent()
@@ -160,15 +182,21 @@ final class BookwormScene {
     /// Shows or hides the dust in the lamp's beam.
     func setDust(_ enabled: Bool) { stage.setDust(enabled) }
 
-    /// Frames the table for a view of width-to-height `aspect`.
-    func setAspect(_ aspect: Float) {
-        guard aspect > 0, aspect != self.aspect else { return }
-        self.aspect = aspect
+    /// Frames the block, or the curled worm, between the bars over `viewport`.
+    func setViewport(_ viewport: PileViewport) {
+        guard viewport.size.height > 0, viewport != self.viewport else { return }
+        self.viewport = viewport
         frame()
     }
 
     /// The book that a tapped book or segment stands for, if any.
     func bookID(for entity: Entity) -> Int? { names[entity.id] }
+
+    /// Swells a tapped segment for a moment, so the reader sees which one names its book.
+    func pop(_ entity: Entity) {
+        guard segments.contains(where: { $0.entity == entity }) else { return }
+        pop = (entity.id, 0)
+    }
 
     // MARK: Building
 
@@ -188,12 +216,15 @@ final class BookwormScene {
                 color: model.look(for: brick.book).background,
                 length: BookwormLayout.segmentLength(pages: brick.book.pages))
         }
-        let corner = bricks.reduce(SIMD2<Float>.zero) { corner, brick in
-            pointwiseMax(corner, abs(SIMD2(brick.center.x, brick.center.z)))
-        }
-        // Room around the block for the worm's way in, which starts 3.2 units in front of the
-        // first stack's middle.
-        reach = simd_length(corner + BookwormLayout.stackPitch / 2) + 2.5
+        // Each stack's footprint is about its pitch, and the worm's head, which bites from
+        // the stack's near side, reaches a little past it. The camera keeps at least two
+        // stacks' width in view, so a small block does not fill the screen. The worm crawls in
+        // from below the screen.
+        let corner = bricks.reduce(SIMD3<Float>.zero) { pointwiseMax($0, abs($1.center)) }
+        let half = pointwiseMax(
+            SIMD2(corner.x, corner.z) + BookwormLayout.stackPitch / 2, BookwormLayout.stackPitch)
+        blockBox = Self.box([-half.x, 0, -half.y], [half.x, corner.y + 0.3, half.y + 0.3])
+        shotBlend = 0
         frame()
         addSegment(color: Self.green, length: 0.3, radius: BookwormLayout.bodyRadius * 0.7)
         sways = !finished
@@ -202,6 +233,8 @@ final class BookwormScene {
             worm.isEnabled = true
             startCurl()
             place(curl: 1)
+            shotBlend = 1
+            placeCamera()
             phase = .done
             isFinished = true
             return
@@ -242,6 +275,8 @@ final class BookwormScene {
 
     private func reset() {
         run &+= 1
+        curlBox = []
+        pop = nil
         block.children.removeAll()
         for segment in segments { segment.entity.removeFromParent() }
         segments = []
@@ -265,43 +300,121 @@ final class BookwormScene {
         let head = ModelEntity(mesh: sphere, materials: [skin(Self.green)])
         head.components.set(GroundingShadowComponent(castsShadow: true))
         stage.light(head)
-        // Eyes on the head's front (+z), in the head's unit-sphere space.
-        let white = BookFactory.surface(nil, tint: .white, roughness: 0.3, specular: 0.4)
-        let black = BookFactory.surface(nil, tint: .black, roughness: 0.15, specular: 0.6)
-        for side: Float in [-1, 1] {
-            let eye = ModelEntity(mesh: sphere, materials: [white])
-            eye.transform = Transform(
-                scale: .init(repeating: 0.32), translation: [side * 0.4, 0.42, 0.7])
-            let pupil = ModelEntity(mesh: sphere, materials: [black])
-            pupil.transform = Transform(
-                scale: .init(repeating: 0.45), translation: [0, 0.05, 0.75])
-            eye.addChild(pupil)
-            head.addChild(eye)
-            stage.light(eye)
-            stage.light(pupil)
-        }
         worm.addChild(head)
+        // The face, in the head's unit-sphere space with the front toward +z: eyes high on the
+        // head that look up toward the camera, round glasses that sit just off the face, rosy
+        // cheeks, and a smile.
+        let white = BookFactory.surface(nil, tint: .white, roughness: 0.3, specular: 0.4)
+        let black = BookFactory.surface(nil, tint: .black, roughness: 0.2, specular: 0.5)
+        let rims = BookFactory.surface(
+            nil, tint: UIColor(red: 0.2, green: 0.12, blue: 0.08, alpha: 1), roughness: 0.25,
+            specular: 0.5)
+        let blush = BookFactory.surface(
+            nil, tint: UIColor(red: 0.96, green: 0.52, blue: 0.5, alpha: 1), roughness: 0.7,
+            specular: 0.1)
+        let ring = Self.mesh(BookwormLayout.ring(arc: 2 * .pi, tube: 0.09))
+        let arc = Self.mesh(BookwormLayout.ring(arc: .pi * 0.6, tube: 0.12))
+        let facing = simd_normalize(SIMD3<Float>(0, 0.55, 0.66))
+        let lenses = simd_quatf(from: [0, 0, 1], to: facing)
+        var eyes: [Entity] = []
+        func add(
+            _ mesh: MeshResource?, _ material: PhysicallyBasedMaterial, to parent: Entity,
+            scale: SIMD3<Float>, at position: SIMD3<Float>,
+            rotation: simd_quatf = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+        ) -> Entity {
+            let part = ModelEntity(mesh: mesh ?? sphere, materials: [material])
+            part.transform = Transform(scale: scale, rotation: rotation, translation: position)
+            stage.light(part)
+            parent.addChild(part)
+            return part
+        }
+        for side: Float in [-1, 1] {
+            let center = SIMD3<Float>(side * 0.38, 0.55, 0.66)
+            let eye = add(sphere, white, to: head, scale: .init(repeating: 0.3), at: center)
+            _ = add(
+                sphere, black, to: eye, scale: .init(repeating: 0.5),
+                at: simd_normalize(SIMD3<Float>(side * -0.08, 0.6, 0.8)) * 0.68)
+            eyes.append(eye)
+            _ = add(
+                ring, rims, to: head, scale: .init(repeating: 0.33), at: center + facing * 0.2,
+                rotation: lenses)
+            let cheek = simd_normalize(SIMD3<Float>(side * 0.62, 0.12, 0.78))
+            _ = add(
+                sphere, blush, to: head, scale: [0.14, 0.09, 0.04], at: cheek,
+                rotation: simd_quatf(from: [0, 0, 1], to: cheek))
+        }
+        // The bridge arches over the nose between the lenses, and the smile curves down.
+        _ = add(
+            arc, rims, to: head, scale: .init(repeating: 0.09),
+            at: SIMD3(0, 0.55, 0.66) + facing * 0.2 + SIMD3(0, 0.02, 0),
+            rotation: lenses * simd_quatf(angle: .pi, axis: [0, 0, 1]))
+        _ = add(
+            arc, black, to: head, scale: .init(repeating: 0.24), at: [0, 0.2, 0.99],
+            rotation: simd_quatf(from: [0, 0, 1], to: simd_normalize(SIMD3<Float>(0, 0.2, 1))))
         let crumbs = Entity()
         crumbs.components.set(Self.crumbEmitter())
         root.addChild(crumbs)
         parts = Parts(
-            head: head, sphere: sphere, shape: .generateSphere(radius: 1), crumbs: crumbs)
+            head: head, eyes: eyes, sphere: sphere, shape: .generateSphere(radius: 1),
+            crumbs: crumbs)
     }
 
-    /// Looks down on the table's middle from 50 degrees up, from as far away as keeps a circle
-    /// of `reach` around it in view.
+    /// A mesh of `ring`'s triangles, or `nil` if RealityKit cannot build it.
+    private static func mesh(
+        _ ring: (positions: [SIMD3<Float>], normals: [SIMD3<Float>], indices: [UInt32])
+    ) -> MeshResource? {
+        var descriptor = MeshDescriptor(name: "ring")
+        descriptor.positions = MeshBuffers.Positions(ring.positions)
+        descriptor.normals = MeshBuffers.Normals(ring.normals)
+        descriptor.primitives = .triangles(ring.indices)
+        return try? MeshResource.generate(from: [descriptor])
+    }
+
+    /// Finds the camera's shots of the block and of the curled worm for the viewport, and
+    /// places the camera `shotBlend` of the way between them.
     private func frame() {
-        let vertical = Self.fieldOfView / 2
-        let horizontal = atan(tan(vertical) * aspect)
-        let distance = reach / sin(min(vertical, horizontal))
+        let height = Float(viewport.size.height)
+        guard height > 0 else { return }
+        // Leaves room under the top bars and over the caption and the tab bar.
+        let top = 1 - 2 * (Float(viewport.insets.top) + 16) / height
+        let bottom = -1 + 2 * (Float(viewport.insets.bottom) + 72) / height
+        func shot(_ box: [SIMD3<Float>]) -> Shot {
+            let fit = BookwormLayout.framing(
+                box, pitch: Self.pitch, fieldOfView: Self.fieldOfView, aspect: aspect,
+                width: 0.94, bottom: bottom, top: top)
+            return Shot(target: fit.target, distance: fit.distance)
+        }
+        shots = (shot(blockBox), shot(curlBox.isEmpty ? blockBox : curlBox))
+        placeCamera()
+    }
+
+    private func placeCamera() {
+        let blend = simd_smoothstep(0, 1, shotBlend)
+        let target = simd_mix(shots.block.target, shots.curl.target, .init(repeating: blend))
+        let distance = shots.block.distance + (shots.curl.distance - shots.block.distance) * blend
         camera.look(
-            at: .zero, from: [0, sin(Self.pitch), cos(Self.pitch)] * distance, relativeTo: root)
+            at: target, from: target + [0, sin(Self.pitch), cos(Self.pitch)] * distance,
+            relativeTo: root)
+    }
+
+    private var aspect: Float {
+        viewport.size.height > 0 ? Float(viewport.size.width / viewport.size.height) : 0.5
+    }
+
+    /// The eight corners of the box from `low` to `high`.
+    private static func box(_ low: SIMD3<Float>, _ high: SIMD3<Float>) -> [SIMD3<Float>] {
+        (0..<8)
+            .map { corner in
+                SIMD3(
+                    corner & 1 == 0 ? low.x : high.x, corner & 2 == 0 ? low.y : high.y,
+                    corner & 4 == 0 ? low.z : high.z)
+            }
     }
 
     /// A glossy, cartoonish skin, shared by every part of one color.
     private func skin(_ color: ColorValue) -> PhysicallyBasedMaterial {
         if let skin = skins[color] { return skin }
-        let skin = BookFactory.surface(nil, tint: color.uiColor, roughness: 0.4, specular: 0.35)
+        let skin = BookFactory.surface(nil, tint: color.uiColor, roughness: 0.5, specular: 0.25)
         skins[color] = skin
         return skin
     }
@@ -314,7 +427,7 @@ final class BookwormScene {
         entity.components.set(
             CollisionComponent(
                 shapes: [parts.shape], mode: .trigger,
-                filter: CollisionFilter(group: Self.wormGroup, mask: [])))
+                filter: CollisionFilter(group: Self.wormGroup, mask: Self.nothing)))
         entity.components.set(InputTargetComponent())
         entity.components.set(GroundingShadowComponent(castsShadow: true))
         stage.light(entity)
@@ -330,22 +443,23 @@ final class BookwormScene {
         var emitter = ParticleEmitterComponent()
         emitter.emitterShape = .box
         emitter.birthLocation = .volume
-        emitter.emitterShapeSize = [1.4, 0.2, 1]
+        emitter.emitterShapeSize = [0.5, 0.2, 0.5]
         emitter.emissionDirection = [0, 1, 0]
-        emitter.speed = 1.8
-        emitter.speedVariation = 0.9
+        emitter.speed = 2.2
+        emitter.speedVariation = 1
         emitter.isEmitting = false
-        emitter.burstCount = 36
-        emitter.burstCountVariation = 8
+        emitter.burstCount = 40
+        emitter.burstCountVariation = 10
         var crumbs = emitter.mainEmitter
-        crumbs.lifeSpan = 0.9
+        crumbs.image = paperFlake()
+        crumbs.lifeSpan = 0.7
         crumbs.lifeSpanVariation = 0.2
-        crumbs.size = 0.05
-        crumbs.sizeVariation = 0.02
-        crumbs.spreadingAngle = 1.1
-        crumbs.acceleration = [0, -14, 0]
-        crumbs.angularSpeed = 6
-        crumbs.angularSpeedVariation = 4
+        crumbs.size = 0.09
+        crumbs.sizeVariation = 0.04
+        crumbs.spreadingAngle = 1.2
+        crumbs.acceleration = [0, -10, 0]
+        crumbs.angularSpeed = 8
+        crumbs.angularSpeedVariation = 5
         crumbs.opacityCurve = .linearFadeOut
         crumbs.isLightingEnabled = true
         crumbs.blendMode = .alpha
@@ -353,16 +467,42 @@ final class BookwormScene {
         return emitter
     }
 
+    /// A white scrap of paper, wider than it is tall, which the crumbs tint.
+    private static func paperFlake() -> TextureResource? {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8))
+            .image { context in
+                UIColor.white.setFill()
+                context.fill(CGRect(x: 0, y: 1, width: 8, height: 6))
+            }
+        return image.cgImage.flatMap {
+            try? TextureResource(image: $0, options: .init(semantic: .color))
+        }
+    }
+
     // MARK: Eating
 
     private func update(_ deltaTime: TimeInterval) {
         feedback.advance(by: deltaTime)
-        guard isPlaying else { return }
         // A late frame, such as one after a stall, slows the worm rather than skipping it on.
         let step = Float(min(deltaTime, 1.0 / 20))
+        if var popped = pop {
+            popped.elapsed += step
+            pop = popped.elapsed < Self.popDuration ? popped : nil
+            // A still worm places its body again only while the segment swells.
+            switch phase {
+            case .done: place(curl: 1)
+            case .crawling, .eating: if !isPlaying { layoutBody() }
+            case .idle, .curling: break
+            }
+        }
+        guard isPlaying else { return }
         let pace = BookwormLayout.pace(books: meal.count)
         switch phase {
-        case .idle, .done: return
+        case .idle: return
+        case .done:
+            clock += step
+            blink()
+            return
         case .crawling(let index, let target):
             crawl(toward: target, by: BookwormLayout.crawlSpeed * pace * step)
             if trail.head == target { bite(index) }
@@ -377,8 +517,11 @@ final class BookwormScene {
         case .curling(var elapsed):
             elapsed += step
             place(curl: simd_smoothstep(0, 1, elapsed / Self.curlDuration))
+            shotBlend = min(1, elapsed / Self.curlDuration)
+            placeCamera()
             if elapsed >= Self.curlDuration {
                 phase = .done
+                clock = 0
                 isFinished = true
             } else {
                 phase = .curling(elapsed: elapsed)
@@ -393,13 +536,9 @@ final class BookwormScene {
         layoutBody()
     }
 
-    /// Where the head stops to eat the book at `index`: `biteReach` short of its stack's
-    /// middle, on the side the head comes from, or where it is when it is already there.
+    /// Where the head stops to eat the book at `index`.
     private func biteSpot(_ index: Int) -> SIMD2<Float> {
-        let offset = meal[index].spot - trail.head
-        let distance = simd_length(offset)
-        guard distance > BookwormLayout.biteReach + 0.1 else { return trail.head }
-        return meal[index].spot - offset / distance * BookwormLayout.biteReach
+        BookwormLayout.biteSpot(stack: meal[index].spot, from: trail.head)
     }
 
     /// Moves the head `step` toward `target`, turning it toward the way it goes.
@@ -426,7 +565,7 @@ final class BookwormScene {
         if let crumbs = parts?.crumbs,
             var emitter = crumbs.components[ParticleEmitterComponent.self]
         {
-            crumbs.position = position
+            crumbs.position = mouth
             emitter.mainEmitter.color = .constant(
                 .random(a: PageEdges.fresh.uiColor, b: course.color.uiColor))
             emitter.burst()
@@ -435,22 +574,37 @@ final class BookwormScene {
         feedback.impact(impulse: 0, mass: 0.3, position: position, pan: pan, minimum: 0.35)
     }
 
-    /// Shrinks the book being eaten onto the table, and lowers its body with its top, so the
-    /// books on it sink with it.
+    /// Shrinks the book being eaten into the worm's mouth, and lowers its body with its top,
+    /// so the books on it sink with it.
     ///
     /// The book moves by velocity rather than to a new position, as a held book in the pile
-    /// does, so the books resting on it follow it down. Its model shrinks toward the table
-    /// within its unchanged physics box: the book lies flat, so the model's z axis points up.
+    /// does, so the books resting on it follow it down. Its model, centered on its physics
+    /// box, shrinks and slides out of the unchanged box toward the mouth.
     private func chew(_ id: Int, _ bite: Bite, step: Float) {
         guard let book = books[id] else { return }
-        let size = 1 - simd_smoothstep(0, 1, bite.elapsed / BookwormLayout.biteDuration)
+        let eaten = simd_smoothstep(0, 1, bite.elapsed / BookwormLayout.biteDuration)
         let position = book.position(relativeTo: root)
-        let goal = bite.bottom + bite.thickness * (size - 0.5)
+        let goal = bite.bottom + bite.thickness * (0.5 - eaten)
         let sink = (goal - position.y) / max(step, 1 / 120)
         book.components.set(PhysicsMotionComponent(linearVelocity: [0, sink, 0]))
         book.children.first?.transform = Transform(
-            scale: .init(repeating: max(0.001, size)),
-            translation: [0, 0, bite.bottom + bite.thickness * size / 2 - position.y])
+            scale: .init(repeating: max(0.001, 1 - eaten)),
+            translation: book.convert(position: mouth, from: root) * eaten)
+    }
+
+    /// The middle of the worm's mouth, on the front of its head.
+    private var mouth: SIMD3<Float> {
+        let radius = BookwormLayout.headRadius
+        let front = trail.head + heading * radius * 0.8
+        return [front.x, radius * 0.55, front.y]
+    }
+
+    /// Closes the curled worm's eyes for a moment every few seconds.
+    private func blink() {
+        guard sways, let eyes = parts?.eyes else { return }
+        let moment = clock.truncatingRemainder(dividingBy: 3.4) - 2.6
+        let open = moment > 0 && moment < 0.16 ? abs(moment / 0.08 - 1) : 1
+        for eye in eyes { eye.scale = [0.3, 0.3 * max(0.08, open), 0.3] }
     }
 
     /// Finishes the book at `index`: it leaves the scene, the worm grows its segment and
@@ -501,17 +655,23 @@ final class BookwormScene {
             let along = distances[index]
             let sway = sways ? 0.1 * min(1, along) * sin(clock * 5 - along * 2.5) : 0
             let place = point + SIMD2(forward.y, -forward.x) * sway
-            let radius = segment.radius * (0.4 + 0.6 * segment.growth)
+            let radius = segment.radius * (0.4 + 0.6 * segment.growth) * swell(segment.entity)
             segment.entity.transform = Transform(
                 scale: [radius, radius, max(radius, segment.length * segment.growth / 2 + 0.12)],
                 rotation: Self.yaw(forward), translation: [place.x, radius, place.y])
         }
+        // While eating, the head pecks at the book and swells as it chews.
         var chew: Float = 1
-        if case .eating = phase { chew += 0.07 * sin(clock * 22) }
+        var peck: Float = 0
+        if case .eating = phase {
+            chew += 0.05 * sin(clock * 22)
+            peck = 0.1 * max(0, sin(clock * 22))
+        }
         let radius = BookwormLayout.headRadius
+        let place = trail.head + heading * peck
         head.transform = Transform(
             scale: .init(repeating: radius * chew), rotation: Self.yaw(heading),
-            translation: [trail.head.x, radius, trail.head.y])
+            translation: [place.x, radius, place.y])
     }
 
     /// Starts curling the worm up in the middle of the table, from where its parts are now.
@@ -524,6 +684,12 @@ final class BookwormScene {
         curlEnd = BookwormLayout.curl(
             lengths: [BookwormLayout.headRadius * 1.5] + segments.map(\.length))
         curlTurn = Self.yaw(heading)
+        // A short worm curls up no smaller on screen than a worm of about 20 books.
+        let reach = curlEnd.reduce(SIMD2<Float>.zero) { pointwiseMax($0, abs($1)) }
+        let half = pointwiseMax(reach + BookwormLayout.headRadius + 0.1, .init(repeating: 1.8))
+        curlBox = Self.box(
+            [-half.x, 0, -half.y], [half.x, BookwormLayout.headRadius * 2, half.y])
+        frame()
         phase = .curling(elapsed: 0)
     }
 
@@ -540,7 +706,7 @@ final class BookwormScene {
             let point = at(index + 1)
             let span = at(index) - at(index + 2)
             let forward = simd_length(span) > 1e-4 ? simd_normalize(span) : SIMD2<Float>(0, 1)
-            let radius = segment.radius
+            let radius = segment.radius * swell(segment.entity)
             segment.entity.transform = Transform(
                 scale: [radius, radius, max(radius, segment.length / 2 + 0.12)],
                 rotation: Self.yaw(forward), translation: [point.x, radius, point.y])
@@ -550,6 +716,12 @@ final class BookwormScene {
             scale: .init(repeating: radius),
             rotation: simd_slerp(curlTurn, Self.yaw([0, 1]), progress),
             translation: [at(0).x, radius, at(0).y])
+    }
+
+    /// How much larger than usual `entity` draws: up to a quarter larger while it pops.
+    private func swell(_ entity: Entity) -> Float {
+        guard let pop, pop.id == entity.id else { return 1 }
+        return 1 + 0.25 * sin(.pi * pop.elapsed / Self.popDuration)
     }
 
     /// The turn about the vertical axis that points a part's +z along `forward`, given as

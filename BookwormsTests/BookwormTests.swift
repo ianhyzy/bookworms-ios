@@ -7,8 +7,7 @@ import simd
 /// The Bookworm's layout and motion math: eating order, the block, the worm's trail, its
 /// segments, its curl, and its tally.
 final class BookwormTests: XCTestCase {
-    private func book(_ id: Int, finished: String? = "2025-01-01", pages: Int? = 320) -> CloudBook
-    {
+    private func book(_ id: Int, finished: String? = "2025-01-01", pages: Int? = 320) -> CloudBook {
         var book = CloudBook(
             id: id, title: "Fictional Book \(id)", author: "An Author", coverURL: nil,
             detailCoverURL: nil)
@@ -30,7 +29,8 @@ final class BookwormTests: XCTestCase {
     func testWormEatsAtMostTheFirstHundredFinishedBooks() {
         let books =
             [book(0, finished: nil)]
-            + (1...130).map { id in
+            + (1...130)
+            .map { id in
                 book(id, finished: "2025-01-" + String(format: "%02d", 28 - id % 28))
             }
         let meal = BookwormLayout.eatingOrder(books)
@@ -143,6 +143,83 @@ final class BookwormTests: XCTestCase {
             }
         }
         XCTAssertEqual(BookwormLayout.curl(lengths: []), [])
+    }
+
+    func testFramingFitsEveryPointTightlyBetweenTheBars() {
+        let pitch: Float = 50 * .pi / 180
+        let fieldOfView: Float = 38 * .pi / 180
+        let (aspect, width, bottom, top): (Float, Float, Float, Float) = (0.46, 0.94, -0.7, 0.75)
+        let points: [SIMD3<Float>] = [
+            [-3.8, 0, -3.3], [3.8, 0, -3.3], [-3.8, 0, 3.6], [3.8, 0, 3.6], [-3.8, 2.4, -3.3],
+            [3.8, 2.4, 3.6], [1, 0.8, 0],
+        ]
+        let fit = BookwormLayout.framing(
+            points, pitch: pitch, fieldOfView: fieldOfView, aspect: aspect, width: width,
+            bottom: bottom, top: top)
+        let back = SIMD3<Float>(0, sin(pitch), cos(pitch))
+        let up = SIMD3<Float>(0, cos(pitch), -sin(pitch))
+        // Where `point` lands in normalized device coordinates from `distance` away.
+        func project(_ point: SIMD3<Float>, distance: Float) -> SIMD2<Float> {
+            let offset = point - (fit.target + back * distance)
+            let depth = -simd_dot(offset, back)
+            return SIMD2(offset.x / aspect, simd_dot(offset, up)) / (depth * tan(fieldOfView / 2))
+        }
+        for point in points {
+            let place = project(point, distance: fit.distance)
+            XCTAssertLessThanOrEqual(abs(place.x), width + 0.001, "\(point)")
+            XCTAssertLessThanOrEqual(place.y, top + 0.001, "\(point)")
+            XCTAssertGreaterThanOrEqual(place.y, bottom - 0.001, "\(point)")
+        }
+        // A camera any closer leaves some point outside the bounds.
+        let closer = points.map { project($0, distance: fit.distance * 0.97) }
+        XCTAssertTrue(
+            closer.contains { abs($0.x) > width || $0.y > top || $0.y < bottom })
+    }
+
+    func testHeadStopsJustOutsideTheStackItEats() {
+        let half = BookwormLayout.stackHalfSize
+        let reach = BookwormLayout.headRadius * 0.3
+        let stack = SIMD2<Float>(2, -1)
+        // From the near side, the head stops past the spines; from the left, past the tails.
+        let fromFront = BookwormLayout.biteSpot(stack: stack, from: stack + [0, 5])
+        XCTAssertLessThan(simd_distance(fromFront, stack + [0, half.y + reach]), 0.0001)
+        let fromLeft = BookwormLayout.biteSpot(stack: stack, from: stack - [4, 0])
+        XCTAssertLessThan(simd_distance(fromLeft, stack - [half.x + reach, 0]), 0.0001)
+        // Coming in at a slant, it stops at the footprint's nearer edge on the way in.
+        let slanted = BookwormLayout.biteSpot(stack: stack, from: stack + [3, 3])
+        XCTAssertEqual(slanted.y - stack.y, half.y + reach * 0.7071, accuracy: 0.001)
+        XCTAssertEqual(slanted.x - stack.x, slanted.y - stack.y, accuracy: 0.001)
+        // A head already at the stack stays put.
+        let close = stack + [0, 0.5]
+        XCTAssertEqual(BookwormLayout.biteSpot(stack: stack, from: close), close)
+    }
+
+    func testRingIsATubeAroundTheUnitCircleFacingOut() {
+        let tube: Float = 0.1
+        for arc: Float in [2 * .pi, .pi * 0.6] {
+            let ring = BookwormLayout.ring(arc: arc, tube: tube)
+            XCTAssertEqual(ring.positions.count, ring.normals.count)
+            XCTAssertEqual(ring.indices.count % 3, 0)
+            for (position, normal) in zip(ring.positions, ring.normals) {
+                XCTAssertEqual(simd_length(normal), 1, accuracy: 0.0001)
+                // Each vertex lies `tube` out from the circle, along its normal.
+                let onCircle = position - normal * tube
+                XCTAssertEqual(simd_length(onCircle), 1, accuracy: 0.0001)
+                XCTAssertEqual(onCircle.z, 0, accuracy: 0.0001)
+            }
+            // Triangles wind counterclockwise seen from outside, where their normals point.
+            for corner in stride(from: 0, to: ring.indices.count, by: 3) {
+                let ids = ring.indices[corner..<corner + 3].map(Int.init)
+                let corners = ids.map { ring.positions[$0] }
+                let outward = ids.reduce(SIMD3<Float>.zero) { $0 + ring.normals[$1] }
+                let facing = simd_cross(corners[1] - corners[0], corners[2] - corners[0])
+                XCTAssertGreaterThan(simd_dot(facing, outward), 0)
+            }
+        }
+        // A short arc is centered on the circle's bottom, as a smile is.
+        let smile = BookwormLayout.ring(arc: .pi * 0.6, tube: tube)
+        let lowest = smile.positions.min { $0.y < $1.y }
+        XCTAssertEqual(lowest?.x ?? 1, 0, accuracy: 0.0001)
     }
 
     func testPaceKeepsLongMealsShort() {
