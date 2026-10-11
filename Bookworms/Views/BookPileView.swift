@@ -16,15 +16,16 @@ struct PileViewport: Equatable {
 /// the books between the bars.
 ///
 /// A tapped book rises out of the pile and flies to where `BookDetailView` draws its book, and
-/// the details fade in over the dimmed pile once it lands. The details' own book is a
+/// the details fade in over the darkened pile once it lands. The details' own book is a
 /// transparent stand-in that places and turns the pile's book, so the same model scrolls and
 /// turns with the details. While they show, the pile's gestures, tilt, and controls, and the
-/// shelf's (through `showsDetails`), give way to **Back**. **Back** fades the details out and
-/// throws the book back into the pile. With Reduce Motion on, or when the pile cannot lift the
-/// book, a tap calls `open` to push the details instead. Returning from pushed details finds
-/// the pile as the reader left it. Leaving the pile any other way, such as for another tab,
-/// puts a lifted book back at once and frees the books and textures, and the books drop again
-/// on the reader's return.
+/// shelf's (through `showsDetails`), give way to **Back**. **Back** fades the details out,
+/// returns the controls, and throws the book back into the pile. With Reduce Motion on, or
+/// when the pile cannot lift the book, a tap calls `open` to push the details instead.
+/// Returning from pushed details, or from the Share tab that the lifted book's **Share** opens,
+/// finds the pile as the reader left it. Leaving the pile any other way, such as for another
+/// tab, puts a lifted or returning book back at once and frees the books and textures, and the
+/// books drop again on the reader's return.
 ///
 /// **Share** makes an image of `books`, up to `PileSnapshotRenderer.maximumBooks` of them, in a
 /// new pile headed `title`. While its sheet is open, the pile leaves the screen and keeps its
@@ -60,7 +61,8 @@ struct BookPileView: View {
     @State private var canvas = CGRect.zero
     /// Counts **Drop again** presses; each starts a new drop with new poses.
     @State private var generation = 0
-    /// Set while pushed details cover the pile.
+    /// Set while pushed details cover the pile, or while the lifted book's details wait for the
+    /// reader to return from the Share tab, so leaving keeps the pile.
     @State private var showsBook = false
     /// The book lifted out of the pile, whose details show over it.
     @State private var lifted: Lifted?
@@ -101,7 +103,7 @@ struct BookPileView: View {
         let book: CloudBook
         /// Whether the details show: set once the book lands, and cleared by **Back**.
         var showsText = false
-        /// Set by **Back**. The details stay, hidden, until the book is back in the pile.
+        /// Set by **Back** while the details fade out, before the book is thrown back.
         var isReturning = false
     }
 
@@ -141,7 +143,7 @@ struct BookPileView: View {
             "Drag a book to throw it, or tap one for its details. To go through books one at a time, choose Stack or Shelf."
         )
         .accessibilityAction(named: dropTitle) { generation += 1 }
-        .accessibilityHidden(lifted != nil)
+        .accessibilityHidden(lifted.map { !$0.isReturning } ?? false)
         .overlay {
             if let lifted { details(lifted) }
         }
@@ -189,10 +191,11 @@ struct BookPileView: View {
         }
         .onDisappear {
             isShown = false
-            putBack()
             scene.endDrag()
             scene.setTilt(false)
-            if !showsBook { scene.release() }
+            guard !showsBook else { return }
+            putBack()
+            scene.release()
         }
         // Leaves the view nothing to draw while a share image renders, in whichever tab.
         .onChange(of: PileSnapshotRenderer.isRendering) { _, isRendering in
@@ -205,12 +208,14 @@ struct BookPileView: View {
         .onChange(of: holdsBook) { if !holdsBook { scene.endDrag() } }
         .onChange(of: movesCamera) { if !movesCamera { scene.endCameraMove() } }
         .toolbar {
-            if let lifted, !lifted.isReturning {
+            if let lifted {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Back", systemImage: "chevron.backward", action: returnBook)
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button("Share", systemImage: "square.and.arrow.up") {
+                        // Keeps the details for the reader's return, as pushed details stay.
+                        showsBook = true
                         model.share(lifted.book)
                     }
                 }
@@ -232,6 +237,12 @@ struct BookPileView: View {
 
     /// The lifted book's details, which fade in once the book lands. The pile's book shows
     /// through their transparent stand-in for the details' own book.
+    ///
+    /// They join the hierarchy at the tap, since the book flies to their stand-in's frame. A
+    /// scroll view's edge effect darkens the tab bar's glass even while the details are hidden,
+    /// so it shows only while the details do, over the darkened veil. Removing the details with
+    /// the effect showing leaves the tab bar dark over the lit pile, so it goes when they start
+    /// to fade.
     private func details(_ lifted: Lifted) -> some View {
         BookDetailView(
             book: lifted.book,
@@ -242,9 +253,12 @@ struct BookPileView: View {
                 },
                 turn: { [scene] in scene.turnLifted($0) })
         )
+        .scrollEdgeEffectHidden(!lifted.showsText)
         .opacity(lifted.showsText ? 1 : 0)
         .allowsHitTesting(lifted.showsText)
         .accessibilityHidden(!lifted.showsText)
+        // Pushed details close with VoiceOver's escape gesture through the navigation stack.
+        .accessibilityAction(.escape, returnBook)
     }
 
     private var tiltIsOn: Bool { tilts && !reduceMotion }
@@ -287,7 +301,7 @@ struct BookPileView: View {
     /// when the pile cannot lift it. Does nothing while another book flies.
     private func show(_ book: CloudBook) {
         guard lifted == nil, !scene.isFlying else { return }
-        guard !reduceMotion, scene.lift(book.id) else {
+        guard !reduceMotion, let landing = scene.lift(book.id) else {
             showsBook = true
             open(book)
             return
@@ -297,7 +311,7 @@ struct BookPileView: View {
         lifted = Lifted(book: book)
         showsDetails = true
         Task {
-            try? await Task.sleep(for: .seconds(PileFlight.landing))
+            try? await Task.sleep(for: .seconds(landing))
             guard liftRevision == revision else { return }
             withAnimation(.easeOut(duration: 0.25)) { lifted?.showsText = true }
             AccessibilityNotification.ScreenChanged(nil).post()
@@ -314,25 +328,22 @@ struct BookPileView: View {
         }
     }
 
-    /// Gives the pile its controls again and fades the details out, then throws the book back
+    /// Fades the details out, then gives the pile its controls again and throws the book back
     /// into the pile.
     ///
-    /// Changing the bars can hold up the screen for a moment, which a still book hides and a
-    /// flying one would show as a jump, so they change first. The details leave the hierarchy
-    /// once the book lands, since nothing can see or reach them by then.
+    /// The bars change and the details leave the hierarchy together, after the fade. That can
+    /// hold up the screen for a moment, which the book waits out before it leaves (see
+    /// `BookPileScene.throwBack`), so the stall shows as a pause rather than a skipped throw.
     private func returnBook() {
         guard let current = lifted, !current.isReturning else { return }
         liftRevision &+= 1
         let revision = liftRevision
         lifted?.isReturning = true
-        showsDetails = false
-        AccessibilityNotification.ScreenChanged(nil).post()
         func throwBack() {
+            lifted = nil
+            showsDetails = false
             scene.throwBack()
-            Task {
-                try? await Task.sleep(for: .seconds(Double(PileFlight.whipDuration) + 0.2))
-                if liftRevision == revision { lifted = nil }
-            }
+            AccessibilityNotification.ScreenChanged(nil).post()
         }
         // Before the book lands, the details have not appeared.
         guard current.showsText else { return throwBack() }
@@ -343,13 +354,14 @@ struct BookPileView: View {
         }
     }
 
-    /// Closes the details at once, if they show, and puts the book back in the pile.
+    /// Closes the details at once, if they show, and puts a lifted or returning book back in
+    /// the pile.
     private func putBack() {
+        scene.dropLifted()
         guard lifted != nil else { return }
         liftRevision &+= 1
         lifted = nil
         showsDetails = false
-        scene.dropLifted()
     }
 
     private var moveCamera: some Gesture {

@@ -96,39 +96,66 @@ struct PileCamera: Equatable {
 /// rise's speed and overshooting slightly. Back throws it at the place it left, on a path that
 /// gravity bends, so it lands there after `whipDuration`.
 enum PileFlight {
-    static let riseDuration: Double = 0.25
     static let spring = Spring(duration: 0.8, bounce: 0.2)
-    /// When the book reaches its details, to the eye; the spring settles within a few points.
-    static var landing: Double { riseDuration + spring.duration }
     static let whipDuration: Float = 0.26
-    /// The opacity of the walnut veil that dims the pile behind an open book.
-    static let veil: Float = 0.985
     /// How far the veil stays behind the book's middle: more than half the longest book's
     /// diagonal, so the book never passes through it.
     static let veilGap: Float = 1.8
 
-    /// How far a book with `bounds` rises: until its bottom clears the top of every book in
-    /// `others` that overlaps it from above, by 0.15 units. It rises at least 0.4 units, to come
-    /// free of the table, and at most 6, the height of the tallest pile.
+    /// How far a book with `bounds` rises: until its bottom clears, by 0.15 units, the top of
+    /// every book in `others` that overlaps it from above and rests on it or on another such
+    /// book. A book more than 0.5 units above that stack, such as one still falling, does not
+    /// count. It rises at least 0.4 units, to come free of the table, and at most 6, the height
+    /// of the tallest pile.
     static func rise(of bounds: BoundingBox, clearing others: [BoundingBox]) -> Float {
-        let tops = others.filter { other in
-            other.max.y > bounds.min.y && other.max.x > bounds.min.x
-                && other.min.x < bounds.max.x && other.max.z > bounds.min.z
-                && other.min.z < bounds.max.z
+        var top = bounds.min.y
+        for other in others.sorted(by: { $0.min.y < $1.min.y })
+        where other.max.y > bounds.min.y && other.max.x > bounds.min.x
+            && other.min.x < bounds.max.x && other.max.z > bounds.min.z
+            && other.min.z < bounds.max.z
+        {
+            // Sorted by height, so every later book starts higher still.
+            guard other.min.y <= max(top, bounds.max.y) + 0.5 else { break }
+            top = max(top, other.max.y)
         }
-        let top = tops.map(\.max.y).max() ?? bounds.min.y
         return min(max(top + 0.15 - bounds.min.y, 0.4), 6)
     }
+
+    /// How long a rise of `rise` takes: 0.12 seconds for the least rise, up to 0.25 for a rise
+    /// of 3 units or more, so a book with nothing on it leaves at once.
+    static func riseDuration(_ rise: Float) -> Double { Double(min(0.25, 0.1 + rise * 0.05)) }
+
+    /// When a book that rises `rise` reaches its details, to the eye; the spring settles within
+    /// a few points.
+    static func landing(rise: Float) -> Double { riseDuration(rise) + spring.duration }
 
     /// How far a rise of `rise` has climbed after `time`. It starts at a third of its top
     /// speed, so the book answers a tap at once without jolting the books on it.
     static func climb(_ rise: Float, at time: Double) -> Float {
-        let progress = Float(min(1, max(0, time / riseDuration)))
+        let progress = Float(min(1, max(0, time / riseDuration(rise))))
         return rise * progress * (1 + progress) / 2
     }
 
     /// The upward speed at the top of a rise of `rise`.
-    static func topSpeed(_ rise: Float) -> Float { 1.5 * rise / Float(riseDuration) }
+    static func topSpeed(_ rise: Float) -> Float { 1.5 * rise / Float(riseDuration(rise)) }
+
+    /// The shade `Book3DView` gives each of the book mesh's material slots (front cover, spine,
+    /// pages, and cloth), as the opacity of black over the face, for a book of `size` turned to
+    /// `pose`. A slot that several faces share takes the lightest visible face's shade.
+    static func shades(of size: SIMD3<Float>, at pose: BookPose) -> [Float] {
+        let faces = BookProjection(
+            width: CGFloat(size.x), height: CGFloat(size.y), thickness: CGFloat(size.z),
+            yaw: pose.yaw, pitch: pose.pitch
+        )
+        .visibleFaces
+        func shade(_ kinds: [BookProjection.FaceKind]) -> Float {
+            Float(faces.filter { kinds.contains($0.kind) }.map(\.shade).min() ?? 0)
+        }
+        return [
+            shade([.front]), shade([.spine]), shade([.top, .bottom, .foreEdge]),
+            shade([.back, .top, .bottom, .foreEdge]),
+        ]
+    }
 
     /// The pose `time` after the book left `clear`, the top of its rise, rising at `speed`, on
     /// its way to `target`. Following a moving target keeps the book on it once it lands.
@@ -539,7 +566,8 @@ final class BookPileScene {
     /// It is kinematic. It rises at a velocity set every frame, as a held book moves, so it
     /// shoves the books around and on it aside. Clear of the pile, it collides with nothing, so
     /// the books it carried fall back, and it follows `PileFlight.pose` to the pose that `frame`
-    /// and `turn` give, and stays on it.
+    /// and `turn` give, and stays on it. From there until it lands back in the pile, it is drawn
+    /// as `Book3DView` draws the details' book: unlit, each face darkened by that view's light.
     private struct Lifted {
         let book: ModelEntity
         let id: Int
@@ -548,6 +576,9 @@ final class BookPileScene {
         let rise: Float
         /// The reader's camera, which returns when the book does.
         let camera: PileCamera
+        /// The lit materials the book is drawn from: the pile's, then `dressLifted`'s sharper
+        /// ones.
+        var materials: [any RealityKit.Material]
         var elapsed: TimeInterval = 0
         /// The book's pose at the top of its rise, once it gets there.
         var clear: Transform?
@@ -555,14 +586,17 @@ final class BookPileScene {
         /// width-to-height aspect.
         var frame: (center: SIMD2<Float>, height: Float, aspect: Float)?
         var turn = BookPose.resting
-        /// Set when `throwBack` asks for the book back, until the next frame launches it.
-        var isThrown = false
+        /// Counts the prompt frames in a row since `throwBack` asked for the book back; `nil`
+        /// until it does.
+        var steadyFrames: Int?
     }
 
     /// A book thrown back into the pile, with the camera and veil returning to the pile with it.
     private struct Whip {
-        let book: ModelEntity
-        let camera: (from: PileCamera, to: PileCamera)
+        /// The lift the book returns from, with its place in the pile and the reader's camera.
+        let flight: Lifted
+        /// The camera at the launch, which eases back to the reader's.
+        let camera: PileCamera
         let veil: Float
         var elapsed: Float = 0
         /// Whether it has hit something, which ends its pass through the walls.
@@ -1016,10 +1050,13 @@ final class BookPileScene {
 
     private func update(_ deltaTime: TimeInterval) {
         if let lifted {
-            // A late frame follows a main-thread stall, such as a large SwiftUI update; a launch
-            // on it would skip the start of the throw.
-            if lifted.isThrown && deltaTime < 0.1 {
-                launch()
+            if let steady = lifted.steadyFrames {
+                // A late frame follows a main-thread stall, such as a large SwiftUI update. The
+                // physics would catch up on one during the throw and skip it, so the book
+                // holds still until three prompt frames in a row show the stall has passed.
+                let frames = deltaTime < 0.05 ? steady + 1 : 0
+                self.lifted?.steadyFrames = frames
+                if frames >= 3 { launch() }
             } else {
                 moveLifted(by: deltaTime)
             }
@@ -1123,32 +1160,33 @@ final class BookPileScene {
     /// Whether a book is lifted or on its way back, when another book cannot lift.
     var isFlying: Bool { lifted != nil || whip != nil }
 
-    /// Starts lifting the book with `id` toward its details, which `placeLifted` places.
-    /// Returns `false`, leaving the pile as it was, when the book is not in the pile or the view
-    /// does not show the scene.
+    /// Starts lifting the book with `id` toward its details, which `placeLifted` places, and
+    /// returns the seconds until it gets there. Returns `nil`, leaving the pile as it was, when
+    /// the book is not in the pile or the view does not show the scene.
     ///
     /// The camera eases to its default framing, keeping its turn, so the book in front of it
     /// clears the pile at any zoom. The pile keeps simulating behind the veil.
-    func lift(_ id: Int) -> Bool {
-        guard !isFlying, root.scene != nil, let size = parts[id]?.size,
+    func lift(_ id: Int) -> Double? {
+        guard !isFlying, root.scene != nil, let parts = parts[id],
             let book = shelf.children.first(where: { bookIDs[$0.id] == id }) as? ModelEntity
-        else { return false }
+        else { return nil }
         endDrag()
         cameraMove = nil
         let others = shelf.children.filter { $0 !== book }
             .map { $0.visualBounds(relativeTo: root) }
         setMode(.kinematic, of: book)
         book.components.set(PhysicsMotionComponent())
+        let rise = PileFlight.rise(of: book.visualBounds(relativeTo: root), clearing: others)
         lifted = Lifted(
-            book: book, id: id, size: size, resting: book.transform,
-            rise: PileFlight.rise(of: book.visualBounds(relativeTo: root), clearing: others),
-            camera: view)
+            book: book, id: id, size: parts.size, resting: book.transform, rise: rise,
+            camera: view, materials: parts.materials)
         if veil == nil { veil = makeVeil() }
-        return true
+        return PileFlight.landing(rise: rise)
     }
 
     /// Sets where the details draw the lifted book: `frame`, in the points of a view of `size`
-    /// that shows the whole scene. The book follows it, so it scrolls with the details.
+    /// that shows the whole scene. The book moves at once rather than on the scene's next
+    /// update, which would always leave it a frame behind the details as they scroll.
     func placeLifted(_ frame: CGRect, in size: CGSize) {
         guard lifted != nil, size.width > 0, size.height > 0, frame.height > 0 else { return }
         lifted?.frame = (
@@ -1158,10 +1196,16 @@ final class BookPileScene {
             height: Float(frame.height / size.height) * 2,
             aspect: Float(size.width / size.height)
         )
+        fly()
     }
 
-    /// Turns the lifted book to `pose`, as a drag turns the details' own book.
-    func turnLifted(_ pose: BookPose) { lifted?.turn = pose }
+    /// Turns the lifted book to `pose` at once, as a drag turns the details' own book.
+    func turnLifted(_ pose: BookPose) {
+        guard let lifted, lifted.turn != pose else { return }
+        self.lifted?.turn = pose
+        fly()
+        dress()
+    }
 
     /// Gives the lifted book textures as sharp as the details' own book at `scale` pixels per
     /// point, with `book`'s current cover and design. The book's pile textures take the cover
@@ -1175,25 +1219,30 @@ final class BookPileScene {
         if let small { await addCover(small, to: book.id) }
         let dressed = await makeParts(
             book, cover: cover, look: model.look(for: book), size: size, scale: scale)
-        guard !Task.isCancelled, let lifted, lifted.id == book.id else { return }
-        lifted.book.children.first?.components[ModelComponent.self]?.materials = dressed.materials
+        guard !Task.isCancelled, lifted?.id == book.id else { return }
+        lifted?.materials = dressed.materials
+        dress()
     }
 
     /// Throws the lifted book back at the place it left, fast and tumbling, so it crashes into
     /// the books that fell into its place. The camera and the veil return over the same time.
     ///
-    /// The book leaves on the next frame that follows the last one closely, so a main-thread
+    /// The book leaves once three frames in a row follow one another closely, so a main-thread
     /// stall from the caller's own changes passes while it holds still. Its details pose can lie
     /// outside the walls or above the ceiling, so it passes through them until it first hits
     /// something, which happens inside them. A device then plays a heavy tap. Continuous
     /// collision detection keeps it out of the table.
-    func throwBack() { lifted?.isThrown = true }
+    func throwBack() {
+        guard let lifted, lifted.steadyFrames == nil else { return }
+        self.lifted?.steadyFrames = 0
+        // Stops a rise in progress while the book waits.
+        lifted.book.components.set(PhysicsMotionComponent())
+    }
 
     private func launch() {
         guard let lifted else { return }
         self.lifted = nil
         let book = lifted.book
-        undress(lifted)
         setMode(.dynamic, of: book)
         book.components[CollisionComponent.self]?.filter = CollisionFilter(
             group: .default, mask: CollisionGroup.all.subtracting(Self.wallGroup))
@@ -1203,7 +1252,7 @@ final class BookPileScene {
         book.components.set(
             PhysicsMotionComponent(
                 linearVelocity: velocity, angularVelocity: PileFlight.spin(for: velocity)))
-        whip = Whip(book: book, camera: (view, lifted.camera), veil: veilLevel)
+        whip = Whip(flight: lifted, camera: view, veil: veilLevel)
         thud = UIImpactFeedbackGenerator(style: .heavy)
         thud?.prepare()
         landing = root.scene.map { scene in
@@ -1214,26 +1263,42 @@ final class BookPileScene {
         }
     }
 
-    /// Puts the lifted book back above the place it left, at rest and without a flight, and the
-    /// camera and veil as they were.
+    /// Ends a lift or a throw at once: puts the book back above the place it left, at rest, in
+    /// its pile textures, and the camera and veil as they were.
     func dropLifted() {
-        guard let lifted else { return }
-        self.lifted = nil
-        undress(lifted)
-        setMode(.dynamic, of: lifted.book)
-        lifted.book.components[CollisionComponent.self]?.filter = .default
-        lifted.book.components.set(PhysicsMotionComponent())
-        var pose = lifted.resting
+        guard let flight = lifted ?? whip?.flight else { return }
+        lifted = nil
+        whip = nil
+        landing = nil
+        thud = nil
+        undress(flight)
+        let book = flight.book
+        setMode(.dynamic, of: book)
+        book.components[CollisionComponent.self]?.filter = .default
+        book.components.set(PhysicsMotionComponent())
+        var pose = flight.resting
         // Above the books that slid into its place.
-        pose.translation.y += lifted.rise
-        lifted.book.transform = pose
-        look(through: lifted.camera)
-        showVeil(0, behind: nil)
+        pose.translation.y += flight.rise
+        book.transform = pose
+        look(through: flight.camera)
+        showVeil(0)
     }
 
     /// Gives a lifted book its pile textures again, which keeps their memory bounded.
-    private func undress(_ lifted: Lifted) {
-        guard let materials = parts[lifted.id]?.materials else { return }
+    private func undress(_ flight: Lifted) {
+        guard let materials = parts[flight.id]?.materials else { return }
+        flight.book.children.first?.components[ModelComponent.self]?.materials = materials
+    }
+
+    /// Draws the lifted book from its materials: lit like the pile while it rises, then unlit
+    /// and shaded for its turn as `Book3DView` shades the details' own book.
+    private func dress() {
+        guard let lifted else { return }
+        let materials =
+            lifted.clear == nil
+            ? lifted.materials
+            : zip(lifted.materials, PileFlight.shades(of: lifted.size, at: lifted.turn))
+                .map { Self.unlit($0, shade: $1) }
         lifted.book.children.first?.components[ModelComponent.self]?.materials = materials
     }
 
@@ -1244,11 +1309,11 @@ final class BookPileScene {
         // A late frame, such as the one that follows mounting the details, slows the flight
         // briefly rather than skipping it ahead.
         lifted.elapsed += min(deltaTime, 1.0 / 20)
-        let progress = Float(min(1, lifted.elapsed / PileFlight.landing))
+        let progress = Float(min(1, lifted.elapsed / PileFlight.landing(rise: lifted.rise)))
         let eased = progress * progress * (3 - 2 * progress)
         look(through: lifted.camera.mixed(with: PileCamera(yaw: lifted.camera.yaw), eased))
         let book = lifted.book
-        if lifted.elapsed < PileFlight.riseDuration {
+        if lifted.elapsed < PileFlight.riseDuration(lifted.rise) {
             // A velocity, as for a held book, lets the physics shove other books aside.
             let goal =
                 lifted.resting.translation
@@ -1257,8 +1322,10 @@ final class BookPileScene {
             book.components.set(
                 PhysicsMotionComponent(
                     linearVelocity: (goal - book.position(relativeTo: root)) / step))
+            self.lifted = lifted
         } else {
-            if lifted.clear == nil {
+            let leaves = lifted.clear == nil
+            if leaves {
                 lifted.clear = book.transform
                 book.components.set(PhysicsMotionComponent())
                 // Above the pile now, it lets the books it carried fall back instead of
@@ -1266,28 +1333,38 @@ final class BookPileScene {
                 book.components[CollisionComponent.self]?.filter = CollisionFilter(
                     group: [], mask: [])
             }
-            let clear = lifted.clear ?? book.transform
-            let target = lifted.frame.map { frame in
-                view.detailPose(
-                    center: frame.center, height: frame.height, size: lifted.size,
-                    pose: lifted.turn, aspect: frame.aspect)
-            }
-            book.transform = PileFlight.pose(
-                from: clear, speed: PileFlight.topSpeed(lifted.rise), to: target ?? clear,
-                time: lifted.elapsed - PileFlight.riseDuration)
+            self.lifted = lifted
+            if leaves { dress() }
+            fly()
         }
-        self.lifted = lifted
-        showVeil(PileFlight.veil * eased, behind: book)
+        showVeil(eased, behind: book)
+    }
+
+    /// Puts the lifted book where its flight is at its current time, once it has risen clear.
+    /// Following the details' frame and turn as they change keeps the book on them.
+    private func fly() {
+        guard let lifted, let clear = lifted.clear else { return }
+        let target = lifted.frame.map { frame in
+            view.detailPose(
+                center: frame.center, height: frame.height, size: lifted.size,
+                pose: lifted.turn, aspect: frame.aspect)
+        }
+        lifted.book.transform = PileFlight.pose(
+            from: clear, speed: PileFlight.topSpeed(lifted.rise), to: target ?? clear,
+            time: lifted.elapsed - PileFlight.riseDuration(lifted.rise))
     }
 
     /// Returns the camera and veil to the pile while a thrown book falls back.
+    ///
+    /// The veil stays behind the book and fades out before it would cut through the pile (see
+    /// `showVeil`), so the pile shows before the throw ends.
     private func moveWhip(by deltaTime: Float) {
         guard var whip else { return }
         whip.elapsed += min(deltaTime, 1.0 / 20)
         let progress = min(1, whip.elapsed / PileFlight.whipDuration)
         let eased = progress * progress * (3 - 2 * progress)
-        look(through: whip.camera.from.mixed(with: whip.camera.to, eased))
-        showVeil(whip.veil * (1 - eased), behind: whip.book)
+        look(through: whip.camera.mixed(with: whip.flight.camera, eased))
+        showVeil(whip.veil * (1 - eased), behind: whip.flight.book)
         self.whip = whip
         guard progress >= 1 else { return }
         // It reaches its old place now, inside the walls, if nothing stopped it on the way.
@@ -1295,11 +1372,24 @@ final class BookPileScene {
         self.whip = nil
     }
 
-    /// Ends a thrown book's pass through the walls at its first hit, with a heavy tap.
+    /// Ends a thrown book's pass through the walls at its first hit, with a heavy tap, and
+    /// gives it its pile textures again.
+    ///
+    /// The throw comes in at tens of units per second, mostly sideways, and tumbling, which
+    /// would carry the book across the pile and out of it after the crash. The hit keeps a
+    /// quarter of the sideways speed, all of the fall, and half of the tumble, so the book
+    /// stays near where it hit.
     private func land() {
         guard let whip, !whip.landed else { return }
         self.whip?.landed = true
-        whip.book.components[CollisionComponent.self]?.filter = .default
+        let book = whip.flight.book
+        book.components[CollisionComponent.self]?.filter = .default
+        if var motion = book.components[PhysicsMotionComponent.self] {
+            motion.linearVelocity *= [0.25, 1, 0.25]
+            motion.angularVelocity *= 0.5
+            book.components.set(motion)
+        }
+        undress(whip.flight)
         thud?.impactOccurred()
         thud = nil
         landing = nil
@@ -1323,12 +1413,13 @@ final class BookPileScene {
     }
 
     /// Shows the veil at opacity `level`, `PileFlight.veilGap` behind `book`'s middle, so the
-    /// book stays in front of it as it flies and the pile behind dims.
+    /// book stays in front of it as it flies and the pile behind dims. At a `level` of 1, the
+    /// pile does not show through.
     ///
     /// Deep enough to cut through the table or the pile, the veil would draw a line across them,
     /// so it fades out over the last 4 units before the nearest point it could cut: where the
     /// bottom edge of the view meets a pile as high as the walls allow for.
-    private func showVeil(_ level: Float, behind book: Entity?) {
+    private func showVeil(_ level: Float, behind book: Entity? = nil) {
         veilLevel = level
         guard let veil else { return }
         veil.isEnabled = level > 0.001
@@ -1387,6 +1478,26 @@ final class BookPileScene {
         return image.cropping(
             to: PileLayout.crop(
                 CGSize(width: image.width, height: image.height), to: CGFloat(size.x / size.y)))
+    }
+
+    /// `material`'s color and texture, unlit and without tone mapping, darkened as a black
+    /// overlay of opacity `shade` darkens a SwiftUI view.
+    private static func unlit(_ material: any RealityKit.Material, shade: Float)
+        -> any RealityKit.Material
+    {
+        guard let lit = material as? PhysicallyBasedMaterial else { return material }
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        lit.baseColor.tint.getRed(&red, green: &green, blue: &blue, alpha: nil)
+        // The tint is in sRGB, like SwiftUI's blending, and multiplies the texture in linear
+        // light, which scales the texture's sRGB values by the same factor.
+        let light = CGFloat(1 - shade)
+        var unlit = UnlitMaterial(applyPostProcessToneMap: false)
+        unlit.color = .init(
+            tint: UIColor(red: red * light, green: green * light, blue: blue * light, alpha: 1),
+            texture: lit.baseColor.texture)
+        return unlit
     }
 
     private static func coverSurface(_ texture: TextureResource) -> PhysicallyBasedMaterial {

@@ -323,6 +323,11 @@ final class BookPileTests: XCTestCase {
         let below = BoundingBox(min: [-1, -0.4, -0.7], max: [1, 0, 0.7])
         XCTAssertEqual(
             PileFlight.rise(of: book, clearing: [onTop, beside, below]), 1.05, accuracy: 0.0001)
+        // A book still falling high above the stack does not count.
+        let falling = BoundingBox(min: [-0.6, 3, -0.4], max: [0.9, 3.5, 0.6])
+        XCTAssertEqual(
+            PileFlight.rise(of: book, clearing: [falling, onTop]), 1.05, accuracy: 0.0001)
+        XCTAssertEqual(PileFlight.rise(of: book, clearing: [falling]), 0.4)
         // A book with nothing over it still comes free of the table, and a tall pile caps it.
         XCTAssertEqual(PileFlight.rise(of: book, clearing: [beside, below]), 0.4)
         let tower = BoundingBox(min: [0, 0.3, 0], max: [0.5, 20, 0.5])
@@ -331,7 +336,11 @@ final class BookPileTests: XCTestCase {
 
     func testFlightLeavesTheRiseAtItsSpeedAndSettlesOnTheTarget() {
         let rise: Float = 1.2
-        let end = PileFlight.riseDuration
+        let end = PileFlight.riseDuration(rise)
+        // A book with nothing on it leaves sooner than one under a stack.
+        XCTAssertLessThan(PileFlight.riseDuration(0.4), end)
+        XCTAssertEqual(PileFlight.riseDuration(6), 0.25)
+        XCTAssertEqual(PileFlight.landing(rise: rise), end + PileFlight.spring.duration)
         XCTAssertEqual(PileFlight.climb(rise, at: 0), 0)
         XCTAssertEqual(PileFlight.climb(rise, at: end), rise, accuracy: 0.0001)
         let step = 0.0001
@@ -385,6 +394,18 @@ final class BookPileTests: XCTestCase {
         XCTAssertEqual(
             simd_length(PileFlight.spin(for: [0, -50, 0])), simd_length(SIMD2<Float>(10, 8)),
             accuracy: 0.001)
+    }
+
+    func testLiftedBookIsShadedLikeTheDetailsBook() {
+        let size = SIMD3<Float>(1.5, 2.25, 0.3)
+        let shades = PileFlight.shades(of: size, at: .resting)
+        XCTAssertEqual(shades.count, 4)
+        // At rest, `Book3DView` darkens the cover to about 76 percent and the spine a little
+        // less, since the spine turns toward its light from the upper left.
+        XCTAssertEqual(shades[0], 0.24, accuracy: 0.01)
+        XCTAssertLessThan(shades[1], shades[0])
+        // Facing the viewer squarely, the cover takes more of the light.
+        XCTAssertLessThan(PileFlight.shades(of: size, at: BookPose(yaw: 0, pitch: 0))[0], shades[0])
     }
 
     func testCameraMixesTowardAnother() {
