@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The library as a 3D carousel of spines, with a caption for the centered book, or as a pile of
-/// books on a table (`BookPileView`).
+/// The library as a 3D carousel of spines, with a caption for the centered book, or in 3D, which
+/// shows a pile of books on a table (`BookPileView`).
 ///
 /// Both show the library snapshot that `AppModel` holds; sorting and filtering happen here when
 /// the snapshot or the options change, never while scrolling.
@@ -10,8 +10,9 @@ struct ShelfView: View {
     @AppStorage("BookwormsShelfMode") private var mode = ShelfPresentation.stack
     @AppStorage("BookwormsShelfSort") private var sort = ShelfSort.finished
     @AppStorage("BookwormsShelfDesignedOnly") private var designedOnly = false
-    /// The pile's time frame as `TimeFrame.setting` writes it; empty for every book.
-    @AppStorage("BookwormsPileFrame") private var pileFrameSetting = ""
+    /// The pile's time frame as `TimeFrame.setting` writes it; empty for every book. Until the
+    /// reader chooses one, the pile shows the current year.
+    @AppStorage("BookwormsPileFrame") private var pileFrameSetting = TimeFrame.thisYear.setting
     /// Whether tilting the phone tips the pile's table, which `BookPileView` reads.
     @AppStorage("BookwormsPileTilt") private var tilts = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -435,15 +436,15 @@ enum ShelfPalette {
     static let gold = Color(red: 0.98, green: 0.76, blue: 0.36)
 }
 
-/// The shelf's presentations: the carousel's two modes and the physics pile. The raw values
-/// match `ShelfMode`, so a saved carousel mode carries over.
+/// The shelf's presentations: the carousel's two modes and 3D, which shows the physics pile. The
+/// raw values match `ShelfMode`, so a saved carousel mode carries over.
 enum ShelfPresentation: String, CaseIterable, Identifiable {
     case stack, shelf, pile
 
     var id: Self { self }
-    /// The carousel mode, or `nil` for the pile.
+    /// The carousel mode, or `nil` for 3D.
     var carousel: ShelfMode? { ShelfMode(rawValue: rawValue) }
-    var title: String { carousel?.title ?? "Pile" }
+    var title: String { carousel?.title ?? "3D" }
 }
 
 /// How the shelf orders books.

@@ -16,6 +16,9 @@ enum TimeFrame: Hashable, Sendable {
         return calendar
     }()
 
+    /// The current year in the UTC calendar that finish dates use.
+    static var thisYear: TimeFrame { .year(calendar.component(.year, from: .now)) }
+
     /// Whether `book` was finished within this span. Unfinished books are never included.
     func contains(_ book: CloudBook) -> Bool {
         guard let date = book.finishedDate else { return false }
