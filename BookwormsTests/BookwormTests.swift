@@ -253,6 +253,20 @@ final class BookwormTests: XCTestCase {
         XCTAssertEqual(lowest?.x ?? 1, 0, accuracy: 0.0001)
     }
 
+    func testBandSitsWhereTwoSegmentsCross() {
+        // Two spheres of radius 0.3 with centers 0.36 apart cross halfway, 0.24 from the axis.
+        let equal = BookwormLayout.crease(front: (0.3, 0.3), back: 0.3, gap: 0.36)
+        XCTAssertEqual(equal.offset, 0.18, accuracy: 0.0001)
+        XCTAssertEqual(equal.radius, 0.24, accuracy: 0.0001)
+        // A longer front segment moves the crease toward the shorter one behind it.
+        let long = BookwormLayout.crease(front: (0.3, 0.6), back: 0.3, gap: 0.6)
+        XCTAssertEqual(long.offset, 0.4, accuracy: 0.0001)
+        XCTAssertEqual(long.radius, 0.3 * (5 / 9 as Float).squareRoot(), accuracy: 0.0001)
+        // A segment that ends before the crease puts its band nowhere.
+        let short = BookwormLayout.crease(front: (0.12, 0.12), back: 0.3, gap: 0.6)
+        XCTAssertEqual(short.radius, 0)
+    }
+
     func testPaceKeepsLongMealsShort() {
         XCTAssertEqual(BookwormLayout.pace(books: 1), 1)
         XCTAssertEqual(BookwormLayout.pace(books: 30), 1)

@@ -5,12 +5,14 @@ import UIKit
 /// The Bookworm's RealityKit content: the desk and its lamp (`DeskStage`), a block of books
 /// (`BookFactory`) laid out by `BookwormLayout`, and a cartoon worm that eats through them.
 ///
-/// The worm is a green head with a face (eyes, round glasses, cheeks, and a smile), a short
-/// green tail, and a body that gains one segment per book, in the book's spine color, as long
-/// as `BookwormLayout.segmentLength` gives for its pages. Every round part is the same unit
-/// sphere mesh, scaled; the glasses and the smile share two ring meshes; and parts of one
-/// color share a material. The body follows the head's `WormTrail` and sways from side to
-/// side behind it. The worm has no physics: it passes through books, and only books collide.
+/// The worm is the app icon's worm in 3D: one pink, from its head to its short tail, with a
+/// body that gains one segment per book, as long as `BookwormLayout.segmentLength` gives for
+/// its pages, and a darker pink band in the crease behind each book's segment. Its face has
+/// big cream eyes ringed in plum, black pupils that look down, and a plum smile. Every round
+/// part is the same unit sphere mesh, scaled; all bands share one ring mesh, both eye rings
+/// another, and the smile a third; and parts of one color share a material. The body follows
+/// the head's `WormTrail` and sways from side to side behind it. The worm has no physics: it
+/// passes through books, and only books collide.
 ///
 /// The camera frames the block between the bars (`BookwormLayout.framing`). The head crawls to
 /// each stack in turn, stops just outside it (`BookwormLayout.biteSpot`), and eats it from the
@@ -62,6 +64,9 @@ final class BookwormScene {
 
     private struct Segment {
         let entity: ModelEntity
+        /// The band in the crease between this segment and the one behind it; the tail has
+        /// none.
+        let band: ModelEntity?
         let length: Float
         let radius: Float
         /// How far the segment has grown in behind the head, from 0 to 1.
@@ -96,11 +101,14 @@ final class BookwormScene {
         let eyes: [Entity]
         let sphere: MeshResource
         let shape: ShapeResource
+        /// The ring mesh of the bands.
+        let band: MeshResource?
+        let skin: PhysicallyBasedMaterial
+        let bands: PhysicallyBasedMaterial
         let crumbs: Entity
     }
 
     @ObservationIgnored private var parts: Parts?
-    @ObservationIgnored private var skins: [ColorValue: PhysicallyBasedMaterial] = [:]
     @ObservationIgnored private var meal: [Course] = []
     @ObservationIgnored private var books: [Int: ModelEntity] = [:]
     /// The book each tappable entity, a book or a segment, stands for.
@@ -139,8 +147,18 @@ final class BookwormScene {
     private static let pitch: Float = 50 * .pi / 180
     private static let curlDuration: Float = 1.6
     private static let growDuration: Float = 0.35
-    /// The worm's green, for its head and tail.
-    private static let green = ColorValue(red: 122, green: 176, blue: 72)
+    /// Tints that show as the app icon's worm colors under the desk's warm lamp: its pink
+    /// skin (#EF9CAE), the darker pink lines across its body (#9E687E), the plum of its eye
+    /// rings and smile (#50344D), and the cream of its eyes (#F7EFDB). The lamp and the room's
+    /// light keep less green and blue than red, so each tint raises them, as measured on the
+    /// rendered worm.
+    private static let pink = ColorValue(red: 0xE9, green: 0xAD, blue: 0xFF)
+    private static let bandPink = ColorValue(red: 0x7A, green: 0x67, blue: 0xA8)
+    private static let plum = ColorValue(red: 0x40, green: 0x3D, blue: 0x72)
+    private static let cream = ColorValue(red: 0xF0, green: 0xE9, blue: 0xFF)
+    /// An open eye's scale in the head's unit sphere: an oval, taller than wide, flattened
+    /// against the face.
+    private static let eyeScale = SIMD3<Float>(0.34, 0.4, 0.16)
     /// Segments are triggers in their own group that collide with nothing: their mask holds
     /// only a group no entity is in. Tap hit tests skip an entity whose mask is empty.
     private static let wormGroup = CollisionGroup(rawValue: 1 << 2)
@@ -228,7 +246,7 @@ final class BookwormScene {
         blockBox = Self.box([-half.x, 0, -half.y], [half.x, corner.y + 0.3, half.y + 0.3])
         shotBlend = 0
         frame()
-        addSegment(color: Self.green, length: 0.3, radius: BookwormLayout.bodyRadius * 0.7)
+        addSegment(length: 0.3, radius: BookwormLayout.bodyRadius * 0.7)
         sways = !finished
         if finished {
             for course in self.meal { eat(course) }
@@ -280,7 +298,10 @@ final class BookwormScene {
         curlBox = []
         pop = nil
         block.children.removeAll()
-        for segment in segments { segment.entity.removeFromParent() }
+        for segment in segments {
+            segment.entity.removeFromParent()
+            segment.band?.removeFromParent()
+        }
         segments = []
         books = [:]
         names = [:]
@@ -288,7 +309,7 @@ final class BookwormScene {
         phase = .idle
         clock = 0
         // Opens eyes that a blink left half shut.
-        for eye in parts?.eyes ?? [] { eye.scale = .init(repeating: 0.3) }
+        for eye in parts?.eyes ?? [] { eye.scale = Self.eyeScale }
         worm.isEnabled = false
         eatenBooks = 0
         eatenPages = 0
@@ -301,66 +322,78 @@ final class BookwormScene {
         guard parts == nil else { return }
         stage.build(pool: .zero, radius: 7)
         let sphere = MeshResource.generateSphere(radius: 1)
-        let head = ModelEntity(mesh: sphere, materials: [skin(Self.green)])
+        // A soft satin skin: a fairly rough base under a thin, blurry clear coat.
+        var skin = BookFactory.surface(
+            nil, tint: Self.pink.uiColor, roughness: 0.55, specular: 0.3)
+        skin.clearcoat = .init(floatLiteral: 0.25)
+        skin.clearcoatRoughness = .init(floatLiteral: 0.4)
+        let bands = BookFactory.surface(
+            nil, tint: Self.bandPink.uiColor, roughness: 0.55, specular: 0.3)
+        let head = ModelEntity(mesh: sphere, materials: [skin])
         head.components.set(GroundingShadowComponent(castsShadow: true))
         stage.light(head)
         worm.addChild(head)
-        // The face, in the head's unit-sphere space with the front toward +z: eyes high on the
-        // head that look up toward the camera, round glasses that sit just off the face, rosy
-        // cheeks, and a smile.
-        let white = BookFactory.surface(nil, tint: .white, roughness: 0.3, specular: 0.4)
+        // The face lies in the head's unit-sphere space, with the front toward +z, as the camera
+        // sees the curled worm, which faces it from `pitch` above: big eyes high on the face,
+        // with pupils low and toward the middle, as the icon's worms look down at their book,
+        // and a smile under them. `spot` is the point on the head that shows at (x, y) on its
+        // disk, from -1 to 1 each way. `facing` turns a part's +z out along `direction` and its
+        // +y as near the camera's up as it can, so an eye's blink closes it from top to bottom
+        // on screen.
+        let toward = SIMD3<Float>(0, sin(Self.pitch), cos(Self.pitch))
+        let up = SIMD3<Float>(0, cos(Self.pitch), -sin(Self.pitch))
+        func spot(_ x: Float, _ y: Float) -> SIMD3<Float> {
+            SIMD3(x, 0, 0) + up * y + toward * max(0, 1 - x * x - y * y).squareRoot()
+        }
+        func facing(_ direction: SIMD3<Float>) -> simd_quatf {
+            let z = simd_normalize(direction)
+            let x = simd_normalize(simd_cross(up, z))
+            return simd_quatf(simd_float3x3(columns: (x, simd_cross(z, x), z)))
+        }
+        let cream = BookFactory.surface(
+            nil, tint: Self.cream.uiColor, roughness: 0.3, specular: 0.4)
         let black = BookFactory.surface(nil, tint: .black, roughness: 0.2, specular: 0.5)
-        let rims = BookFactory.surface(
-            nil, tint: UIColor(red: 0.2, green: 0.12, blue: 0.08, alpha: 1), roughness: 0.25,
-            specular: 0.5)
-        let blush = BookFactory.surface(
-            nil, tint: UIColor(red: 0.96, green: 0.52, blue: 0.5, alpha: 1), roughness: 0.7,
-            specular: 0.1)
-        let ring = Self.mesh(BookwormLayout.ring(arc: 2 * .pi, tube: 0.09))
+        let plum = BookFactory.surface(nil, tint: Self.plum.uiColor, roughness: 0.4, specular: 0.3)
+        let band = Self.mesh(BookwormLayout.ring(arc: 2 * .pi, tube: 0.08))
+        let ring = Self.mesh(BookwormLayout.ring(arc: 2 * .pi, tube: 0.16))
         let arc = Self.mesh(BookwormLayout.ring(arc: .pi * 0.6, tube: 0.12))
-        let facing = simd_normalize(SIMD3<Float>(0, 0.55, 0.66))
-        let lenses = simd_quatf(from: [0, 0, 1], to: facing)
         var eyes: [Entity] = []
         func add(
-            _ mesh: MeshResource?, _ material: PhysicallyBasedMaterial, to parent: Entity,
+            _ mesh: MeshResource, _ material: PhysicallyBasedMaterial, to parent: Entity,
             scale: SIMD3<Float>, at position: SIMD3<Float>,
             rotation: simd_quatf = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
         ) -> Entity {
-            let part = ModelEntity(mesh: mesh ?? sphere, materials: [material])
+            let part = ModelEntity(mesh: mesh, materials: [material])
             part.transform = Transform(scale: scale, rotation: rotation, translation: position)
             stage.light(part)
             parent.addChild(part)
             return part
         }
         for side: Float in [-1, 1] {
-            let center = SIMD3<Float>(side * 0.38, 0.55, 0.66)
-            let eye = add(sphere, white, to: head, scale: .init(repeating: 0.3), at: center)
+            // Each eye sinks a little into the head, and its ring circles its rim.
+            let center = spot(side * 0.4, 0.2)
+            let eye = add(
+                sphere, cream, to: head, scale: Self.eyeScale, at: center * 0.95,
+                rotation: facing(center))
             _ = add(
-                sphere, black, to: eye, scale: .init(repeating: 0.5),
-                at: simd_normalize(SIMD3<Float>(side * -0.08, 0.6, 0.8)) * 0.68)
+                sphere, black, to: eye, scale: .init(repeating: 0.42),
+                at: simd_normalize(SIMD3<Float>(side * -0.28, -0.55, 0.8)) * 0.72)
+            if let ring { _ = add(ring, plum, to: eye, scale: .one, at: .zero) }
             eyes.append(eye)
-            _ = add(
-                ring, rims, to: head, scale: .init(repeating: 0.33), at: center + facing * 0.2,
-                rotation: lenses)
-            let cheek = simd_normalize(SIMD3<Float>(side * 0.62, 0.12, 0.78))
-            _ = add(
-                sphere, blush, to: head, scale: [0.14, 0.09, 0.04], at: cheek,
-                rotation: simd_quatf(from: [0, 0, 1], to: cheek))
         }
-        // The bridge arches over the nose between the lenses, and the smile curves down.
-        _ = add(
-            arc, rims, to: head, scale: .init(repeating: 0.09),
-            at: SIMD3(0, 0.55, 0.66) + facing * 0.2 + SIMD3(0, 0.02, 0),
-            rotation: lenses * simd_quatf(angle: .pi, axis: [0, 0, 1]))
-        _ = add(
-            arc, black, to: head, scale: .init(repeating: 0.24), at: [0, 0.2, 0.99],
-            rotation: simd_quatf(from: [0, 0, 1], to: simd_normalize(SIMD3<Float>(0, 0.2, 1))))
+        // The smile is the bottom of a small circle on the head, so both its ends meet the skin.
+        if let arc {
+            let middle = spot(0, -0.08)
+            _ = add(
+                arc, plum, to: head, scale: .init(repeating: 0.3), at: middle * 0.96,
+                rotation: facing(middle))
+        }
         let crumbs = Entity()
         crumbs.components.set(Self.crumbEmitter())
         root.addChild(crumbs)
         parts = Parts(
-            head: head, eyes: eyes, sphere: sphere, shape: .generateSphere(radius: 1),
-            crumbs: crumbs)
+            head: head, eyes: eyes, sphere: sphere, shape: .generateSphere(radius: 1), band: band,
+            skin: skin, bands: bands, crumbs: crumbs)
     }
 
     /// A mesh of `ring`'s triangles, or `nil` if RealityKit cannot build it.
@@ -415,19 +448,12 @@ final class BookwormScene {
             }
     }
 
-    /// A glossy, cartoonish skin, shared by every part of one color.
-    private func skin(_ color: ColorValue) -> PhysicallyBasedMaterial {
-        if let skin = skins[color] { return skin }
-        let skin = BookFactory.surface(nil, tint: color.uiColor, roughness: 0.5, specular: 0.25)
-        skins[color] = skin
-        return skin
-    }
-
-    /// Adds a segment right behind the head. It grows in from nothing over `growDuration`,
-    /// pushing the rest of the body back along the trail.
-    private func addSegment(color: ColorValue, length: Float, radius: Float, book: Int? = nil) {
+    /// Adds a segment right behind the head, with a band behind it if it stands for a book. It
+    /// grows in from nothing over `growDuration`, pushing the rest of the body back along the
+    /// trail.
+    private func addSegment(length: Float, radius: Float, book: Int? = nil) {
         guard let parts else { return }
-        let entity = ModelEntity(mesh: parts.sphere, materials: [skin(color)])
+        let entity = ModelEntity(mesh: parts.sphere, materials: [parts.skin])
         entity.components.set(
             CollisionComponent(
                 shapes: [parts.shape], mode: .trigger,
@@ -436,9 +462,20 @@ final class BookwormScene {
         entity.components.set(GroundingShadowComponent(castsShadow: true))
         stage.light(entity)
         worm.addChild(entity)
-        if let book { names[entity.id] = book }
+        var band: ModelEntity?
+        if let book {
+            names[entity.id] = book
+            if let mesh = parts.band {
+                let ring = ModelEntity(mesh: mesh, materials: [parts.bands])
+                stage.light(ring)
+                worm.addChild(ring)
+                band = ring
+            }
+        }
         segments.insert(
-            Segment(entity: entity, length: length, radius: radius, growth: book == nil ? 1 : 0),
+            Segment(
+                entity: entity, band: band, length: length, radius: radius,
+                growth: book == nil ? 1 : 0),
             at: 0)
     }
 
@@ -616,7 +653,7 @@ final class BookwormScene {
         guard sways, let eyes = parts?.eyes else { return }
         let moment = clock.truncatingRemainder(dividingBy: 3.4) - 2.6
         let open = moment > 0 && moment < 0.16 ? abs(moment / 0.08 - 1) : 1
-        for eye in eyes { eye.scale = [0.3, 0.3 * max(0.08, open), 0.3] }
+        for eye in eyes { eye.scale = Self.eyeScale * [1, max(0.08, open), 1] }
     }
 
     /// Finishes the book at `index`: it leaves the scene, the worm grows its segment and
@@ -639,8 +676,7 @@ final class BookwormScene {
 
     private func eat(_ course: Course) {
         addSegment(
-            color: course.color, length: course.length, radius: BookwormLayout.bodyRadius,
-            book: course.book.id)
+            length: course.length, radius: BookwormLayout.bodyRadius, book: course.book.id)
         eatenBooks += 1
         eatenPages += course.book.pages ?? 0
     }
@@ -684,6 +720,26 @@ final class BookwormScene {
         head.transform = Transform(
             scale: .init(repeating: radius * chew), rotation: Self.yaw(heading),
             translation: [place.x, radius, place.y])
+        placeBands()
+    }
+
+    /// Puts each band around its segment where it meets the one behind it
+    /// (`BookwormLayout.crease`), square to the segment's own axis so the band lies on its skin
+    /// where the body bends. A segment still growing in hides its band inside the one behind.
+    private func placeBands() {
+        for (front, back) in zip(segments, segments.dropFirst()) {
+            guard let band = front.band else { continue }
+            let segment = front.entity.transform
+            let axis = segment.rotation.act([0, 0, 1])
+            // Measures the gap along the segment, so a sway or a bend does not push the band
+            // past the crease.
+            let crease = BookwormLayout.crease(
+                front: (segment.scale.x, segment.scale.z), back: back.entity.scale.z,
+                gap: max(0, simd_dot(segment.translation - back.entity.position, axis)))
+            band.transform = Transform(
+                scale: .init(repeating: max(0.001, crease.radius)), rotation: segment.rotation,
+                translation: segment.translation - axis * crease.offset)
+        }
     }
 
     /// Starts curling the worm up in the middle of the table, from where its parts are now.
@@ -728,6 +784,7 @@ final class BookwormScene {
             scale: .init(repeating: radius),
             rotation: simd_slerp(curlTurn, Self.yaw([0, 1]), progress),
             translation: [at(0).x, radius, at(0).y])
+        placeBands()
     }
 
     /// How much larger than usual `entity` draws: up to a quarter larger while it pops.

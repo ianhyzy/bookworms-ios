@@ -190,10 +190,25 @@ enum BookwormLayout {
         return (SIMD3(shift.x, 0, 0) + up * shift.y, far)
     }
 
+    /// Where the crease between two segments of the worm's body lies on the front one: its
+    /// distance behind the front segment's center, and the front segment's radius there. Each
+    /// segment is an ellipsoid, round across the body, with `radius` and a half length `half`
+    /// along it, and the back one's half length is `back`. Two ellipsoids of one radius cross
+    /// where they divide the `gap` between their centers in proportion to their half lengths.
+    /// A front segment that does not reach that far, such as one growing in, has radius 0
+    /// there.
+    static func crease(
+        front: (radius: Float, half: Float), back: Float, gap: Float
+    ) -> (offset: Float, radius: Float) {
+        let offset = gap * front.half / (front.half + back)
+        let along = offset / front.half
+        return (offset, front.radius * max(0, 1 - along * along).squareRoot())
+    }
+
     /// The triangles of a tube of radius `tube` bent along `arc` radians of a unit circle in
-    /// the xy-plane, centered on the circle's bottom (-y), so a full turn makes a glasses lens
-    /// and a shorter arc a smile. The ends stay open. Triangles wind counterclockwise seen from
-    /// outside, as RealityKit draws front faces.
+    /// the xy-plane, centered on the circle's bottom (-y), so a full turn makes an eye's ring
+    /// or a band around the body, and a shorter arc a smile. The ends stay open. Triangles wind
+    /// counterclockwise seen from outside, as RealityKit draws front faces.
     static func ring(arc: Float, tube: Float) -> (
         positions: [SIMD3<Float>], normals: [SIMD3<Float>], indices: [UInt32]
     ) {
