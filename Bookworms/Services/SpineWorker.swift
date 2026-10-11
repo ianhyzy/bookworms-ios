@@ -84,6 +84,15 @@ actor SpineWorker {
     private var searchedSeries = Set<Int>()
 
     static let busyRetryDelay: TimeInterval = 15 * 60
+    /// How long a stop waits when its cause needs the user, such as a full iCloud storage plan
+    /// or Apple Intelligence turned off. **Generate now** does not wait.
+    static let lastingStopDelay: TimeInterval = 24 * 60 * 60
+    /// URL error codes that stop the run with no retry date: no usable network, or a cancelled
+    /// request.
+    static let offlineErrors: Set<URLError.Code> = [
+        .notConnectedToInternet, .dataNotAllowed, .internationalRoamingOff, .callIsActive,
+        .cancelled,
+    ]
 
     /// Creates a worker that starts from `lastRun`, the saved outcome of the previous run.
     init(store: any SpineStore, lastRun: WorkerSnapshot = WorkerSnapshot()) {
@@ -112,10 +121,15 @@ actor SpineWorker {
         snapshot.isRunning = true
         snapshot.error = nil
         snapshot.retryAfter = nil
-        // A pass ends early when the Apple TV changes the work; the next pass reads it again.
+        // A pass ends early when the Apple TV or the reader changes the work; the next pass
+        // reads it again.
+        var changed = false
         for _ in 0..<3 {
-            guard await runPass(mode: mode) else { break }
+            changed = await runPass(mode: mode)
+            if !changed { break }
         }
+        // The work kept changing. The books left in `queue` keep the charging task scheduled.
+        if changed { snapshot.phase = "Ready to continue" }
         snapshot.isRunning = false
         snapshot.currentTitle = nil
         snapshot.lastRunAt = Date()
@@ -123,7 +137,8 @@ actor SpineWorker {
         publish()
     }
 
-    /// Returns `true` when the Apple TV changed the work during the pass.
+    /// Returns `true` when the Apple TV or the reader's cover choice changed the work during the
+    /// pass.
     private func runPass(mode: RunMode) async -> Bool {
         snapshot.phase = "Checking the library"
         snapshot.queue = 0
@@ -181,7 +196,7 @@ actor SpineWorker {
                     if let design = try await design(
                         for: book, cover: cover, workHash: workHash, context: context)
                     {
-                        guard try await store.isStillCurrent(context, bookID: book.id) else {
+                        guard try await store.isStillCurrent(context, book: book) else {
                             return true
                         }
                         try await store.save(design)
@@ -295,17 +310,23 @@ actor SpineWorker {
     private func publish() { continuation.yield(.status(snapshot)) }
 
     /// Returns why the model should get no more requests in this run, or `nil` to continue.
-    static func modelStop(_ status: ModelStatus, mode: RunMode) -> (
+    ///
+    /// An unavailable model waits `lastingStopDelay`, so the charging task does not download the
+    /// library in every charging window only to stop again.
+    static func modelStop(_ status: ModelStatus, mode: RunMode, now: Date = Date()) -> (
         message: String, retryAfter: Date?
     )? {
         guard status.isAvailable else {
             return (
                 status.unavailableReason ?? CompanionError.modelUnavailable.localizedDescription,
-                nil
+                now.addingTimeInterval(lastingStopDelay)
             )
         }
         guard status.coverReader != .none else {
-            return (CompanionError.modelUnavailable.localizedDescription, nil)
+            return (
+                CompanionError.modelUnavailable.localizedDescription,
+                now.addingTimeInterval(lastingStopDelay)
+            )
         }
         switch status.quota {
         case .limitReached:
@@ -325,37 +346,35 @@ actor SpineWorker {
 
     /// Decides whether an error stops the run or fails only the current book.
     ///
-    /// Quota, model service, iCloud, and connectivity errors stop the run so later books are not
-    /// spent on a request that cannot succeed now. Errors tied to one book's cover, font, or
-    /// design fail that book. A cover host that is unreachable while the network works fails
-    /// the book, so one dead link cannot block the queue on every run. A timeout or a dropped
-    /// connection can come from either, so it fails the book and stops the run.
+    /// Quota, model service, Google Fonts service, iCloud, and connectivity errors stop the run so
+    /// later books are not spent on a request that cannot succeed now. A full iCloud storage plan
+    /// waits `lastingStopDelay`, because it does not clear by itself. Errors tied to one book's
+    /// cover or design fail that book. A cover host that is unreachable while the network works
+    /// fails the book, so one dead link cannot block the queue on every run. A timeout or a
+    /// dropped connection can come from either, so it fails the book and stops the run.
     static func disposition(of error: any Error, now: Date = Date()) -> Disposition {
         switch error {
         case let error as CompanionError:
             switch error {
             case .invalidCover, .coverTooLarge, .invalidDesign: return .skipBook
             case .quotaReached(let resetDate): return .stopRun(retryAfter: resetDate)
-            case .modelBusy(let retryAfter):
+            case .modelBusy(let retryAfter), .fontServiceUnavailable(let retryAfter):
                 return .stopRun(retryAfter: retryAfter ?? now.addingTimeInterval(busyRetryDelay))
             default: return .stopRun(retryAfter: nil)
             }
+        case let error as CKError where error.code == .quotaExceeded:
+            return .stopRun(retryAfter: now.addingTimeInterval(lastingStopDelay))
         case let error as CKError:
             let transient: Set<CKError.Code> = [
                 .networkUnavailable, .networkFailure, .requestRateLimited, .zoneBusy,
-                .serviceUnavailable, .notAuthenticated, .quotaExceeded,
-                .accountTemporarilyUnavailable,
+                .serviceUnavailable, .notAuthenticated, .accountTemporarilyUnavailable,
             ]
             // Other codes, such as a schema the production container lacks, usually affect
             // every save, so stop after this book instead of spending the quota on the rest.
             guard transient.contains(error.code) else { return .skipBookAndStop }
             return .stopRun(retryAfter: error.retryAfterSeconds.map { now.addingTimeInterval($0) })
         case let error as URLError:
-            let offline: Set<URLError.Code> = [
-                .notConnectedToInternet, .dataNotAllowed, .internationalRoamingOff, .callIsActive,
-                .cancelled,
-            ]
-            if offline.contains(error.code) { return .stopRun(retryAfter: nil) }
+            if offlineErrors.contains(error.code) { return .stopRun(retryAfter: nil) }
             if [.timedOut, .networkConnectionLost].contains(error.code) { return .skipBookAndStop }
             return .skipBook
         case is CancellationError:
@@ -365,8 +384,22 @@ actor SpineWorker {
         }
     }
 
-    private static func message(for error: any Error) -> String {
-        (error as? CompanionError)?.errorDescription ?? error.localizedDescription
+    /// The status message for an error that stops the run.
+    ///
+    /// A network that a policy refused, which only the background cover downloader sets, reads
+    /// as waiting for Wi-Fi rather than as offline.
+    static func message(for error: any Error) -> String {
+        switch error {
+        case let error as CompanionError:
+            return error.errorDescription ?? error.localizedDescription
+        case let error as CKError where error.code == .quotaExceeded:
+            return "Your iCloud storage is full. Free up space so Bookworms can save spines."
+        case let error as URLError where error.networkUnavailableReason != nil:
+            return
+                "Waiting for Wi-Fi. Generation while charging does not use cellular data or Low Data Mode."
+        default:
+            return error.localizedDescription
+        }
     }
 
     private static func recordName(_ accountID: String, _ book: CloudBook) -> String {

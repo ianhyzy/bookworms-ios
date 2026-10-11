@@ -69,7 +69,14 @@ actor CloudSpineStore: SpineStore {
         return existing
     }
 
-    func isStillCurrent(_ context: WorkContext, bookID: Int) async throws -> Bool {
+    func isStillCurrent(_ context: WorkContext, book: CloudBook) async throws -> Bool {
+        guard try await belongsToWork(context, bookID: book.id) else { return false }
+        let current = try await choosingCovers(accountID: context.accountID, books: [book])
+        return current.first?.chosenCoverURL == book.chosenCoverURL
+    }
+
+    /// Returns whether `bookID` is still in the work that `context` came from.
+    private func belongsToWork(_ context: WorkContext, bookID: Int) async throws -> Bool {
         let worklist = try await fetchWorklist()
         guard context.followsWorklist else {
             // A worklist, sign-in, or sign-out since the run started takes over on the next run.
@@ -230,6 +237,9 @@ actor CloudSpineStore: SpineStore {
     }
 
     /// Fetches the `payload` of the named records that exist.
+    ///
+    /// A missing record is skipped. Any other per-record failure throws, so a transient error
+    /// cannot pass for a deleted design or cover choice.
     private func records(_ names: [String]) async throws -> [CKRecord] {
         var records: [CKRecord] = []
         // CloudKit limits one fetch to a few hundred IDs; batches of 100 match the Apple TV.
@@ -239,7 +249,13 @@ actor CloudSpineStore: SpineStore {
                     CKRecord.ID(recordName: $0)
                 }
             let results = try await database.records(for: batch, desiredKeys: ["payload"])
-            records += results.values.compactMap { try? $0.get() }
+            for result in results.values {
+                switch result {
+                case .success(let record): records.append(record)
+                case .failure(let error as CKError) where error.code == .unknownItem: continue
+                case .failure(let error): throw error
+                }
+            }
         }
         return records
     }

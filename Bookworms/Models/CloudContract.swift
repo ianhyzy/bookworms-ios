@@ -58,7 +58,9 @@ struct CloudLibraryArchive: Decodable, Sendable {
     /// With a worklist, the Apple TV chose the account and books: the snapshot must have the
     /// worklist's account and sync date, or the library is still uploading. Without one (Apple TV
     /// builds that predate the worklist), the newest Hardcover snapshot wins, preferring a real
-    /// account ID over the legacy `"hardcover"` placeholder, and every book is listed.
+    /// account ID over the legacy `"hardcover"` placeholder, and every book is listed. An archive
+    /// with no Hardcover snapshot, such as from a CWA-only Apple TV, throws
+    /// `CompanionError.noHardcoverLibrary`.
     func workSource(for worklist: SpineWorklistV1?) throws -> (
         snapshot: CloudSourceSnapshot, books: [CloudBook]
     ) {
@@ -73,6 +75,7 @@ struct CloudLibraryArchive: Decodable, Sendable {
             else { throw CompanionError.waitingForLibrary }
             return (source, try source.selectedBooks(in: worklist))
         }
+        guard !hardcover.isEmpty else { throw CompanionError.noHardcoverLibrary }
         let accounts = hardcover.filter { $0.accountID != "hardcover" }
         guard
             let source = (accounts.isEmpty ? hardcover : accounts)
@@ -308,6 +311,8 @@ enum CompanionError: LocalizedError, Sendable {
     case invalidCloudData
     case unsupportedCloudData
     case waitingForLibrary
+    /// The Apple TV archive has sources, such as CWA, but none from Hardcover.
+    case noHardcoverLibrary
     case bookNotInLibrary
     case invalidCover
     case coverTooLarge
@@ -318,6 +323,9 @@ enum CompanionError: LocalizedError, Sendable {
     /// one.
     case modelBusy(Date?)
     case invalidDesign
+    /// Google Fonts is failing or rate limiting requests; retry after the date, when the service
+    /// gives one.
+    case fontServiceUnavailable(Date?)
     case cloudConflict
 
     var errorDescription: String? {
@@ -328,6 +336,8 @@ enum CompanionError: LocalizedError, Sendable {
         case .invalidCloudData: "Bookworms iCloud data could not be read."
         case .unsupportedCloudData: "Update this app to read the iCloud data."
         case .waitingForLibrary: "Waiting for the Apple TV to upload its library to iCloud."
+        case .noHardcoverLibrary:
+            "The Apple TV library has no Hardcover books. Connect Hardcover on the Apple TV or on this iPhone to design spines."
         case .bookNotInLibrary: "This book is not in the library Bookworms shows now."
         case .invalidCover: "A book cover could not be read securely."
         case .coverTooLarge: "A book cover exceeds the image limit."
@@ -340,6 +350,7 @@ enum CompanionError: LocalizedError, Sendable {
             }
         case .modelBusy: "Private Cloud Compute is busy or unreachable. Bookworms will retry."
         case .invalidDesign: "The generated design did not pass validation."
+        case .fontServiceUnavailable: "Google Fonts is unavailable. Bookworms will retry."
         case .cloudConflict: "A concurrent iCloud update prevented saving."
         }
     }
