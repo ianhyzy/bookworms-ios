@@ -82,8 +82,7 @@ final class SpineFonts {
     }
 
     /// Starts downloading `design`'s face and records the result under `key` when it ends.
-    private func download(family: String, design: SpineDesignV1, key: String) -> Task<Void, Never>
-    {
+    private func download(family: String, design: SpineDesignV1, key: String) -> Task<Void, Never> {
         let task = Task { [downloader] in
             do {
                 let font = try await downloader.download(family: family, weight: design.weight)

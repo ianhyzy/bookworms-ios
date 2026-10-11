@@ -17,9 +17,10 @@ struct PileViewport: Equatable {
 ///
 /// Returning from a book's details finds the pile as the reader left it. Leaving it any other
 /// way, such as for another tab, frees its books and textures, and the books drop again on the
-/// reader's return. **Share** makes an image of all `books` in a new pile, headed `title`.
-/// While its sheet is open, the pile leaves the screen and keeps its books, and tilt pauses,
-/// as it does while the app is not active.
+/// reader's return. **Share** makes an image of `books`, up to
+/// `PileSnapshotRenderer.maximumBooks` of them, in a new pile headed `title`. While its sheet
+/// is open, the pile leaves the screen and keeps its books, and tilt pauses, as it does while
+/// the app is not active.
 ///
 /// RealityKit's render thread can crash drawing this view while a share image's offscreen
 /// renderer steps the same engine, so while any pile image renders, such as the Share tab's
@@ -47,6 +48,9 @@ struct BookPileView: View {
     @State private var generation = 0
     /// Set while a book's details cover the pile.
     @State private var showsBook = false
+    /// Set between `onAppear` and `onDisappear`. The view stays in the hierarchy under a pushed
+    /// book or in a tab that is not selected, where tilt must stay off.
+    @State private var isShown = false
     @State private var sharesPile = false
     /// Set while a finger holds a book. SwiftUI resets it when the drag ends or is cancelled,
     /// so the book is let go either way.
@@ -109,12 +113,13 @@ struct BookPileView: View {
         }
         .onAppear {
             showsBook = false
-            scene.setTilt(tracksTilt)
+            isShown = true
             #if DEBUG
                 if PileSnapshotDebug.opensSheet { sharesPile = true }
             #endif
         }
         .onDisappear {
+            isShown = false
             scene.endDrag()
             scene.setTilt(false)
             if !showsBook { scene.release() }
@@ -150,7 +155,9 @@ struct BookPileView: View {
     }
 
     private var tiltIsOn: Bool { tilts && !reduceMotion }
-    private var tracksTilt: Bool { tiltIsOn && !sharesPile && scenePhase == .active }
+    private var tracksTilt: Bool {
+        isShown && tiltIsOn && !sharesPile && scenePhase == .active
+    }
 
     /// The number of books, such as "39 books", or "300 of 1,024 books" past `maximumBooks`.
     private var count: String {

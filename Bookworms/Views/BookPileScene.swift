@@ -154,6 +154,9 @@ enum PileLayout {
     /// follow.
     static let gravity: Float = 55
     static let waveSize = 16
+    /// The least time from one wave to the next. It lets the previous wave's highest books
+    /// fall below the next wave's lowest cells before those books start.
+    static let waveInterval = Duration.milliseconds(750)
     static let spawnHeight: Float = 9
     /// Above the highest start a drop plan gives, 11.4 units over `spawnHeight`.
     static let ceiling: Float = 22
@@ -594,10 +597,7 @@ final class BookPileScene {
             await prepare(
                 wave.map(\.book), prefetching: next.map(\.book), coverWait: Self.coverWait,
                 model: model)
-            if !tidy {
-                // Lets the previous wave's highest books fall clear of the spawn cells first.
-                try? await Task.sleep(until: lastWave + .milliseconds(650))
-            }
+            if !tidy { try? await Task.sleep(until: lastWave + PileLayout.waveInterval) }
             guard !Task.isCancelled, planKey == key else { return }
             for slot in wave { spawn(slot, mode: holdsStill ? .kinematic : .dynamic) }
             spawned += wave.count

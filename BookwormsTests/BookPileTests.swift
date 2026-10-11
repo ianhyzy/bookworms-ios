@@ -155,6 +155,18 @@ final class BookPileTests: XCTestCase {
         }
     }
 
+    func testEachWaveFallsBelowTheNextWaveBeforeItStarts() {
+        let starts = (0..<20 as Range<UInt64>)
+            .flatMap { PileLayout.dropPlan(Self.books, in: Self.tray, seed: $0) }
+            .map(\.transform.translation.y)
+        let reach = Self.books.map { simd_length(PileLayout.size(of: $0, coverAspect: 0.85)) / 2 }
+            .max()!
+        // Physics starts a frame after a wave spawns.
+        let time = Float(PileLayout.waveInterval / .seconds(1)) - 1 / 60
+        let fallen = starts.max()! - PileLayout.gravity * time * time / 2
+        XCTAssertLessThan(fallen + reach, starts.min()! - reach)
+    }
+
     func testStillImageGroupsStartApartInsideTheWalls() throws {
         for aspect in ShareAspect.allCases {
             for count in [1, 2, 12, 40] {
