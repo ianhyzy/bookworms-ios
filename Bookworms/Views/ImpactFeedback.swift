@@ -3,7 +3,8 @@ import CoreHaptics
 import RealityKit
 import os
 
-/// One collision between books, or between a book and the table, as `ImpactFeedback` heard it.
+/// A collision whose sound `ImpactFeedback` played, or would have played with **Sounds** on:
+/// what an offline mix needs to play the same sound at the same time.
 struct ImpactRecord: Equatable, Sendable {
     /// Seconds of simulation since the recording started.
     var time: TimeInterval
@@ -13,6 +14,13 @@ struct ImpactRecord: Equatable, Sendable {
     var mass: Float
     /// Where the bodies touched, in scene coordinates.
     var position: SIMD3<Float>
+    /// The sound, one of `ImpactSound.bank`'s samples.
+    var kind: ImpactSound.Kind
+    var variant: Int
+    /// How loud the sound plays, from 0 to 1, before `ImpactSound.level`.
+    var volume: Float
+    /// The sound's stereo position, from -1 at the screen's left edge to 1 at its right.
+    var pan: Float
 }
 
 /// How hard collisions land, and the sounds they make, computed without audio hardware so an
@@ -26,10 +34,14 @@ enum ImpactSound {
     }
 
     static let sampleRate: Double = 44_100
+    /// The gain of every voice. Eight full-strength thuds 30 ms apart, the most that overlap,
+    /// sum to about 1.5, and panning a voice 0.8 to one side plays it at 0.99 there, so this
+    /// keeps the mix below 0.9 without a limiter.
+    static let level: Float = 0.6
     /// The variations of each kind, which differ in pitch and noise.
     static let variants = 4
-    /// Books at least this heavy, in kilograms, thud; lighter books slap. A 320-page trade
-    /// hardcover weighs about 0.5 kg in the scene.
+    /// Books at least this heavy, in kilograms, thud; lighter books slap. In the scene, a
+    /// 320-page book of average size weighs about 0.43 kg, and one of about 450 pages 0.5 kg.
     static let heavyMass: Float = 0.5
     /// Hits weaker than this are neither heard nor felt, so a settling pile stays quiet.
     static let threshold: Float = 0.04
@@ -124,41 +136,38 @@ struct ImpactThrottle {
 /// Haptics tap whose intensity follows its strength (`ImpactSound.strength`), sharper for a
 /// light book, and, while `playsSounds`, a short synthesized sound: a thud for a heavy book, a
 /// slap for a light one, panned to where the hit shows on screen. Taps come at most every 60
-/// ms and sounds every 30 ms, unless a hit is much stronger (`ImpactThrottle`). Eight pooled
-/// voices play the sounds, and a new sound takes over the oldest voice.
+/// ms and sounds every 30 ms, unless a hit is much stronger (`ImpactThrottle`). Sounds take
+/// the variants in turn, so a recording names the samples that played.
 ///
-/// The audio session's ambient category mixes with other audio and follows the silent switch.
-/// `start` and `stop` bound the engines' lifetimes; the audio engine restarts after a route
-/// change. Devices without haptics, such as the Simulator, only play sounds.
+/// `ImpactAudio` plays the sounds away from the main actor. Devices without haptics, such as
+/// the Simulator, only play sounds. `start` and `stop` bound both engines' lifetimes.
 ///
-/// `startRecording` keeps every audible hit, with its simulation time, until
-/// `finishRecording`, so an offline renderer can mix the same `ImpactSound` samples.
+/// `startRecording` keeps every hit whose sound passes the throttle, with its simulation time,
+/// until `finishRecording`, so an offline renderer can mix the same `ImpactSound` samples.
 @MainActor
 final class ImpactFeedback {
     /// Whether hits play sounds. **Sounds** in **Sort and filter** sets it.
     var playsSounds = true {
         didSet {
             guard playsSounds != oldValue, isActive else { return }
-            if playsSounds { startAudio() } else { stopAudio() }
+            setAudio(playsSounds)
         }
     }
 
-    private static let voiceCount = 8
     nonisolated private static let log = Logger(
         subsystem: "gay.ian.Bookworms.iOS", category: "impacts")
 
+    private let audio = ImpactAudio()
+    /// Counts requests to start or stop `audio`, so it can ignore one that arrives late.
+    private var audioRequest = 0
     private var isActive = false
     private var haptics: CHHapticEngine?
-    private var audio: AVAudioEngine?
-    private var voices: [AVAudioPlayerNode] = []
-    private var buffers: [ImpactSound.Kind: [AVAudioPCMBuffer]] = [:]
-    private var nextVoice = 0
-    private var routeChange: (any NSObjectProtocol)?
     private var hapticThrottle = ImpactThrottle(interval: 0.06)
     private var soundThrottle = ImpactThrottle(interval: 0.03)
+    /// Counts the sounds, which take the variants in turn.
+    private var sounds = 0
     /// Seconds of simulation, which `advance` counts.
     private var clock: TimeInterval = 0
-    private var lastRestart: TimeInterval = -.infinity
     private var recording: (start: TimeInterval, records: [ImpactRecord])?
 
     /// Starts the haptic engine, and the audio engine while `playsSounds`.
@@ -166,7 +175,7 @@ final class ImpactFeedback {
         guard !isActive else { return }
         isActive = true
         startHaptics()
-        if playsSounds { startAudio() }
+        if playsSounds { setAudio(true) }
     }
 
     /// Stops both engines and releases the audio session.
@@ -175,7 +184,7 @@ final class ImpactFeedback {
         isActive = false
         haptics?.stop()
         haptics = nil
-        stopAudio()
+        setAudio(false)
     }
 
     /// Advances the clock that throttles and timestamps hits by one simulation step.
@@ -204,28 +213,41 @@ final class ImpactFeedback {
     ) {
         let strength = max(minimum, ImpactSound.strength(impulse: impulse, mass: mass))
         guard strength >= ImpactSound.threshold else { return }
+        if hapticThrottle.admit(strength, at: clock), haptics != nil {
+            tap(strength: strength, sharpness: mass < ImpactSound.heavyMass ? 0.6 : 0.25)
+        }
+        guard soundThrottle.admit(strength, at: clock) else { return }
+        let kind = ImpactSound.kind(mass: mass)
+        let variant = sounds % ImpactSound.variants
+        let stereo = pan(position)
+        sounds += 1
         if let start = recording?.start {
             recording?.records
                 .append(
                     ImpactRecord(
-                        time: clock - start, impulse: impulse, mass: mass, position: position))
+                        time: clock - start, impulse: impulse, mass: mass, position: position,
+                        kind: kind, variant: variant, volume: strength, pan: stereo))
         }
-        guard isActive else { return }
-        if haptics != nil, hapticThrottle.admit(strength, at: clock) {
-            tap(strength: strength, sharpness: mass < ImpactSound.heavyMass ? 0.6 : 0.25)
-        }
-        if audio != nil, soundThrottle.admit(strength, at: clock) {
-            play(ImpactSound.kind(mass: mass), volume: strength, pan: pan(position))
+        guard isActive, playsSounds else { return }
+        Task { [audio] in
+            await audio.play(kind, variant: variant, volume: strength, pan: stereo)
         }
     }
 
-    /// Starts keeping every audible hit, replacing a recording in progress.
+    /// Starts keeping every hit whose sound passes the throttle, replacing a recording in
+    /// progress.
     func startRecording() { recording = (clock, []) }
 
     /// Stops recording and returns the hits in the order they happened.
     func finishRecording() -> [ImpactRecord] {
         defer { recording = nil }
         return recording?.records ?? []
+    }
+
+    private func setAudio(_ running: Bool) {
+        audioRequest += 1
+        let request = audioRequest
+        Task { [audio] in await audio.run(running, request: request) }
     }
 
     // MARK: Haptics
@@ -257,17 +279,68 @@ final class ImpactFeedback {
         else { return }
         try? player.start(atTime: CHHapticTimeImmediate)
     }
+}
 
-    // MARK: Sounds
+/// Plays `ImpactSound`s through eight pooled voices, off the main actor: the audio session's
+/// calls block, and starting the engine spins up audio I/O.
+///
+/// The session's ambient category mixes with other audio and follows the silent switch. The
+/// session is deactivated only if this actor activated it. The engine is rebuilt after a route
+/// change, such as headphones connecting, and after the media services reset. An interruption,
+/// such as a call, stops the engine; it restarts at the next sound after the interruption
+/// ends, at most once a second. A new sound takes over the oldest voice.
+actor ImpactAudio {
+    private static let voiceCount = 8
+    private static let log = Logger(subsystem: "gay.ian.Bookworms.iOS", category: "impacts")
 
-    private func startAudio() {
-        guard audio == nil,
+    private var request = 0
+    private var isRunning = false
+    private var engine: AVAudioEngine?
+    private var voices: [AVAudioPlayerNode] = []
+    private var buffers: [ImpactSound.Kind: [AVAudioPCMBuffer]] = [:]
+    private var nextVoice = 0
+    private var activatedSession = false
+    private var observers: [any NSObjectProtocol] = []
+    private var lastRestart: ContinuousClock.Instant?
+
+    /// Starts or stops the engine. Requests may arrive out of order, so one older than the
+    /// last request handled is ignored.
+    func run(_ running: Bool, request: Int) {
+        guard request > self.request else { return }
+        self.request = request
+        guard running != isRunning else { return }
+        isRunning = running
+        if running { setUp() } else { tearDown() }
+    }
+
+    /// Plays a variant of `kind` at `volume` (0 to 1), panned to `pan`, if the engine runs.
+    func play(_ kind: ImpactSound.Kind, variant: Int, volume: Float, pan: Float) {
+        guard let engine, let variants = buffers[kind], variants.indices.contains(variant)
+        else { return }
+        if !engine.isRunning {
+            let now = ContinuousClock.now
+            if let lastRestart, now - lastRestart < .seconds(1) { return }
+            lastRestart = now
+            do { try engine.start() } catch { return }
+        }
+        let voice = voices[nextVoice]
+        nextVoice = (nextVoice + 1) % voices.count
+        voice.volume = volume * ImpactSound.level
+        voice.pan = min(1, max(-1, pan))
+        voice.scheduleBuffer(variants[variant], at: nil, options: .interrupts)
+        if !voice.isPlaying { try? voice.playAudio() }
+    }
+
+    private func setUp() {
+        guard engine == nil,
             let format = AVAudioFormat(
                 standardFormatWithSampleRate: ImpactSound.sampleRate, channels: 1)
         else { return }
+        let session = AVAudioSession.sharedInstance()
         do {
-            try AVAudioSession.sharedInstance().setCategory(.ambient)
-            try AVAudioSession.sharedInstance().setActive(true)
+            try session.setCategory(.ambient)
+            try session.setActive(true)
+            activatedSession = true
         } catch {
             Self.log.error("The audio session did not activate: \(error)")
             return
@@ -281,60 +354,49 @@ final class ImpactFeedback {
                     try engine.connectNode(voice, to: engine.mainMixerNode, format: format)
                     return voice
                 }
-        } catch {
-            Self.log.error("The audio voices did not connect: \(error)")
-            return
-        }
-        if buffers.isEmpty {
-            buffers = ImpactSound.bank.mapValues { variants in
-                variants.compactMap { samples in Self.buffer(samples, format: format) }
+            if buffers.isEmpty {
+                buffers = ImpactSound.bank.mapValues { variants in
+                    variants.compactMap { samples in Self.buffer(samples, format: format) }
+                }
             }
-        }
-        engine.prepare()
-        do {
+            engine.prepare()
             try engine.start()
         } catch {
             Self.log.error("The audio engine did not start: \(error)")
-            voices = []
+            tearDown()
             return
         }
-        audio = engine
-        // The engine stops when the route changes, such as when headphones connect.
-        routeChange = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.stopAudio()
-                if self?.isActive == true, self?.playsSounds == true { self?.startAudio() }
-            }
-        }
+        self.engine = engine
+        let center = NotificationCenter.default
+        observers = [
+            center.addObserver(
+                forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+            ) { [weak self] _ in Task { await self?.rebuild() } },
+            center.addObserver(
+                forName: AVAudioSession.mediaServicesWereResetNotification, object: session,
+                queue: nil
+            ) { [weak self] _ in Task { await self?.rebuild() } },
+        ]
     }
 
-    private func stopAudio() {
-        if let routeChange { NotificationCenter.default.removeObserver(routeChange) }
-        routeChange = nil
-        audio?.stop()
-        audio = nil
+    /// Builds a new engine, keeping the session active.
+    private func rebuild() {
+        guard isRunning else { return }
+        tearDown(releasingSession: false)
+        setUp()
+    }
+
+    private func tearDown(releasingSession: Bool = true) {
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = []
+        engine?.stop()
+        engine = nil
         voices = []
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-    }
-
-    private func play(_ kind: ImpactSound.Kind, volume: Float, pan: Float) {
-        guard let audio, let variants = buffers[kind], !variants.isEmpty else { return }
-        if !audio.isRunning {
-            // An interruption, such as a call, stops the engine. It restarts at the next hit
-            // after the interruption ends, trying at most once a second.
-            guard clock - lastRestart > 1 else { return }
-            lastRestart = clock
-            do { try audio.start() } catch { return }
-        }
-        let voice = voices[nextVoice]
-        nextVoice = (nextVoice + 1) % voices.count
-        voice.volume = volume
-        voice.pan = min(1, max(-1, pan))
-        voice.scheduleBuffer(
-            variants[Int.random(in: variants.indices)], at: nil, options: .interrupts)
-        if !voice.isPlaying { try? voice.playAudio() }
+        nextVoice = 0
+        guard releasingSession, activatedSession else { return }
+        activatedSession = false
+        try? AVAudioSession.sharedInstance()
+            .setActive(false, options: .notifyOthersOnDeactivation)
     }
 
     private static func buffer(_ samples: [Float], format: AVAudioFormat) -> AVAudioPCMBuffer? {

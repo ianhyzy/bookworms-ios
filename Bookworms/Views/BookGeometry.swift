@@ -52,6 +52,19 @@ struct BookShape: Hashable, Sendable {
     /// The book's box: x from spine to fore edge (the cover's width), y from tail to head, and
     /// z from back to front cover.
     var size: SIMD3<Float> { SIMD3<Float>(cells) * Self.step }
+
+    /// Each board's thickness: up to 2.8 mm for a hardcover and 0.8 mm for a paperback's card,
+    /// and less on a thin book, so its pages keep most of its thickness.
+    var board: Float {
+        binding == .hardcover ? min(0.028, size.z * 0.18) : min(0.008, size.z * 0.1)
+    }
+
+    /// How far the spine bulges out past the boards' edges.
+    var spineDepth: Float { max(0.006, size.z * (binding == .hardcover ? 0.22 : 0.08)) }
+
+    /// The width-to-height aspect of the front board, from the spine's joint to the fore edge,
+    /// which the cover fills.
+    var coverAspect: Float { (size.x - spineDepth) / size.y }
 }
 
 /// The material slots of a book's mesh, in the order of its materials.
@@ -106,7 +119,8 @@ struct BookGeometry: Sendable {
             slot: slot)
     }
 
-    /// Adds a convex polygon as a fan from its first corner.
+    /// Adds a polygon as a fan from its first corner, which must see every other corner, as
+    /// every corner of a convex polygon does.
     private mutating func polygon(
         _ corners: [SIMD3<Float>], normals: [SIMD3<Float>], coordinates: [SIMD2<Float>],
         slot: UInt32
@@ -127,8 +141,8 @@ struct BookGeometry: Sendable {
 }
 
 extension BookGeometry {
-    /// Points on a spine's cross-section in the x–z plane, from the back cover (`t` = 0) to the
-    /// front (`t` = 1), with outward normals.
+    /// Points on a spine's cross-section in the x–z plane, from the back cover to the front,
+    /// with outward normals.
     ///
     /// The curve is half a superellipse of exponent `exponent` around (`x`, 0): it bulges
     /// `depth` toward -x and spans `half` to each side. An exponent of 2 gives a rounded
@@ -136,7 +150,7 @@ extension BookGeometry {
     /// covers square, with normals along ±z.
     static func spineProfile(
         x: Float, depth: Float, half: Float, exponent: Float, segments: Int
-    ) -> [(point: SIMD2<Float>, normal: SIMD2<Float>, t: Float)] {
+    ) -> [(point: SIMD2<Float>, normal: SIMD2<Float>)] {
         let shape = 2 / exponent
         let slope = 2 * (exponent - 1) / exponent
         return (0...segments)
@@ -149,36 +163,36 @@ extension BookGeometry {
                     x - depth * pow(cosine, shape), half * side * pow(abs(sine), shape))
                 let normal = SIMD2(
                     -pow(cosine, slope) / depth, side * pow(abs(sine), slope) / half)
-                return (point, simd_normalize(normal), t)
+                return (point, simd_normalize(normal))
             }
     }
 
     /// The mesh of a book of `shape`, centered on the origin in the book's axes (see
     /// `BookShape.size`), with the material slots of `BookSlot`.
     ///
-    /// A hardcover's boards are up to 2.8 mm thick and overhang the page block by 3.5 mm at the
-    /// head, tail, and fore edge, and its spine is rounded. A paperback's covers, up to 0.8 mm
-    /// thick, are trimmed flush with the pages, and its spine is flat with soft corners. Thin
-    /// books get thinner covers, so their pages keep most of their thickness. The covers' outer edges
-    /// are beveled, so they catch the light.
+    /// A hardcover's boards (`BookShape.board`) overhang the page block by 3.5 mm at the head,
+    /// tail, and fore edge, and its spine is rounded. A paperback's covers are trimmed flush
+    /// with the pages, and its spine is flat with soft corners. The covers' outer edges are
+    /// beveled, so they catch the light.
     ///
-    /// The front cover's image spans the front board, upright, from the spine to the fore edge;
-    /// the board's edges repeat the image's border, as a jacket that wraps them would. The
-    /// spine's image runs head to tail across the curved spine, with its top toward the front
-    /// cover, matching `UprightSpineView`. The page edges' line texture repeats every
+    /// The front cover's image spans the front board, upright, from the spine's joint to the
+    /// fore edge (`BookShape.coverAspect`). Over the bevels and the board's edges it folds back
+    /// on itself, as a jacket wrapped around the board shows its border there. The spine's
+    /// image runs head to tail across the curved spine at an even scale, with its top toward
+    /// the front cover, matching `UprightSpineView`. The page edges' line texture repeats every
     /// `pageLinePeriod` across the block, so its lines run parallel to the covers.
     static func book(_ shape: BookShape) -> BookGeometry {
         let size = shape.size
         let (w, h, t) = (size.x / 2, size.y / 2, size.z / 2)
         let hard = shape.binding == .hardcover
-        let board = hard ? min(0.028, t * 0.36) : min(0.008, t * 0.2)
+        let board = shape.board
         let overhang: Float = hard ? 0.035 : 0
         let bevel = min(hard ? 0.008 : 0.004, board * 0.6)
-        let depth = max(0.006, size.z * (hard ? 0.22 : 0.08))
+        let depth = shape.spineDepth
         let exponent: Float = hard ? 2 : 4
         // Where the boards meet the spine.
         let x0 = -w + depth
-        func profile(_ inset: Float) -> [(point: SIMD2<Float>, normal: SIMD2<Float>, t: Float)] {
+        func profile(_ inset: Float) -> [(point: SIMD2<Float>, normal: SIMD2<Float>)] {
             spineProfile(
                 x: x0, depth: max(0.001, depth - inset), half: t - inset, exponent: exponent,
                 segments: 14)
@@ -186,6 +200,14 @@ extension BookGeometry {
         let outer = profile(0)
         let beveled = profile(bevel)
         let inner = profile(board)
+        // The spine image's v at each profile point: the share of the curve's length up to it,
+        // so the image keeps one scale where the curve turns fast and where it runs flat.
+        var along: [Float] = [0]
+        for index in 1..<outer.count {
+            along.append(
+                along[index - 1] + simd_distance(outer[index - 1].point, outer[index].point))
+        }
+        along = along.map { $0 / along[along.count - 1] }
         func point(_ p: SIMD2<Float>, _ y: Float) -> SIMD3<Float> { [p.x, y, p.y] }
         func normal(_ n: SIMD2<Float>) -> SIMD3<Float> { [n.x, 0, n.y] }
 
@@ -195,6 +217,7 @@ extension BookGeometry {
         // inside, which shows past the pages at the head and tail.
         for index in 0..<(outer.count - 1) {
             let (a, b) = (outer[index], outer[index + 1])
+            let (va, vb) = (along[index], along[index + 1])
             mesh.quad(
                 [
                     point(a.point, -top), point(b.point, -top), point(b.point, top),
@@ -202,8 +225,8 @@ extension BookGeometry {
                 ],
                 normals: [normal(a.normal), normal(b.normal), normal(b.normal), normal(a.normal)],
                 coordinates: [
-                    [(h + top) / (2 * h), a.t], [(h + top) / (2 * h), b.t],
-                    [(h - top) / (2 * h), b.t], [(h - top) / (2 * h), a.t],
+                    [(h + top) / (2 * h), va], [(h + top) / (2 * h), vb],
+                    [(h - top) / (2 * h), vb], [(h - top) / (2 * h), va],
                 ],
                 slot: BookSlot.spine)
             for end: Float in [1, -1] {
@@ -219,7 +242,7 @@ extension BookGeometry {
                         normal(a.normal) + [0, end, 0], normal(b.normal) + [0, end, 0],
                         normal(b.normal) + [0, end, 0], normal(a.normal) + [0, end, 0],
                     ],
-                    coordinates: [[u + edge, a.t], [u + edge, b.t], [u, b.t], [u, a.t]],
+                    coordinates: [[u + edge, va], [u + edge, vb], [u, vb], [u, va]],
                     slot: BookSlot.spine)
                 let (e, f) = (inner[index], inner[index + 1])
                 mesh.quad(
@@ -253,13 +276,20 @@ extension BookGeometry {
         bevel: Float
     ) {
         let (xe, ye) = (w - bevel, h - bevel)
-        // The front cover's image, clamped so the board's edges repeat its border.
-        func cover(_ p: SIMD3<Float>) -> SIMD2<Float> {
-            [min(1, max(0, (p.x - x0) / (w - x0))), min(1, max(0, (p.y + h) / (2 * h)))]
-        }
         for side: Float in [1, -1] {
             let slot = side > 0 ? BookSlot.cover : BookSlot.cloth
             let (zo, zb, zi) = (side * t, side * (t - bevel), side * (t - board))
+            // The front cover's image. Past the bevel, a point as deep in the board as the
+            // board's edge maps as far back inside the image's border, so the edge shows the
+            // border folded over at its own scale rather than its last row stretched.
+            func cover(_ p: SIMD3<Float>) -> SIMD2<Float> {
+                let fold = max(0, abs(zo - p.z) - bevel)
+                var u = (p.x - x0) / (w - x0)
+                var v = (p.y + h) / (2 * h)
+                if p.x >= w { u = 1 - fold / (w - x0) }
+                if abs(p.y) >= h { v = p.y > 0 ? 1 - fold / (2 * h) : fold / (2 * h) }
+                return [min(1, max(0, u)), min(1, max(0, v))]
+            }
             func face(_ corners: [SIMD3<Float>], _ normal: SIMD3<Float>) {
                 if corners.count == 3 {
                     triangle(corners, normal: normal, coordinates: corners.map(cover), slot: slot)
@@ -328,8 +358,7 @@ extension BookGeometry {
     static func ribbon(_ shape: BookShape, progress: Float) -> BookGeometry {
         let size = shape.size
         let (w, h, t) = (size.x / 2, size.y / 2, size.z / 2)
-        let board = shape.binding == .hardcover ? min(0.028, t * 0.36) : min(0.008, t * 0.2)
-        let half = t - board
+        let half = t - shape.board
         let start = half - 2 * half * min(0.95, max(0.05, progress))
         let floor = max(-t + 0.004, start - 0.12)
         let x = -w + 0.25
@@ -353,9 +382,11 @@ extension BookGeometry {
                 let along = simd_normalize(SIMD3(0, b.y - a.y, b.z - a.z))
                 let up = simd_cross(along, [1, 0, 0]) * side
                 let last = index == path.count - 2
+                // The tip's notch makes its outline concave, so the notch's corner comes first:
+                // every other corner shows from it, so the fan of triangles from it is valid.
                 let corners: [SIMD3<Float>] = [
-                    [x - width, a.y, a.z], [x + width, a.y, a.z], [x + width, b.y, b.z],
                     [x, last ? b.y + notch : b.y, b.z], [x - width, b.y, b.z],
+                    [x - width, a.y, a.z], [x + width, a.y, a.z], [x + width, b.y, b.z],
                 ]
                 mesh.polygon(
                     corners, normals: Array(repeating: up, count: corners.count),

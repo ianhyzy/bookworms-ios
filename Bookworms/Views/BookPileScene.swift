@@ -1,4 +1,3 @@
-import Combine
 import CoreMotion
 import RealityKit
 import SwiftUI
@@ -52,7 +51,7 @@ struct PileCamera: Equatable {
         return distance > 0 ? ray.origin + ray.direction * distance : nil
     }
 
-    /// The pose that shows a book of `size` (see `PileLayout.size`) as `Book3DView` draws it at
+    /// The pose that shows a book of `size` (see `BookShape.size`) as `Book3DView` draws it at
     /// `pose`, in a view of width-to-height `aspect`.
     ///
     /// `center` and `height` give the book's place in normalized device coordinates, where the
@@ -532,8 +531,6 @@ final class BookPileScene {
     /// lift.
     private var veil: ModelEntity?
     private var veilLevel: Float = 0
-    /// The lifted book's collisions while it falls back, until its first hit.
-    private var landing: AnyCancellable?
 
     /// The walls' collision group, which a thrown-back book passes through.
     private static let wallGroup = CollisionGroup(rawValue: 1 << 1)
@@ -617,7 +614,7 @@ final class BookPileScene {
     }
 
     /// Calls `update` every frame, and plays collisions through `feedback`, while the view
-    /// shows the scene.
+    /// shows the scene. A thrown-back book's first hit lands it instead (see `land`).
     func attach(to content: inout RealityViewCameraContent) {
         content.add(root)
         updates = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
@@ -625,7 +622,13 @@ final class BookPileScene {
         }
         collisions = content.subscribe(to: CollisionEvents.Began.self) { [weak self] event in
             guard let self else { return }
-            feedback.collide(event, pan: pan)
+            if let whip, !whip.landed,
+                event.entityA === whip.flight.book || event.entityB === whip.flight.book
+            {
+                land(impulse: event.impulse)
+            } else {
+                feedback.collide(event, pan: pan)
+            }
         }
     }
 
@@ -653,7 +656,8 @@ final class BookPileScene {
         let middle = (tray.farZ + tray.nearZ) / 2
         stage.build(
             pool: [0, 0, middle],
-            radius: simd_length(SIMD2(max(tray.farHalfWidth, tray.nearHalfWidth), tray.nearZ - middle)) * 1.05)
+            radius: simd_length(
+                SIMD2(max(tray.farHalfWidth, tray.nearHalfWidth), tray.nearZ - middle)) * 1.05)
         root.addChild(walls)
         walls.addChild(Self.makeWalls(around: tray))
     }
@@ -767,7 +771,6 @@ final class BookPileScene {
         cameraMove = nil
         lifted = nil
         whip = nil
-        landing = nil
         showVeil(0, behind: nil)
         spawned = 0
         factory.release(keeping: ids)
@@ -812,6 +815,7 @@ final class BookPileScene {
         // Room for the longest book, 3.15 units corner to corner, tilted a little.
         build(tray.scaled(toFit: 3.4))
         await factory.prepare(books, prefetching: [], coverWait: .seconds(10), model: model)
+        await stage.lit()
         func run(_ steps: Int) async throws {
             for index in 0..<steps {
                 if index % 10 == 0 {
@@ -857,8 +861,9 @@ final class BookPileScene {
     /// Puts a cover that arrived after its book was built onto the book in the pile.
     private func retexture(_ id: Int, cover: any RealityKit.Material) {
         for case let book as ModelEntity in shelf.children where bookIDs[book.id] == id {
-            book.children.first?.components[ModelComponent.self]?.materials[
-                Int(BookSlot.cover)] = cover
+            book.children.first?.components[ModelComponent.self]?
+                .materials[
+                    Int(BookSlot.cover)] = cover
         }
     }
 
@@ -1084,12 +1089,6 @@ final class BookPileScene {
             PhysicsMotionComponent(
                 linearVelocity: velocity, angularVelocity: PileFlight.spin(for: velocity)))
         whip = Whip(flight: lifted, camera: view, veil: veilLevel)
-        landing = root.scene.map { scene in
-            AnyCancellable(
-                scene.subscribe(to: CollisionEvents.Began.self, on: book) { [weak self] event in
-                    self?.land(impulse: event.impulse)
-                })
-        }
     }
 
     /// Ends a lift or a throw at once: puts the book back above the place it left, at rest, in
@@ -1098,7 +1097,6 @@ final class BookPileScene {
         guard let flight = lifted ?? whip?.flight else { return }
         lifted = nil
         whip = nil
-        landing = nil
         undress(flight)
         let book = flight.book
         setMode(.dynamic, of: book)
@@ -1218,7 +1216,8 @@ final class BookPileScene {
         let book = whip.flight.book
         book.components[CollisionComponent.self]?.filter = .default
         let mass = book.components[PhysicsBodyComponent.self]?.massProperties.mass ?? 0.5
-        let speed = simd_length(book.components[PhysicsMotionComponent.self]?.linearVelocity ?? .zero)
+        let speed = simd_length(
+            book.components[PhysicsMotionComponent.self]?.linearVelocity ?? .zero)
         if var motion = book.components[PhysicsMotionComponent.self] {
             motion.linearVelocity *= [0.25, 1, 0.25]
             motion.angularVelocity *= 0.5
@@ -1228,7 +1227,6 @@ final class BookPileScene {
         feedback.impact(
             impulse: impulse ?? mass * speed, mass: mass, position: book.position(relativeTo: root),
             pan: pan, minimum: 0.85)
-        landing = nil
     }
 
     /// A camera child that fills the view with the shelf's walnut wall, unlit and without tone

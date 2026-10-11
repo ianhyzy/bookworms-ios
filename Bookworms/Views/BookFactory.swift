@@ -8,26 +8,50 @@ import UIKit
 /// `prepare` builds each book's parts once: its shape (`BookShape`), a mesh shared by every
 /// book of that shape, and its materials. Covers download in parallel and spines render on the
 /// main actor, because `ImageRenderer` draws synchronously. A book's parts are kept until its
-/// look changes or `release` drops them, so a new drop reuses them.
+/// look or its wear changes or `release` drops them, so a new drop reuses them.
 ///
 /// GPU memory stays bounded by the texture sizes. A cover is at most `coverPixels` on its long
-/// side (224 pixels at a `textureScale` of 1), cropped to its box's 0.55 to 0.85 aspect: 149 ×
-/// 224 × 4 bytes (178 KB with mipmaps) for a 2:3 cover, and at most 190 × 224 (227 KB). A spine
+/// side (224 pixels at a `textureScale` of 1), cropped to its front board's 0.5 to 0.85
+/// aspect: at most 149 × 224 × 4 bytes (178 KB with mipmaps) for a 2:3 cover, and at most
+/// 190 × 224 (227 KB). A spine
 /// is 384 pixels long and 5 to 20 percent as thick (39 to 158 KB with mipmaps). Three hundred
 /// books therefore need about 75 MB, and at most 116 MB. Each texture has one material. Books
 /// share the page-edge texture, page and cloth materials by color, and meshes by shape, which
 /// adds about 25 KB per distinct shape.
 @MainActor
 final class BookFactory {
-    /// A book's mesh, its materials in `BookSlot` order, and the look they were drawn with, so
-    /// a changed design or a newly loaded font redraws them. `ribbon` is a current read's
-    /// bookmark.
+    /// A book's mesh, its materials in `BookSlot` order, and the look and wear they were drawn
+    /// with, so a changed design, a newly loaded font, or a synced reading history redraws
+    /// them. `ribbon` is a current read's bookmark.
     struct Parts {
         let shape: BookShape
         let mesh: MeshResource
         var materials: [any RealityKit.Material]
         let look: SpineLook
+        let wear: Wear
         let ribbon: ModelComponent?
+    }
+
+    /// What the reading history shows on a book: its page edges' color and finish, and its
+    /// ribbon's place in tenths of the book, or `nil` for a book that is not being read.
+    struct Wear: Equatable {
+        let pages: PageFinish
+        let ribbon: Int?
+
+        init(_ book: CloudBook, accent: ColorValue) {
+            pages = PageFinish(
+                color: PageEdges.color(of: book, accent: accent), sprayed: PageEdges.isSprayed(book)
+            )
+            ribbon =
+                book.isReading == true
+                ? book.progress.map { Int(($0 * 10).rounded()) } : nil
+        }
+    }
+
+    /// A page edges' color and finish, by which books share page materials.
+    struct PageFinish: Hashable {
+        let color: ColorValue
+        let sprayed: Bool
     }
 
     /// The name of a current read's ribbon entity, a child of the book's model entity.
@@ -58,11 +82,6 @@ final class BookFactory {
         let binding: BookBinding
     }
 
-    private struct PageFinish: Hashable {
-        let color: ColorValue
-        let sprayed: Bool
-    }
-
     private struct RibbonKey: Hashable {
         let shape: BookShape
         /// Progress in tenths.
@@ -76,7 +95,7 @@ final class BookFactory {
         coverPixels = Int((224 * textureScale).rounded())
     }
 
-    /// Builds the parts of the books that lack them or whose look changed.
+    /// Builds the parts of the books that lack them or whose look or wear changed.
     ///
     /// A book whose cover takes longer than `coverWait` is built with its title on the cloth,
     /// and `coverArrived` hands over its cover when the download finishes. Once these books'
@@ -87,7 +106,11 @@ final class BookFactory {
         _ books: [CloudBook], prefetching upcoming: [CloudBook], coverWait: Duration,
         model: AppModel
     ) async {
-        let missing = books.filter { parts[$0.id]?.look != model.look(for: $0) }
+        let missing = books.filter { book in
+            let look = model.look(for: book)
+            guard let built = parts[book.id] else { return true }
+            return built.look != look || built.wear != Wear(book, accent: look.accent)
+        }
         guard !missing.isEmpty else { return }
         await model.fonts.load(missing.compactMap { model.library?.designs[$0.id] })
         guard !Task.isCancelled else { return }
@@ -130,10 +153,10 @@ final class BookFactory {
         }
     }
 
-    /// Puts a cover onto a built book's front, cropped to the book's box, and hands the new
+    /// Puts a cover onto a built book's front, cropped to its front board, and hands the new
     /// material to `coverArrived`.
     func addCover(_ cover: UIImage, to id: Int) async {
-        guard let parts = parts[id], let image = Self.crop(cover, to: parts.shape.size),
+        guard let parts = parts[id], let image = Self.crop(cover, to: parts.shape),
             let texture = await Self.texture(image)
         else { return }
         let material = Self.jacket(texture, binding: parts.shape.binding)
@@ -150,7 +173,6 @@ final class BookFactory {
     ) async -> Parts? {
         let shape = shape ?? BookShape(of: book, coverAspect: Book3DView.aspect(of: cover))
         guard let mesh = await mesh(for: shape) else { return nil }
-        let size = shape.size
         let scale = scale ?? textureScale
         let thickness = max(16, (Self.spineLength * book.thicknessRatio).rounded())
         let spine = Self.render(
@@ -158,24 +180,24 @@ final class BookFactory {
                 .frame(width: Self.spineLength, height: thickness)
                 .background(look.background.color), scale: scale)
         // Unshaded, since RealityKit lights the front as it does the cloth.
-        let width = 224 * CGFloat(size.x / size.y)
+        let width = 224 * CGFloat(shape.coverAspect)
         let front =
-            cover.flatMap { Self.crop($0, to: size) }
+            cover.flatMap { Self.crop($0, to: shape) }
             ?? Self.render(
                 BookFrontPlaceholder(book: book, look: look, width: width)
                     .frame(width: width, height: 224), scale: scale)
         let coverTexture = await Self.texture(front)
         let spineTexture = await Self.texture(spine)
         let cloth = cloth(look.background, binding: shape.binding)
+        let wear = Wear(book, accent: look.accent)
         return Parts(
             shape: shape, mesh: mesh,
             materials: [
                 coverTexture.map { Self.jacket($0, binding: shape.binding) } ?? cloth,
                 spineTexture.map { Self.jacket($0, binding: shape.binding) } ?? cloth,
-                pages(PageEdges.color(of: book, accent: look.accent), sprayed: PageEdges.isSprayed(book)),
-                cloth,
+                pages(wear.pages), cloth,
             ],
-            look: look, ribbon: ribbon(for: book, shape: shape))
+            look: look, wear: wear, ribbon: wear.ribbon.flatMap { ribbon(shape, tenths: $0) })
     }
 
     /// A rigid body for the book with `id`, from its parts: a box as large as the book, about
@@ -212,13 +234,14 @@ final class BookFactory {
         return book
     }
 
-    /// Drops the parts of books not in `ids`. With no IDs, also drops the shared meshes and
-    /// materials.
+    /// Drops the parts of books not in `ids`, and the meshes no remaining book uses. With no
+    /// IDs, also drops the shared materials.
     func release(keeping ids: Set<Int>) {
         parts = parts.filter { ids.contains($0.key) }
+        let shapes = Set(parts.values.map(\.shape))
+        meshes = meshes.filter { shapes.contains($0.key) }
+        ribbonMeshes = ribbonMeshes.filter { shapes.contains($0.key.shape) }
         guard ids.isEmpty else { return }
-        meshes = [:]
-        ribbonMeshes = [:]
         cloths = [:]
         pageMaterials = [:]
         ribbonMaterial = nil
@@ -234,11 +257,10 @@ final class BookFactory {
         return await task.value
     }
 
-    /// A current read's ribbon bookmark at its progress, in tenths: deep red satin, which
-    /// stands out against cream page edges; `nil` for other books.
-    private func ribbon(for book: CloudBook, shape: BookShape) -> ModelComponent? {
-        guard book.isReading == true, let progress = book.progress else { return nil }
-        let key = RibbonKey(shape: shape, tenths: Int((progress * 10).rounded()))
+    /// A ribbon bookmark `tenths` of the way through a book of `shape`: deep red satin, which
+    /// stands out against cream page edges.
+    private func ribbon(_ shape: BookShape, tenths: Int) -> ModelComponent? {
+        let key = RibbonKey(shape: shape, tenths: tenths)
         guard
             let mesh = ribbonMeshes[key]
                 ?? (try? MeshResource.generate(
@@ -266,12 +288,11 @@ final class BookFactory {
     }
 
     /// The page edges' material: matte paper with fine lines, or a smoother sprayed finish.
-    private func pages(_ color: ColorValue, sprayed: Bool) -> PhysicallyBasedMaterial {
-        let key = PageFinish(color: color, sprayed: sprayed)
+    private func pages(_ key: PageFinish) -> PhysicallyBasedMaterial {
         if let pages = pageMaterials[key] { return pages }
         var pages = Self.surface(
-            nil, tint: color.uiColor, roughness: sprayed ? 0.5 : 0.88,
-            specular: sprayed ? 0.25 : 0.05)
+            nil, tint: key.color.uiColor, roughness: key.sprayed ? 0.5 : 0.88,
+            specular: key.sprayed ? 0.25 : 0.05)
         if let pageLines {
             let sampler = MTLSamplerDescriptor()
             sampler.sAddressMode = .repeat
@@ -299,8 +320,10 @@ final class BookFactory {
         var material = material
         switch binding {
         case .hardcover:
-            material.clearcoat = .init(floatLiteral: 1)
-            material.clearcoatRoughness = .init(floatLiteral: 0.12)
+            // A satin gloss: a sharper or stronger coat mirrors the lamp as a white patch that
+            // hides the cover's art.
+            material.clearcoat = .init(floatLiteral: 0.5)
+            material.clearcoatRoughness = .init(floatLiteral: 0.35)
         case .paperback:
             material.roughness = .init(floatLiteral: 0.74)
             material.specular = .init(floatLiteral: 0.12)
@@ -350,12 +373,13 @@ final class BookFactory {
         return try? await TextureResource(image: image, options: .init(semantic: .color))
     }
 
-    /// The middle of `cover` at the width-to-height aspect of a box of `size`.
-    static func crop(_ cover: UIImage, to size: SIMD3<Float>) -> CGImage? {
+    /// The middle of `cover` at the aspect of the front board of a book of `shape`.
+    static func crop(_ cover: UIImage, to shape: BookShape) -> CGImage? {
         guard let image = cover.cgImage else { return nil }
         return image.cropping(
             to: PileLayout.crop(
-                CGSize(width: image.width, height: image.height), to: CGFloat(size.x / size.y)))
+                CGSize(width: image.width, height: image.height),
+                to: CGFloat(shape.coverAspect)))
     }
 
     static func render(_ content: some View, scale: CGFloat) -> CGImage? {

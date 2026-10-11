@@ -98,6 +98,58 @@ final class ThreeDTests: XCTestCase {
         XCTAssertEqual(pageTop(.paperback), 2.25 / 2, accuracy: 0.0001)
     }
 
+    func testSpineImageKeepsOneScaleAcrossTheCurve() {
+        for binding in [BookBinding.hardcover, .paperback] {
+            let shape = BookShape(size: [1.5, 2.25, 0.18], binding: binding)
+            let mesh = BookGeometry.book(shape)
+            // The spine face's corners along its tail edge, in order around the curve.
+            let bevel = min(binding == .hardcover ? 0.008 : 0.004, shape.board * 0.6)
+            let tail = -shape.size.y / 2 + bevel
+            var corners: [(point: SIMD2<Float>, v: Float)] = []
+            for (triangle, slot) in mesh.slots.enumerated() where slot == BookSlot.spine {
+                for index in mesh.indices[triangle * 3..<triangle * 3 + 3].map(Int.init) {
+                    let position = mesh.positions[index]
+                    guard abs(position.y - tail) < 0.0001,
+                        !corners.contains(where: { $0.v == mesh.coordinates[index].y })
+                    else { continue }
+                    corners.append((SIMD2(position.x, position.z), mesh.coordinates[index].y))
+                }
+            }
+            corners.sort { $0.v < $1.v }
+            XCTAssertEqual(corners.count, 15)
+            let lengths = zip(corners, corners.dropFirst())
+                .map { simd_distance($0.point, $1.point) }
+            let total = lengths.reduce(0, +)
+            for (index, length) in lengths.enumerated() {
+                XCTAssertEqual(
+                    corners[index + 1].v - corners[index].v, length / total, accuracy: 0.002,
+                    "\(binding) segment \(index)")
+            }
+        }
+    }
+
+    func testCoverFillsTheFrontBoardAndFoldsOverItsEdges() {
+        let shape = BookShape(size: [1.5, 2.25, 0.3], binding: .hardcover)
+        XCTAssertEqual(shape.coverAspect, (1.5 - shape.spineDepth) / 2.25, accuracy: 0.0001)
+        let mesh = BookGeometry.book(shape)
+        let half = shape.size / 2
+        var front: [SIMD2<Float>] = []
+        var head: [Float] = []
+        for (triangle, slot) in mesh.slots.enumerated() where slot == BookSlot.cover {
+            for index in mesh.indices[triangle * 3..<triangle * 3 + 3].map(Int.init) {
+                let position = mesh.positions[index]
+                if abs(position.z - half.z) < 0.0001 { front.append(mesh.coordinates[index]) }
+                if abs(position.y - half.y) < 0.0001 { head.append(mesh.coordinates[index].y) }
+            }
+        }
+        // The front face spans the image from the spine's joint to the fore edge.
+        XCTAssertEqual(front.map(\.x).min() ?? 1, 0, accuracy: 0.0001)
+        XCTAssertGreaterThan(front.map(\.x).max() ?? 0, 0.99)
+        // The head's edge shows a band inside the image's top border as deep as the board.
+        let fold = (head.max() ?? 0) - (head.min() ?? 0)
+        XCTAssertEqual(fold, (shape.board - 0.008) / shape.size.y, accuracy: 0.0001)
+    }
+
     func testSpineProfileMeetsTheCoversSquare() {
         for exponent: Float in [2, 4] {
             let profile = BookGeometry.spineProfile(
@@ -116,7 +168,7 @@ final class ThreeDTests: XCTestCase {
         let half = shape.size / 2
         for progress: Float in [0, 0.5, 1] {
             let ribbon = BookGeometry.ribbon(shape, progress: progress)
-            XCTAssertEqual(Set(ribbon.slots), [0])
+            checkMesh(ribbon, within: half + [0, 0.5, 0], slots: [0])
             let low = ribbon.positions.reduce(SIMD3(repeating: .infinity), pointwiseMin)
             XCTAssertLessThan(low.y, -half.y - 0.4)
             XCTAssertGreaterThan(low.z, -half.z)
@@ -150,18 +202,25 @@ final class ThreeDTests: XCTestCase {
             accent.mixed(with: PageEdges.fresh, 0.12))
     }
 
-    func testLampPoolCoversItsRadius() {
-        let placement = DeskStage.lampPlacement(pool: [0, 0, 1], radius: 7)
-        XCTAssertGreaterThan(placement.position.y, 15)
-        // The pool's far edge, nearest the lamp, and its near edge both lie inside the cone.
-        let axis = simd_normalize(placement.aim - placement.position)
-        for edge: SIMD3<Float> in [[0, 0, -6], [0, 0, 8]] {
-            let angle = acos(simd_dot(axis, simd_normalize(edge - placement.position))) * 180 / .pi
-            XCTAssertLessThan(angle, placement.outerAngle / 2)
+    func testLampLightsThePoolAndTheFacesTowardTheCamera() {
+        let pool: SIMD3<Float> = [0, 0, 1]
+        let placement = DeskStage.lampPlacement(pool: pool, radius: 7)
+        // High above the pile's highest drop, and toward the camera, so faces turned toward
+        // the camera (+z) catch its light.
+        XCTAssertGreaterThan(placement.position.y, PileLayout.ceiling + 8)
+        XCTAssertGreaterThan(placement.position.z, pool.z + 7)
+        XCTAssertEqual(placement.aim, pool)
+        func angle(to point: SIMD3<Float>) -> Float {
+            let axis = simd_normalize(placement.aim - placement.position)
+            return acos(simd_dot(axis, simd_normalize(point - placement.position))) * 180 / .pi
         }
-        let edge = atan(7 / placement.distance) * 180 / .pi
-        XCTAssertGreaterThan(placement.outerAngle / 2, edge)
-        XCTAssertLessThan(placement.innerAngle / 2, edge)
+        // Full light spans the middle of the pool, and light reaches every edge.
+        XCTAssertLessThan(angle(to: pool + [0, 0, 3]), placement.innerAngle / 2)
+        XCTAssertLessThan(angle(to: pool + [3, 0, 0]), placement.innerAngle / 2)
+        for edge: SIMD3<Float> in [[0, 0, -7], [0, 0, 7], [-7, 0, 0], [7, 0, 0]] {
+            XCTAssertGreaterThan(angle(to: pool + edge), placement.innerAngle / 2)
+            XCTAssertLessThan(angle(to: pool + edge), placement.outerAngle / 2)
+        }
     }
 
     func testImpactStrengthFollowsSpeedAndMass() {
@@ -187,6 +246,64 @@ final class ThreeDTests: XCTestCase {
             // It fades out rather than ending in a click.
             XCTAssertLessThan(samples.suffix(100).map(abs).max() ?? 1, 0.05)
         }
+    }
+
+    func testABurstOfImpactsLeavesHeadroom() {
+        // Eight full-strength sounds 30 to 60 ms apart, the most that overlap, each taking the
+        // next variant, panned 0.8 to one side, where the mixer plays a sound at 0.99.
+        for kinds in [[ImpactSound.Kind.thud], [.slap], [.thud, .slap]] {
+            for spacing in [0.03, 0.04, 0.06] {
+                let gap = Int(spacing * ImpactSound.sampleRate)
+                var mix = [Float](repeating: 0, count: gap * 8 + 12_000)
+                for hit in 0..<8 {
+                    let samples = ImpactSound.bank[kinds[hit % kinds.count]]![hit % 4]
+                    for (index, sample) in samples.enumerated() { mix[hit * gap + index] += sample }
+                }
+                let peak = (mix.map(abs).max() ?? 0) * ImpactSound.level * 0.99
+                XCTAssertLessThan(peak, 0.92, "\(kinds) \(spacing)")
+            }
+        }
+    }
+
+    @MainActor
+    func testRecordingKeepsTheSoundsThatPlay() {
+        let feedback = ImpactFeedback()
+        feedback.startRecording()
+        func hit(_ impulse: Float, mass: Float, after seconds: TimeInterval) {
+            feedback.advance(by: seconds)
+            feedback.impact(impulse: impulse, mass: mass, position: [1, 0, 0], pan: { $0.x / 2 })
+        }
+        hit(0.4 * 20, mass: 0.4, after: 0.1)
+        // Too soon after the first, and no stronger: throttled.
+        hit(0.4 * 20, mass: 0.4, after: 0.01)
+        // Too weak to hear.
+        hit(0.01, mass: 0.4, after: 0.1)
+        hit(0.8 * 20, mass: 0.8, after: 0.1)
+        let records = feedback.finishRecording()
+        XCTAssertEqual(records.map(\.kind), [.slap, .thud])
+        XCTAssertEqual(records.map(\.variant), [0, 1])
+        XCTAssertEqual(records[0].time, 0.1, accuracy: 0.0001)
+        XCTAssertEqual(records[1].time, 0.31, accuracy: 0.0001)
+        XCTAssertEqual(records.map(\.pan), [0.5, 0.5])
+        XCTAssertEqual(
+            records[0].volume, ImpactSound.strength(impulse: 8, mass: 0.4), accuracy: 0.0001)
+        XCTAssertEqual(feedback.finishRecording(), [])
+    }
+
+    func testWearFollowsTheReadingHistory() {
+        let accent = ColorValue(red: 180, green: 30, blue: 40)
+        var reading = book(1)
+        reading.isReading = true
+        reading.progress = 0.42
+        let wear = BookFactory.Wear(reading, accent: accent)
+        XCTAssertEqual(wear.ribbon, 4)
+        reading.progress = 0.61
+        XCTAssertNotEqual(BookFactory.Wear(reading, accent: accent), wear)
+        reading.isReading = false
+        XCTAssertNil(BookFactory.Wear(reading, accent: accent).ribbon)
+        var loved = book(2)
+        loved.rating = 5
+        XCTAssertTrue(BookFactory.Wear(loved, accent: accent).pages.sprayed)
     }
 
     func testThrottleLetsBurstsThroughAtABoundedRate() {
