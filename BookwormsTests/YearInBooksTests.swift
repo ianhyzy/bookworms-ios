@@ -84,6 +84,30 @@ final class YearInBooksTests: XCTestCase {
             "A span past \(YearInBooks.maximumYearSpan) years charts only the years with books")
     }
 
+    /// A leap February's one-day column shows the day alone, and a lifetime that charts only
+    /// the years with books labels them in full, so 1925 and 2025 stay apart.
+    @MainActor
+    func testChartLabelsNameOneDayAndFarApartYears() {
+        let leapFebruary = YearInBooks(frame: .month(year: 2024, month: 2), library: [])
+        XCTAssertEqual(leapFebruary.columns.last.map { YearInBooksCard.label($0.span) }, "29")
+        XCTAssertEqual(YearInBooksCard.label(.days(8...14, month: 8)), "8–14")
+        let busiest = YearInBooksCard.busiest(.days(29...29, month: 2), isCompact: false).value
+        XCTAssertTrue(busiest.hasSuffix(" 29") && !busiest.contains("–"), busiest)
+
+        let mistyped = YearInBooks(
+            frame: .lifetime,
+            library: [book(1, finished: "1925-05-01"), book(2, finished: "2025-05-01")])
+        XCTAssertTrue(YearInBooksCard.isSparse(mistyped.columns))
+        XCTAssertEqual(
+            mistyped.columns.map { YearInBooksCard.label($0.span, isSparse: true) },
+            ["1925", "2025"])
+        let contiguous = YearInBooks(
+            frame: .lifetime,
+            library: [book(1, finished: "2019-05-01"), book(2, finished: "2021-05-01")])
+        XCTAssertFalse(YearInBooksCard.isSparse(contiguous.columns))
+        XCTAssertEqual(YearInBooksCard.label(.year(2019)), "’19")
+    }
+
     func testTotalsIgnoreMissingValues() throws {
         let stats = YearInBooks(
             frame: .year(2025),

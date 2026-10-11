@@ -15,12 +15,11 @@ struct YearStackCard: View {
             height: aspect.size.height - aspect.insets.top - aspect.insets.bottom - headerHeight
                 - plankHeight - 2 * spacing)
         let layout = StackLayout(books: input.books, area: area, seed: input.seed)
-        let lead = ShareStyle.leadColor(input.books.map { input.look(for: $0).background })
+        let theme = input.theme
         ZStack {
             RadialGradient(
-                colors: [
-                    ShareStyle.backdrop(lead, 0.45).color, ShareStyle.backdrop(lead, 0.8).color,
-                ], center: UnitPoint(x: 0.5, y: 0.3), startRadius: 0,
+                colors: [theme.backdropLight.color, theme.backdropDark.color],
+                center: UnitPoint(x: 0.5, y: 0.3), startRadius: 0,
                 endRadius: aspect.size.height * 0.8)
             VStack(spacing: spacing) {
                 header(isSquare: isSquare)
@@ -210,7 +209,7 @@ struct ShelfPlank: View {
     }
 }
 
-/// One book, as a 3D book or a flat cover on a backdrop from its spine colors, with its
+/// One book, as a 3D book or a flat cover on a backdrop in its spine's color family, with its
 /// details: the finish date, rating, and length for Just Finished, or the progress and start
 /// date for Currently Reading.
 struct FeaturedBookCard: View {
@@ -225,25 +224,25 @@ struct FeaturedBookCard: View {
     private func card(_ book: CloudBook, look: SpineLook) -> some View {
         let aspect = input.aspect
         let isSquare = aspect == .square
-        let edge = ShareStyle.backdrop(look.background, 0.7)
+        let theme = input.theme
+        let edge = theme.backdropDark.color
         return ZStack {
-            // A glow behind the book, tinted by the spine's accent so dark spines still light up.
+            // A glow behind the book that fades to the dark field.
             RadialGradient(
                 stops: [
-                    .init(color: look.background.mixed(with: look.accent, 0.3).color, location: 0),
-                    .init(
-                        color: look.background.mixed(with: look.accent, 0.1)
-                            .mixed(with: ShareStyle.night, 0.4).color,
-                        location: 0.4),
-                    .init(color: edge.color, location: 1),
+                    .init(color: theme.glow.color, location: 0),
+                    .init(color: theme.backdropLight.color, location: 0.4),
+                    .init(color: edge, location: 1),
                 ],
                 center: isSquare ? UnitPoint(x: 0.27, y: 0.5) : UnitPoint(x: 0.5, y: 0.34),
                 startRadius: 0, endRadius: aspect.size.width * 0.9)
-            // A scrim under the text keeps it legible on light spine colors.
+            // A long, eased scrim settles the glow into the field behind the text without a
+            // visible edge.
             LinearGradient(
                 stops: [
-                    .init(color: edge.color.opacity(0), location: isSquare ? 0.4 : 0.5),
-                    .init(color: edge.color, location: isSquare ? 0.56 : 0.66),
+                    .init(color: edge.opacity(0), location: isSquare ? 0.32 : 0.42),
+                    .init(color: edge.opacity(0.6), location: isSquare ? 0.48 : 0.56),
+                    .init(color: edge, location: isSquare ? 0.62 : 0.7),
                 ],
                 startPoint: isSquare ? .leading : .top, endPoint: isSquare ? .trailing : .bottom)
             Group {
@@ -344,22 +343,15 @@ struct TopFiveCard: View {
     var body: some View {
         let aspect = input.aspect
         let books = input.books
-        let stops = books.map { ShareStyle.backdrop(input.look(for: $0).background, 0.55).color }
+        let theme = input.theme
         ZStack {
             LinearGradient(
-                colors: stops.count > 1 ? stops : [stops.first ?? .black, stops.first ?? .black],
+                colors: [theme.backdropLight.color, theme.backdropDark.color],
                 startPoint: .top, endPoint: .bottom)
-            if let first = books.first {
-                // A glow behind the fan from the first book's spine; still dark enough for text.
-                let look = input.look(for: first)
-                RadialGradient(
-                    colors: [
-                        ShareStyle.backdrop(look.background.mixed(with: look.accent, 0.35), 0.25)
-                            .color,
-                        .clear,
-                    ], center: UnitPoint(x: 0.5, y: 0.42), startRadius: 0,
-                    endRadius: aspect.size.width * 0.75)
-            }
+            // A glow behind the fan.
+            RadialGradient(
+                colors: [theme.glow.color, .clear], center: UnitPoint(x: 0.5, y: 0.42),
+                startRadius: 0, endRadius: aspect.size.width * 0.75)
             VStack(spacing: aspect == .story ? 48 : 32) {
                 Text(heading)
                     .font(ShareStyle.serif(aspect == .story ? 84 : 68, .semibold))
@@ -390,7 +382,14 @@ struct TopFiveCard: View {
         let middle = used.reduce(0, +) / CGFloat(max(1, used.count))
         return GeometryReader { proxy in
             let size = proxy.size
-            let leadHeight = min(size.height * 0.78, size.width * 0.55)
+            // A lone book takes the fan's space, sized as a featured book's hero is.
+            let leadHeight =
+                books.count == 1
+                ? min(
+                    size.height * 0.88,
+                    size.width * 0.86
+                        / ShareCover.aspect(of: input.covers[books[0].id], style: input.coverStyle))
+                : min(size.height * 0.78, size.width * 0.55)
             // An outer book, at 0.82 of the lead height and turned about 15 degrees, reaches up
             // to 0.47 lead heights from its center with the widest 3D book, or 0.5 with the
             // widest flat cover (`ShareCover.aspect`). This spacing keeps the outermost slot (2)
@@ -453,13 +452,16 @@ struct SpectrumCard: View {
     var body: some View {
         let aspect = input.aspect
         let looks = input.books.map { input.look(for: $0) }
+        let theme = ShareTheme(looks: looks)
         let years = input.books.map { $0.finishedYear ?? 0 }
         // Square images stand the spines upright; taller ones lay them flat.
         let isUpright = aspect == .square
         let showsYears = input.frame == .lifetime && !isUpright && Set(years).count > 1
         let count = input.books.count
         ZStack {
-            ShareStyle.backdrop(ShareStyle.leadColor(looks.map(\.background)), 0.88).color
+            LinearGradient(
+                colors: [theme.backdropLight.color, theme.backdropDark.color],
+                startPoint: .top, endPoint: .bottom)
             VStack(spacing: 36) {
                 HStack(spacing: 20) {
                     if showsYears {

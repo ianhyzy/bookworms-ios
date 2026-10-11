@@ -30,7 +30,6 @@ struct ShareStudioView: View {
     /// The request that drew `image`. While it differs from the current request, a newer image
     /// is on its way, so the preview shows progress and sharing waits.
     @State private var renderedRequest: RenderRequest?
-    @State private var hasNoBooks = false
     /// Whether the last render failed, so no image is shown or shared.
     @State private var failed = false
     @State private var showsAccount = false
@@ -111,7 +110,9 @@ struct ShareStudioView: View {
                 NoLibraryView(showsAccount: $showsAccount)
                     .navigationTitle("Share")
             } else {
-                form(isPending: isPending)
+                // The request lists one cover candidate per drawn book, so it shows emptiness
+                // at once, before the debounced render catches up.
+                form(isPending: isPending, hasNoBooks: request.covers.isEmpty)
             }
         }
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
@@ -140,10 +141,10 @@ struct ShareStudioView: View {
         #endif
     }
 
-    private func form(isPending: Bool) -> some View {
+    private func form(isPending: Bool, hasNoBooks: Bool) -> some View {
         Form {
             Section {
-                preview(isPending: isPending)
+                preview(isPending: isPending, hasNoBooks: hasNoBooks)
                 Picker("Size", selection: $aspect) {
                     ForEach(ShareAspect.allCases) { Text($0.title).tag($0) }
                 }
@@ -232,7 +233,7 @@ struct ShareStudioView: View {
     #endif
 
     @ViewBuilder
-    private func preview(isPending: Bool) -> some View {
+    private func preview(isPending: Bool, hasNoBooks: Bool) -> some View {
         let size = aspect.size
         // Messages sit outside the image's box, which would clip them at large text sizes.
         if image == nil && hasNoBooks && !model.isLoading {
@@ -315,6 +316,19 @@ struct ShareStudioView: View {
         case .currentlyReading:
             return ("Not reading anything", "Books you're reading appear here \(nextSync).")
         case .hotTakes:
+            let other: HotTakeDirection = direction == .lovedMore ? .lovedLess : .lovedMore
+            if !ShareTemplate.hotTakes.books(from: library, in: frame, direction: other).isEmpty {
+                return (
+                    "No hot takes\(suffix)",
+                    "Choose \(other.title) to see this frame's other takes."
+                )
+            }
+            if frame != .lifetime,
+                !ShareTemplate.hotTakes.books(from: library, in: .lifetime, direction: direction)
+                    .isEmpty
+            {
+                return ("No hot takes\(suffix)", "Choose another time frame or Lifetime.")
+            }
             let side = direction == .lovedMore ? "above" : "below"
             return (
                 "No hot takes\(suffix)",
@@ -346,7 +360,7 @@ struct ShareStudioView: View {
                         Text(option.title)
                             .font(.caption)
                             .multilineTextAlignment(.center)
-                            .lineLimit(2, reservesSpace: true)
+                            .lineLimit(2)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
@@ -503,7 +517,6 @@ struct ShareStudioView: View {
         let books = template.books(
             from: library, in: request.frame, bookID: request.bookID,
             direction: request.direction)
-        hasNoBooks = books.isEmpty
         var input = ShareInput(
             template: template, aspect: request.aspect, books: books, frame: request.frame,
             coverStyle: request.coverStyle, direction: request.direction,
