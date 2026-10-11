@@ -9,14 +9,17 @@ import SwiftUI
 /// pulled toward the finger with a capped force, so it grinds against the books around it and
 /// can bring the tower down. While a finger holds a book, its title and the reader's rating
 /// show under the navigation bar. Touch and hold a book to push its details, pinch to zoom,
-/// and turn two fingers to circle the tower. **Rebuild** stacks the tower again.
+/// and turn two fingers to circle the tower; a pinch or turn lets go of a held book.
+/// **Rebuild** stacks the tower again, and so does a change to which books are stacked. Either
+/// keeps the camera's turn and zoom.
 ///
 /// Collisions, grinding, and the tower's fall play haptic taps and, while the shelf's
 /// **Sounds** is on, knocks (`ImpactFeedback`), only while the tower shows in the active app.
-/// Returning from pushed details finds the tower as the reader left it. Leaving the tower any
-/// other way, such as for another tab, frees the books and their textures, and the tower is
-/// built again on the reader's return. With Reduce Motion on, no dust drifts in the lamp's
-/// beam; the tower moves only when the reader moves it.
+/// Returning from pushed details finds the tower as the reader left it. The fall is checked
+/// only while the tower shows, so a fall behind the details plays on the reader's return.
+/// Leaving the tower any other way, such as for another tab, frees the books and their
+/// textures, and the tower is built again on the reader's return. With Reduce Motion on, no
+/// dust drifts in the lamp's beam; the tower moves only when the reader moves it.
 ///
 /// While any pile image renders (`PileSnapshotRenderer.isRendering`), the tower leaves the
 /// view's scene, for the reason `BookPileView` gives.
@@ -46,9 +49,14 @@ struct JengaView: View {
     /// cancelled, so the book is let go either way.
     @GestureState private var holdsBook = false
     @GestureState private var movesCamera = false
+    /// Set when a pinch or turn starts while a finger holds a book, so the rest of that drag
+    /// slides nothing, even if one finger stays down after the pinch.
+    @State private var slideIsCancelled = false
 
+    /// Keyed on the set of stacked books, not their shelf order, which a synced rating or a new
+    /// sort can change without changing the tower.
     private struct BuildRequest: Equatable {
-        let ids: [Int]
+        let ids: Set<Int>
         let generation: Int
         let hasViewport: Bool
     }
@@ -66,7 +74,10 @@ struct JengaView: View {
                 content.add(scene.root)
             }
         }
-        .gesture(openOrSlide)
+        // The press runs alongside the drag: attached with `gesture`, it would wait for the drag
+        // to fail, and combined with `exclusively(before:)`, the drag never starts.
+        .gesture(slideBook)
+        .simultaneousGesture(openBook)
         .simultaneousGesture(moveCamera)
         .ignoresSafeArea()
         .accessibilityElement()
@@ -98,7 +109,7 @@ struct JengaView: View {
         }
         .task(
             id: BuildRequest(
-                ids: stacked.map(\.id), generation: generation, hasViewport: viewport != nil)
+                ids: Set(stacked.map(\.id)), generation: generation, hasViewport: viewport != nil)
         ) {
             guard viewport != nil else { return }
             await scene.build(stacked, generation: generation, model: model)
@@ -106,13 +117,19 @@ struct JengaView: View {
         .onAppear {
             showsBook = false
             isShown = true
+            scene.isShown = true
             #if DEBUG
                 scene.debugHold = { id in held = id.flatMap { id in books.first { $0.id == id } } }
             #endif
         }
         .onDisappear {
             isShown = false
+            scene.isShown = false
             scene.endSlide()
+            held = nil
+            // A view removed from the hierarchy, such as for another 3D view, gets no
+            // `playsFeedback` change, so this releases the engines and the audio session.
+            scene.feedback.stop()
             guard !showsBook else { return }
             scene.release()
         }
@@ -131,6 +148,13 @@ struct JengaView: View {
             guard !holdsBook else { return }
             scene.endSlide()
             held = nil
+            slideIsCancelled = false
+        }
+        .onChange(of: holdsBook && movesCamera) { _, both in
+            guard both else { return }
+            scene.endSlide()
+            held = nil
+            slideIsCancelled = true
         }
         .onChange(of: movesCamera) { if !movesCamera { scene.endCameraMove() } }
         .toolbar {
@@ -154,19 +178,20 @@ struct JengaView: View {
         return books.count == 1 ? "1 book" : "\(books.count.formatted()) books"
     }
 
-    /// Touch and hold pushes a book's details. A finger that moves before then slides the book
-    /// instead, from where it first touched.
-    private var openOrSlide: some Gesture {
-        LongPressGesture(minimumDuration: 0.5)
+    /// Touch and hold pushes a book's details. A finger that moves more than 3 points first
+    /// fails the press, before it moves the 4 points that start `slideBook`, so a slow pull
+    /// slides the book rather than opening it. A finger that moves after the press succeeds
+    /// slides nothing.
+    private var openBook: some Gesture {
+        LongPressGesture(minimumDuration: 0.5, maximumDistance: 3)
             .targetedToAnyEntity()
             .onEnded { value in
-                guard let id = scene.bookID(for: value.entity),
+                guard !movesCamera, let id = scene.bookID(for: value.entity),
                     let book = books.first(where: { $0.id == id })
                 else { return }
                 showsBook = true
                 open(book)
             }
-            .exclusively(before: slideBook)
     }
 
     private var slideBook: some Gesture {
@@ -174,6 +199,7 @@ struct JengaView: View {
             .targetedToAnyEntity()
             .updating($holdsBook) { _, holds, _ in holds = true }
             .onChanged { value in
+                guard !movesCamera, !slideIsCancelled, !showsBook else { return }
                 let id = scene.slide(
                     value.entity,
                     from: value.ray(through: value.startLocation, in: .local, to: .scene),

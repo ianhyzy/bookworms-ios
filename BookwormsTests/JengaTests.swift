@@ -45,7 +45,9 @@ final class JengaTests: XCTestCase {
         let reading = CloudBook(
             id: 9_999, title: "Fictional Current Read", author: "An Author", coverURL: nil,
             detailCoverURL: nil, isReading: true)
-        XCTAssertEqual(JengaLayout.tower([reading] + books(5)).last?.book.id, 9_999)
+        let tower = JengaLayout.tower([reading] + books(5))
+        XCTAssertTrue(
+            tower.filter { $0.layer == tower.last?.layer }.contains { $0.book.id == 9_999 })
     }
 
     func testLayersCrossLieFlatAndRestOnTheLayerBelow() {
@@ -171,9 +173,13 @@ final class JengaTests: XCTestCase {
         let aspect: Float = 402.0 / 874
         let top: Float = 1 - 2 * 116.0 / 874
         let bottom: Float = -1 + 2 * 83.0 / 874
-        for (height, width): (Float, Float) in [(3.4, 2.25), (8, 2.4), (0.2, 2.1)] {
+        // A rebuild keeps the reader's turn, so the fit holds at any yaw.
+        for (height, width, yaw): (Float, Float, Float) in [
+            (3.4, 2.25, JengaCamera.defaultYaw), (8, 2.4, 2.3), (0.2, 2.1, -1.1),
+        ] {
             let camera = JengaCamera(
-                fitting: height, width: width, aspect: aspect, top: top, bottom: bottom)
+                fitting: height, width: width, aspect: aspect, top: top, bottom: bottom, yaw: yaw)
+            XCTAssertEqual(camera.yaw, yaw)
             var low: Float = 1
             var high: Float = -1
             for corner in 0..<8 {

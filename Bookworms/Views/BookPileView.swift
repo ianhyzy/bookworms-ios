@@ -197,6 +197,9 @@ struct BookPileView: View {
             isShown = false
             scene.endDrag()
             scene.setTilt(false)
+            // A view removed from the hierarchy, such as for Jenga, gets no `playsFeedback`
+            // change, so this releases the engines and the audio session.
+            scene.feedback.stop()
             guard !showsBook else { return }
             putBack()
             scene.release()

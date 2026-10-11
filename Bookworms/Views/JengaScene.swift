@@ -198,10 +198,12 @@ struct JengaCamera: Equatable {
     static let pitch: Float = 30 * .pi / 180
     static let zoomRange: ClosedRange<Float> = 1...3
 
-    var target = SIMD3<Float>.zero
     /// About 34 degrees from the pile's view, so the tower shows two faces and the lamp, over
     /// the reader's right shoulder, lights the nearer one more.
-    var yaw: Float = 0.6
+    static let defaultYaw: Float = 0.6
+
+    var target = SIMD3<Float>.zero
+    var yaw = Self.defaultYaw
     var distance: Float = 12
     var zoom: Float = 1
     var shift: Float = 0
@@ -218,10 +220,14 @@ struct JengaCamera: Equatable {
             translation: target + rotation.act([0, -shift * away * slope, away]))
     }
 
-    /// The camera that shows a tower `height` tall on a square base `width` wide, in a view of
-    /// width-to-height `aspect`, between the normalized device heights `top` and `bottom`, with
-    /// a little room around it.
-    init(fitting height: Float, width: Float, aspect: Float, top: Float, bottom: Float) {
+    /// The camera that shows a tower `height` tall on a square base `width` wide, turned by
+    /// `yaw`, in a view of width-to-height `aspect`, between the normalized device heights `top`
+    /// and `bottom`, with a little room around it.
+    init(
+        fitting height: Float, width: Float, aspect: Float, top: Float, bottom: Float,
+        yaw: Float = JengaCamera.defaultYaw
+    ) {
+        self.yaw = yaw
         target = [0, height / 2, 0]
         shift = (top + bottom) / 2
         let half = (top - bottom) / 2
@@ -312,8 +318,12 @@ final class JengaScene {
     private var sinceCheck: TimeInterval = 0
     private var hasFallen = false
 
+    /// Whether the view shows the tower. The fall is checked only then, so a fall behind pushed
+    /// details plays, and VoiceOver announces it, when the reader returns.
+    var isShown = false
+
     private struct BuildKey: Equatable {
-        let ids: [Int]
+        let ids: Set<Int>
         let generation: Int
     }
 
@@ -375,14 +385,15 @@ final class JengaScene {
     // MARK: Building
 
     /// Builds the tower of `books` (see `JengaLayout.tower`), replacing the one standing. Does
-    /// nothing when the tower already stands for the same books and `generation`, such as on
-    /// the reader's return from pushed details.
+    /// nothing when the tower already stands for the same books, in any order, and
+    /// `generation`, such as on the reader's return from pushed details. The camera keeps its
+    /// turn and zoom.
     ///
     /// Every block's parts are built before any block appears, with up to 1.5 seconds for
     /// covers; a cover that arrives later replaces the block's title. The old tower stands
     /// until then. A cancelled build leaves it standing.
     func build(_ books: [CloudBook], generation: Int, model: AppModel) async {
-        let key = BuildKey(ids: books.map(\.id), generation: generation)
+        let key = BuildKey(ids: Set(books.map(\.id)), generation: generation)
         guard key != built else { return }
         stage.build(pool: .zero, radius: Self.poolRadius)
         let blocks = JengaLayout.tower(books)
@@ -406,17 +417,20 @@ final class JengaScene {
     }
 
     /// Frames the tower between the bars that cover `viewport`'s edges, leaving room for the
-    /// held book's label under the top bar, and returns the camera there.
+    /// held book's label under the top bar, and moves the camera there, keeping its turn and
+    /// zoom.
     func frame(_ viewport: PileViewport) {
         let height = Float(viewport.size.height)
         guard viewport.size.width > 0, height > 0 else { return }
         self.viewport = viewport
         aspect = Float(viewport.size.width) / height
         cameraMove = nil
+        let zoom = view.zoom
         view = JengaCamera(
             fitting: size.height, width: size.width, aspect: aspect,
             top: 1 - 2 * Float(viewport.insets.top + Self.labelRoom) / height,
-            bottom: -1 + 2 * Float(viewport.insets.bottom) / height)
+            bottom: -1 + 2 * Float(viewport.insets.bottom) / height, yaw: view.yaw)
+        view.zoom = zoom
         camera.transform = view.transform
     }
 
@@ -552,7 +566,7 @@ final class JengaScene {
     /// Checks four times a second whether the tower has fallen, and plays the fall once: the
     /// hardest knock and haptic tap, over the blocks' own hits, and a VoiceOver announcement.
     private func watch(_ deltaTime: TimeInterval) {
-        guard !hasFallen, !resting.isEmpty else { return }
+        guard isShown, !hasFallen, !resting.isEmpty else { return }
         sinceCheck += deltaTime
         guard sinceCheck >= 0.25 else { return }
         sinceCheck = 0
@@ -603,8 +617,8 @@ final class JengaScene {
 
         /// Simulator hook: `-BookwormsJengaPull <index>` slides the block at that index out of
         /// the tower toward the camera through the finger's pull, three seconds after the tower
-        /// is built. Blocks count from the bottom, three to a layer, so the middle block of
-        /// layer `n` is `3n + 1`.
+        /// is built. Blocks count from the bottom, three to a layer, so the middle block of a
+        /// full layer `n` is `3n + 1`.
         private func runDebugPull() async {
             guard
                 let index = UserDefaults.standard.string(forKey: "BookwormsJengaPull")

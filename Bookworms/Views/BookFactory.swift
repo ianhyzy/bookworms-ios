@@ -100,7 +100,8 @@ final class BookFactory {
         coverPixels = Int((224 * textureScale).rounded())
     }
 
-    /// Builds the parts of the books that lack them or whose look or wear changed.
+    /// Builds the parts of the books that lack them, whose look or wear changed, or whose shape
+    /// in `shapes` differs from the built one.
     ///
     /// A book whose cover takes longer than `coverWait` is built with its title on the cloth,
     /// and `coverArrived` hands over its cover when the download finishes. Once these books'
