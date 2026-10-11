@@ -11,8 +11,8 @@ struct Book3DView: View {
     let book: CloudBook
     let look: SpineLook
     let cover: UIImage?
-    /// The book's height in points. Width follows the cover's aspect ratio; thickness follows
-    /// the page count.
+    /// The book's height in points. Width follows the cover's aspect ratio, and thickness is in
+    /// the proportion to the height that the 3D views give the book (`BookShape`).
     var height: CGFloat
     /// Rotation about the vertical axis in radians. Positive turns the spine toward the viewer.
     var yaw: Double = 0.45
@@ -20,8 +20,10 @@ struct Book3DView: View {
     var pitch: Double = -0.12
 
     var body: some View {
+        let size = BookShape(of: book, coverAspect: coverAspect).size
         let projection = BookProjection(
-            width: height * coverAspect, height: height, thickness: height * book.thicknessRatio,
+            width: height * coverAspect, height: height,
+            thickness: height * CGFloat(size.z / size.y),
             yaw: yaw, pitch: pitch)
         ZStack(alignment: .topLeading) {
             ForEach(projection.visibleFaces) { face in

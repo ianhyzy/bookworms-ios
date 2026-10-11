@@ -25,7 +25,7 @@ final class DominoTests: XCTestCase {
     }
 
     func testBingesStayWithinReachAndSlumpsLeaveAGapTooWide() {
-        for height: Float in [2.1, 2.4] {
+        for height: Float in [1.7, 2.1, 2.4, 2.8] {
             XCTAssertEqual(DominoLayout.gap(days: 0, height: height), height * 0.15, accuracy: 1e-4)
             var previous: Float = 0
             for days in 0..<DominoLayout.slumpDays {
@@ -42,6 +42,15 @@ final class DominoTests: XCTestCase {
             XCTAssertEqual(
                 DominoLayout.gap(days: 900, height: height), height * 1.75, accuracy: 1e-4)
         }
+    }
+
+    func testDominoMassFollowsOnlyHeight() {
+        XCTAssertEqual(DominoLayout.mass(height: 1.7), 0.34, accuracy: 1e-4)
+        XCTAssertEqual(DominoLayout.mass(height: 2.8), 0.56, accuracy: 1e-4)
+        // The lightest and heaviest books differ by less than a factor of 2, so a light book
+        // knocks a heavy one over instead of bouncing off it.
+        XCTAssertLessThan(
+            DominoLayout.mass(height: BookShape.longest) / DominoLayout.mass(height: 1.7), 2)
     }
 
     func testChainRunsInFinishOrderWithCurrentReadsLast() throws {

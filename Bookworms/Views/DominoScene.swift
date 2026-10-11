@@ -73,8 +73,10 @@ enum DominoLayout {
     /// books on a turn keep their inner corners apart (see `turnSpacing`).
     static let turnRadius: Float = 2
     static let shortestRow: Float = 6
-    /// How deep the rows may reach, which keeps the path and the books that fall past its ends
-    /// on the 90-unit table.
+    /// How deep the rows may reach, and the longest a row may be. Rows stop at this length, so a
+    /// very long chain, such as 300 thick books finished months apart, reaches about 80 units
+    /// deep, which still keeps the path and the books that fall past its ends on the 90-unit
+    /// table.
     static let deepest: Float = 72
     /// The space a turn keeps between the inner corners of neighboring books.
     static let clearance: Float = 0.05
@@ -85,10 +87,11 @@ enum DominoLayout {
     /// A toppling book pivots on its leading bottom edge, the back cover's, so its head reaches
     /// at most `height` past that edge: its reach. Books finished within `slumpDays` of each
     /// other stand 15 percent of the height apart on the same day, growing evenly to 54
-    /// percent at 29 days, so the falling book strikes the next one at least 84 percent of the
-    /// way up and knocks it over. A slump leaves 1.25 times the height, a quarter of a book
-    /// beyond reach, and another quarter for each doubling of its length, up to 1.75 times the
-    /// height at 120 days or more. The falling book lands short, and the chain stops there.
+    /// percent at 29 days, so the falling book strikes the next one at least 84 percent of its
+    /// own height up, or at the next book's top edge when that book is shorter, and knocks it
+    /// over. A slump leaves 1.25 times the height, a quarter of a book beyond reach, and
+    /// another quarter for each doubling of its length, up to 1.75 times the height at 120 days
+    /// or more. The falling book lands short, and the chain stops there.
     static func gap(days: Int, height: Float) -> Float {
         let days = Float(max(0, days))
         let slump = Float(slumpDays)
@@ -158,7 +161,8 @@ enum DominoLayout {
     }
 
     /// The length of each row for a path of `length`, so the path's width is about `aspect`
-    /// times its depth, and its rows reach no deeper than `deepest`.
+    /// times its depth, and its rows reach no deeper than `deepest`, unless that takes rows
+    /// longer than `deepest`: rows stop at that length, and the path reaches deeper.
     ///
     /// Rows of length L, each taking L plus a half turn of the path, span L + 2R across and
     /// about 2R for each row in depth, where R is `turnRadius`. The aspect fit solves
@@ -172,6 +176,13 @@ enum DominoLayout {
         let shallow = 2 * radius * length / deepest - .pi * radius
         return min(deepest, max(shortestRow, fitted, shallow))
     }
+
+    /// A domino's mass in kilograms: 0.2 per unit of `height`, whatever the book's thickness.
+    ///
+    /// Neighbors then weigh within a factor of 1.7 of each other. A book as heavy as paper of
+    /// its volume can weigh a sixth as much as the next one, and bounces back off it instead
+    /// of knocking it over.
+    static func mass(height: Float) -> Float { 0.2 * height }
 
     /// The widest a book of `height` can be: as wide as the widest cover aspect that
     /// `Book3DView.aspect(of:)` allows, rounded up to the next mesh step.
@@ -510,7 +521,9 @@ final class DominoScene {
 
     private func spawn(_ slot: DominoSlot) {
         guard
-            let book = factory.makeBook(slot.book.id, mode: .dynamic, lighting: stage.lighting)
+            let book = factory.makeBook(
+                slot.book.id, mode: .dynamic, lighting: stage.lighting,
+                mass: DominoLayout.mass(height: slot.size.y))
         else { return }
         // A hair above the table, so it settles onto it rather than starting inside it.
         book.transform = Transform(

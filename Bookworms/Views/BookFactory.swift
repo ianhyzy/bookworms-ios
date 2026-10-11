@@ -10,14 +10,15 @@ import UIKit
 /// main actor, because `ImageRenderer` draws synchronously. A book's parts are kept until its
 /// look or its wear changes or `release` drops them, so a new drop reuses them.
 ///
-/// GPU memory stays bounded by the texture sizes. A cover is at most `coverPixels` on its long
-/// side (224 pixels at a `textureScale` of 1), cropped to its front board's 0.5 to 0.85
-/// aspect: at most 149 × 224 × 4 bytes (178 KB with mipmaps) for a 2:3 cover, and at most
-/// 190 × 224 (227 KB). A spine
-/// is 384 pixels long and 5 to 20 percent as thick (39 to 158 KB with mipmaps). Three hundred
-/// books therefore need about 75 MB, and at most 116 MB. Each texture has one material. Books
-/// share the page-edge texture, page and cloth materials by color, and meshes by shape, which
-/// adds about 25 KB per distinct shape.
+/// GPU memory stays bounded by the texture sizes, which grow with the book's length up to 24 cm,
+/// so books up to that length are about as sharp on screen (see `textureScale(forLength:)`).
+/// At a `textureScale` of 1, a book at least 24 cm long has a cover of at most 224 pixels on
+/// its long side, cropped to its front board's 0.5 to 0.85 aspect: 149 × 224 × 4 bytes
+/// (178 KB with mipmaps) for a 2:3 cover, and at most 192 × 224 (229 KB). Its spine is 384
+/// pixels long and as thick as the book is in proportion, at most a sixth of its length
+/// (131 KB). Three hundred books of a typical library's sizes therefore need about 60 MB, and
+/// at most 108 MB. Each texture has one material. Books share the page-edge texture, page and
+/// cloth materials by color, and meshes by shape, which adds about 25 KB per distinct shape.
 @MainActor
 final class BookFactory {
     /// A book's mesh, its materials in `BookSlot` order, and the look and wear they were drawn
@@ -58,9 +59,7 @@ final class BookFactory {
     static let ribbonName = "ribbon"
     static let spineLength: CGFloat = 384
 
-    /// The longest side of a cover texture, in pixels.
-    let coverPixels: Int
-    /// The pixels per point of spine textures and of the fronts drawn for books without a cover.
+    /// The texture scale of a 24-centimeter book, which `textureScale(forLength:)` scales.
     let textureScale: CGFloat
     /// Called with a book's ID and new cover material when its cover arrives after the book was
     /// built, so the scene can retexture the book.
@@ -92,7 +91,21 @@ final class BookFactory {
     /// closely; their GPU memory grows with its square.
     init(textureScale: CGFloat = 1) {
         self.textureScale = textureScale
-        coverPixels = Int((224 * textureScale).rounded())
+    }
+
+    /// The pixels per point of the spine texture and the front drawn without a cover, for a book
+    /// `length` units long: `textureScale` in proportion to the length, up to 2.4 units, so
+    /// books up to that length keep one sharpness per unit, and longer books do not raise the
+    /// memory ceiling.
+    func textureScale(forLength length: Float) -> CGFloat {
+        textureScale * CGFloat(min(length, 2.4)) / 2.4
+    }
+
+    /// The longest side of `book`'s cover texture, in pixels: 224 at its length's texture
+    /// scale. A book's length does not depend on its cover.
+    func coverPixels(for book: CloudBook) -> Int {
+        let length = BookShape(of: book, coverAspect: 2 / 3).size.y
+        return Int((224 * textureScale(forLength: length)).rounded())
     }
 
     /// Builds the parts of the books that lack them or whose look or wear changed.
@@ -115,9 +128,9 @@ final class BookFactory {
         await model.fonts.load(missing.compactMap { model.library?.designs[$0.id] })
         guard !Task.isCancelled else { return }
         let covers = model.covers
-        let pixels = coverPixels
         let (arrivals, delivery) = AsyncStream.makeStream(of: (Int, UIImage?).self)
         for book in missing {
+            let pixels = coverPixels(for: book)
             Task {
                 delivery.yield((book.id, await covers.image(for: book, maximumPixelSize: pixels)))
             }
@@ -135,6 +148,7 @@ final class BookFactory {
         }
         deadline.cancel()
         for book in upcoming where parts[book.id] == nil {
+            let pixels = coverPixels(for: book)
             Task { _ = await covers.image(for: book, maximumPixelSize: pixels) }
         }
         for book in missing where !Task.isCancelled {
@@ -144,6 +158,7 @@ final class BookFactory {
             else { continue }
             parts[book.id] = built
             if !arrived.contains(book.id) {
+                let pixels = coverPixels(for: book)
                 Task { [weak self] in
                     guard let cover = await covers.image(for: book, maximumPixelSize: pixels)
                     else { return }
@@ -165,16 +180,16 @@ final class BookFactory {
     }
 
     /// Builds a book's parts. `shape` keeps a built book's shape for a new cover, and `scale`
-    /// overrides `textureScale` for the spine and a front without a cover. Returns `nil` if
-    /// RealityKit cannot make the book's mesh.
+    /// overrides the shape's texture scale (`textureScale(forLength:)`) for the spine and a
+    /// front without a cover. Returns `nil` if RealityKit cannot make the book's mesh.
     func makeParts(
         _ book: CloudBook, cover: UIImage?, look: SpineLook, shape: BookShape? = nil,
         scale: CGFloat? = nil
     ) async -> Parts? {
         let shape = shape ?? BookShape(of: book, coverAspect: Book3DView.aspect(of: cover))
         guard let mesh = await mesh(for: shape) else { return nil }
-        let scale = scale ?? textureScale
-        let thickness = max(16, (Self.spineLength * book.thicknessRatio).rounded())
+        let scale = scale ?? textureScale(forLength: shape.size.y)
+        let thickness = max(16, (Self.spineLength * CGFloat(shape.size.z / shape.size.y)).rounded())
         let spine = Self.render(
             SpineView(book: book, look: look)
                 .frame(width: Self.spineLength, height: thickness)
@@ -200,10 +215,12 @@ final class BookFactory {
             look: look, wear: wear, ribbon: wear.ribbon.flatMap { ribbon(shape, tenths: $0) })
     }
 
-    /// A rigid body for the book with `id`, from its parts: a box as large as the book, about
-    /// as heavy as one of paper, holding the book's model, lit by `lighting`'s image-based
-    /// light. Returns `nil` for a book without parts.
-    func makeBook(_ id: Int, mode: PhysicsBodyMode, lighting: Entity) -> ModelEntity? {
+    /// A rigid body for the book with `id`, from its parts: a box as large as the book, `mass`
+    /// kilograms or, by default, about as heavy as one of paper, holding the book's model, lit
+    /// by `lighting`'s image-based light. Returns `nil` for a book without parts.
+    func makeBook(
+        _ id: Int, mode: PhysicsBodyMode, lighting: Entity, mass: Float? = nil
+    ) -> ModelEntity? {
         guard let parts = parts[id] else { return nil }
         let size = parts.shape.size
         let box = ShapeResource.generateBox(size: size)
@@ -212,7 +229,7 @@ final class BookFactory {
         book.components.set(InputTargetComponent())
         // Paper weighs about 0.7 kg per liter, and a cubic decimeter is a liter.
         var body = PhysicsBodyComponent(
-            shapes: [box], mass: size.x * size.y * size.z * 0.7, material: Self.paper,
+            shapes: [box], mass: mass ?? size.x * size.y * size.z * 0.7, material: Self.paper,
             mode: mode)
         body.isContinuousCollisionDetectionEnabled = true
         body.linearDamping = 0.05
