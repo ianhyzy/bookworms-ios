@@ -65,7 +65,24 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(WheelPose(distance: 280, length: 60, viewport: 500).opacity, 0)
         // Gone once the center leaves the viewport, so no visible spine's page is unbuilt.
         XCTAssertEqual(WheelPose(distance: -250, length: 60, viewport: 500).opacity, 0)
-        XCTAssertEqual(CoverFlowPose(distance: 200, length: 60, viewport: 400).opacity, 0)
+    }
+
+    func testShelvedDoorstoppersStandTallerAndThickerThanNovellas() {
+        // Every variety of a 900-page book outsizes every variety of a 120-page one.
+        let novellas = (1...20).map { book($0, "Novella", pages: 120).shelfSpineSize(scale: 150) }
+        let doorstoppers = (21...40)
+            .map {
+                book($0, "Doorstopper", pages: 900).shelfSpineSize(scale: 150)
+            }
+        let novella = (
+            width: novellas.map(\.width).max()!, height: novellas.map(\.height).max()!
+        )
+        XCTAssertGreaterThan(doorstoppers.map(\.width).min()!, novella.width * 1.8)
+        XCTAssertGreaterThan(doorstoppers.map(\.height).min()!, novella.height)
+        // Thin spines keep room for lettering; tall ones stay within the longest book.
+        XCTAssertGreaterThanOrEqual(novellas.map(\.width).min()!, 150 * 0.17)
+        XCTAssertLessThanOrEqual(
+            doorstoppers.map(\.height).max()!, 150 * CGFloat(BookShape.longest) + 0.001)
     }
 
     func testTrackCentersEachSpineAndSnapsToTheNearest() {
@@ -114,6 +131,28 @@ final class ShelfLogicTests: XCTestCase {
                 XCTAssertLessThanOrEqual(pageStart, start + thickness / 2)
                 XCTAssertLessThan(start + thickness / 2, pageStart + SpineTrack.pageLength)
                 start += thickness + 6
+                order.append(slot.id)
+            }
+        }
+        XCTAssertEqual(order, track.ids)
+    }
+
+    func testShelfTrackLaysOutTheShelvedSpines() {
+        let books = (1...40).map { book($0, "Book \($0)", pages: 60 + $0 * 33) }
+        let widths = books.map { $0.shelfSpineSize(scale: 150).width }
+        let track = SpineTrack(books: books, spacing: 1) { $0.shelfSpineSize(scale: 150).width }
+        XCTAssertEqual(
+            track.length, widths.reduce(0, +) + CGFloat(books.count - 1), accuracy: 0.001)
+        // The shelf's scroll view reaches past the screen by half of this.
+        XCTAssertEqual(track.maxThickness, widths.max()!)
+        var start: CGFloat = 0
+        var order: [Int] = []
+        for (page, slots) in track.pages.enumerated() {
+            for slot in slots {
+                let pageStart = CGFloat(page) * SpineTrack.pageLength
+                XCTAssertEqual(pageStart + slot.inset, start, accuracy: 0.001)
+                XCTAssertEqual(slot.index, order.count)
+                start += widths[slot.index] + 1
                 order.append(slot.id)
             }
         }
