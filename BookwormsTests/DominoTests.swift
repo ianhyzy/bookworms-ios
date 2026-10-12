@@ -332,6 +332,43 @@ final class DominoTests: XCTestCase {
         XCTAssertLessThan(simd_distance(pose(0.99).translation, place.translation), 0.01)
     }
 
+    func testBooksDropFromJustAboveTheView() throws {
+        let half = PileCamera.fieldOfView / 2
+        let cameras = [
+            PileCamera(target: [1, 0, -2], yaw: 0.4, zoom: 0.3),
+            PileCamera(yaw: DominoCameraRig.finaleYaw, pitch: DominoCameraRig.finalePitch),
+        ]
+        for camera in cameras {
+            let shown = camera.transform
+            for point: SIMD2<Float> in [[0, 0], [-6, 4], [5, -7]] {
+                let height = try XCTUnwrap(
+                    PileCamera.heightAboveView(of: point, radius: 1.5, seenFrom: shown))
+                // The ball's middle lies its radius above the plane through the camera and the
+                // view's top edge, which tips back from the camera's up axis by half the view.
+                let local = shown.rotation.inverse.act(
+                    [point.x, height, point.y] - shown.translation)
+                XCTAssertEqual(local.y * cos(half) + local.z * sin(half), 1.5, accuracy: 0.001)
+            }
+        }
+        // A view whose top edge looks level or up shows every height.
+        XCTAssertNil(
+            PileCamera.heightAboveView(
+                of: .zero, radius: 1, seenFrom: PileCamera(pitch: half).transform))
+    }
+
+    func testEveryDropStartsWithinTheSpread() {
+        for count in [1, 2, 16, 39, 300] {
+            let step = DominoLayout.entryStep(count: count)
+            XCTAssertLessThanOrEqual(step, 0.05)
+            XCTAssertLessThanOrEqual(
+                step * Double(count - 1), DominoLayout.entrySpread + 0.0001, "\(count)")
+        }
+        XCTAssertEqual(DominoLayout.entryStep(count: 16), 0.05)
+        // The whole entrance, with the last cobweb's fade, stays under two seconds.
+        XCTAssertLessThan(
+            DominoLayout.entrySpread + DominoLayout.entryFall + DominoLayout.webFade, 2)
+    }
+
     func testThreeDOffersDominoes() {
         XCTAssertEqual(ThreeDView.dominoes.title, "Dominoes")
         XCTAssertEqual(ThreeDView(rawValue: "dominoes"), .dominoes)

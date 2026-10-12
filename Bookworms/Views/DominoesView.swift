@@ -3,7 +3,9 @@ import SwiftUI
 
 /// The time frame's books as dominoes: they stand on end along a winding path in finish order,
 /// evenly spaced (`DominoLayout`), and a cobweb hangs between two books wherever 30 days or more
-/// passed between their finishes (`DominoLayout.cobwebDays`).
+/// passed between their finishes (`DominoLayout.cobwebDays`). While a new chain's first books get
+/// ready, a spinner shows over the table (`SceneLoading`); then the books drop into their places
+/// from above the top of the screen (see `DominoScene`).
 ///
 /// A tap on the first book, which a glow marks, topples the whole chain, tearing the cobwebs
 /// as it goes. Should the chain stop, such as where a book leans on the next without knocking
@@ -98,6 +100,7 @@ struct DominoesView: View {
             Button("Set up again") { generation += 1 }
         }
         .overlay(alignment: .bottom) { hint }
+        .settingUp(scene.loading.isLoading)
         .modifier(
             LiftedDetailsOverlay(details: details, scene: scene, canvas: canvas) {
                 showsBook = true

@@ -8,7 +8,9 @@ struct PileViewport: Equatable {
 }
 
 /// The library as a physics toy: the first books, up to `maximumBooks` of them and
-/// `PileLayout.maximumVolume` liters, drop onto a table and pile up.
+/// `PileLayout.maximumVolume` liters, drop onto a table and pile up. While a new pile's first
+/// books get ready, a spinner shows over the table (`SceneLoading`), and every book falls in
+/// from above the top of the screen.
 ///
 /// Drag a book to pick it up and throw it, tap one for its details, pinch to zoom, and turn two
 /// fingers to look around the pile. When the phone reports motion, the shelf's **Tilt** tips the
@@ -128,6 +130,7 @@ struct BookPileView: View {
             "Drag a book to throw it, or tap one for its details. To go through books one at a time, choose Stack or Shelf."
         )
         .accessibilityAction(named: dropTitle) { generation += 1 }
+        .settingUp(scene.loading.isLoading)
         .modifier(
             LiftedDetailsOverlay(details: details, scene: scene, canvas: canvas) {
                 showsBook = true

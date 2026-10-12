@@ -207,7 +207,8 @@ final class BookPileTests: XCTestCase {
                     let position = slot.transform.translation
                     let reach = simd_length(BookShape(of: slot.book, coverAspect: 0.85).size) / 2
                     XCTAssertEqual(Self.tray.clamp(position, margin: PileLayout.reach), position)
-                    XCTAssertGreaterThanOrEqual(position.y, PileLayout.spawnHeight)
+                    XCTAssertGreaterThanOrEqual(
+                        position.y, PileLayout.spawnHeight(over: Self.tray))
                     XCTAssertLessThan(position.y + reach, PileLayout.ceiling)
                 }
                 for wave in stride(from: 0, to: plan.count, by: PileLayout.waveSize) {
@@ -222,6 +223,53 @@ final class BookPileTests: XCTestCase {
                 }
             }
         }
+    }
+
+    func testDropsStartOutOfViewOfEveryCamera() throws {
+        // iPhone-shaped views, from a small phone to a large one, with and without the time
+        // frame button's inset.
+        let views: [(CGSize, CGFloat, CGFloat)] = [
+            (CGSize(width: 375, height: 812), 100, 83), (CGSize(width: 402, height: 874), 116, 83),
+            (CGSize(width: 402, height: 874), 166, 83), (CGSize(width: 440, height: 956), 170, 83),
+        ]
+        let slope = tan(PileCamera.fieldOfView / 2)
+        for (size, top, bottom) in views {
+            let tray = try XCTUnwrap(
+                PileTray(
+                    viewport: PileViewport(
+                        size: size,
+                        insets: .init(top: top, leading: 0, bottom: bottom, trailing: 0))))
+            let plan = (0..<3 as Range<UInt64>)
+                .flatMap { PileLayout.dropPlan(Self.books, in: tray, seed: $0) }
+            let points = plan.flatMap { corners(of: $0) }
+            XCTAssertLessThan(
+                plan.map(\.transform.translation.y).max()! + 1.86, PileLayout.ceiling, "\(size)")
+            var shown = 0
+            for zoom in [PileCamera.zoomRange.lowerBound, 1.6, PileCamera.zoomRange.upperBound] {
+                // The targets a zoomed camera can move to (see `BookPileScene.moveCamera`).
+                let reach = 1 - 1 / zoom
+                for x in [-tray.farHalfWidth, tray.farHalfWidth] {
+                    for z in [tray.farZ, tray.nearZ] {
+                        for step in 0..<16 {
+                            let camera = PileCamera(
+                                target: [x * reach, 0, z * reach], yaw: Float(step) * .pi / 8,
+                                zoom: zoom)
+                            let eye = camera.transform.translation
+                            // Counts the corners on or under the plane through the camera
+                            // and the view's top edge.
+                            shown += points.count(where: { corner in
+                                let local = camera.rotation.inverse.act(corner - eye)
+                                return local.y <= -local.z * slope
+                            })
+                        }
+                    }
+                }
+            }
+            XCTAssertEqual(shown, 0, "\(size)")
+        }
+        // The box closes only once a book from the ceiling has landed.
+        let fall = (2 * PileLayout.ceiling / PileLayout.gravity).squareRoot()
+        XCTAssertLessThan(Double(fall) + 0.5, PileLayout.boxDelay / .seconds(1))
     }
 
     func testEachWaveFallsBelowTheNextWaveBeforeItStarts() {

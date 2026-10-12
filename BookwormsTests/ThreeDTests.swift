@@ -209,9 +209,9 @@ final class ThreeDTests: XCTestCase {
     func testLampLightsThePoolAndTheFacesTowardTheCamera() {
         let pool: SIMD3<Float> = [0, 0, 1]
         let placement = DeskStage.lampPlacement(pool: pool, radius: 7)
-        // High above the ceiling, which every drop starts under, and toward the camera, so
+        // High above the camera, and so above every book in view, and toward the camera, so
         // faces turned toward the camera (+z) catch its light.
-        XCTAssertGreaterThan(placement.position.y, PileLayout.ceiling + 4)
+        XCTAssertGreaterThan(placement.position.y, PileCamera().transform.translation.y + 4)
         XCTAssertGreaterThan(placement.position.z, pool.z + 7)
         XCTAssertEqual(placement.aim, pool)
         func angle(to point: SIMD3<Float>) -> Float {
