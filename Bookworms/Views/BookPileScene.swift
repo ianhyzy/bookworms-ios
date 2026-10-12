@@ -229,10 +229,10 @@ enum PileLayout {
     /// fall below the next wave's lowest cells, under `airDrag`, before those books start.
     static let waveInterval = Duration.milliseconds(950)
     /// The linear damping of a live drop's falling books, as air drag, until they first touch
-    /// something. A drop starts out of view, high above the table (see `spawnHeight(over:)`),
-    /// and drag keeps its books landing at 37 to 41 units a second, about as fast as from 9 to
-    /// 20 units up without drag, so about nine in ten land front cover up. Landing over 50
-    /// units a second flips about twice as many face down.
+    /// something. A drop starts out of view, high above the table (see `spawnHeight(over:)`).
+    /// Drag lands its books at 37 to 41 units a second, about as fast as a drop of 9 to 20
+    /// units without drag, so about nine in ten land front cover up. Without drag they land at
+    /// 51 to 62 units a second, and about twice as many land face down.
     static let airDrag: Float = 1
     /// Above the highest start a drop plan gives on an iPhone, with room for a book lifted over
     /// others (see `dropPlan`). The walls reach it.
@@ -840,7 +840,8 @@ final class BookPileScene {
                 label = await PileCalendar.texture(
                     YearInBooksCard.busiest(span, isCompact: false).value, season: group.season)
             }
-            if !tidy {
+            // A new pile's first wave falls at once, since no earlier books are left to clear.
+            if !tidy, spawned > 0 {
                 try? await Task.sleep(
                     until: lastWave
                         + (starts ? PileLayout.periodInterval : PileLayout.waveInterval))
