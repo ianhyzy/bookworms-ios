@@ -25,9 +25,6 @@ struct Book3DView: View {
     /// How much of the light's shading the faces show, from 0, every face evenly lit as a flat
     /// spine on the shelf is, to 1. A book pulled off the shelf starts unshaded, as its spine.
     var lighting: Double = 1
-    /// The opacity of every face but the spine. A book pulled out of the 3D stack starts with
-    /// only its spine showing, because the books above it hide the rest.
-    var faceOpacity: Double = 1
 
     var body: some View {
         let projection = BookProjection(
@@ -39,7 +36,6 @@ struct Book3DView: View {
                 content(for: face.kind, size: face.size)
                     .frame(width: face.size.width, height: face.size.height)
                     .overlay(Color.black.opacity(face.shade * lighting))
-                    .opacity(face.kind == .spine ? 1 : faceOpacity)
                     .projectionEffect(face.transform)
             }
         }

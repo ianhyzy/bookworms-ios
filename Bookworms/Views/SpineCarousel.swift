@@ -28,16 +28,16 @@ enum StackStyle: String {
     static let lighting = 0.6
 
     /// How `book` lies in the stack, which is also where its flight to the details starts.
-    /// `covered` says whether another book lies on it, hiding all of a 3D book but its spine.
-    func rest(of book: CloudBook, covered: Bool) -> PullOutPath.Rest {
+    ///
+    /// The flight draws every face of the book from its first frame, in front of the stack, so
+    /// a book under others comes straight out over them and goes back the same way; nothing
+    /// fades. The books around it hold still while it is out.
+    func rest(of book: CloudBook) -> PullOutPath.Rest {
         let twist = StackArrangement.twist(of: book)
         switch self {
-        case .flat:
-            // A flat spine shows no other face, so its flight starts with the spine alone.
-            return PullOutPath.Rest(pitch: twist, isCovered: true)
+        case .flat: return PullOutPath.Rest(pitch: twist)
         case .threeD:
-            return PullOutPath.Rest(
-                yaw: -Self.lookDown, pitch: twist, lighting: Self.lighting, isCovered: covered)
+            return PullOutPath.Rest(yaw: -Self.lookDown, pitch: twist, lighting: Self.lighting)
         }
     }
 }
@@ -118,9 +118,7 @@ struct SpineCarousel: View {
                         ZStack(alignment: .topLeading) {
                             ForEach(track.pages[page]) { slot in
                                 spineButton(slot.book) {
-                                    stackedBook(
-                                        slot.book, spine: arrangement.spine(of: slot.book),
-                                        covered: slot.index > 0)
+                                    stackedBook(slot.book, spine: arrangement.spine(of: slot.book))
                                 }
                                 .padding(.leading, arrangement.leading(of: slot.book))
                                 .padding(.top, slot.inset)
@@ -154,11 +152,11 @@ struct SpineCarousel: View {
     }
 
     /// A stacked book, lying as `style` says, with its spine filling `spine`'s length and
-    /// thickness. `covered` says whether another book lies on it.
+    /// thickness.
     @ViewBuilder
-    private func stackedBook(_ book: CloudBook, spine: CGSize, covered: Bool) -> some View {
+    private func stackedBook(_ book: CloudBook, spine: CGSize) -> some View {
         let look = model.look(for: book)
-        let rest = style.rest(of: book, covered: covered)
+        let rest = style.rest(of: book)
         switch style {
         case .flat:
             SpineView(book: book, look: look)
@@ -297,7 +295,7 @@ private struct StackedBook: View {
         }
         guard let longest else { return 0 }
         let spine = arrangement.spine(of: longest)
-        let rest = StackStyle.threeD.rest(of: longest, covered: true)
+        let rest = StackStyle.threeD.rest(of: longest)
         return fit(spine: spine, aspect: Book3DView.aspects.upperBound, rest: rest).drawn.height
             - spine.height
     }

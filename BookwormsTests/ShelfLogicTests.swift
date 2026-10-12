@@ -101,16 +101,14 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(StackArrangement.maskStops(height: 0, top: 30, bottom: 90).count, 0)
     }
 
-    func testOnlyACoveredThreeDBookHidesAllButItsSpine() {
+    func testStackedBooksStartTheirFlightAsTheyLie() {
         let top = book(1, "Top", pages: 300)
-        XCTAssertTrue(StackStyle.threeD.rest(of: top, covered: true).isCovered)
-        XCTAssertFalse(StackStyle.threeD.rest(of: top, covered: false).isCovered)
-        XCTAssertFalse(StackStyle.flat.rest(of: top, covered: true).isCovered)
-        let path = PullOutPath(
-            home: CGRect(x: 40, y: 400, width: 280, height: 32), upright: false,
-            stage: CGRect(x: 0, y: 100, width: 402, height: 380), pose: .resting, aspect: 2 / 3,
-            thicknessRatio: 0.1, rest: StackStyle.threeD.rest(of: top, covered: false))
-        XCTAssertEqual(path.pose(at: 0).faces, 1)
+        let twist = StackArrangement.twist(of: top)
+        XCTAssertEqual(StackStyle.flat.rest(of: top), PullOutPath.Rest(pitch: twist))
+        XCTAssertEqual(
+            StackStyle.threeD.rest(of: top),
+            PullOutPath.Rest(
+                yaw: -StackStyle.lookDown, pitch: twist, lighting: StackStyle.lighting))
     }
 
     func testShelvedDoorstoppersStandTallerAndThickerThanNovellas() {
@@ -287,7 +285,6 @@ final class ShelfLogicTests: XCTestCase {
         // Unshaded and casting no shadow, as the flat spine it replaces.
         XCTAssertEqual(start.lighting, 0)
         XCTAssertEqual(start.shadow, 0)
-        XCTAssertEqual(start.faces, 1)
         let size = drawnSize(start, aspect: 2 / 3)
         XCTAssertEqual(size.width, 30, accuracy: 0.01)
         XCTAssertEqual(size.height, 280, accuracy: 0.01)
@@ -397,7 +394,7 @@ final class ShelfLogicTests: XCTestCase {
     func testThreeDStackedBookStartsAsItLiesAndLandsInTheDetails() {
         let home = CGRect(x: 40, y: 400, width: 280, height: 32)
         let rest = PullOutPath.Rest(
-            yaw: -0.3, pitch: 0.2, lighting: 0.6, isCovered: true)
+            yaw: -0.3, pitch: 0.2, lighting: 0.6)
         let path = PullOutPath(
             home: home, upright: false, stage: CGRect(x: 0, y: 100, width: 402, height: 380),
             pose: .resting, aspect: 2 / 3, thicknessRatio: 0.1, rest: rest)
@@ -421,16 +418,11 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertLessThan(pulled.center.x, start.center.x)
         XCTAssertEqual(pulled.center.y, start.center.y, accuracy: 0.001)
         XCTAssertGreaterThan(pulled.scale / start.scale, 1.1)
-        // Only the spine shows until the book lifts away from the books above it.
-        XCTAssertEqual(start.faces, 0)
-        XCTAssertEqual(path.pose(at: PullOutPath.floatStart).faces, 0)
-        XCTAssertEqual(path.pose(at: PullOutPath.veilStart).faces, 1, accuracy: 0.0001)
 
         let end = path.pose(at: 1)
         XCTAssertEqual(end.roll, 0, accuracy: 0.0001)
         XCTAssertEqual(end.yaw, BookPose.resting.yaw, accuracy: 0.0001)
         XCTAssertEqual(end.pitch, BookPose.resting.pitch, accuracy: 0.0001)
         XCTAssertEqual(end.lighting, 1, accuracy: 0.0001)
-        XCTAssertEqual(end.faces, 1)
     }
 }

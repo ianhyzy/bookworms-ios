@@ -134,9 +134,11 @@ final class ShelfPullOut {
 ///
 /// Each part of the flight runs over its own share of the progress, with its own easing:
 ///
-/// 1. The book slides out of its place. On **Shelf**, it comes straight toward the reader, which
-///    shows as its spine growing; on **Stack**, it also slides along its length, out of the
-///    stack. It casts a shadow on the shelf, and the faces' shading fades in.
+/// 1. The book slides out of its place, straight toward the reader, which shows as its spine
+///    growing; on **Stack**, it comes out along the way its spine faces, so a turned book also
+///    moves a little to that side. It is drawn whole and in front of the books around it from
+///    the start, and they hold still. It casts a shadow on the shelf, and the faces' shading
+///    fades in.
 /// 2. As the slide ends, the book starts to float to the stage, growing or shrinking to the
 ///    stage's height, and to turn from the way it lay (`Rest`) to the details' pose, while a book
 ///    from **Stack** stands up from lying on its back. The float and the turn start before the
@@ -166,9 +168,6 @@ struct PullOutPath {
         var roll: Double
         /// `Book3DView.lighting`: `Rest.lighting` in the book's place, 0 for an unshaded spine.
         var lighting: Double
-        /// `Book3DView.faceOpacity`: 0 while the books above a book from the 3D stack still
-        /// hide all but its spine, and 1 once it has lifted away from them.
-        var faces: Double
         /// The opacity of the book's shadow on the shelf behind it.
         var shadow: Double
         /// How far the shelf has dimmed behind the book, 0...1, which also lights the stage.
@@ -213,10 +212,6 @@ struct PullOutPath {
         var pitch = 0.0
         /// `Book3DView.lighting`, 0 for a flat spine.
         var lighting = 0.0
-        /// Whether the books above hide every face of the book but its spine, as they hide a 3D
-        /// book's top board and page edges in the stack. The flight is drawn over the shelf, so
-        /// it starts with only the spine and shows the other faces as the book lifts away.
-        var isCovered = false
     }
 
     /// How much larger than the book's height `Book3DView` draws a book that faces its spine to
@@ -260,8 +255,6 @@ struct PullOutPath {
             roll: Self.mix(upright ? 0 : -.pi / 2, 0, turn),
             lighting: Self.mix(
                 rest.lighting, 1, Self.phase(progress, from: 0, to: Self.turnStart, .easeInOut)),
-            faces: rest.isCovered
-                ? Self.phase(progress, from: Self.floatStart, to: Self.veilStart, .easeInOut) : 1,
             shadow: pull * (1 - lift),
             lift: lift)
     }
@@ -430,8 +423,7 @@ private struct PullOutFlight: View, Animatable {
         .bounds
         Book3DView(
             book: book, look: look, cover: cover, height: pose.height, yaw: pose.yaw,
-            pitch: pose.pitch, thicknessRatio: pose.thicknessRatio, lighting: pose.lighting,
-            faceOpacity: pose.faces
+            pitch: pose.pitch, thicknessRatio: pose.thicknessRatio, lighting: pose.lighting
         )
         .scaleEffect(pose.scale)
         .rotationEffect(.radians(pose.roll))

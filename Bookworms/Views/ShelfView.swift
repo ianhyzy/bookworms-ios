@@ -75,6 +75,11 @@ struct ShelfView: View {
         // The shelf's controls return as a pulled-out book flies back, and a book can only
         // return to a spine that is still where it left it.
         .onChange(of: mode) { pullOut.close() }
+        // In Stack, the stack centers a pulled book behind its details, and again as Back starts,
+        // so the book always flies back to the middle of the screen, clear of the stack's faded
+        // ends, even if the stack moved while the details showed.
+        .onChange(of: pullOut.showsText) { centerPulledBook() }
+        .onChange(of: pullOut.isReturning) { centerPulledBook() }
         #if DEBUG
             .onChange(of: model.books.count, initial: true) { applyDebugArguments() }
         #endif
@@ -156,6 +161,13 @@ struct ShelfView: View {
         } else {
             NoLibraryView(showsAccount: $showsAccount)
         }
+    }
+
+    private func centerPulledBook() {
+        guard mode == .stack, !pullOut.upright, let id = pullOut.book?.id,
+            pullOut.showsText || pullOut.isReturning
+        else { return }
+        centeredID = id
     }
 
     /// The chosen 3D view, or the Pile when the saved choice is one the app does not offer.
