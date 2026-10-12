@@ -65,7 +65,24 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(WheelPose(distance: 280, length: 60, viewport: 500).opacity, 0)
         // Gone once the center leaves the viewport, so no visible spine's page is unbuilt.
         XCTAssertEqual(WheelPose(distance: -250, length: 60, viewport: 500).opacity, 0)
-        XCTAssertEqual(CoverFlowPose(distance: 200, length: 60, viewport: 400).opacity, 0)
+    }
+
+    func testShelvedDoorstoppersStandTallerAndThickerThanNovellas() {
+        // Every variety of a 900-page book outsizes every variety of a 120-page one.
+        let novellas = (1...20).map { book($0, "Novella", pages: 120).shelfSpineSize(scale: 150) }
+        let doorstoppers = (21...40)
+            .map {
+                book($0, "Doorstopper", pages: 900).shelfSpineSize(scale: 150)
+            }
+        let novella = (
+            width: novellas.map(\.width).max()!, height: novellas.map(\.height).max()!
+        )
+        XCTAssertGreaterThan(doorstoppers.map(\.width).min()!, novella.width * 1.8)
+        XCTAssertGreaterThan(doorstoppers.map(\.height).min()!, novella.height)
+        // Thin spines keep room for lettering; tall ones stay within the longest book.
+        XCTAssertGreaterThanOrEqual(novellas.map(\.width).min()!, 150 * 0.17)
+        XCTAssertLessThanOrEqual(
+            doorstoppers.map(\.height).max()!, 150 * CGFloat(BookShape.longest) + 0.001)
     }
 
     func testTrackCentersEachSpineAndSnapsToTheNearest() {

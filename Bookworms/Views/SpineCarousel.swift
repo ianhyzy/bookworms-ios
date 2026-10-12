@@ -4,21 +4,23 @@ import SwiftUI
 enum ShelfMode: String, CaseIterable, Identifiable {
     /// Spines lying flat, stacked top to bottom on a wheel that turns about the x axis.
     case stack
-    /// Spines standing side by side, turning about the y axis like cover flow.
+    /// Spines standing side by side in a wooden bookcase that scrolls horizontally.
     case shelf
 
     var id: Self { self }
     var title: String { self == .stack ? "Stack" : "Shelf" }
 }
 
-/// A snapping 3D carousel of spines that reports the centered book through `centeredID`.
+/// The library's spines, as a snapping 3D wheel (Stack) or a bookcase (Shelf), reporting the
+/// book at the viewport's center through `centeredID`.
 ///
-/// Each spine's 3D pose is a `visualEffect` of its distance from the viewport center, so
-/// scrolling changes only render effects and never re-evaluates a body. (`scrollTransition`
-/// cannot drive a wheel: its phase reaches ±1 about one spine's length from its threshold.)
-/// The body does not read `centeredID`; only the button actions do, when tapped. A tap on the
-/// centered spine opens it, and a tap on another spine brings it to the center. VoiceOver
-/// activation always opens the book.
+/// In Stack, each spine's 3D pose is a `visualEffect` of its distance from the viewport center,
+/// so scrolling changes only render effects and never re-evaluates a body. (`scrollTransition`
+/// cannot drive a wheel: its phase reaches ±1 about one spine's length from its threshold.) A
+/// tap on the centered spine opens it, and a tap on another spine brings it to the center.
+/// Shelf scrolls freely, with the bookcase's wood as part of the content, and a tap on any
+/// spine opens it. The body does not read `centeredID`; only the button actions do, when
+/// tapped. VoiceOver activation always opens the book.
 struct SpineCarousel: View {
     let books: [CloudBook]
     let mode: ShelfMode
@@ -33,7 +35,15 @@ struct SpineCarousel: View {
     /// Space between the screen edges and a stacked spine's ends.
     private static let sideMargin: CGFloat = 20
     private static let stackSpacing: CGFloat = 6
-    private static let shelfSpacing: CGFloat = 4
+    /// Shelved books nearly touch, so their spines read as separate books.
+    private static let shelfSpacing: CGFloat = 1
+    /// How far the shelf's scroll view reaches past each side of the screen.
+    ///
+    /// Pages hold the spines centered in them, so a spine overhangs its page by up to half its
+    /// thickness, and a lazy stack builds only the pages within its scroll view's bounds. The
+    /// wider bounds keep a page built while any of its spines shows on screen. It exceeds half
+    /// the thickest spine at the largest `Bookcase.scale`.
+    private static let shelfBleed: CGFloat = 48
 
     var body: some View {
         GeometryReader { proxy in
@@ -44,13 +54,15 @@ struct SpineCarousel: View {
         }
         .background {
             // A pool of warm light behind the centered spine, larger than the carousel so its
-            // falloff never meets an edge.
-            RadialGradient(
-                colors: [ShelfPalette.lamp.opacity(0.22), .clear], center: .center,
-                startRadius: 0, endRadius: 320
-            )
-            .frame(width: 700, height: 700)
-            .accessibilityHidden(true)
+            // falloff never meets an edge. The shelf's lamp lights the bookcase instead.
+            if mode == .stack {
+                RadialGradient(
+                    colors: [ShelfPalette.lamp.opacity(0.22), .clear], center: .center,
+                    startRadius: 0, endRadius: 320
+                )
+                .frame(width: 700, height: 700)
+                .accessibilityHidden(true)
+            }
         }
     }
 
@@ -91,70 +103,66 @@ struct SpineCarousel: View {
                 Color.clear.frame(height: track.trailingSpace(viewport: size.height))
             }
         }
+        .scrollTargetBehavior(SpineSnapping(track: track))
         .modifier(
-            CenterSnapping(
+            CenterTracking(
                 track: track, axis: .vertical, viewport: size.height, centeredID: $centeredID))
     }
 
     private func shelf(in size: CGSize) -> some View {
-        // Leaves room under the spines for the shelf board.
-        let height = min(440, size.height - 56)
-        let center = size.width / 2
-        let track = SpineTrack(books: books, spacing: Self.shelfSpacing)
-        return VStack(spacing: 0) {
-            ScrollView(.horizontal) {
+        let bookcase = Bookcase(height: size.height)
+        let scale = bookcase.scale
+        let bleed = Self.shelfBleed
+        let viewport = size.width + 2 * bleed
+        let track = SpineTrack(books: books, spacing: Self.shelfSpacing) {
+            $0.shelfSpineSize(scale: scale).width
+        }
+        let leading = track.leadingSpace(viewport: viewport)
+        return ScrollView(.horizontal) {
+            ZStack(alignment: .topLeading) {
+                BookcaseWood(bookcase: bookcase, start: leading, length: track.length)
                 HStack(spacing: 0) {
-                    Color.clear.frame(width: track.leadingSpace(viewport: size.width))
-                    LazyHStack(spacing: 0) {
+                    Color.clear.frame(width: leading)
+                    // Top aligned, because the lazy stack takes the scroll view's full height.
+                    LazyHStack(alignment: .top, spacing: 0) {
                         ForEach(track.pages.indices, id: \.self) { page in
                             ZStack(alignment: .bottomLeading) {
                                 ForEach(track.pages[page]) { slot in
-                                    let thickness = slot.book.slabThickness
+                                    let spine = slot.book.shelfSpineSize(scale: scale)
                                     spineButton(slot.book) {
                                         UprightSpineView(
                                             book: slot.book, look: model.look(for: slot.book),
-                                            height: height, thickness: thickness)
+                                            height: spine.height, thickness: spine.width)
                                     }
-                                    .visualEffect { content, proxy in
-                                        let pose = CoverFlowPose(
-                                            distance: proxy.frame(in: .scrollView).midX - center,
-                                            length: thickness, viewport: size.width)
-                                        return
-                                            content
-                                            .rotation3DEffect(
-                                                pose.angle, axis: (x: 0, y: 1, z: 0),
-                                                perspective: 0.7
-                                            )
-                                            .scaleEffect(pose.scale, anchor: .bottom)
-                                            .offset(x: pose.offset)
-                                            .brightness(pose.brightness)
-                                            .opacity(pose.opacity)
+                                    .background(alignment: .bottom) {
+                                        ContactShadow(width: spine.width)
                                     }
                                     .padding(.leading, slot.inset)
                                 }
                             }
-                            .frame(width: SpineTrack.pageLength, alignment: .leading)
+                            .frame(
+                                width: SpineTrack.pageLength, height: bookcase.base,
+                                alignment: .bottomLeading)
                         }
                     }
-                    Color.clear.frame(width: track.trailingSpace(viewport: size.width))
+                    Color.clear.frame(width: track.trailingSpace(viewport: viewport))
                 }
             }
-            .frame(height: height)
-            .scrollClipDisabled()
-            .modifier(
-                CenterSnapping(
-                    track: track, axis: .horizontal, viewport: size.width,
-                    centeredID: $centeredID))
-            ShelfBoard()
+            .frame(height: size.height, alignment: .top)
         }
-        .frame(maxHeight: .infinity)
+        .modifier(
+            CenterTracking(
+                track: track, axis: .horizontal, viewport: size.width, centeredID: $centeredID)
+        )
+        .padding(.horizontal, -bleed)
+        .overlay { ShelfLamp() }
     }
 
     private func spineButton(_ book: CloudBook, @ViewBuilder label: () -> some View)
         -> some View
     {
         Button {
-            if voiceOver || book.id == (centeredID ?? books.first?.id) {
+            if voiceOver || mode == .shelf || book.id == (centeredID ?? books.first?.id) {
                 open(book)
             } else {
                 centeredID = book.id
@@ -168,16 +176,17 @@ struct SpineCarousel: View {
     }
 }
 
-/// Snaps the carousel so a spine always rests at the center, keeps `centeredID` on the spine at
-/// the center, and scrolls to `centeredID` when something other than scrolling changes it.
+/// Keeps `centeredID` on the spine at the center, and scrolls to `centeredID` when something
+/// other than scrolling changes it.
 ///
-/// Snapping, tracking, and scrolling all use `SpineTrack` offsets, which match the layout
-/// exactly. Offsets count from the end of the scroll view's content inset, as `ScrollPosition`
-/// and `ScrollTarget` do; the scroll view takes a top inset where it meets the navigation bar.
-private struct CenterSnapping: ViewModifier {
+/// Tracking and scrolling use `SpineTrack` offsets, as `SpineSnapping` does, which match the
+/// layout exactly. Offsets count from the end of the scroll view's content inset, as
+/// `ScrollPosition` and `ScrollTarget` do; the scroll view takes a top inset where it meets the
+/// navigation bar.
+private struct CenterTracking: ViewModifier {
     let track: SpineTrack
     let axis: Axis
-    /// The scroll view's length along `axis`.
+    /// The length along `axis` that shows on screen.
     let viewport: CGFloat
     @Binding var centeredID: Int?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -189,16 +198,17 @@ private struct CenterSnapping: ViewModifier {
     func body(content: Content) -> some View {
         content
             .scrollPosition($position)
-            .scrollTargetBehavior(SpineSnapping(track: track, axis: axis))
-            .onScrollGeometryChange(for: Int?.self) { geometry in
-                track.id(
-                    nearest: axis == .vertical
-                        ? geometry.contentOffset.y + geometry.contentInsets.top
-                        : geometry.contentOffset.x + geometry.contentInsets.leading)
-            } action: { old, id in
-                // The first call reports the starting book, before `onAppear` scrolls to
+            // Watches the offset rather than the book at it: a new order puts another book at
+            // the same offset, which must not replace the `centeredID` that a sort sets.
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                axis == .vertical
+                    ? geometry.contentOffset.y + geometry.contentInsets.top
+                    : geometry.contentOffset.x + geometry.contentInsets.leading
+            } action: { old, offset in
+                // The first call reports the starting offset, before `onAppear` scrolls to
                 // `centeredID`, so only an actual change moves `centeredID`.
-                guard id != old else { return }
+                let id = track.id(nearest: offset)
+                guard offset != old, id != scrolledID else { return }
                 scrolledID = id
                 centeredID = id
             }
@@ -215,8 +225,8 @@ private struct CenterSnapping: ViewModifier {
             // A new carousel, such as after a mode switch, opens on the centered book.
             .onAppear(perform: scrollToCenteredBook)
             .scrollIndicators(.hidden)
-            // The spines fade out before the carousel's ends, so the bar's edge effect would
-            // only draw a seam across the walnut wall.
+            // The stack's spines fade out before its ends, and the shelf's top board meets the
+            // bar, so the bar's edge effect would only draw a seam across the walnut.
             .scrollEdgeEffectHidden()
     }
 
@@ -226,34 +236,13 @@ private struct CenterSnapping: ViewModifier {
     }
 }
 
-/// Ends every scroll, including a fling's momentum, with the nearest spine at the center.
+/// Ends every vertical scroll, including a fling's momentum, with the nearest spine at the
+/// center.
 private struct SpineSnapping: ScrollTargetBehavior {
     let track: SpineTrack
-    let axis: Axis
 
     func updateTarget(_ target: inout ScrollTarget, context: TargetContext) {
-        if axis == .vertical {
-            target.rect.origin.y = track.offset(nearest: target.rect.minY)
-        } else {
-            target.rect.origin.x = track.offset(nearest: target.rect.minX)
-        }
-    }
-}
-
-/// The walnut board the upright spines stand on.
-private struct ShelfBoard: View {
-    var body: some View {
-        LinearGradient(
-            colors: [ShelfPalette.board, ShelfPalette.board.mix(with: .black, by: 0.45)],
-            startPoint: .top, endPoint: .bottom
-        )
-        .frame(height: 16)
-        .overlay(alignment: .top) {
-            // The lit front edge of the board.
-            Rectangle().fill(.white.opacity(0.12)).frame(height: 1)
-        }
-        .shadow(color: .black.opacity(0.5), radius: 10, y: 8)
-        .accessibilityHidden(true)
+        target.rect.origin.y = track.offset(nearest: target.rect.minY)
     }
 }
 
@@ -264,8 +253,10 @@ private struct ShelfBoard: View {
 /// the scroll offset names. The carousel's lazy stack therefore holds pages of equal length,
 /// with no spacing, so it places even pages it has not built exactly and `offsets` match the
 /// layout. Each page holds the spines whose centers fall within it; a spine may overhang its
-/// page by half its thickness. A spine fades out completely once its center leaves the
-/// viewport, so every visible spine's page intersects the viewport and is built.
+/// page by half its thickness. A stacked spine fades out completely once its center leaves the
+/// viewport, so every visible spine's page intersects the viewport and is built. Shelved spines
+/// stay opaque, so the shelf's scroll view reaches past the screen's sides instead
+/// (`SpineCarousel.shelfBleed`).
 struct SpineTrack {
     static let pageLength: CGFloat = 100
 
@@ -282,19 +273,23 @@ struct SpineTrack {
     let offsets: [CGFloat]
     let pages: [[Slot]]
     /// From the first spine's start to the last spine's end.
-    private let length: CGFloat
+    let length: CGFloat
     private let firstThickness: CGFloat
     private let lastThickness: CGFloat
 
-    init(books: [CloudBook], spacing: CGFloat) {
+    /// Lays out `books` with `thickness` along the scroll axis, `spacing` apart.
+    init(
+        books: [CloudBook], spacing: CGFloat,
+        thickness: (CloudBook) -> CGFloat = \.slabThickness
+    ) {
         ids = books.map(\.id)
-        firstThickness = books.first?.slabThickness ?? 0
-        lastThickness = books.last?.slabThickness ?? 0
+        let thicknesses = books.map(thickness)
+        firstThickness = thicknesses.first ?? 0
+        lastThickness = thicknesses.last ?? 0
         var start: CGFloat = 0
         var offsets: [CGFloat] = []
         var pages: [[Slot]] = []
-        for book in books {
-            let thickness = book.slabThickness
+        for (book, thickness) in zip(books, thicknesses) {
             offsets.append(start + (thickness - firstThickness) / 2)
             let page = Int((start + thickness / 2) / Self.pageLength)
             while pages.count <= page { pages.append([]) }
@@ -381,31 +376,215 @@ struct WheelPose {
     }
 }
 
-/// An upright spine's cover-flow pose: spines beside the center turn toward it and close up.
-struct CoverFlowPose {
-    let angle: Angle
-    let scale: Double
-    let offset: Double
-    let brightness: Double
-    let opacity: Double
-
-    init(distance: Double, length: Double, viewport: Double) {
-        let phase = max(-1, min(1, distance / ((viewport + length) / 2)))
-        // Turns fully within about one spine's width of the center.
-        let turn = max(-1, min(1, distance / 70))
-        angle = .degrees(48 * turn)
-        // Side spines show only part of their width once turned, so they close up.
-        offset = -turn * 14 - (distance - turn * 70) * 0.28
-        scale = 1 - 0.1 * abs(phase)
-        brightness = -0.18 * abs(turn) - 0.1 * abs(phase)
-        // Gone once the spine's center leaves the viewport, which `SpineTrack` relies on.
-        let edge = min(1, abs(distance) / (viewport / 2))
-        opacity = 1 - edge * edge
-    }
-}
-
 extension CloudBook {
     /// The carousel thickness of the book's spine: `thicknessRatio`, which spans 0.05...0.2,
     /// mapped linearly onto 44...96 points, so even a short book has room for a legible title.
     var slabThickness: CGFloat { 44 + (thicknessRatio - 0.05) / 0.15 * 52 }
+
+    /// The book's upright spine on the shelf, in points: `width` is its thickness and `height`
+    /// its height, from its `BookShape` at `scale` points per decimeter.
+    ///
+    /// Heights keep the shape's proportions. Thickness grows from a floor, so a 120-page book's
+    /// spine still fits legible lettering, and a 900-page book's is a little over twice as
+    /// thick, where in life it is about five times.
+    func shelfSpineSize(scale: CGFloat) -> CGSize {
+        let size = BookShape(of: self, coverAspect: 2 / 3).size
+        return CGSize(
+            width: scale * (0.12 + 0.7 * CGFloat(size.z)), height: scale * CGFloat(size.y))
+    }
+}
+
+/// The proportions of the bookcase that Shelf draws in a scroll view `height` points tall: the
+/// front edge of the shelf above, the back panel, and the board the books stand on, whose top
+/// shows a little, as seen from just above it.
+private struct Bookcase {
+    static let topEdge: CGFloat = 14
+    static let surface: CGFloat = 12
+    static let lip: CGFloat = 18
+    /// The board's shadow on the wall below it.
+    static let drop: CGFloat = 16
+    /// The front of each side panel.
+    static let side: CGFloat = 18
+    /// Between a side panel and the nearest book.
+    static let gap: CGFloat = 6
+
+    let height: CGFloat
+
+    /// How far down the books stand: partway back on the board's top.
+    var base: CGFloat { height - Self.drop - Self.lip - Self.surface * 0.45 }
+
+    /// Points per decimeter of book: the most that lets the tallest book (`BookShape.longest`)
+    /// clear the shelf above by 20 points, up to 170, so a tall phone still shows about ten
+    /// books across.
+    var scale: CGFloat {
+        min(170, max(60, (base - Self.topEdge - 20) / CGFloat(BookShape.longest)))
+    }
+}
+
+/// The bookcase's wood around `length` points of books that start `start` points into the
+/// scroll content: a side panel at each end, and the bays between them.
+///
+/// The bays between the side panels each span one square wood tile as tall as the bookcase, so
+/// the seamless texture repeats without seams. They sit in a lazy stack, so a long shelf builds
+/// only the bays on screen.
+private struct BookcaseWood: View {
+    let bookcase: Bookcase
+    let start: CGFloat
+    let length: CGFloat
+
+    var body: some View {
+        let tile = bookcase.height
+        let inside = length + 2 * Bookcase.gap
+        let count = max(1, Int((inside / tile).rounded(.up)))
+        HStack(spacing: 0) {
+            Color.clear.frame(width: max(0, start - Bookcase.gap - Bookcase.side))
+            // Above the bays, which its shadow falls on.
+            BookcaseSide(bookcase: bookcase).zIndex(1)
+            LazyHStack(spacing: 0) {
+                ForEach(0..<count, id: \.self) { bay in
+                    BookcaseBay(
+                        bookcase: bookcase, width: min(tile, inside - CGFloat(bay) * tile))
+                }
+            }
+            BookcaseSide(bookcase: bookcase).scaleEffect(x: -1).zIndex(1)
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// A stretch of the bookcase behind and under the books, `width` points of one wood tile.
+private struct BookcaseBay: View {
+    let bookcase: Bookcase
+    let width: CGFloat
+
+    var body: some View {
+        let tile = bookcase.height
+        VStack(spacing: 0) {
+            WoodGrain(tile: tile, shade: 0.55)
+                .frame(height: Bookcase.topEdge)
+                .overlay(alignment: .bottom) {
+                    Rectangle().fill(.black.opacity(0.45)).frame(height: 1)
+                }
+            // The back panel, its grain upright, so it shows the shelf moving between the
+            // books' tops; in the shadow of the shelf above and of the board.
+            WoodGrain(tile: tile, across: false, shade: 0.72)
+                .overlay {
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black.opacity(0.6), location: 0),
+                            .init(color: .clear, location: 0.1),
+                            .init(color: .clear, location: 0.8),
+                            .init(color: .black.opacity(0.4), location: 1),
+                        ], startPoint: .top, endPoint: .bottom)
+                }
+            // The board's top, darker toward the back.
+            LinearGradient(
+                colors: [
+                    ShelfPalette.board.mix(with: .black, by: 0.55),
+                    ShelfPalette.board.mix(with: .black, by: 0.15),
+                ], startPoint: .top, endPoint: .bottom
+            )
+            .frame(height: Bookcase.surface)
+            // The board's front edge, lit along its top.
+            WoodGrain(tile: tile, shade: 0.4)
+                .overlay {
+                    LinearGradient(
+                        colors: [.white.opacity(0.06), .black.opacity(0.3)], startPoint: .top,
+                        endPoint: .bottom)
+                }
+                .overlay(alignment: .top) {
+                    Rectangle().fill(.white.opacity(0.18)).frame(height: 1)
+                }
+                .frame(height: Bookcase.lip)
+            LinearGradient(
+                colors: [.black.opacity(0.45), .clear], startPoint: .top, endPoint: .bottom
+            )
+            .frame(height: Bookcase.drop)
+        }
+        .frame(width: width, height: bookcase.height)
+    }
+}
+
+/// The front of the bookcase's left side panel, from the top to the board's front edge, with its
+/// shadow on the back panel beside it; mirror it for the right.
+private struct BookcaseSide: View {
+    let bookcase: Bookcase
+
+    var body: some View {
+        WoodGrain(tile: bookcase.height, across: false, shade: 0.5)
+            .overlay {
+                LinearGradient(
+                    colors: [.white.opacity(0.08), .clear, .black.opacity(0.35)],
+                    startPoint: .leading, endPoint: .trailing)
+            }
+            .frame(width: Bookcase.side, height: bookcase.height - Bookcase.drop)
+            .background(alignment: .trailing) {
+                LinearGradient(
+                    colors: [.black.opacity(0.5), .clear], startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: 16)
+                .offset(x: 16)
+                .padding(.vertical, Bookcase.topEdge)
+            }
+            .frame(height: bookcase.height, alignment: .top)
+    }
+}
+
+/// The table's wood texture (`TableWood`), darkened to walnut: a seamless square `tile` points
+/// wide, its grain running across unless `across` is false, under dark brown at `shade` opacity.
+///
+/// It fills the frame it is given from the tile's top-leading corner, so the frame must fit in
+/// one tile.
+private struct WoodGrain: View {
+    let tile: CGFloat
+    var across = true
+    let shade: Double
+
+    var body: some View {
+        Image("TableWood")
+            .resizable()
+            .frame(width: tile, height: tile)
+            .rotationEffect(.degrees(across ? 90 : 0))
+            .overlay { Color(red: 0.17, green: 0.085, blue: 0.035).opacity(shade) }
+            // The zero minimums let the frame shrink below the tile, which it then clips.
+            .frame(
+                minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
+                alignment: .topLeading
+            )
+            .clipped()
+    }
+}
+
+/// The soft shadow where a book of `width` points stands on the board.
+private struct ContactShadow: View {
+    let width: CGFloat
+
+    var body: some View {
+        EllipticalGradient(colors: [.black.opacity(0.6), .clear])
+            .frame(width: width + 6, height: 10)
+            .offset(y: 4)
+            .allowsHitTesting(false)
+    }
+}
+
+/// A lamp above the middle of the shelf, fixed to the screen while the books scroll under it:
+/// a warm pool of light at the top that falls off toward the screen's sides.
+private struct ShelfLamp: View {
+    var body: some View {
+        ZStack {
+            RadialGradient(
+                colors: [ShelfPalette.lamp.opacity(0.14), .clear], center: .top, startRadius: 0,
+                endRadius: 480)
+            LinearGradient(
+                stops: [
+                    .init(color: .black.opacity(0.5), location: 0),
+                    .init(color: .clear, location: 0.3),
+                    .init(color: .clear, location: 0.7),
+                    .init(color: .black.opacity(0.5), location: 1),
+                ], startPoint: .leading, endPoint: .trailing)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
 }
