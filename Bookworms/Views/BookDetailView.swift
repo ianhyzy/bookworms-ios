@@ -129,8 +129,7 @@ struct BookDetailView: View {
             book.seriesPosition.map { ("Series", "Book \($0.formatted())") },
             book.finishedDate.map { ("Finished", $0.formatted(ShelfLabels.finishedFormat)) },
             book.isReading == true ? ("Status", "Reading now") : nil,
-            // Hardcover records 0 pages for some audiobooks; the Apple TV omits those too.
-            book.pages.flatMap { $0 > 0 ? ("Pages", $0.formatted()) : nil },
+            ShelfLabels.length(of: book).map { ("Length", $0) },
             ShelfLabels.format(book.format).map { ("Format", $0) },
         ]
         .compactMap(\.self)

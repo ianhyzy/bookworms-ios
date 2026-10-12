@@ -735,4 +735,19 @@ enum ShelfLabels {
         default: format
         }
     }
+
+    /// The book's length: listening time for an audiobook when Hardcover records it, such as
+    /// "12 hr, 5 min", otherwise the page count, such as "352 pages". Returns `nil` without
+    /// either.
+    static func length(
+        of book: CloudBook, width: Duration.UnitsFormatStyle.UnitWidth = .abbreviated
+    ) -> String? {
+        if format(book.format) == "Audiobook", let seconds = book.audioSeconds, seconds > 0 {
+            return Duration.seconds(seconds)
+                .formatted(.units(allowed: [.hours, .minutes], width: width))
+        }
+        // Hardcover records 0 pages for some audiobooks; the Apple TV omits those too.
+        guard let pages = book.pages, pages > 0 else { return nil }
+        return "\(pages.formatted()) pages"
+    }
 }

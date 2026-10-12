@@ -376,13 +376,7 @@ enum ShareStyle {
         {
             parts.append("Started " + date.formatted(ShelfLabels.finishedFormat))
         }
-        if format == "Audiobook", let seconds = book.audioSeconds, seconds > 0 {
-            parts.append(
-                Duration.seconds(seconds)
-                    .formatted(.units(allowed: [.hours, .minutes], width: .narrow)))
-        } else if let pages = book.pages, pages > 0 {
-            parts.append("\(pages.formatted()) pages")
-        }
+        if let length = ShelfLabels.length(of: book, width: .narrow) { parts.append(length) }
         return parts.joined(separator: " · ")
     }
 }
