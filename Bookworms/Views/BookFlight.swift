@@ -354,11 +354,17 @@ final class BookLifter {
     }
 
     /// Turns the lifted book to `pose` at once, as a drag turns the details' own book.
+    ///
+    /// The book takes new materials only when a face's shade changes by a level of 8-bit color,
+    /// since the details' slow drift turns it a little on every frame.
     func turn(_ pose: BookPose) {
         guard let lifted, lifted.turn != pose else { return }
         self.lifted?.turn = pose
         fly()
-        redraw()
+        func levels(_ pose: BookPose) -> [Float] {
+            BookFlight.shades(of: lifted.size, at: pose).map { ($0 * 255).rounded() }
+        }
+        if levels(pose) != levels(lifted.turn) { redraw() }
     }
 
     /// Gives the lifted book textures as sharp as the details' own book at `scale` pixels per

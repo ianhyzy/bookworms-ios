@@ -293,7 +293,8 @@ private struct ShelfPullOutLayer: View {
                     // The return starts from the pose on screen and ignores the rest of a coast,
                     // which could otherwise carry the book past a fore-edge-on pose and flip the
                     // spine it turns back to.
-                    turn: { [pullOut] in if !pullOut.isReturning { pullOut.pose = $0 } })
+                    turn: { [pullOut] in if !pullOut.isReturning { pullOut.pose = $0 } },
+                    hasLanded: pullOut.showsText)
             )
             .scrollEdgeEffectHidden()
             .opacity(pullOut.showsText ? 1 : 0)
@@ -306,12 +307,14 @@ private struct ShelfPullOutLayer: View {
                 .frame(width: 20)
                 .contentShape(.rect)
                 .gesture(
-                    DragGesture(minimumDistance: 12).onEnded { drag in
-                        let width = max(drag.translation.width, drag.predictedEndTranslation.width)
-                        if width > 80, drag.translation.width > abs(drag.translation.height) {
-                            pullOut.putBack()
+                    DragGesture(minimumDistance: 12)
+                        .onEnded { drag in
+                            let width = max(
+                                drag.translation.width, drag.predictedEndTranslation.width)
+                            if width > 80, drag.translation.width > abs(drag.translation.height) {
+                                pullOut.putBack()
+                            }
                         }
-                    }
                 )
                 .allowsHitTesting(pullOut.showsText)
                 .accessibilityHidden(true)

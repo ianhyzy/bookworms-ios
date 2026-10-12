@@ -172,6 +172,38 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(settled.pitch, -0.12, accuracy: 0.01)
     }
 
+    func testDriftEasesInFromRestThenFloatsAtFullAmplitude() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let drift = Drift(start: start)
+        func offset(_ seconds: Double) -> (translation: CGSize, yaw: Double) {
+            drift.offset(at: start.addingTimeInterval(seconds))
+        }
+        // No offset at arrival or before it, and no velocity: the book leaves its pose smoothly.
+        for seconds in [-1.0, 0] {
+            XCTAssertEqual(offset(seconds).translation, .zero)
+            XCTAssertEqual(offset(seconds).yaw, 0)
+        }
+        let step = 0.01
+        XCTAssertEqual(offset(step).translation.width / step, 0, accuracy: 1e-4)
+        XCTAssertEqual(offset(step).translation.height / step, 0, accuracy: 1e-4)
+        XCTAssertEqual(offset(step).yaw / step, 0, accuracy: 1e-6)
+        // From the end of the ramp, each wave reaches its full amplitude a quarter period in.
+        XCTAssertEqual(offset(10).translation.height, -Drift.verticalAmplitude, accuracy: 1e-9)
+        XCTAssertEqual(offset(12).translation.width, Drift.horizontalAmplitude, accuracy: 1e-9)
+        XCTAssertEqual(offset(15).yaw, Drift.swayAmplitude, accuracy: 1e-12)
+        XCTAssertEqual(
+            offset(Drift.rampDuration).translation.height,
+            -Drift.verticalAmplitude * sin(2 * .pi * Drift.rampDuration / 40), accuracy: 1e-9)
+        // It moves noticeably within ten seconds, and never past its amplitudes.
+        XCTAssertGreaterThan(abs(offset(6).translation.height), 10)
+        for seconds in stride(from: 0.0, through: 240, by: 0.25) {
+            let sample = offset(seconds)
+            XCTAssertLessThanOrEqual(abs(sample.translation.width), Drift.horizontalAmplitude)
+            XCTAssertLessThanOrEqual(abs(sample.translation.height), Drift.verticalAmplitude)
+            XCTAssertLessThanOrEqual(abs(sample.yaw), Drift.swayAmplitude)
+        }
+    }
+
     /// The size `pose` draws a book at on screen, before its roll: its projected bounds, scaled.
     private func drawnSize(_ pose: PullOutPath.Pose, aspect: CGFloat) -> CGSize {
         let projection = BookProjection(
