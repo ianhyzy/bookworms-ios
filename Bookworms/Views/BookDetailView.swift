@@ -1,7 +1,9 @@
 import SwiftUI
 
-/// A book's details: a 3D model to turn with a drag, its reading record, its spine design, and
-/// **Change cover**.
+/// A book's details: a 3D model to turn with a drag and its title, over three tabs that switch
+/// only the content below them: **Details** (facts about the book and **Change cover**),
+/// **Journal** (the reader's reading dates, progress, and review), and **Spine** (the spine's
+/// design and colors).
 ///
 /// With a `HostedBook`, the details draw no book, backdrop, or **Share** button of their own: a
 /// transparent stand-in takes the book's place and turns as it would, the host draws the book
@@ -23,11 +25,22 @@ struct BookDetailView: View {
     /// The chosen cover the shown spine design comes from, as far as this screen knows: the
     /// cover when the details opened, then the cover when a new design arrives.
     @State private var designedCover: URL?
+    @State private var tab = DetailTab.details
+    /// The scroll view's visible height, which every tab's content fills at least, so switching
+    /// to a shorter tab never scrolls the book.
+    @State private var viewport: CGFloat = 0
 
     init(book: CloudBook, hostedBook: HostedBook? = nil) {
         opened = book
         self.hostedBook = hostedBook
         _designedCover = State(initialValue: book.chosenCoverURL)
+        #if DEBUG
+            // `-BookwormsDetailTab <details|journal|spine>` opens that tab, for Simulator checks.
+            let debugTab = UserDefaults.standard.string(forKey: "BookwormsDetailTab")
+            if let debugTab, let tab = DetailTab(rawValue: debugTab) {
+                _tab = State(initialValue: tab)
+            }
+        #endif
     }
 
     private var book: CloudBook { model.books.first { $0.id == opened.id } ?? opened }
@@ -40,16 +53,20 @@ struct BookDetailView: View {
             VStack(spacing: 24) {
                 TurningBook(book: book, look: look, cover: cover, host: hostedBook)
                 header
-                Button("Change cover", systemImage: "photo.on.rectangle") { choosesCover = true }
-                    .buttonStyle(.bordered)
-                if design != nil, book.chosenCoverURL != designedCover {
-                    redesignCard
+                Picker("Section", selection: $tab) {
+                    ForEach(DetailTab.allCases) { Text($0.title).tag($0) }
                 }
-                record
-                designCard(look: look, design: design)
+                .pickerStyle(.segmented)
+                tabContent(look: look, design: design)
+                    .frame(maxWidth: .infinity, minHeight: viewport, alignment: .top)
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 24)
+        }
+        .onScrollGeometryChange(for: CGFloat.self) {
+            $0.containerSize.height
+        } action: {
+            viewport = $1
         }
         .background {
             if hostedBook == nil { ShelfPalette.wall.ignoresSafeArea() }
@@ -68,8 +85,12 @@ struct BookDetailView: View {
         .sheet(isPresented: $choosesCover) {
             // The shelf sets a dark scheme for its walnut backdrop, which the sheet's content
             // inherits; the sheet's own background must match it to keep text readable.
-            CoverPickerView(book: book) { coverChangedAt = .now }
-                .preferredColorScheme(.dark)
+            // A new cover can call for a new spine, so the **Spine** tab shows its offer.
+            CoverPickerView(book: book) {
+                coverChangedAt = .now
+                if design != nil { tab = .spine }
+            }
+            .preferredColorScheme(.dark)
         }
         #if DEBUG
             .onAppear { if CoverPickerDebug.opensPicker { choosesCover = true } }
@@ -124,15 +145,88 @@ struct BookDetailView: View {
         .foregroundStyle(ShelfPalette.paper)
     }
 
-    @ViewBuilder private var record: some View {
-        let rows: [(String, String)] = [
+    @ViewBuilder
+    private func tabContent(look: SpineLook, design: SpineDesignV1?) -> some View {
+        switch tab {
+        case .details:
+            VStack(spacing: 24) {
+                Button("Change cover", systemImage: "photo.on.rectangle") { choosesCover = true }
+                    .buttonStyle(.bordered)
+                rows(facts)
+            }
+        case .journal:
+            journal
+        case .spine:
+            VStack(spacing: 24) {
+                if design != nil, book.chosenCoverURL != designedCover { redesignCard }
+                designCard(look: look, design: design)
+            }
+        }
+    }
+
+    /// Facts about the book itself, as Hardcover records them.
+    private var facts: [(String, String)] {
+        let genres = (book.genres ?? []).prefix(3).joined(separator: ", ")
+        return [
             book.seriesPosition.map { ("Series", "Book \($0.formatted())") },
-            book.finishedDate.map { ("Finished", $0.formatted(ShelfLabels.finishedFormat)) },
-            book.isReading == true ? ("Status", "Reading now") : nil,
+            book.publicationYear.map { ("Published", String($0)) },
             ShelfLabels.length(of: book).map { ("Length", $0) },
             ShelfLabels.format(book.format).map { ("Format", $0) },
+            genres.isEmpty ? nil : ("Genres", genres),
+            book.communityRating.flatMap { rating in
+                guard rating > 0, let count = book.ratingsCount, count > 0 else { return nil }
+                let average = rating.formatted(.number.precision(.fractionLength(1)))
+                return ("Readers' rating", "\(average) from \(count.formatted()) ratings")
+            },
         ]
         .compactMap(\.self)
+    }
+
+    /// The reader's own record of the book: when they read it, how far they are, and their
+    /// review, all from their reading service.
+    @ViewBuilder private var journal: some View {
+        let started = book.startedDate
+        let finished = book.finishedDate
+        let progress = book.isReading == true ? book.progress : nil
+        let entries: [(String, String)] = [
+            book.isReading == true
+                ? (
+                    "Status",
+                    progress.map {
+                        "Reading now, \($0.formatted(.percent.precision(.fractionLength(0))))"
+                    } ?? "Reading now"
+                )
+                : nil,
+            started.map { ("Started", $0.formatted(ShelfLabels.finishedFormat)) },
+            finished.map { ("Finished", $0.formatted(ShelfLabels.finishedFormat)) },
+            ShelfLabels.readingTime(from: started, to: finished).map { ("Reading time", $0) },
+        ]
+        .compactMap(\.self)
+        let review = book.review?.trimmingCharacters(in: .whitespacesAndNewlines)
+        VStack(spacing: 24) {
+            rows(entries)
+            if let review, !review.isEmpty {
+                Card {
+                    Text("Your review").font(.headline)
+                    Text(review)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            } else {
+                Text(
+                    entries.isEmpty
+                        ? "Your reading dates and review from Hardcover appear here."
+                        : "A review you write on Hardcover appears here."
+                )
+                .font(.footnote)
+                .foregroundStyle(cardNote)
+                .multilineTextAlignment(.center)
+            }
+        }
+    }
+
+    /// Labeled values on a card, or nothing without any.
+    @ViewBuilder private func rows(_ rows: [(String, String)]) -> some View {
         if !rows.isEmpty {
             Card {
                 ForEach(rows, id: \.0) { row in
@@ -155,6 +249,16 @@ struct BookDetailView: View {
     private func designCard(look: SpineLook, design: SpineDesignV1?) -> some View {
         SpineDesignCard(book: book, look: look, design: design)
     }
+}
+
+/// The parts of a book's details that the tabs under its title switch between.
+enum DetailTab: String, CaseIterable, Identifiable {
+    case details
+    case journal
+    case spine
+
+    var id: Self { self }
+    var title: String { rawValue.capitalized }
 }
 
 /// The 3D book's orientation, in radians.

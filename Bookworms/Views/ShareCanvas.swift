@@ -371,9 +371,7 @@ enum ShareStyle {
         // Dates are calendar days at noon UTC; the format keeps UTC so they show the recorded day.
         if !isReading, let date = book.finishedDate {
             parts.append(date.formatted(ShelfLabels.finishedFormat))
-        } else if let started = book.started, started.count >= 10,
-            let date = try? Date(String(started.prefix(10)) + "T12:00:00Z", strategy: .iso8601)
-        {
+        } else if let date = book.startedDate {
             parts.append("Started " + date.formatted(ShelfLabels.finishedFormat))
         }
         if let length = ShelfLabels.length(of: book, width: .narrow) { parts.append(length) }

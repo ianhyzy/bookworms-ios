@@ -736,6 +736,14 @@ enum ShelfSort: String, CaseIterable, Identifiable {
     }
 }
 
+extension CloudBook {
+    /// The start date of the current or last read, parsed at noon UTC like `finishedDate`.
+    var startedDate: Date? {
+        guard let started, started.count >= 10 else { return nil }
+        return try? Date(String(started.prefix(10)) + "T12:00:00Z", strategy: .iso8601)
+    }
+}
+
 /// Display text for book and design fields.
 enum ShelfLabels {
     /// Finish dates are calendar days stored at noon UTC, so they format in UTC to keep the day.
@@ -751,6 +759,18 @@ enum ShelfLabels {
         case "both": "Physical & audiobook"
         default: format
         }
+    }
+
+    /// How long the reader took, counting both the start and finish days, such as "12 days".
+    /// Returns `nil` without both dates or when they are out of order.
+    static func readingTime(from started: Date?, to finished: Date?) -> String? {
+        guard let started, let finished, started <= finished else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .gmt
+        guard let days = calendar.dateComponents([.day], from: started, to: finished).day else {
+            return nil
+        }
+        return days == 0 ? "1 day" : "\((days + 1).formatted()) days"
     }
 
     /// The book's length: listening time for an audiobook when Hardcover records it, such as
