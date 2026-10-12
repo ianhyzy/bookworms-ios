@@ -86,6 +86,30 @@ enum DominoLayout {
     /// The gap from a book's back cover to the next book's front cover, as a share of the
     /// first book's height.
     static let spacing: Float = 0.3
+    /// How long a book takes to drop into its place as the chain stands up, in seconds.
+    static let entryFall: TimeInterval = 0.35
+    /// How long a cobweb takes to fade in once the book behind it lands, in seconds.
+    static let webFade: TimeInterval = 0.25
+    /// The latest a book of the chain starts its drop after the first, in seconds.
+    static let entrySpread: TimeInterval = 1.2
+
+    /// The seconds from one book's drop to the next one's down a chain of `count` books: 0.05, or
+    /// less in a chain too long for that, so every drop starts within `entrySpread` of the first.
+    static func entryStep(count: Int) -> TimeInterval {
+        min(0.05, entrySpread / Double(max(count - 1, 1)))
+    }
+
+    /// The seconds from one drop to the next in a batch of `batch` books of a chain of `count`,
+    /// built `interval` seconds after the batch before it: `entryStep(count:)`, or the interval
+    /// shared among the batch's books when that is longer, up to 0.05. A slowly built batch
+    /// thus drops one book after another over about the time it took, instead of all at once
+    /// and then a pause, while a chain built at once still drops within `entrySpread`. The
+    /// first batch's `interval` runs from when setting up began, so a new chain's first batch,
+    /// which also waits for its covers and the room's light, usually drops 0.05 seconds apart,
+    /// and the next batch builds while it drops.
+    static func entryStep(count: Int, batch: Int, interval: TimeInterval) -> TimeInterval {
+        max(entryStep(count: count), min(0.05, interval / Double(max(batch, 1))))
+    }
 
     /// The gap from the back cover of a book of `height` to the next book's front cover on a
     /// row: `spacing` times the height, whatever the days between their finishes.
@@ -323,6 +347,10 @@ final class DominoStatus {
 /// places it, and a cobweb (`Cobweb`) between each pair of books whose finishes lie
 /// `DominoLayout.cobwebDays` or more apart.
 ///
+/// As the chain stands up, its books drop one after another down the path from above the top
+/// of the view onto their places, and each cobweb fades in once the book behind it lands. With
+/// Reduce Motion on, they appear standing. The chain waits for a push once every book stands.
+///
 /// The chain's front is the book after the last one that tilted past about 26 degrees. Each
 /// frame checks only the next three books, so the work per frame does not grow with the
 /// chain, and a book that the chain skips counts as passed. A book that falls before the first
@@ -361,6 +389,8 @@ final class DominoScene {
     /// Haptics and sounds for collisions, which `DominoesView` starts and stops.
     let feedback = ImpactFeedback()
     let status = DominoStatus()
+    /// Set from a new chain's plan until its first books start to drop in (see `planSetUp`).
+    let loading = SceneLoading()
     /// The flight of a book lifted to its details.
     let lifter: BookLifter
 
@@ -472,6 +502,12 @@ final class DominoScene {
         (start: PileCamera, focus: SIMD3<Float>, pinches: Bool, translation: CGSize)?
     private var updates: EventSubscription?
     private var collisions: EventSubscription?
+    /// The books dropping into their places, in chain order (see `enter(by:)`).
+    private var entering: [Entry] = []
+    /// Seconds of frames since the scene was attached, which time the books' drops, and when the
+    /// latest drop starts.
+    private var entryClock: TimeInterval = 0
+    private var lastEntry = -TimeInterval.infinity
     /// The index of the book in flight, while one flies.
     private var flying: Int?
     /// While a book flies, the view the camera rises from, until **Back** returns the book to
@@ -481,6 +517,19 @@ final class DominoScene {
     private struct Key: Equatable {
         let ids: [Int]
         let generation: Int
+    }
+
+    /// A book dropping into its place as the chain stands up.
+    private struct Entry {
+        /// The book's index in the chain.
+        let book: Int
+        /// When the drop starts, on `entryClock`.
+        let start: TimeInterval
+        /// The cobweb between the book and the one before it, which fades in once it lands.
+        let web: Entity?
+        /// The height the book's middle drops from, set as the drop starts.
+        var height: Float?
+        var landed = false
     }
 
     /// A view to blend from: one that holds still, or a camera mode's, which moves on.
@@ -563,7 +612,8 @@ final class DominoScene {
         if !blends { handoff = nil }
     }
 
-    private var isReady: Bool { !plan.isEmpty && spawned == plan.count }
+    /// Whether every book stands in its place, so the chain can start.
+    private var isReady: Bool { !plan.isEmpty && spawned == plan.count && entering.isEmpty }
 
     // MARK: Setting up
 
@@ -574,13 +624,19 @@ final class DominoScene {
     /// order, does not matter. A new chain or generation removes every book, frames the whole
     /// path between the bars of `viewport`, and lays the lamp's pool over it. Books stand up
     /// `batchSize` at a time, each batch waiting at most `coverWait` for its covers and then
-    /// for its cobwebs' meshes. Returns when every book stands or the task is cancelled.
+    /// for its cobwebs' meshes, and the first batch also for the room's light. Each book then
+    /// drops into its place from above the view (see `spawn`). `loading` is set until the first
+    /// batch starts to drop. Returns when every book is built or the task is cancelled; the
+    /// chain waits for a push once the last book has landed.
     func setUp(_ books: [CloudBook], generation: Int, viewport: PileViewport, model: AppModel)
         async
     {
         guard planSetUp(books, generation: generation, viewport: viewport), let key else {
             return
         }
+        // When the batch before was built, or this call began, on `entryClock`, which paces
+        // the drops.
+        var built = entryClock
         while spawned < plan.count {
             let end = min(spawned + Self.batchSize, plan.count)
             let batch = plan[spawned..<end]
@@ -590,12 +646,23 @@ final class DominoScene {
                 coverWait: Self.coverWait, model: model)
             guard !Task.isCancelled, self.key == key else { return }
             let cobwebs = await makeCobwebs(before: batch)
+            // Keeps the first books until the room's light is ready, so they enter lit.
+            if spawned == 0 { await stage.lit() }
             guard !Task.isCancelled, self.key == key else { return }
-            for slot in batch { spawn(slot, cobweb: cobwebs[slot.book.id]) }
+            let step = DominoLayout.entryStep(
+                count: plan.count, batch: batch.count, interval: entryClock - built)
+            built = entryClock
+            for slot in batch { spawn(slot, cobweb: cobwebs[slot.book.id], step: step) }
             spawned = end
+            if loading.isLoading { loading.isLoading = false }
         }
         if rig == nil { rig = makeRig() }
         #if DEBUG
+            // The hooks start once every book stands.
+            while !Task.isCancelled, self.key == key, !isReady {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            guard !Task.isCancelled, self.key == key else { return }
             showDebugCobweb()
             await runDebugPushes()
         #endif
@@ -624,6 +691,7 @@ final class DominoScene {
         light(radius: max(6, simd_length(plan.extent) + 3))
         frame(plan, in: viewport)
         self.key = key
+        loading.isLoading = !plan.slots.isEmpty
         return true
     }
 
@@ -654,6 +722,8 @@ final class DominoScene {
         farthest = 0
         cameraMove = nil
         lifter.reset()
+        entering = []
+        lastEntry = -.infinity
         flying = nil
         flightViews = nil
         mark(nil)
@@ -746,10 +816,15 @@ final class DominoScene {
     }
 
     /// Stands the book of `slot`, with `cobweb` hanging between it and the book before it.
-    private func spawn(_ slot: DominoSlot, cobweb: HangingCobweb?) {
+    ///
+    /// Unless Reduce Motion is on, the book waits out of sight for its turn to drop into its
+    /// place, `step` seconds after the book before it, and its cobweb waits unseen for it to
+    /// land (see `enter(by:)`).
+    private func spawn(_ slot: DominoSlot, cobweb: HangingCobweb?, step: TimeInterval) {
+        let enters = !reducesMotion
         guard
             let book = factory.makeBook(
-                slot.book.id, mode: .dynamic, lighting: stage.lighting,
+                slot.book.id, mode: enters ? .kinematic : .dynamic, lighting: stage.lighting,
                 mass: DominoLayout.mass(height: slot.size.y))
         else { return }
         book.transform = DominoLayout.standingPose(of: slot)
@@ -757,11 +832,76 @@ final class DominoScene {
         indices[book.id] = books.count
         books.append(book)
         slots.append(slot)
-        guard var cobweb, books.count > 1 else { return }
-        cobweb.book = books.count - 2
-        shelf.addChild(cobweb.root)
-        cobwebs.append(cobweb)
-        status.cobwebs += 1
+        var web: Entity?
+        if var cobweb, books.count > 1 {
+            cobweb.book = books.count - 2
+            shelf.addChild(cobweb.root)
+            cobwebs.append(cobweb)
+            status.cobwebs += 1
+            web = cobweb.root
+        }
+        guard enters else { return }
+        book.isEnabled = false
+        web?.components.set(OpacityComponent(opacity: 0))
+        let start = max(entryClock, lastEntry + step)
+        lastEntry = start
+        entering.append(Entry(book: books.count - 1, start: start, web: web))
+    }
+
+    /// Moves the entering books on by `deltaTime`. Each book, at its turn, appears with its middle
+    /// just far enough above the top of the view as it shows then that the whole book is out of
+    /// it, and drops straight down onto its place, speeding up as a falling book does, over
+    /// `DominoLayout.entryFall`. It is kinematic while it drops, so it pushes nothing, and stands
+    /// as a dynamic body once it lands, at rest. Its cobweb then fades in over
+    /// `DominoLayout.webFade`.
+    private func enter(by deltaTime: TimeInterval) {
+        entryClock += deltaTime
+        for index in entering.indices {
+            let time = entryClock - entering[index].start
+            // Drops start in chain order.
+            guard time >= 0 else { break }
+            let entry = entering[index]
+            if !entry.landed {
+                let book = books[entry.book]
+                let place = DominoLayout.standingPose(of: slots[entry.book])
+                let height = entry.height ?? dropHeight(of: slots[entry.book])
+                let share = Float(min(1, time / DominoLayout.entryFall))
+                book.transform = Transform(
+                    rotation: place.rotation,
+                    translation: [
+                        place.translation.x,
+                        height + (place.translation.y - height) * share * share,
+                        place.translation.z,
+                    ])
+                book.isEnabled = true
+                entering[index].height = height
+                guard share == 1 else { continue }
+                book.components[PhysicsBodyComponent.self]?.mode = .dynamic
+                book.components.set(PhysicsMotionComponent())
+                entering[index].landed = true
+            }
+            let fade = (time - DominoLayout.entryFall) / DominoLayout.webFade
+            if fade < 1 {
+                entry.web?.components.set(OpacityComponent(opacity: Float(max(0, fade))))
+            } else {
+                entry.web?.components.remove(OpacityComponent.self)
+            }
+        }
+        entering.removeAll {
+            $0.landed && entryClock - $0.start >= DominoLayout.entryFall + DominoLayout.webFade
+        }
+    }
+
+    /// The height from which the book of `slot` drops: its middle just far enough above the top
+    /// of the view as it shows that the whole book, at the widest cover, is out of view, or its
+    /// place when that lies out of view already.
+    private func dropHeight(of slot: DominoSlot) -> Float {
+        let place = DominoLayout.standingPose(of: slot).translation.y
+        let size = SIMD3(DominoLayout.widest(slot.size.y), slot.size.y, slot.size.z)
+        let above = PileCamera.heightAboveView(
+            of: slot.position, radius: simd_length(size) / 2, seenFrom: camera.transform)
+        // A view whose top looks level or up shows every height; the book drops from high.
+        return max(place, above ?? place + 30)
     }
 
     /// The cobwebs to hang in front of the books of `batch`, by the ID of the book behind each
@@ -817,9 +957,12 @@ final class DominoScene {
     }
 
     /// The ID of any book under `point`, in a view of `size`, the marked book's on `hitBox`,
-    /// or `nil` for the table, for a touch and hold.
+    /// or `nil` for the table, for a touch and hold. Returns `nil` until every book stands,
+    /// since `lift(_:)` cannot lift a book before then, and a touch and hold would otherwise
+    /// push the details.
     func bookID(at point: CGPoint, in size: CGSize) -> Int? {
-        book(at: point, in: size).map { slots[$0].book.id }
+        guard isReady else { return nil }
+        return book(at: point, in: size).map { slots[$0].book.id }
     }
 
     /// The index of the book under `point`, in a view of `size`, the marked book's on
@@ -962,6 +1105,7 @@ final class DominoScene {
             updateCamera(Float(deltaTime))
             updateFlight(deltaTime)
         }
+        enter(by: deltaTime)
         guard isReady else { return }
         clock += deltaTime
         for index in next..<min(next + 3, books.count) where upright(index) < Self.fallenTilt {

@@ -94,6 +94,23 @@ struct PileCamera: Equatable {
         return min(1, max(-1, x)) * 0.8
     }
 
+    /// The least height at which a ball of `radius` over `point`, given as x and z on the table,
+    /// lies wholly above the top of the view of a camera at `camera`, with this camera's field
+    /// of view; or `nil` when the top of the view does not slope down, so no height clears it.
+    ///
+    /// The top of the view is the plane through the camera along the view's top edge. Its
+    /// outward normal is the camera's up axis tipped back by half the field of view.
+    static func heightAboveView(
+        of point: SIMD2<Float>, radius: Float, seenFrom camera: Transform
+    ) -> Float? {
+        let half = fieldOfView / 2
+        let normal = camera.rotation.act([0, cos(half), sin(half)])
+        guard normal.y > 0.05 else { return nil }
+        let eye = camera.translation
+        let across = normal.x * (point.x - eye.x) + normal.z * (point.y - eye.z)
+        return eye.y + (radius - across) / normal.y
+    }
+
     /// This camera moved `fraction` of the way to `other`.
     func mixed(with other: PileCamera, _ fraction: Float) -> PileCamera {
         PileCamera(
@@ -209,12 +226,23 @@ enum PileLayout {
     static let gravity: Float = 55
     static let waveSize = 16
     /// The least time from one wave to the next. It lets the previous wave's highest books
-    /// fall below the next wave's lowest cells before those books start.
-    static let waveInterval = Duration.milliseconds(800)
-    static let spawnHeight: Float = 9
-    /// Above the highest start a drop plan gives, with room for a book lifted over others (see
-    /// `dropPlan`), and below the walls' tops.
-    static let ceiling: Float = 28
+    /// fall below the next wave's lowest cells, under `airDrag`, before those books start.
+    static let waveInterval = Duration.milliseconds(950)
+    /// The linear damping of a live drop's falling books, as air drag, until they first touch
+    /// something. A drop starts out of view, high above the table (see `spawnHeight(over:)`).
+    /// Drag lands its books at 37 to 41 units a second, about as fast as a drop of 9 to 20
+    /// units without drag, so about nine in ten land front cover up. Without drag they land at
+    /// 51 to 62 units a second, and about twice as many land face down.
+    static let airDrag: Float = 1
+    /// Above the highest start a drop plan gives on an iPhone, with room for a book lifted over
+    /// others (see `dropPlan`). The walls reach it.
+    static let ceiling: Float = 44
+    /// Half the largest book's diagonal, 3.72 units, and a little more: a book whose middle lies
+    /// this far outside the view is wholly out of it.
+    static let entryClearance: Float = 1.9
+    /// How long after the last wave the box of **Phone is the box** closes: longer than a book
+    /// takes to fall from the ceiling under `airDrag`, so none is still in the air.
+    static let boxDelay = Duration.seconds(2.5)
     /// Half the longest book's length (`BookShape.longest`) plus a little, which keeps a new
     /// book clear of the walls.
     static let reach: Float = 1.5
@@ -244,7 +272,56 @@ enum PileLayout {
     static let lyingFlat = simd_quatf(
         simd_float3x3(columns: ([0, 0, -1], [-1, 0, 0], [0, 1, 0])))
 
-    /// Drop poses above the tray, in waves of `waveSize` books, from `spawnHeight` up.
+    /// The height from which a drop over `tray` starts: low enough to fall soon, and high enough
+    /// that every book starts wholly out of view, by `entryClearance`, and falls in past the top
+    /// of the screen, however the reader has turned or zoomed the camera.
+    ///
+    /// The top of the view is the plane through the camera along the view's top edge. It slopes
+    /// down by the camera's pitch less half the field of view. A camera `distance` from its target
+    /// sees a point `d` across the table from the target, on the side toward the camera, above
+    /// that plane at heights over (`distance` × sin(half the field of view) + `d` × sin(slope)) /
+    /// cos(slope). Turning can put any point of the tray on that side. Zooming in brings the
+    /// camera nearer, and lets the target move toward the tray's edges (see
+    /// `BookPileScene.moveCamera`), so `d` can grow by the target's reach. The height is linear
+    /// in 1 / zoom, so it is largest at one end of the zoom range.
+    static func spawnHeight(over tray: PileTray) -> Float {
+        let half = PileCamera.fieldOfView / 2
+        let slope = PileCamera.pitch - half
+        let farthest = tray.corners.map { simd_length(SIMD2($0.x, $0.z)) }.max() ?? 0
+        let reach = simd_length(SIMD2(tray.farHalfWidth, max(-tray.farZ, tray.nearZ)))
+        return [PileCamera.zoomRange.lowerBound, PileCamera.zoomRange.upperBound]
+            .map { zoom in
+                let distance = PileCamera.distance / zoom
+                let across = farthest + reach * (1 - 1 / zoom)
+                return (distance * sin(half) + entryClearance + across * sin(slope)) / cos(slope)
+            }
+            .max() ?? 0
+    }
+
+    /// The seconds until the first of the books starting at `slots` can show in `camera`'s
+    /// view: the least time one takes to fall, from rest under `gravity` and `airDrag`, until
+    /// its middle comes within `entryClearance` of the plane along the view's top edge.
+    static func entryDelay(of slots: some Sequence<PileSlot>, seenBy camera: PileCamera)
+        -> TimeInterval
+    {
+        // The top plane's normal, pointing away from what the view shows.
+        let half = PileCamera.fieldOfView / 2
+        let normal = camera.rotation.act(SIMD3(0, cos(half), sin(half)))
+        let eye = camera.transform.translation
+        let drop =
+            slots.map {
+                (simd_dot(normal, $0.transform.translation - eye) - entryClearance) / normal.y
+            }
+            .min() ?? 0
+        // A fall under drag has no closed-form time for a distance, so this steps through it.
+        var time: Float = 0
+        while gravity / airDrag * (time - (1 - exp(-airDrag * time)) / airDrag) < drop {
+            time += 0.01
+        }
+        return TimeInterval(time)
+    }
+
+    /// Drop poses above the tray, in waves of `waveSize` books, from `spawnHeight(over:)` up.
     ///
     /// Each wave fills a 2 × 8 grid of cells once, in a shuffled order. Cells start at six
     /// heights 2.2 units apart, repeating every three rows, so books in a wave start spread out.
@@ -262,6 +339,7 @@ enum PileLayout {
     ) -> [PileSlot] {
         let columns = 2
         let rows = waveSize / columns
+        let base = spawnHeight(over: tray)
         var order: [Int] = []
         var slots = books.enumerated()
             .map { index, book in
@@ -281,7 +359,7 @@ enum PileLayout {
                     + max(0, tray.nearZ - tray.farZ - 2 * reach) * (depth - 0.5)
                 let across = (Float(column) + 0.2 + 0.6 * random(3)) / Float(columns) * 2 - 1
                 let x = across * max(0, tray.halfWidth(at: z) - reach)
-                let y = spawnHeight + Float((row % 3) * 2 + column) * 2.2 + random(4) * 0.4
+                let y = base + Float((row % 3) * 2 + column) * 2.2 + random(4) * 0.4
                 let axis = random(5) * 2 * .pi
                 let tumble = simd_quatf(
                     angle: (random(6) - 0.5) * 2 * tumble, axis: [cos(axis), 0, sin(axis)])
@@ -486,8 +564,11 @@ enum PileLayout {
 ///
 /// Books arrive a wave at a time. Each wave waits for its own fonts and textures, and at most
 /// `coverWait` for its covers, so the first books fall within a second or two while later
-/// covers download. A new drop reuses the parts of books whose look has not changed. While the
-/// view shows the scene, collisions play taps and sounds through `feedback`.
+/// covers download. `loading` is set until a new pile's first wave, which also waits for the
+/// room's light, falls. Every falling book starts out of view (`PileLayout.spawnHeight(over:)`)
+/// and falls in past the top of the screen. A new drop reuses the parts of books whose look has
+/// not changed. While the view shows the scene, collisions play taps and sounds through
+/// `feedback`.
 ///
 /// While it follows motion (`setTilt`), the pile tilts as `PileTilt` says, and a hard shake
 /// throws the books. In **Phone is the box**, the box's walls and glass (`PileBox`) close once
@@ -511,6 +592,8 @@ final class BookPileScene {
     let camera = PerspectiveCamera()
     /// Haptics and sounds for collisions, which `BookPileView` starts and stops.
     let feedback = ImpactFeedback()
+    /// Set from a new pile's plan until its first books fall (see `planDrop`).
+    let loading = SceneLoading()
     private let factory: BookFactory
     private let stage = DeskStage()
     private let shelf = Entity()
@@ -525,6 +608,9 @@ final class BookPileScene {
     private var spawned = 0
     private var lastWave = ContinuousClock.now
     private var bookIDs: [Entity.ID: Int] = [:]
+    /// The books of a live drop that have not yet touched anything, with their damping before
+    /// `PileLayout.airDrag`.
+    private var falling: [Entity.ID: Float] = [:]
     private var drag: Drag?
     /// Whether the books stand still in tidy stacks, as kinematic bodies. Picking up a book
     /// frees only that book and the books resting on it. Tall stacks of uneven books can slip
@@ -605,7 +691,10 @@ final class BookPileScene {
             self?.update(event.deltaTime)
         }
         collisions = content.subscribe(to: CollisionEvents.Began.self) { [weak self] event in
-            guard let self, !lifter.handle(event) else { return }
+            guard let self else { return }
+            land(event.entityA)
+            land(event.entityB)
+            guard !lifter.handle(event) else { return }
             feedback.collide(event, pan: pan)
         }
     }
@@ -668,8 +757,9 @@ final class BookPileScene {
             // Two units thick and long enough to close the corners, so a thrown book cannot
             // slip between walls.
             add(
-                .generateBox(width: 2, height: 30, depth: simd_length(along) + 4),
-                at: (start + end) / 2 + outward + [0, 15, 0], yaw: atan2(along.x, along.z))
+                .generateBox(width: 2, height: PileLayout.ceiling, depth: simd_length(along) + 4),
+                at: (start + end) / 2 + outward + [0, PileLayout.ceiling / 2, 0],
+                yaw: atan2(along.x, along.z))
         }
         add(.generateBox(width: 90, height: 2, depth: 90), at: [0, PileLayout.ceiling + 1, 0])
         return walls
@@ -722,6 +812,7 @@ final class BookPileScene {
                 }
             self.periods = groups
             holdsStill = false
+            loading.isLoading = !plan.isEmpty
         } else {
             reset(keeping: Set(key.ids))
             plan =
@@ -729,6 +820,7 @@ final class BookPileScene {
                 ? PileLayout.stackPlan(books, in: tray)
                 : PileLayout.dropPlan(books, in: tray, seed: UInt64(generation))
             holdsStill = tidy
+            loading.isLoading = !plan.isEmpty
         }
         planKey = key
         // Opens the box before the new books spawn above it.
@@ -749,6 +841,7 @@ final class BookPileScene {
         _ books: [CloudBook], tidy: Bool, periods: TimeFrame? = nil, generation: Int,
         viewport: PileViewport, model: AppModel
     ) async {
+        let began = ContinuousClock.now
         planDrop(books, tidy: tidy, periods: periods, generation: generation, viewport: viewport)
         guard tray != nil else { return }
         let key = PlanKey(
@@ -771,13 +864,21 @@ final class BookPileScene {
                 label = await PileCalendar.texture(
                     YearInBooksCard.busiest(span, isCompact: false).value, season: group.season)
             }
-            if !tidy {
+            // A new pile's first wave falls at once, since no earlier books are left to clear.
+            if !tidy, spawned > 0 {
                 try? await Task.sleep(
                     until: lastWave
                         + (starts ? PileLayout.periodInterval : PileLayout.waveInterval))
             }
+            // Keeps the first books until the room's light is ready, so they enter lit.
+            if spawned == 0 { await stage.lit() }
             guard !Task.isCancelled, planKey == key else { return }
-            for slot in wave { spawn(slot, mode: holdsStill ? .kinematic : .dynamic) }
+            for slot in wave {
+                guard let book = spawn(slot, mode: holdsStill ? .kinematic : .dynamic),
+                    !holdsStill
+                else { continue }
+                startFall(book)
+            }
             if let group, let groups = self.periods {
                 calendar.show(
                     isFlying ? nil : label, season: group.season,
@@ -785,6 +886,16 @@ final class BookPileScene {
             }
             spawned += wave.count
             lastWave = .now
+            if loading.isLoading {
+                // Keeps a spinner that has shown until the first books can show, so it fades
+                // out as they fall into view. A quicker setup, such as **Drop again**, shows none.
+                if !holdsStill, lastWave - began > .seconds(SceneLoading.showDelay) {
+                    try? await Task.sleep(
+                        for: .seconds(PileLayout.entryDelay(of: wave, seenBy: view)))
+                }
+                guard planKey == key else { return }
+                loading.isLoading = false
+            }
         }
         #if DEBUG
             await runDebugActions()
@@ -802,6 +913,7 @@ final class BookPileScene {
     private func reset(keeping ids: Set<Int>) {
         shelf.children.removeAll()
         bookIDs = [:]
+        falling = [:]
         drag = nil
         cameraMove = nil
         lifter.reset()
@@ -903,12 +1015,14 @@ final class BookPileScene {
         }
     }
 
-    /// Adds a book at its slot's pose and spin. A dynamic book's center of mass moves toward
-    /// its back board (see `PileLayout.centerOfMass`); a still stack's books keep theirs.
-    private func spawn(_ slot: PileSlot, mode: PhysicsBodyMode) {
+    /// Adds a book at its slot's pose and spin, and returns it. A dynamic book's center of mass
+    /// moves toward its back board (see `PileLayout.centerOfMass`); a still stack's books keep
+    /// theirs.
+    @discardableResult
+    private func spawn(_ slot: PileSlot, mode: PhysicsBodyMode) -> ModelEntity? {
         guard let book = factory.makeBook(slot.book.id, mode: mode, lighting: stage.lighting),
             let size = factory.parts[slot.book.id]?.shape.size
-        else { return }
+        else { return nil }
         if mode == .dynamic {
             book.components[PhysicsBodyComponent.self]?.massProperties.centerOfMass.position =
                 PileLayout.centerOfMass(of: size)
@@ -917,6 +1031,22 @@ final class BookPileScene {
         book.transform = slot.transform
         shelf.addChild(book)
         bookIDs[book.id] = slot.book.id
+        return book
+    }
+
+    /// Slows a live drop's falling book with `PileLayout.airDrag` until it first touches
+    /// something (see `land`).
+    private func startFall(_ book: ModelEntity) {
+        guard let body = book.components[PhysicsBodyComponent.self] else { return }
+        falling[book.id] = body.linearDamping
+        book.components[PhysicsBodyComponent.self]?.linearDamping = PileLayout.airDrag
+    }
+
+    /// Gives a falling book that touches something its own damping back, so it slides, tumbles,
+    /// and flies when thrown as any other book does.
+    private func land(_ entity: Entity) {
+        guard let damping = falling.removeValue(forKey: entity.id) else { return }
+        entity.components[PhysicsBodyComponent.self]?.linearDamping = damping
     }
 
     /// The ID of the book an entity belongs to, or `nil` for the table.
@@ -1150,10 +1280,10 @@ final class BookPileScene {
         }
     }
 
-    /// Closes the box of **Phone is the box** once nothing waits to fall, a second after the
-    /// last wave, and opens it in the other modes, while books wait to fall, which start above
-    /// it, and while a book flies to or from its details, with gravity straight down until it
-    /// closes again.
+    /// Closes the box of **Phone is the box** once nothing waits to fall, `PileLayout.boxDelay`
+    /// after the last wave, and opens it in the other modes, while books wait to fall, which
+    /// start above it, and while a book flies to or from its details, with gravity straight down
+    /// until it closes again.
     ///
     /// Books past the glass or the sides when it closes, such as one high on the pile against
     /// the far wall, which the box's top side cuts off, move just inside them. They are off
@@ -1161,7 +1291,7 @@ final class BookPileScene {
     private func updateBox() {
         let closes =
             tilt == .box && !holdsStill && !isFlying && spawned == plan.count
-            && ContinuousClock.now - lastWave > .seconds(1)
+            && ContinuousClock.now - lastWave > PileLayout.boxDelay
         guard closes != (boxWalls.parent != nil) else { return }
         guard closes else {
             boxWalls.removeFromParent()

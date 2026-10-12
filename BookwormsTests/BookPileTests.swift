@@ -207,7 +207,8 @@ final class BookPileTests: XCTestCase {
                     let position = slot.transform.translation
                     let reach = simd_length(BookShape(of: slot.book, coverAspect: 0.85).size) / 2
                     XCTAssertEqual(Self.tray.clamp(position, margin: PileLayout.reach), position)
-                    XCTAssertGreaterThanOrEqual(position.y, PileLayout.spawnHeight)
+                    XCTAssertGreaterThanOrEqual(
+                        position.y, PileLayout.spawnHeight(over: Self.tray))
                     XCTAssertLessThan(position.y + reach, PileLayout.ceiling)
                 }
                 for wave in stride(from: 0, to: plan.count, by: PileLayout.waveSize) {
@@ -224,6 +225,96 @@ final class BookPileTests: XCTestCase {
         }
     }
 
+    func testDropsStartOutOfViewOfEveryCamera() throws {
+        // iPhone-shaped views, from a small phone to a large one, with and without the time
+        // frame button's inset.
+        let views: [(CGSize, CGFloat, CGFloat)] = [
+            (CGSize(width: 375, height: 812), 100, 83), (CGSize(width: 402, height: 874), 116, 83),
+            (CGSize(width: 402, height: 874), 166, 83), (CGSize(width: 440, height: 956), 170, 83),
+        ]
+        let slope = tan(PileCamera.fieldOfView / 2)
+        for (size, top, bottom) in views {
+            let tray = try XCTUnwrap(
+                PileTray(
+                    viewport: PileViewport(
+                        size: size,
+                        insets: .init(top: top, leading: 0, bottom: bottom, trailing: 0))))
+            let plan = (0..<3 as Range<UInt64>)
+                .flatMap { PileLayout.dropPlan(Self.books, in: tray, seed: $0) }
+            let points = plan.flatMap { corners(of: $0) }
+            XCTAssertLessThan(
+                plan.map(\.transform.translation.y).max()! + 1.86, PileLayout.ceiling, "\(size)")
+            var shown = 0
+            for zoom in [PileCamera.zoomRange.lowerBound, 1.6, PileCamera.zoomRange.upperBound] {
+                // The targets a zoomed camera can move to (see `BookPileScene.moveCamera`).
+                let reach = 1 - 1 / zoom
+                for x in [-tray.farHalfWidth, tray.farHalfWidth] {
+                    for z in [tray.farZ, tray.nearZ] {
+                        for step in 0..<16 {
+                            let camera = PileCamera(
+                                target: [x * reach, 0, z * reach], yaw: Float(step) * .pi / 8,
+                                zoom: zoom)
+                            let eye = camera.transform.translation
+                            // Counts the corners on or under the plane through the camera
+                            // and the view's top edge.
+                            shown += points.count(where: { corner in
+                                let local = camera.rotation.inverse.act(corner - eye)
+                                return local.y <= -local.z * slope
+                            })
+                        }
+                    }
+                }
+            }
+            XCTAssertEqual(shown, 0, "\(size)")
+        }
+        // The box closes only once a book from the ceiling has landed.
+        let fall = stride(from: Float(0), to: 10, by: 0.01)
+            .first { fallen(after: $0) > PileLayout.ceiling }!
+        XCTAssertLessThan(Double(fall) + 0.5, PileLayout.boxDelay / .seconds(1))
+    }
+
+    /// How far a falling book drops in `time` seconds from rest, under gravity and air drag.
+    private func fallen(after time: Float) -> Float {
+        let drag = PileLayout.airDrag
+        return PileLayout.gravity / drag * (time - (1 - exp(-drag * time)) / drag)
+    }
+
+    func testSpinnerLastsUntilTheFirstBooksCanShow() {
+        let camera = PileCamera()
+        let eye = camera.transform.translation
+        let slope = tan(PileCamera.fieldOfView / 2)
+        for seed: UInt64 in 0..<5 {
+            let wave = PileLayout.dropPlan(Self.books, in: Self.tray, seed: seed)
+                .prefix(PileLayout.waveSize)
+            let delay = Float(PileLayout.entryDelay(of: wave, seenBy: camera))
+            // About a third of a second, so the spinner's fade overlaps the first books coming in.
+            XCTAssertGreaterThan(delay, 0.2)
+            XCTAssertLessThan(delay, 0.6)
+            // No corner shows before then.
+            let drop = SIMD3(0, fallen(after: delay - 0.02), 0)
+            let shown = wave.flatMap { corners(of: $0) }
+                .contains { corner in
+                    let local = camera.rotation.inverse.act(corner - drop - eye)
+                    return local.y <= -local.z * slope
+                }
+            XCTAssertFalse(shown, "\(seed)")
+        }
+    }
+
+    func testAirDragLandsBooksAboutAsFastAsALowDrop() {
+        let starts = PileLayout.dropPlan(Self.books, in: Self.tray, seed: 2)
+            .map(\.transform.translation.y)
+        for height in [starts.min()!, starts.max()!] {
+            let time = stride(from: Float(0), to: 10, by: 0.001)
+                .first { fallen(after: $0) > height }!
+            let speed =
+                PileLayout.gravity / PileLayout.airDrag * (1 - exp(-PileLayout.airDrag * time))
+            // A drop from 9 to 20 units without drag lands at 31 to 47 units a second.
+            XCTAssertGreaterThan(speed, 35, "\(height)")
+            XCTAssertLessThan(speed, 43, "\(height)")
+        }
+    }
+
     func testEachWaveFallsBelowTheNextWaveBeforeItStarts() {
         let starts = (0..<20 as Range<UInt64>)
             .flatMap { PileLayout.dropPlan(Self.books, in: Self.tray, seed: $0) }
@@ -232,8 +323,7 @@ final class BookPileTests: XCTestCase {
             .max()!
         // Physics starts a frame after a wave spawns.
         let time = Float(PileLayout.waveInterval / .seconds(1)) - 1 / 60
-        let fallen = starts.max()! - PileLayout.gravity * time * time / 2
-        XCTAssertLessThan(fallen + reach, starts.min()! - reach)
+        XCTAssertLessThan(starts.max()! - fallen(after: time) + reach, starts.min()! - reach)
     }
 
     func testStillImageGroupsStartApartInsideTheWalls() throws {
