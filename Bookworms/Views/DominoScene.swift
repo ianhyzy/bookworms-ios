@@ -1,3 +1,4 @@
+import CoreMedia
 import RealityKit
 import SwiftUI
 import UIKit
@@ -347,6 +348,10 @@ final class DominoStatus {
 /// places it, and a cobweb (`Cobweb`) between each pair of books whose finishes lie
 /// `DominoLayout.cobwebDays` or more apart.
 ///
+/// The simulation runs in slow motion, at `slowMotion` of real time, except while a book flies
+/// to or from its details. Frame times, such as the books' drops into place, the stall time, and
+/// the cameras, stay in real time.
+///
 /// As the chain stands up, its books drop one after another down the path from above the top
 /// of the view onto their places, and each cobweb fades in once the book behind it lands. With
 /// Reduce Motion on, they appear standing. The chain waits for a push once every book stands.
@@ -397,6 +402,10 @@ final class DominoScene {
     /// How far beside a lifted book its rise clears the books (`BookFlight.rise`): past the
     /// widest gap to a standing neighbor (`DominoLayout.gap`), and short of the books past them.
     private static let riseMargin = DominoLayout.gap(height: BookShape.longest) + 0.05
+    /// The share of real time the simulation runs at: a uniform slow motion, as film shot at a
+    /// higher frame rate shows. Gravity, the push, and every collision slow together, so the
+    /// books fall as they would at full speed, only slower.
+    static let slowMotion: Double = 0.8
     /// How fast a push tips a book forward, in radians per second.
     private static let pushSpeed: Float = 2.5
     private static let stallTime: TimeInterval = 1
@@ -508,8 +517,13 @@ final class DominoScene {
     /// latest drop starts.
     private var entryClock: TimeInterval = 0
     private var lastEntry = -TimeInterval.infinity
+    /// The clock the simulation runs by: `slowMotion` of real time, or real time while a book
+    /// flies, because `BookLifter` times the flight's rise and throw by the frame clock.
+    private let simulationClock: CMTimebase?
     /// The index of the book in flight, while one flies.
-    private var flying: Int?
+    private var flying: Int? {
+        didSet { try? simulationClock?.setRate(flying == nil ? Self.slowMotion : 1) }
+    }
     /// While a book flies, the view the camera rises from, until **Back** returns the book to
     /// the camera mode's view (`nil`), and the view the flight rises to.
     private var flightViews: (from: Transform?, flight: Transform)?
@@ -542,6 +556,11 @@ final class DominoScene {
         var simulation = PhysicsSimulationComponent()
         simulation.gravity = [0, -PileLayout.gravity, 0]
         simulation.solverIterations = .init(positionIterations: 12, velocityIterations: 2)
+        // A new timebase stands still until it has a rate, so without one the simulation keeps
+        // its default clock.
+        let clock = try? CMTimebase(sourceClock: .hostTimeClock)
+        if let clock, (try? clock.setRate(Self.slowMotion)) != nil { simulation.clock = clock }
+        simulationClock = clock
         root.components.set(simulation)
         // Far enough for the Follow camera's finale, which can stand 250 units from a long path.
         camera.camera = PerspectiveCameraComponent(

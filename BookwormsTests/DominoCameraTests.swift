@@ -3,8 +3,8 @@ import simd
 
 @testable import Bookworms
 
-/// The Follow camera's math: the smoothed front, the springs' limits, the close, low chase and
-/// its swings round the turns, clearance from the books, following to the last book, the
+/// The Follow camera's math: the smoothed front, the springs' limits, the low chase, framed
+/// with room around the front, and its slow swings round the turns, clearance from the books, following to the last book, the
 /// establishing move, cobweb push in, and reveal; and the overview camera's spring.
 final class DominoCameraTests: XCTestCase {
     private static let fieldOfView: Float = 38 * .pi / 180
@@ -52,12 +52,13 @@ final class DominoCameraTests: XCTestCase {
     }
 
     /// Runs `rig` through a chain of `count` books `spacing` apart, pushed after `wait` seconds,
-    /// whose front tips from book to book at about `speed` units a second, each book a little
-    /// faster or slower than the last and gathering speed as it tips, as the scene's front
-    /// does. Steps are a 60th of a second, with a 40th every seventh frame unless `even`.
+    /// once the establishing move has settled, whose front tips from book to book at about
+    /// `speed` units a second, each book a little faster or slower than the last and gathering
+    /// speed as it tips, as the scene's front does. Steps are a 60th of a second, with a 40th
+    /// every seventh frame unless `even`.
     private func run(
         _ rig: inout DominoCameraRig, count: Int, spacing: Float = 1.05, speed: Float = 18,
-        wait: Float = 6, even: Bool = false
+        wait: Float = 10, even: Bool = false
     ) -> [Frame] {
         var starts: [Float] = []
         var time = wait
@@ -182,7 +183,7 @@ final class DominoCameraTests: XCTestCase {
         }
     }
 
-    func testTheCameraChasesTheFrontLowAndClose() {
+    func testTheCameraChasesTheFrontLow() {
         for count in [39, 120, 276] {
             // A dense web halfway along the third row, and another on the fifth turn.
             let path = chain(count).rig.path
@@ -192,14 +193,15 @@ final class DominoCameraTests: XCTestCase {
             ]
             .map { DominoCameraRig.Cobweb(distance: $0, density: 1) }
             var (rig, _) = chain(count, cobwebs: webs)
-            // At about the chain's pace in the scene, which times the swings.
-            let frames = run(&rig, count: count, speed: 13)
+            // At about the chain's pace in the scene's slow motion, which times the swings.
+            let frames = run(&rig, count: count, speed: 10)
             var shares: [Float] = []
             var elevations: [Float] = []
             var rolls: [Float] = []
             var shown = 0
             var lastSpin: SIMD3<Float>?
             var hardest: Float = 0
+            var fastest: Float = 0
             for (index, frame) in frames.enumerated().dropFirst() where frame.running {
                 let pose = frame.pose
                 // The book at the front: the last the chain has reached.
@@ -220,8 +222,9 @@ final class DominoCameraTests: XCTestCase {
                 {
                     shown += 1
                 }
-                // The view swings smoothly, cobwebs and all: its turn never changes faster than
-                // a swing's ease allows, so it never snaps.
+                // The view swings slowly and smoothly, cobwebs and all: it never turns fast, and
+                // its turn never changes faster than a slow swing's ease allows, so it never
+                // whips or snaps.
                 let before = frames[index - 1]
                 let spin = spin(from: before.pose, to: pose) / frame.step
                 if let lastSpin {
@@ -229,12 +232,14 @@ final class DominoCameraTests: XCTestCase {
                         hardest, simd_length(spin - lastSpin) / ((before.step + frame.step) / 2))
                 }
                 lastSpin = spin
+                fastest = max(fastest, simd_length(spin))
             }
-            XCTAssertLessThan(hardest, 8, "\(count)")
-            // A typical book at the front fills about a quarter of the view's height, closer
-            // as the camera pushes in on the webs.
-            let close = shares.filter { $0 >= 0.2 && $0 <= 0.35 }.count
-            XCTAssertGreaterThan(Float(close), Float(shares.count) * 0.85, "\(count)")
+            XCTAssertLessThan(fastest, 70 * .pi / 180, "\(count)")
+            XCTAssertLessThan(hardest, 4, "\(count)")
+            // A typical book at the front fills about a fifth of the view's height, more as the
+            // camera pushes in on the webs.
+            let framed = shares.filter { $0 >= 0.14 && $0 <= 0.27 }.count
+            XCTAssertGreaterThan(Float(framed), Float(shares.count) * 0.85, "\(count)")
             // From low over the table, at heights that vary from row to row.
             XCTAssertGreaterThan(elevations.min()!, 8 * .pi / 180, "\(count)")
             XCTAssertLessThan(elevations.max()!, 25 * .pi / 180, "\(count)")
@@ -250,7 +255,7 @@ final class DominoCameraTests: XCTestCase {
     func testTheCameraFilmsEachRowFromTheFallenSide() {
         for count in [60, 276] {
             var (rig, _) = chain(count)
-            let frames = run(&rig, count: count, speed: 13)
+            let frames = run(&rig, count: count, speed: 10)
             let path = rig.path
             var rows = 0
             for row in 0..<Int(rig.length / path.period) {
@@ -350,9 +355,9 @@ final class DominoCameraTests: XCTestCase {
             stretch.longest = max(stretch.longest, stretch.now)
             steady[row] = stretch
         }
-        // The view mostly holds steady and swings fast but rarely.
+        // The view mostly holds steady and swings slowly.
         let sorted = rates.sorted()
-        XCTAssertLessThan(sorted[sorted.count * 95 / 100], 95 * .pi / 180)
+        XCTAssertLessThan(sorted[sorted.count * 95 / 100], 55 * .pi / 180)
         XCTAssertGreaterThan(
             Float(rates.filter { $0 < 15 * .pi / 180 }.count), Float(rates.count) * 0.4)
         // Every whole row and its turn has a stretch of at least 0.4 seconds without a swing.
@@ -472,6 +477,21 @@ final class DominoCameraTests: XCTestCase {
         }
     }
 
+    func testTheEstablishingMoveAndTheRevealTurnSlowly() {
+        for count in [39, 276] {
+            var (rig, _) = chain(count)
+            let establishTime = rig.establishTime
+            let frames = run(&rig, count: count)
+            // Both moves turn the view at most 22 degrees a second, easing in and out.
+            for (before, frame) in zip(frames, frames.dropFirst())
+            where frame.time < establishTime || frame.revealing {
+                XCTAssertLessThan(
+                    turn(from: before.pose, to: frame.pose) / frame.step, 22 * .pi / 180,
+                    "\(count) at \(frame.time)")
+            }
+        }
+    }
+
     func testTheCameraPushesInAsTheFrontNearsADenseCobweb() {
         let web = DominoCameraRig.Cobweb(distance: 80, density: 1)
         var (plain, _) = chain(160)
@@ -484,10 +504,10 @@ final class DominoCameraTests: XCTestCase {
                 .init(distance: 1, density: 1),
             ])
         XCTAssertEqual(webbed.cobwebs, [web])
-        // At about the chain's pace in the scene. The runs match frame for frame until the
-        // reveal, whose length depends on the view.
-        let without = run(&plain, count: 160, speed: 13).filter(\.running)
-        let with = run(&webbed, count: 160, speed: 13).filter(\.running)
+        // At about the chain's pace in the scene's slow motion. The runs match frame for frame
+        // until the reveal, whose length depends on the view.
+        let without = run(&plain, count: 160, speed: 10).filter(\.running)
+        let with = run(&webbed, count: 160, speed: 10).filter(\.running)
         func ratio(_ index: Int) -> Float {
             range(of: with[index].pose) / range(of: without[index].pose)
         }
@@ -507,11 +527,11 @@ final class DominoCameraTests: XCTestCase {
         var (rig, _) = chain(276, cobwebs: [web])
         XCTAssertEqual(rig.cobwebs, [web])
         XCTAssertEqual(sides(of: rig)[3], sides(of: rig).min()!)
-        let frames = run(&rig, count: 276, speed: 13, even: true)
+        let frames = run(&rig, count: 276, speed: 10, even: true)
         let tear = frames.first { $0.running && $0.raw >= web.distance }!.time
-        // Within a second of the tear, the view's turn changes no faster than a swing's ease
-        // allows, as in `testTheCameraChasesTheFrontLowAndClose`: the push in and the lean
-        // toward the web ease in and out.
+        // Within a second of the tear, the view's turn changes no faster than a slow swing's
+        // ease allows, as in `testTheCameraChasesTheFrontLow`: the push in and the lean toward
+        // the web ease in and out.
         var hardest: Float = 0
         for index in 2..<frames.count where abs(frames[index].time - tear) < 1 {
             let one = spin(from: frames[index - 2].pose, to: frames[index - 1].pose)
@@ -522,7 +542,7 @@ final class DominoCameraTests: XCTestCase {
                     / frames[index].step)
         }
         XCTAssertGreaterThan(hardest, 0)
-        XCTAssertLessThan(hardest, 8)
+        XCTAssertLessThan(hardest, 4)
     }
 
     func testAWebOnATurnTearsInView() {
@@ -532,7 +552,7 @@ final class DominoCameraTests: XCTestCase {
         let web = DominoCameraRig.Cobweb(distance: distance, density: 1)
         var (rig, _) = chain(160, cobwebs: [web])
         XCTAssertEqual(rig.cobwebs, [web])
-        let frames = run(&rig, count: 160, speed: 13)
+        let frames = run(&rig, count: 160, speed: 10)
         let tear = frames.firstIndex { $0.raw >= web.distance }!
         let place = rig.point(at: web.distance)
         // The swing follows the front round the turn, so the web holds its place in the view:
@@ -561,8 +581,8 @@ final class DominoCameraTests: XCTestCase {
         XCTAssertEqual(torn.cobwebs, [])
         XCTAssertEqual(whole.cobwebs, [web])
         XCTAssertNotEqual(
-            run(&torn, count: 276, speed: 13, even: true).map(\.pose),
-            run(&whole, count: 276, speed: 13, even: true).map(\.pose))
+            run(&torn, count: 276, speed: 10, even: true).map(\.pose),
+            run(&whole, count: 276, speed: 10, even: true).map(\.pose))
     }
 
     func testAWebAtThePushLeavesTheCameraAlone() {
