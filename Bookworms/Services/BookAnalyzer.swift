@@ -389,14 +389,18 @@ actor BookAnalyzer {
         return capitalLines.count * 2 >= lines.count
     }
 
-    /// Applies a series sibling's typography and colors to `book` without a model request.
+    /// Applies a series sibling's typography and generated colors to `book` without a model
+    /// request.
     ///
-    /// Returns `nil` when the sibling's font is not allowed or lacks a glyph that this book's
-    /// title or author needs, so the caller can analyze the cover instead.
+    /// Colors the reader chose for the sibling stay with the sibling: `book` gets the colors the
+    /// generator chose. Returns `nil` when the sibling has an invalid color, or when its font is
+    /// not allowed or lacks a glyph that this book's title or author needs, so the caller can
+    /// analyze the cover instead.
     func seriesDesign(
         from source: SpineDesignV1, book: CloudBook, accountID: String, workItemHash: String,
         coverHash: String
     ) async throws -> SpineDesignV1? {
+        guard let colors = source.generatedColors ?? source.colors else { return nil }
         if let family = source.fontFamily {
             let text = Self.renderedText(of: book, uppercase: source.uppercase)
             guard let font = try await downloadedFont(family, weight: source.weight),
@@ -407,8 +411,8 @@ actor BookAnalyzer {
             version: 1, accountID: accountID, bookID: book.id,
             workItemHash: workItemHash, coverHash: coverHash,
             generatorVersion: CloudContract.generatorVersion, generatedAt: Date(),
-            backgroundHex: source.backgroundHex, foregroundHex: source.foregroundHex,
-            accentHex: source.accentHex, typeface: source.typeface, weight: source.weight,
+            backgroundHex: colors.background.hex, foregroundHex: colors.foreground.hex,
+            accentHex: colors.accent.hex, typeface: source.typeface, weight: source.weight,
             uppercase: source.uppercase, fontFamily: source.fontFamily,
             fontPostScriptName: source.fontPostScriptName, instanceWeight: source.instanceWeight,
             provenance: "series-reuse:\(source.bookID)")

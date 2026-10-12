@@ -363,7 +363,8 @@ final class BookLifter {
 
     /// Gives the lifted book textures as sharp as the details' own book at `scale` pixels per
     /// point, with `book`'s current cover and design. The book's scene textures take the cover
-    /// too, so the book returns as the details last showed it.
+    /// too, so the book returns as the details last showed it; see `restyle(_:model:)` for its
+    /// design.
     func dress(_ book: CloudBook, scale: CGFloat, model: AppModel) async {
         guard lifted?.id == book.id, let shape = factory.parts[book.id]?.shape else { return }
         let covers = model.covers
@@ -378,6 +379,18 @@ final class BookLifter {
         else { return }
         lifted?.materials = dressed.materials
         redraw()
+    }
+
+    /// Draws `book`'s scene textures again when its design changed since the scene built them,
+    /// so a lifted book lands back with the design its details showed, including colors the
+    /// reader picked just before **Back**. A book that already landed keeps its textures.
+    func restyle(_ book: CloudBook, model: AppModel) async {
+        let look = model.look(for: book)
+        guard let built = factory.parts[book.id], built.look != look else { return }
+        let cover = await model.covers.image(
+            for: book, maximumPixelSize: factory.coverPixels(for: book))
+        guard !Task.isCancelled else { return }
+        await factory.restyle(book, cover: cover, look: look)
     }
 
     /// Returns the lifted book: sets it down standing in the pose `standing` gives (see

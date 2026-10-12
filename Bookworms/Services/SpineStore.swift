@@ -12,14 +12,17 @@ import Foundation
 protocol SpineStore: Sendable {
     /// Returns the books to design, or `nil` when there is no work.
     func loadWork() async throws -> WorkContext?
-    /// Returns the book's saved design when it is valid and made by this app's generator.
-    func currentDesign(accountID: String, bookID: Int) async throws -> SpineDesignV1?
+    /// Returns the book's saved design when it is valid, from any generator.
+    func savedDesign(accountID: String, bookID: Int) async throws -> SpineDesignV1?
     /// Returns whether `book` still belongs to the work in `context` with the same chosen cover,
     /// so a stale result is not saved after the Apple TV changed accounts or removed the book, or
     /// the reader picked another cover.
     func isStillCurrent(_ context: WorkContext, book: CloudBook) async throws -> Bool
     /// Saves `design` unless an equal or newer design for the same work already exists.
     func save(_ design: SpineDesignV1) async throws
+    /// Replaces the saved design that `design` recolors (see `SpineDesignV1.isSameDesign(as:)`).
+    /// Throws `CompanionError.designChanged` when the saved design is another one.
+    func saveRecolored(_ design: SpineDesignV1) async throws
     /// Saves the reader's cover for a book, replacing an earlier choice.
     func save(_ choice: CoverChoiceV1) async throws
     /// Deletes the reader's cover choice for a book, which restores its default cover.
@@ -88,11 +91,10 @@ actor LocalSpineStore: SpineStore {
             followsWorklist: worklist != nil, cloudUserRecordName: "local")
     }
 
-    func currentDesign(accountID: String, bookID: Int) async throws -> SpineDesignV1? {
+    func savedDesign(accountID: String, bookID: Int) async throws -> SpineDesignV1? {
         let name = CloudContract.designRecordName(accountID: accountID, bookID: bookID)
         guard let design = try designs()[name], (try? design.validate()) != nil,
-            design.accountID == accountID, design.bookID == bookID,
-            design.generatorVersion == CloudContract.generatorVersion
+            design.accountID == accountID, design.bookID == bookID
         else { return nil }
         return design
     }
@@ -112,6 +114,18 @@ actor LocalSpineStore: SpineStore {
         var all = try designs()
         all[CloudContract.designRecordName(accountID: design.accountID, bookID: design.bookID)] =
             design
+        try write(all, "spine-designs-v1.json")
+    }
+
+    func saveRecolored(_ design: SpineDesignV1) async throws {
+        try design.validate()
+        let name = CloudContract.designRecordName(
+            accountID: design.accountID, bookID: design.bookID)
+        var all = try designs()
+        guard let saved = all[name], saved.isSameDesign(as: design) else {
+            throw CompanionError.designChanged
+        }
+        all[name] = design
         try write(all, "spine-designs-v1.json")
     }
 

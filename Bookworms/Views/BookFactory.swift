@@ -179,6 +179,15 @@ final class BookFactory {
         coverArrived?(id, material)
     }
 
+    /// Draws a built book's parts again with `look`, keeping its shape, when its spine design
+    /// changed since they were built, such as after the reader recolored it in its details.
+    func restyle(_ book: CloudBook, cover: UIImage?, look: SpineLook) async {
+        guard let built = parts[book.id], built.look != look,
+            let restyled = await makeParts(book, cover: cover, look: look, shape: built.shape)
+        else { return }
+        parts[book.id] = restyled
+    }
+
     /// Builds a book's parts. `shape` keeps a built book's shape for a new cover, and `scale`
     /// overrides the shape's texture scale (`textureScale(forLength:)`) for the spine and a
     /// front without a cover. Returns `nil` if RealityKit cannot make the book's mesh.

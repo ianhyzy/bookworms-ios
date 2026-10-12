@@ -98,8 +98,10 @@ final class AppModel {
             // A sign-in, sync, or sign-out during the load replaces this result below.
             if revision == account.libraryRevision {
                 if var snapshot = loaded {
+                    // The newest design wins, and of designs made at the same time, the last one
+                    // applied: a recoloring keeps its design's `generatedAt`.
                     snapshot.designs = LibrarySnapshot.latestDesigns(
-                        Array(snapshot.designs.values) + appliedDuringLoad,
+                        appliedDuringLoad.reversed() + Array(snapshot.designs.values),
                         accountID: snapshot.accountID, books: snapshot.books)
                     for chosen in coversChosenDuringLoad
                     where chosen.accountID == snapshot.accountID {
@@ -163,7 +165,7 @@ final class AppModel {
         await reload()
     }
 
-    /// Shows a design the generator just saved, without a reload.
+    /// Shows a design that the generator or `recolor(_:to:)` saves, without a reload.
     ///
     /// The library cache is written once saves pause for 20 seconds or `reloadIfStale()` runs,
     /// so a run does not encode and write the whole library on the main actor for each design.
@@ -185,6 +187,29 @@ final class AppModel {
             persist()
         }
         Task { await fonts.load([design]) }
+    }
+
+    /// Shows `colors` on `book`'s spine at once and saves them to its design as the reader's
+    /// colors (see `SpineDesignV1.recolored(_:)`), through the store the library comes from.
+    ///
+    /// Throws when the colors cannot be saved, and then they stay on screen until the next
+    /// reload. Throws `CompanionError.invalidDesign`, before showing anything, when the colors
+    /// are not readable, and `CompanionError.bookNotInLibrary` when the book has no design.
+    /// When iCloud holds another design, such as a redesign from another device, reloads to show
+    /// it and throws `CompanionError.designChanged`.
+    func recolor(_ book: CloudBook, to colors: SpineColors) async throws {
+        guard let design = library?.designs[book.id] else {
+            throw CompanionError.bookNotInLibrary
+        }
+        let recolored = design.recolored(colors)
+        try recolored.validate()
+        apply(recolored)
+        do {
+            try await store.saveRecolored(recolored)
+        } catch CompanionError.designChanged {
+            await reload()
+            throw CompanionError.designChanged
+        }
     }
 
     /// Returns the covers of `book`'s Hardcover editions for the cover picker. Needs this

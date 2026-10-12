@@ -21,6 +21,9 @@ final class LiftedDetails {
 
     /// The lifted book, from the tap until **Back** returns it.
     private(set) var lift: Lift?
+    /// The book of the latest lift, which stays after **Back**, so a design change committed
+    /// as its details close still reaches the scene's textures.
+    private(set) var lastLifted: CloudBook?
     /// Counts lifts and returns.
     @ObservationIgnored private var revision = 0
 
@@ -34,6 +37,7 @@ final class LiftedDetails {
         revision &+= 1
         let revision = revision
         lift = Lift(book: book)
+        lastLifted = book
         Task {
             try? await Task.sleep(for: .seconds(landing))
             guard self.revision == revision else { return }
@@ -136,8 +140,12 @@ struct LiftedDetailsOverlay: ViewModifier {
         let look: SpineLook
     }
 
-    private var dressing: Dressing? {
-        guard let lifted = details.lift?.book else { return nil }
+    private var dressing: Dressing? { details.lift.map { dressing(of: $0.book) } }
+
+    /// What the scene's textures of the latest lifted book show, in the pile or in flight.
+    private var sceneDressing: Dressing? { details.lastLifted.map(dressing(of:)) }
+
+    private func dressing(of lifted: CloudBook) -> Dressing {
         let book = model.books.first { $0.id == lifted.id } ?? lifted
         return Dressing(book: book, look: model.look(for: book))
     }
@@ -151,6 +159,10 @@ struct LiftedDetailsOverlay: ViewModifier {
             .task(id: dressing) {
                 guard let dressing else { return }
                 await scene.lifter.dress(dressing.book, scale: displayScale, model: model)
+            }
+            .task(id: sceneDressing) {
+                guard let sceneDressing else { return }
+                await scene.lifter.restyle(sceneDressing.book, model: model)
             }
             .toolbar {
                 if let lift = details.lift {

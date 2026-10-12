@@ -327,6 +327,9 @@ enum CompanionError: LocalizedError, Sendable {
     /// gives one.
     case fontServiceUnavailable(Date?)
     case cloudConflict
+    /// iCloud holds another design than the one the reader recolored, such as a redesign from
+    /// another device.
+    case designChanged
 
     var errorDescription: String? {
         switch self {
@@ -352,6 +355,8 @@ enum CompanionError: LocalizedError, Sendable {
         case .invalidDesign: "The generated design did not pass validation."
         case .fontServiceUnavailable: "Google Fonts is unavailable. Bookworms will retry."
         case .cloudConflict: "A concurrent iCloud update prevented saving."
+        case .designChanged:
+            "The spine was redesigned on another device, so these colors were not saved."
         }
     }
 }
