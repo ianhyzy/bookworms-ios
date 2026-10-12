@@ -251,6 +251,8 @@ private struct TurningBook: View {
     @State private var drift: Drift?
     /// Whether some of the book's stage shows in the details' scroll view.
     @State private var isOnScreen = true
+    /// When the stage last scrolled out of view, while it stays out.
+    @State private var hiddenSince: Date?
     /// The pose on screen when the current drag began. SwiftUI resets it when a drag ends or
     /// is cancelled, so the next drag starts from the current pose.
     @GestureState private var dragStart: BookPose?
@@ -310,9 +312,9 @@ private struct TurningBook: View {
         .onChange(of: reduceMotion) { _, reduced in
             drift = reduced || host?.hasLanded == false ? nil : Drift(start: .now)
         }
-        // The drift resumes as a sliver of the stage's margin scrolls back into view, so its
-        // jump to the current offset happens out of sight.
-        .onScrollVisibilityChange(threshold: 0.01) { isOnScreen = $0 }
+        // The drift pauses while the stage is out of view and resumes where it paused, so it
+        // never jumps, whatever part of the stage counts as visible.
+        .onScrollVisibilityChange(threshold: 0.01) { visibilityChanged($0) }
         // Pauses the timeline once the coast settles.
         .task(id: coast) {
             guard coast != nil else { return }
@@ -348,6 +350,18 @@ private struct TurningBook: View {
                 let yaw = pose.turned(by: momentum).yaw
                 settle(at: BookPose(yaw: yaw, pitch: BookPose.resting.pitch))
             }
+    }
+
+    /// Pauses the drift while the stage is out of view, and resumes it where it paused.
+    private func visibilityChanged(_ visible: Bool) {
+        isOnScreen = visible
+        if !visible {
+            hiddenSince = .now
+        } else if let hiddenSince, let current = drift {
+            drift = Drift(
+                start: current.start.addingTimeInterval(Date.now.timeIntervalSince(hiddenSince)))
+            self.hiddenSince = nil
+        }
     }
 
     /// Springs from the pose on screen to `target`.
