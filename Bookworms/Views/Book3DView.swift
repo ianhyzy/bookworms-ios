@@ -60,11 +60,15 @@ struct Book3DView: View {
         return CGFloat(size.z / size.y)
     }
 
-    /// The book's width-to-height ratio: the cover's, clamped to 0.55...0.85, else 2:3.
+    /// The width-to-height ratios that `aspect(of:)` allows.
+    static let aspects: ClosedRange<CGFloat> = 0.55...0.85
+
+    /// The book's width-to-height ratio: the cover's, clamped to `aspects`, else 2:3.
     /// Layouts that size a book before drawing it use this, so their space matches the book.
     static func aspect(of cover: UIImage?) -> CGFloat {
         guard let cover, cover.size.height > 0 else { return 2 / 3 }
-        return min(0.85, max(0.55, cover.size.width / cover.size.height))
+        return min(
+            aspects.upperBound, max(aspects.lowerBound, cover.size.width / cover.size.height))
     }
 
     @ViewBuilder

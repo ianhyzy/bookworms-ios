@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import XCTest
 
 @testable import Bookworms
@@ -92,7 +93,8 @@ final class ShelfLogicTests: XCTestCase {
         let tilts = books.map { abs(StackArrangement.tilt(of: $0)) }
         let straight = tilts.filter { $0 < StackArrangement.maximumTilt / 2 }.count
         XCTAssertGreaterThan(straight, books.count * 6 / 10)
-        XCTAssertEqual(StackArrangement.tilt(of: books[3]), StackArrangement.tilt(of: books[3]))
+        XCTAssertEqual(
+            StackArrangement.tilt(of: books[3]), 0.000_634_752_280_834_7, accuracy: 1e-12)
         // Each book rests on the one below it.
         let track = layout.track(of: books)
         XCTAssertEqual(track.ids, books.map(\.id))
@@ -105,13 +107,33 @@ final class ShelfLogicTests: XCTestCase {
         }
     }
 
-    func testStackedBooksFadeOutAsTheirCentersReachTheEnds() {
-        XCTAssertEqual(StackArrangement.opacity(inset: -10), 0)
-        XCTAssertEqual(StackArrangement.opacity(inset: 0), 0)
-        XCTAssertEqual(
-            StackArrangement.opacity(inset: StackArrangement.fade / 2), 0.5, accuracy: 0.0001)
-        XCTAssertEqual(StackArrangement.opacity(inset: StackArrangement.fade), 1)
-        XCTAssertEqual(StackArrangement.opacity(inset: 500), 1)
+    func testStackMaskHidesTheEndsThenFadesIn() {
+        func assertLocations(_ stops: [Gradient.Stop], _ expected: [CGFloat]) {
+            XCTAssertEqual(stops.count, expected.count)
+            for (stop, location) in zip(stops, expected) {
+                XCTAssertEqual(stop.location, location, accuracy: 1e-9)
+            }
+        }
+        let fade = StackArrangement.fade
+        let stops = StackArrangement.maskStops(height: 1000, top: 30, bottom: 90)
+        assertLocations(stops, [0.03, (30 + fade) / 1000, 1 - (90 + fade) / 1000, 0.91])
+        XCTAssertEqual(stops.map(\.color), [.clear, .black, .black, .clear])
+        // A short scroll view fades in to its middle, keeping the stops in order.
+        assertLocations(
+            StackArrangement.maskStops(height: 200, top: 30, bottom: 90), [0.15, 0.5, 0.5, 0.55])
+        XCTAssertEqual(StackArrangement.maskStops(height: 0, top: 30, bottom: 90).count, 0)
+    }
+
+    func testOnlyACoveredThreeDBookHidesAllButItsSpine() {
+        let top = book(1, "Top", pages: 300)
+        XCTAssertTrue(StackStyle.threeD.rest(of: top, covered: true).isCovered)
+        XCTAssertFalse(StackStyle.threeD.rest(of: top, covered: false).isCovered)
+        XCTAssertFalse(StackStyle.flat.rest(of: top, covered: true).isCovered)
+        let path = PullOutPath(
+            home: CGRect(x: 40, y: 400, width: 280, height: 32), upright: false,
+            stage: CGRect(x: 0, y: 100, width: 402, height: 380), pose: .resting, aspect: 2 / 3,
+            thicknessRatio: 0.1, rest: StackStyle.threeD.rest(of: top, covered: false))
+        XCTAssertEqual(path.pose(at: 0).faces, 1)
     }
 
     func testShelvedDoorstoppersStandTallerAndThickerThanNovellas() {

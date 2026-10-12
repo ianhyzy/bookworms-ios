@@ -237,7 +237,7 @@ struct ShelfView: View {
 }
 
 /// The Shelf tab's title and bar: the presentation picker, **Sort and filter**, and in **Stack**
-/// the **2D** or **3D** button, or, while a book's details show over the shelf or a 3D view,
+/// the **3D** toggle, or, while a book's details show over the shelf or a 3D view,
 /// **Back** and the book's **Share**.
 ///
 /// A modifier of its own, so a book's pull-out and return update only the bar, not the shelf's
@@ -291,15 +291,16 @@ private struct ShelfBar: ViewModifier {
         } else if !threeDShowsDetails {
             if mode == .stack {
                 ToolbarItem(placement: .topBarLeading) {
-                    // Shows the style a tap switches to, as the 2D and 3D button in Maps does. A
-                    // symbol rather than text, so it does not read as the picker's 3D.
-                    Button(
-                        "3D", systemImage: stackStyle == .threeD ? "view.2d" : "view.3d"
-                    ) {
-                        stackStyle = stackStyle == .threeD ? .flat : .threeD
-                    }
-                    .accessibilityValue(stackStyle == .threeD ? "On" : "Off")
-                    .accessibilityAddTraits(.isToggle)
+                    // A cube rather than lettering, which would repeat the picker's 3D.
+                    Toggle(
+                        "3D", systemImage: "cube",
+                        isOn: Binding {
+                            stackStyle == .threeD
+                        } set: {
+                            stackStyle = $0 ? .threeD : .flat
+                        }
+                    )
+                    .toggleStyle(.button)
                 }
             }
             ToolbarItem(placement: .principal) {

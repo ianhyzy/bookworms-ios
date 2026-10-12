@@ -28,7 +28,8 @@ enum StackStyle: String {
     static let lighting = 0.6
 
     /// How `book` lies in the stack, which is also where its flight to the details starts.
-    func rest(of book: CloudBook) -> PullOutPath.Rest {
+    /// `covered` says whether another book lies on it, hiding all of a 3D book but its spine.
+    func rest(of book: CloudBook, covered: Bool) -> PullOutPath.Rest {
         let tilt = StackArrangement.tilt(of: book)
         switch self {
         case .flat:
@@ -36,7 +37,7 @@ enum StackStyle: String {
         case .threeD:
             return PullOutPath.Rest(
                 tilt: tilt, yaw: -Self.lookDown, pitch: StackArrangement.twist(of: book),
-                lighting: Self.lighting, isCovered: true)
+                lighting: Self.lighting, isCovered: covered)
         }
     }
 }
@@ -98,6 +99,13 @@ struct SpineCarousel: View {
     private func stack(in size: CGSize) -> some View {
         let arrangement = StackArrangement(width: size.width)
         let track = arrangement.track(of: books)
+        // A spine overhangs its page by up to half its thickness, and a 3D book's top board rises
+        // above its spine, so the mask hides that much at each end, where the lazy stack may not
+        // have built a book's page.
+        let rise = style == .threeD ? StackedBook.rise(of: books, in: arrangement) : 0
+        let stops = StackArrangement.maskStops(
+            height: size.height, top: track.maxThickness / 2,
+            bottom: track.maxThickness / 2 + rise)
         return ScrollView(.vertical) {
             VStack(spacing: 0) {
                 Color.clear.frame(height: track.leadingSpace(viewport: size.height))
@@ -106,16 +114,9 @@ struct SpineCarousel: View {
                         ZStack(alignment: .topLeading) {
                             ForEach(track.pages[page]) { slot in
                                 spineButton(slot.book) {
-                                    stackedBook(slot.book, spine: arrangement.spine(of: slot.book))
-                                }
-                                // A book whose center leaves the scroll view has faded out, so a
-                                // page that the lazy stack has not built shows no gap.
-                                .visualEffect { content, proxy in
-                                    let bounds = proxy.bounds(of: .scrollView) ?? .infinite
-                                    let center = proxy.size.height / 2
-                                    return content.opacity(
-                                        StackArrangement.opacity(
-                                            inset: min(center - bounds.minY, bounds.maxY - center)))
+                                    stackedBook(
+                                        slot.book, spine: arrangement.spine(of: slot.book),
+                                        covered: slot.index > 0)
                                 }
                                 .padding(.leading, arrangement.leading(of: slot.book))
                                 .padding(.top, slot.inset)
@@ -134,15 +135,19 @@ struct SpineCarousel: View {
         }
         .modifier(
             CenterTracking(
-                track: track, axis: .vertical, viewport: size.height, centeredID: $centeredID))
+                track: track, axis: .vertical, viewport: size.height, centeredID: $centeredID)
+        )
+        // Fades the stack as one image, so a fading 3D book never shows the book under it through
+        // its spine. The mask also hides the top boards that would rise under the bar.
+        .mask { LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom) }
     }
 
     /// A stacked book, lying as `style` says, with its spine filling `spine`'s length and
-    /// thickness.
+    /// thickness. `covered` says whether another book lies on it.
     @ViewBuilder
-    private func stackedBook(_ book: CloudBook, spine: CGSize) -> some View {
+    private func stackedBook(_ book: CloudBook, spine: CGSize, covered: Bool) -> some View {
         let look = model.look(for: book)
-        let rest = style.rest(of: book)
+        let rest = style.rest(of: book, covered: covered)
         switch style {
         case .flat:
             SpineView(book: book, look: look)
@@ -250,21 +255,43 @@ private struct StackedBook: View {
     @Environment(AppModel.self) private var model
     @State private var cover: UIImage?
 
-    var body: some View {
-        let aspect = Book3DView.aspect(of: cover)
-        let thicknessRatio = spine.height / spine.width
+    /// The scale that fits the book's spine to `spine`, and the drawn book's size before its
+    /// tilt, for a cover `aspect` wide.
+    static func fit(
+        spine: CGSize, aspect: CGFloat, rest: PullOutPath.Rest
+    ) -> (scale: CGFloat, drawn: CGSize) {
         let scale =
-            1 / PullOutPath.spineMagnification(aspect: aspect, thicknessRatio: thicknessRatio)
+            1
+            / PullOutPath.spineMagnification(
+                aspect: aspect, thicknessRatio: spine.height / spine.width)
         let bounds = BookProjection(
             width: spine.width * aspect, height: spine.width, thickness: spine.height,
             yaw: .pi / 2 + rest.yaw, pitch: rest.pitch
         )
         .bounds
         // Lying on its back, the drawn book's width runs along the screen's height.
-        let drawn = CGSize(width: bounds.height * scale, height: bounds.width * scale)
+        return (scale, CGSize(width: bounds.height * scale, height: bounds.width * scale))
+    }
+
+    /// How far the top board of the longest of `books`, with the widest cover `Book3DView` draws,
+    /// rises above its spine: about the most that any of the books' boards rises.
+    static func rise(of books: [CloudBook], in arrangement: StackArrangement) -> CGFloat {
+        let longest = books.max {
+            arrangement.spine(of: $0).width < arrangement.spine(of: $1).width
+        }
+        guard let longest else { return 0 }
+        let spine = arrangement.spine(of: longest)
+        let rest = StackStyle.threeD.rest(of: longest, covered: true)
+        return fit(spine: spine, aspect: Book3DView.aspects.upperBound, rest: rest).drawn.height
+            - spine.height
+    }
+
+    var body: some View {
+        let (scale, drawn) = Self.fit(
+            spine: spine, aspect: Book3DView.aspect(of: cover), rest: rest)
         Book3DView(
             book: book, look: look, cover: cover, height: spine.width, yaw: .pi / 2 + rest.yaw,
-            pitch: rest.pitch, thicknessRatio: thicknessRatio, lighting: rest.lighting
+            pitch: rest.pitch, thicknessRatio: spine.height / spine.width, lighting: rest.lighting
         )
         .scaleEffect(scale)
         .rotationEffect(.radians(-.pi / 2 + rest.tilt))
@@ -401,10 +428,10 @@ private struct CenterTracking: ViewModifier {
 /// the scroll offset names. The carousel's lazy stack therefore holds pages of equal length,
 /// with no spacing, so it places even pages it has not built exactly and `offsets` match the
 /// layout. Each page holds the spines whose centers fall within it; a spine may overhang its
-/// page by half its thickness. A stacked book fades out completely once its center leaves the
-/// scroll view (`StackArrangement.opacity(inset:)`), so every visible book's page intersects the
-/// scroll view and is built. Shelved spines stay opaque, so the shelf's scroll view reaches past
-/// the screen's sides by half of `maxThickness` instead.
+/// page by half its thickness. The stack's mask hides half of `maxThickness` at each end of its
+/// scroll view (`StackArrangement.maskStops(height:top:bottom:)`), so every visible book's page
+/// intersects the scroll view and is built. Shelved spines stay opaque, so the shelf's scroll view
+/// reaches past the screen's sides by half of `maxThickness` instead.
 struct SpineTrack {
     static let pageLength: CGFloat = 100
 
@@ -509,7 +536,7 @@ struct StackArrangement {
     static let maximumTwist = 0.3
     /// Space between the screen's edges and the longest book lying in the middle.
     static let margin: CGFloat = 16
-    /// How far inside the scroll view's ends a book's center fades in.
+    /// How far the stack fades in from each end of the masked part of its scroll view.
     static let fade: CGFloat = 96
 
     /// A book's place in the stack: its center's distance right of the middle, its length, and
@@ -576,11 +603,19 @@ struct StackArrangement {
         return max(overlap(at: start), overlap(at: end))
     }
 
-    /// The opacity of a book whose center lies `inset` points inside the nearer end of the scroll
-    /// view: 0 at the end, where its page may not be built, and 1 from `fade` inside it.
-    static func opacity(inset: CGFloat) -> Double {
-        let amount = Double(min(1, max(0, inset / fade)))
-        return amount * amount * (3 - 2 * amount)
+    /// The stops of the stack's mask, from the top of a scroll view `height` points tall to its
+    /// bottom: clear for `top` and `bottom` points at the ends, then opaque from `fade` further in.
+    /// A scroll view too short for both fades fades in to its middle.
+    static func maskStops(height: CGFloat, top: CGFloat, bottom: CGFloat) -> [Gradient.Stop] {
+        guard height > 0 else { return [] }
+        let opaqueStart = min(0.5, (top + fade) / height)
+        let opaqueEnd = max(0.5, 1 - (bottom + fade) / height)
+        return [
+            .init(color: .clear, location: min(opaqueStart, top / height)),
+            .init(color: .black, location: opaqueStart),
+            .init(color: .black, location: opaqueEnd),
+            .init(color: .clear, location: max(opaqueEnd, 1 - bottom / height)),
+        ]
     }
 
     /// A value in -1...1 from the book's ID and `salt`, mostly near 0.
