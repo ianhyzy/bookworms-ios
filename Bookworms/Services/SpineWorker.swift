@@ -253,13 +253,19 @@ actor SpineWorker {
     }
 
     /// Returns the design to save for `book`, or `nil` when iCloud already has this work or a
-    /// design whose colors the reader chose (see `SpineDesignV1.action(workItemHash:coverHash:)`).
+    /// design whose colors the reader chose (see
+    /// `SpineDesignV1.action(workItemHash:coverHash:readerChoseCover:)`).
     private func design(
         for book: CloudBook, cover: CoverImage, workHash: String, context: WorkContext
     ) async throws -> SpineDesignV1? {
         // A ledger miss is not proof: another device may have saved this work already.
         let saved = try await store.savedDesign(accountID: context.accountID, bookID: book.id)
-        switch saved?.action(workItemHash: workHash, coverHash: cover.hash) ?? .redesign {
+        let readerChoseCover = await ledger.readerChoseCover(
+            recordName: Self.recordName(context.accountID, book), chosenCover: book.chosenCoverURL)
+        let action = saved?
+            .action(
+                workItemHash: workHash, coverHash: cover.hash, readerChoseCover: readerChoseCover)
+        switch action ?? .redesign {
         case .keep: return nil
         case .save(let design): return design
         case .redesign: break

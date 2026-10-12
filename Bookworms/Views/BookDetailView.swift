@@ -23,9 +23,6 @@ struct BookDetailView: View {
     /// The chosen cover the shown spine design comes from, as far as this screen knows: the
     /// cover when the details opened, then the cover when a new design arrives.
     @State private var designedCover: URL?
-    /// Whether the reader picked a spine color since last scrolling, which keeps room below the
-    /// **Spine design** card for the color picker's sheet.
-    @State private var picksColors = false
 
     init(book: CloudBook, hostedBook: HostedBook? = nil) {
         opened = book
@@ -53,13 +50,6 @@ struct BookDetailView: View {
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 24)
-        }
-        // The color picker's sheet blocks scrolling while it shows, so a scroll means it closed.
-        // The room goes once the scroll settles, so its removal does not jerk the reader's drag.
-        .onScrollPhaseChange { old, new in
-            if new == .idle, old == .interacting || old == .decelerating {
-                withAnimation { picksColors = false }
-            }
         }
         .background {
             if hostedBook == nil { ShelfPalette.wall.ignoresSafeArea() }
@@ -163,7 +153,7 @@ struct BookDetailView: View {
     }
 
     private func designCard(look: SpineLook, design: SpineDesignV1?) -> some View {
-        SpineDesignCard(book: book, look: look, design: design, isPicking: $picksColors)
+        SpineDesignCard(book: book, look: look, design: design)
     }
 }
 
@@ -357,10 +347,9 @@ private struct Card<Content: View>: View {
 /// neither redraws 3D textures nor writes to iCloud for each frame. Colors whose text and
 /// background contrast less than 4.5:1 show only here, with a note, and are never saved.
 ///
-/// The picker's sheet covers the lower part of the screen, so once the reader picks a color,
-/// the card adds room below itself and scrolls its spine and contrast note to the top, above
-/// the sheet. The room stays until the details scroll again. The picker's opening tap goes to a
-/// UIKit color well that reports nothing to SwiftUI, and its closing reports nothing either.
+/// The picker's sheet covers the lower half of the screen. While it shows, the card adds room
+/// below itself and scrolls its top to the top of the details, so the spine, the contrast note,
+/// and the swatches stay above the sheet.
 private struct SpineDesignCard: View {
     let book: CloudBook
     /// The look of the saved design, as the rest of the app shows it.
@@ -372,10 +361,10 @@ private struct SpineDesignCard: View {
     /// Picked colors that the library does not show yet, or that it shows but failed to save.
     @State private var draft: SpineColors?
     @State private var saveError: String?
-    /// Set when the reader picks a color; the details clear it when they scroll.
-    @Binding var isPicking: Bool
+    /// The color whose picker shows.
+    @State private var picking: ColorRole?
 
-    private static let previewID = "spine-preview"
+    private static let cardID = "spine-design-card"
 
     private var saved: SpineColors {
         SpineColors(background: look.background, foreground: look.foreground, accent: look.accent)
@@ -385,15 +374,28 @@ private struct SpineDesignCard: View {
         let shown = draft ?? saved
         ScrollViewReader { proxy in
             VStack(spacing: 0) {
-                card(shown: shown)
-                if isPicking {
-                    Color.clear.containerRelativeFrame(.vertical) { height, _ in height * 0.6 }
+                card(shown: shown).id(Self.cardID)
+                if picking != nil {
+                    Color.clear.containerRelativeFrame(.vertical)
                 }
             }
-            .onChange(of: isPicking) {
-                guard isPicking else { return }
-                withAnimation { proxy.scrollTo(Self.previewID, anchor: .top) }
+            .animation(.smooth, value: picking == nil)
+            .onChange(of: picking == nil) {
+                guard picking != nil else { return }
+                withAnimation(.smooth) { proxy.scrollTo(Self.cardID, anchor: .top) }
             }
+        }
+        .sheet(item: $picking) { role in
+            SystemColorPicker(
+                title: "\(role.name) color", initial: shown[keyPath: role.keyPath]
+            ) { color in
+                var colors = draft ?? saved
+                colors[keyPath: role.keyPath] = color
+                draft = colors
+            } finish: {
+                picking = nil
+            }
+            .presentationDetents([.medium])
         }
         .task(id: draft) {
             guard let draft else { return }
@@ -419,7 +421,6 @@ private struct SpineDesignCard: View {
             SpineView(book: book, look: look(with: shown))
                 .frame(height: book.slabThickness)
                 .accessibilityHidden(true)
-                .id(Self.previewID)
             if let design {
                 // Under the spine, so the note shows above the picker's sheet.
                 if !shown.isReadable {
@@ -437,9 +438,9 @@ private struct SpineDesignCard: View {
                     ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
                     : AnyLayout(HStackLayout(alignment: .top))
                 swatches {
-                    Swatch(name: "Background", color: color(\.background))
-                    Swatch(name: "Text", color: color(\.foreground))
-                    Swatch(name: "Accent", color: color(\.accent))
+                    ForEach(ColorRole.allCases) { role in
+                        Swatch(role: role, color: shown[keyPath: role.keyPath]) { picking = role }
+                    }
                 }
                 if shown.isReadable {
                     if let saveError {
@@ -466,18 +467,6 @@ private struct SpineDesignCard: View {
                     .font(.footnote)
                     .foregroundStyle(cardNote)
             }
-        }
-    }
-
-    /// A binding to one of the shown colors, which makes the picked colors the draft.
-    private func color(_ role: WritableKeyPath<SpineColors, ColorValue>) -> Binding<ColorValue> {
-        Binding {
-            (draft ?? saved)[keyPath: role]
-        } set: { value in
-            var colors = draft ?? saved
-            colors[keyPath: role] = value
-            draft = colors
-            isPicking = true
         }
     }
 
@@ -530,13 +519,38 @@ private struct SpineDesignCard: View {
     #endif
 }
 
-/// One design color: a swatch that opens the system color picker, its role, and its hex value.
+/// A spine color the reader can change.
+private enum ColorRole: CaseIterable, Identifiable {
+    case background, text, accent
+
+    var id: Self { self }
+
+    var name: String {
+        switch self {
+        case .background: "Background"
+        case .text: "Text"
+        case .accent: "Accent"
+        }
+    }
+
+    var keyPath: WritableKeyPath<SpineColors, ColorValue> {
+        switch self {
+        case .background: \.background
+        case .text: \.foreground
+        case .accent: \.accent
+        }
+    }
+}
+
+/// One design color: a button with its swatch, its role, and its hex value, which opens the
+/// color picker.
 ///
 /// A column for a row of three; at accessibility sizes, where a column breaks the words, a row
 /// with the text beside the swatch.
 private struct Swatch: View {
-    let name: String
-    @Binding var color: ColorValue
+    let role: ColorRole
+    let color: ColorValue
+    let action: () -> Void
 
     @Environment(\.dynamicTypeSize) private var typeSize
 
@@ -544,36 +558,66 @@ private struct Swatch: View {
         let isRow = typeSize.isAccessibilitySize
         let layout =
             isRow ? AnyLayout(HStackLayout(spacing: 12)) : AnyLayout(VStackLayout(spacing: 6))
-        layout {
-            // The swatch covers the system color well and lets touches through to it, so the
-            // card keeps its look while the well opens the picker.
-            ColorPicker(
-                "\(name) color",
-                selection: Binding {
-                    color.color
-                } set: {
-                    color = ColorValue($0)
-                },
-                supportsOpacity: false
-            )
-            .labelsHidden()
-            .accessibilityValue(color.hex)
-            .overlay {
+        Button(action: action) {
+            layout {
                 Circle()
                     .fill(color.color)
                     .overlay { Circle().strokeBorder(.white.opacity(0.25), lineWidth: 1) }
                     .frame(width: 40, height: 40)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+                VStack(alignment: isRow ? .leading : .center, spacing: isRow ? 2 : 6) {
+                    Text(role.name).font(.caption)
+                    Text(color.hex).font(.caption.monospaced()).foregroundStyle(cardNote)
+                }
             }
-            .frame(width: 40, height: 40)
-            VStack(alignment: isRow ? .leading : .center, spacing: isRow ? 2 : 6) {
-                Text(name).font(.caption)
-                Text(color.hex).font(.caption.monospaced()).foregroundStyle(cardNote)
-            }
-            .accessibilityHidden(true)
+            .frame(maxWidth: isRow ? nil : .infinity)
+            .contentShape(.rect)
         }
-        .frame(maxWidth: isRow ? nil : .infinity)
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(role.name) color")
+        .accessibilityValue(color.hex)
+    }
+}
+
+/// The system color picker, without opacity, reporting each pick and the picker's close.
+///
+/// SwiftUI's `ColorPicker` opens the same picker but reports neither its opening nor its close,
+/// which the **Spine design** card needs to move above the picker's sheet and back. The card
+/// presents this picker in its own sheet instead.
+private struct SystemColorPicker: UIViewControllerRepresentable {
+    let title: String
+    let initial: ColorValue
+    let pick: (ColorValue) -> Void
+    let finish: () -> Void
+
+    func makeUIViewController(context: Context) -> UIColorPickerViewController {
+        let picker = UIColorPickerViewController()
+        picker.title = title
+        picker.supportsAlpha = false
+        picker.selectedColor = initial.uiColor
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ picker: UIColorPickerViewController, context: Context) {
+        context.coordinator.parent = self
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    @MainActor final class Coordinator: NSObject, UIColorPickerViewControllerDelegate {
+        var parent: SystemColorPicker
+
+        init(parent: SystemColorPicker) { self.parent = parent }
+
+        func colorPickerViewController(
+            _ picker: UIColorPickerViewController, didSelect color: UIColor, continuously: Bool
+        ) {
+            parent.pick(ColorValue(Color(uiColor: color)))
+        }
+
+        func colorPickerViewControllerDidFinish(_ picker: UIColorPickerViewController) {
+            parent.finish()
+        }
     }
 }
 
