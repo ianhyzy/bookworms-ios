@@ -298,6 +298,29 @@ enum PileLayout {
             .max() ?? 0
     }
 
+    /// The seconds until the first of the books starting at `slots` can show in `camera`'s
+    /// view: the least time one takes to fall, from rest under `gravity` and `airDrag`, until
+    /// its middle comes within `entryClearance` of the plane along the view's top edge.
+    static func entryDelay(of slots: some Sequence<PileSlot>, seenBy camera: PileCamera)
+        -> TimeInterval
+    {
+        // The top plane's normal, pointing away from what the view shows.
+        let half = PileCamera.fieldOfView / 2
+        let normal = camera.rotation.act(SIMD3(0, cos(half), sin(half)))
+        let eye = camera.transform.translation
+        let drop =
+            slots.map {
+                (simd_dot(normal, $0.transform.translation - eye) - entryClearance) / normal.y
+            }
+            .min() ?? 0
+        // A fall under drag has no closed-form time for a distance, so this steps through it.
+        var time: Float = 0
+        while gravity / airDrag * (time - (1 - exp(-airDrag * time)) / airDrag) < drop {
+            time += 0.01
+        }
+        return TimeInterval(time)
+    }
+
     /// Drop poses above the tray, in waves of `waveSize` books, from `spawnHeight(over:)` up.
     ///
     /// Each wave fills a 2 × 8 grid of cells once, in a shuffled order. Cells start at six
@@ -818,6 +841,7 @@ final class BookPileScene {
         _ books: [CloudBook], tidy: Bool, periods: TimeFrame? = nil, generation: Int,
         viewport: PileViewport, model: AppModel
     ) async {
+        let began = ContinuousClock.now
         planDrop(books, tidy: tidy, periods: periods, generation: generation, viewport: viewport)
         guard tray != nil else { return }
         let key = PlanKey(
@@ -855,7 +879,6 @@ final class BookPileScene {
                 else { continue }
                 startFall(book)
             }
-            if loading.isLoading { loading.isLoading = false }
             if let group, let groups = self.periods {
                 calendar.show(
                     isFlying ? nil : label, season: group.season,
@@ -863,6 +886,16 @@ final class BookPileScene {
             }
             spawned += wave.count
             lastWave = .now
+            if loading.isLoading {
+                // Keeps a spinner that has shown until the first books can show, so it fades
+                // out as they fall into view. A quicker setup, such as **Drop again**, shows none.
+                if !holdsStill, lastWave - began > .seconds(SceneLoading.showDelay) {
+                    try? await Task.sleep(
+                        for: .seconds(PileLayout.entryDelay(of: wave, seenBy: view)))
+                }
+                guard planKey == key else { return }
+                loading.isLoading = false
+            }
         }
         #if DEBUG
             await runDebugActions()

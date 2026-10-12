@@ -105,10 +105,9 @@ final class DeskStage {
     /// It hangs high above the pool, toward the camera and a little to its right, about 61
     /// degrees up: it lights the faces that turn toward the camera, its shadows fall up and to
     /// the left of the books, where the camera sees them, and flat glossy covers reflect it
-    /// away from the camera. Over the pile's pool it hangs far above where a drop starts, so
-    /// falling books stay in its light and their shadows stay close to their size. It aims at
-    /// the pool's middle. Full light spans the middle of the pool and fades out past its
-    /// edge. Angles are the cone's full angles, in degrees.
+    /// away from the camera. Over the pile's pool it hangs above the camera, so above every book
+    /// in view. It aims at the pool's middle. Full light spans the middle of the pool and fades
+    /// out past its edge. Angles are the cone's full angles, in degrees.
     nonisolated static func lampPlacement(pool: SIMD3<Float>, radius: Float) -> (
         position: SIMD3<Float>, aim: SIMD3<Float>, distance: Float, innerAngle: Float,
         outerAngle: Float

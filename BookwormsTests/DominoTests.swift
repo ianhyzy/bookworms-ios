@@ -369,6 +369,20 @@ final class DominoTests: XCTestCase {
             DominoLayout.entrySpread + DominoLayout.entryFall + DominoLayout.webFade, 2)
     }
 
+    func testASlowBatchSpreadsItsDropsOverItsBuild() {
+        // Built at once, a batch keeps the chain's step.
+        XCTAssertEqual(
+            DominoLayout.entryStep(count: 276, batch: 16, interval: 0),
+            DominoLayout.entryStep(count: 276))
+        XCTAssertEqual(DominoLayout.entryStep(count: 39, batch: 16, interval: 0.1), 1.2 / 38)
+        // Built in 0.48 seconds, its 16 drops share that time.
+        XCTAssertEqual(
+            DominoLayout.entryStep(count: 276, batch: 16, interval: 0.48), 0.03, accuracy: 1e-9)
+        // A slower build spreads them at most 50 milliseconds apart.
+        XCTAssertEqual(DominoLayout.entryStep(count: 276, batch: 16, interval: 1.1), 0.05)
+        XCTAssertEqual(DominoLayout.entryStep(count: 276, batch: 0, interval: 1), 0.05)
+    }
+
     func testThreeDOffersDominoes() {
         XCTAssertEqual(ThreeDView.dominoes.title, "Dominoes")
         XCTAssertEqual(ThreeDView(rawValue: "dominoes"), .dominoes)

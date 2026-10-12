@@ -99,6 +99,18 @@ enum DominoLayout {
         min(0.05, entrySpread / Double(max(count - 1, 1)))
     }
 
+    /// The seconds from one drop to the next in a batch of `batch` books of a chain of `count`,
+    /// built `interval` seconds after the batch before it: `entryStep(count:)`, or the interval
+    /// shared among the batch's books when that is longer, up to 0.05. A slowly built batch
+    /// thus drops one book after another over about the time it took, instead of all at once
+    /// and then a pause, while a chain built at once still drops within `entrySpread`. The
+    /// first batch's `interval` runs from when setting up began, so a new chain's first batch,
+    /// which also waits for its covers and the room's light, usually drops 0.05 seconds apart,
+    /// and the next batch builds while it drops.
+    static func entryStep(count: Int, batch: Int, interval: TimeInterval) -> TimeInterval {
+        max(entryStep(count: count), min(0.05, interval / Double(max(batch, 1))))
+    }
+
     /// The gap from the back cover of a book of `height` to the next book's front cover on a
     /// row: `spacing` times the height, whatever the days between their finishes.
     ///
@@ -622,6 +634,9 @@ final class DominoScene {
         guard planSetUp(books, generation: generation, viewport: viewport), let key else {
             return
         }
+        // When the batch before was built, or this call began, on `entryClock`, which paces
+        // the drops.
+        var built = entryClock
         while spawned < plan.count {
             let end = min(spawned + Self.batchSize, plan.count)
             let batch = plan[spawned..<end]
@@ -634,12 +649,20 @@ final class DominoScene {
             // Keeps the first books until the room's light is ready, so they enter lit.
             if spawned == 0 { await stage.lit() }
             guard !Task.isCancelled, self.key == key else { return }
-            for slot in batch { spawn(slot, cobweb: cobwebs[slot.book.id]) }
+            let step = DominoLayout.entryStep(
+                count: plan.count, batch: batch.count, interval: entryClock - built)
+            built = entryClock
+            for slot in batch { spawn(slot, cobweb: cobwebs[slot.book.id], step: step) }
             spawned = end
             if loading.isLoading { loading.isLoading = false }
         }
         if rig == nil { rig = makeRig() }
         #if DEBUG
+            // The hooks start once every book stands.
+            while !Task.isCancelled, self.key == key, !isReady {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            guard !Task.isCancelled, self.key == key else { return }
             showDebugCobweb()
             await runDebugPushes()
         #endif
@@ -795,9 +818,9 @@ final class DominoScene {
     /// Stands the book of `slot`, with `cobweb` hanging between it and the book before it.
     ///
     /// Unless Reduce Motion is on, the book waits out of sight for its turn to drop into its
-    /// place, `DominoLayout.entryStep(count:)` after the book before it, and its cobweb waits
-    /// unseen for it to land (see `enter(by:)`).
-    private func spawn(_ slot: DominoSlot, cobweb: HangingCobweb?) {
+    /// place, `step` seconds after the book before it, and its cobweb waits unseen for it to
+    /// land (see `enter(by:)`).
+    private func spawn(_ slot: DominoSlot, cobweb: HangingCobweb?, step: TimeInterval) {
         let enters = !reducesMotion
         guard
             let book = factory.makeBook(
@@ -820,7 +843,7 @@ final class DominoScene {
         guard enters else { return }
         book.isEnabled = false
         web?.components.set(OpacityComponent(opacity: 0))
-        let start = max(entryClock, lastEntry + DominoLayout.entryStep(count: plan.count))
+        let start = max(entryClock, lastEntry + step)
         lastEntry = start
         entering.append(Entry(book: books.count - 1, start: start, web: web))
     }
@@ -934,9 +957,12 @@ final class DominoScene {
     }
 
     /// The ID of any book under `point`, in a view of `size`, the marked book's on `hitBox`,
-    /// or `nil` for the table, for a touch and hold.
+    /// or `nil` for the table, for a touch and hold. Returns `nil` until every book stands,
+    /// since `lift(_:)` cannot lift a book before then, and a touch and hold would otherwise
+    /// push the details.
     func bookID(at point: CGPoint, in size: CGSize) -> Int? {
-        book(at: point, in: size).map { slots[$0].book.id }
+        guard isReady else { return nil }
+        return book(at: point, in: size).map { slots[$0].book.id }
     }
 
     /// The index of the book under `point`, in a view of `size`, the marked book's on

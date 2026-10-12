@@ -279,6 +279,28 @@ final class BookPileTests: XCTestCase {
         return PileLayout.gravity / drag * (time - (1 - exp(-drag * time)) / drag)
     }
 
+    func testSpinnerLastsUntilTheFirstBooksCanShow() {
+        let camera = PileCamera()
+        let eye = camera.transform.translation
+        let slope = tan(PileCamera.fieldOfView / 2)
+        for seed: UInt64 in 0..<5 {
+            let wave = PileLayout.dropPlan(Self.books, in: Self.tray, seed: seed)
+                .prefix(PileLayout.waveSize)
+            let delay = Float(PileLayout.entryDelay(of: wave, seenBy: camera))
+            // About a third of a second, so the spinner's fade overlaps the first books coming in.
+            XCTAssertGreaterThan(delay, 0.2)
+            XCTAssertLessThan(delay, 0.6)
+            // No corner shows before then.
+            let drop = SIMD3(0, fallen(after: delay - 0.02), 0)
+            let shown = wave.flatMap { corners(of: $0) }
+                .contains { corner in
+                    let local = camera.rotation.inverse.act(corner - drop - eye)
+                    return local.y <= -local.z * slope
+                }
+            XCTAssertFalse(shown, "\(seed)")
+        }
+    }
+
     func testAirDragLandsBooksAboutAsFastAsALowDrop() {
         let starts = PileLayout.dropPlan(Self.books, in: Self.tray, seed: 2)
             .map(\.transform.translation.y)
