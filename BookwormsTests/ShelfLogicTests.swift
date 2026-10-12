@@ -108,7 +108,8 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(
             StackStyle.threeD.rest(of: top),
             PullOutPath.Rest(
-                yaw: -StackStyle.lookDown, pitch: twist, lighting: StackStyle.lighting))
+                yaw: -StackStyle.lookDown, pitch: twist, lighting: StackStyle.lighting,
+                slidesInStack: true))
     }
 
     func testShelvedDoorstoppersStandTallerAndThickerThanNovellas() {
@@ -413,11 +414,26 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(start.pitch, 0.2, accuracy: 0.0001)
         XCTAssertEqual(start.lighting, 0.6, accuracy: 0.0001)
         XCTAssertEqual(path.pose(at: -0.1), start)
-        // Turned to face a little left, it comes out toward the reader and a little left.
+        // Turned to face a little left, it comes out toward the reader, a little left, and down
+        // the screen.
+        let placeTop = start.center.y + drawnSize(start, aspect: 2 / 3).width / 2 - home.height
         let pulled = path.pose(at: PullOutPath.floatStart)
         XCTAssertLessThan(pulled.center.x, start.center.x)
-        XCTAssertEqual(pulled.center.y, start.center.y, accuracy: 0.001)
+        XCTAssertGreaterThan(pulled.center.y, start.center.y)
         XCTAssertGreaterThan(pulled.scale / start.scale, 1.1)
+        XCTAssertEqual(pulled.roll, -.pi / 2, accuracy: 0.0001)
+        // It ends the slide just clear of the book above, before it rises or stands up, as far
+        // as the stack's own drawing of the slide moves it.
+        let out = path.pose(at: PullOutPath.pullEnd)
+        XCTAssertEqual(out.roll, -.pi / 2, accuracy: 0.0001)
+        XCTAssertEqual(
+            out.center.y - drawnSize(out, aspect: 2 / 3).width / 2, placeTop, accuracy: 0.5)
+        let slide = PullOutPath.slide(
+            at: PullOutPath.pullEnd, length: 280, thickness: 32,
+            extent: drawnSize(start, aspect: 2 / 3).width, rest: rest)
+        XCTAssertEqual(out.center.y - start.center.y, slide.offset.height, accuracy: 0.001)
+        XCTAssertEqual(out.center.x - start.center.x, slide.offset.width, accuracy: 0.001)
+        XCTAssertEqual(out.scale / start.scale, slide.scale, accuracy: 0.0001)
 
         let end = path.pose(at: 1)
         XCTAssertEqual(end.roll, 0, accuracy: 0.0001)

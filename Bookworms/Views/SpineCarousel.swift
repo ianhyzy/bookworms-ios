@@ -29,15 +29,17 @@ enum StackStyle: String {
 
     /// How `book` lies in the stack, which is also where its flight to the details starts.
     ///
-    /// The flight draws every face of the book from its first frame, in front of the stack, so
-    /// a book under others comes straight out over them and goes back the same way; nothing
-    /// fades. The books around it hold still while it is out.
+    /// Nothing fades: the book shows every face throughout. A 3D book slides out inside the
+    /// stack, under the books above it, until it is clear of them (`Rest.slidesInStack`), and
+    /// the flight then draws it in front of the stack. The books around it hold still while it
+    /// is out.
     func rest(of book: CloudBook) -> PullOutPath.Rest {
         let twist = StackArrangement.twist(of: book)
         switch self {
         case .flat: return PullOutPath.Rest(pitch: twist)
         case .threeD:
-            return PullOutPath.Rest(yaw: -Self.lookDown, pitch: twist, lighting: Self.lighting)
+            return PullOutPath.Rest(
+                yaw: -Self.lookDown, pitch: twist, lighting: Self.lighting, slidesInStack: true)
         }
     }
 }
@@ -310,6 +312,11 @@ private struct StackedBook: View {
         .scaleEffect(scale)
         .rotationEffect(.radians(-.pi / 2))
         .frame(width: drawn.width, height: drawn.height)
+        .modifier(
+            StackSlide(
+                progress: pullOut.book?.id == book.id && pullOut.isOut ? pullOut.progress : 0,
+                spine: spine, extent: drawn.height, rest: rest)
+        )
         .frame(width: spine.width, height: spine.height, alignment: .bottom)
         .modifier(
             PulledSpine(
@@ -322,8 +329,37 @@ private struct StackedBook: View {
     }
 }
 
+/// A 3D stacked book's slide out of its place while it is pulled (`PullOutPath.slide`), drawn in
+/// the stack, so the books above it cover what still lies under them and it covers the books
+/// below. Once the book is clear of the stack, the flight draws it and the stack hides it.
+///
+/// SwiftUI animates `progress`, so the slide follows the flight frame by frame.
+private struct StackSlide: ViewModifier, Animatable {
+    var progress: Double
+    /// The book's place: the spine's length by its thickness.
+    let spine: CGSize
+    /// How far the drawn book reaches down the screen as it lay.
+    let extent: CGFloat
+    let rest: PullOutPath.Rest
+
+    nonisolated var animatableData: Double {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        let slide = PullOutPath.slide(
+            at: progress, length: spine.width, thickness: spine.height, extent: extent, rest: rest)
+        content
+            .scaleEffect(slide.scale)
+            .offset(slide.offset)
+            .opacity(progress < PullOutPath.pullEnd ? 1 : 0)
+    }
+}
+
 /// Hides a spine while `pullOut` has its book out, leaving a gap in the shadow of the books beside
-/// it, and reports the gap's frame and how the book lay in it.
+/// it, and reports the gap's frame and how the book lay in it. A book that slides out inside the
+/// stack hides itself (`StackSlide`).
 ///
 /// The gap reports its frame as soon as the book is pulled, while the spine still shows, and the
 /// spine hides once the flying book is drawn over it, so no frame shows neither. The frame is the
@@ -341,7 +377,7 @@ private struct PulledSpine: ViewModifier {
     func body(content: Content) -> some View {
         let isPulled = pullOut.book?.id == id
         content
-            .opacity(isPulled && pullOut.isOut ? 0 : 1)
+            .opacity(isPulled && pullOut.isOut && !rest.slidesInStack ? 0 : 1)
             .background {
                 if isPulled {
                     LinearGradient(

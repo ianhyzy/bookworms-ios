@@ -135,14 +135,17 @@ final class ShelfPullOut {
 /// Each part of the flight runs over its own share of the progress, with its own easing:
 ///
 /// 1. The book slides out of its place, straight toward the reader, which shows as its spine
-///    growing; on **Stack**, it comes out along the way its spine faces, so a turned book also
-///    moves a little to that side. It is drawn whole and in front of the books around it from
-///    the start, and they hold still. It casts a shadow on the shelf, and the faces' shading
-///    fades in.
+///    growing, while the books around it hold still. On **Stack**, it comes out along the way
+///    its spine faces (`slide`), so a turned book also moves a little to that side, and down
+///    the screen, until it is clear of the book above. The 3D stack draws this part itself,
+///    under the books above (`Rest.slidesInStack`). The book casts a shadow on the shelf, and
+///    the faces' shading fades in.
 /// 2. As the slide ends, the book starts to float to the stage, growing or shrinking to the
 ///    stage's height, and to turn from the way it lay (`Rest`) to the details' pose, while a book
-///    from **Stack** stands up from lying on its back. The float and the turn start before the
-///    slide has quite ended, so the book never stops, but only once it is almost out of its place.
+///    from **Stack** stands up from lying on its back. On **Shelf**, the float and the turn start
+///    before the slide has quite ended, so the book never stops, but only once it is almost out
+///    of its place. On **Stack**, they wait for the slide to end, so the book never moves across
+///    its neighbors while it is still between them.
 /// 3. Once the book is on its way, the shelf dims behind it.
 ///
 /// The return retraces the same path. Progress outside 0...1 leaves the book at that end.
@@ -212,6 +215,10 @@ struct PullOutPath {
         var pitch = 0.0
         /// `Book3DView.lighting`, 0 for a flat spine.
         var lighting = 0.0
+        /// Whether the stack draws the book's slide out of its place itself (`slide`), so the
+        /// books above it still cover what lies under them. The flight takes over once the book
+        /// is clear of the stack.
+        var slidesInStack = false
     }
 
     /// How much larger than the book's height `Book3DView` draws a book that faces its spine to
@@ -226,25 +233,36 @@ struct PullOutPath {
 
     func pose(at progress: Double) -> Pose {
         let pull = Self.phase(progress, from: 0, to: Self.pullEnd, .easeInOut)
-        let float = Self.phase(progress, from: Self.floatStart, to: 1, Self.floatCurve)
-        let turn = Self.phase(progress, from: Self.turnStart, to: 1, .easeInOut)
+        let floatStart = upright ? Self.floatStart : Self.pullEnd
+        let turnStart = floatStart + Self.turnStart - Self.floatStart
+        let float = Self.phase(progress, from: floatStart, to: 1, Self.floatCurve)
+        let turn = Self.phase(progress, from: turnStart, to: 1, .easeInOut)
         let lift = Self.phase(progress, from: Self.veilStart, to: 1, .easeInOut)
         let length = upright ? home.height : home.width
         let spineRatio = (upright ? home.width : home.height) / max(1, length)
         let magnification = Self.spineMagnification(aspect: aspect, thicknessRatio: spineRatio)
-        let pulled = (1 + (Self.pullScale - 1) * pull) / magnification
-        // A book on its back comes out along the way its spine faces: straight toward the reader,
-        // and a little to the side it is turned to. `BookProjection`'s camera sits 3.2 lengths
-        // away, so growing by `pullScale` moves the book that much nearer.
-        let slideX =
-            upright ? 0 : -sin(rest.pitch) * 3.2 * (Self.pullScale - 1) * length * pull
         // The spine-on pose nearest the details' pose, so a book the reader spun turns back the
         // short way.
         let spineYaw = .pi / 2 + 2 * .pi * ((pose.yaw - .pi / 2) / (2 * .pi)).rounded()
+        // On its back, a book comes out along the way its spine faces (`slide`). Its drawn width
+        // runs down the screen, and in 3D includes the top board behind its spine.
+        let slide =
+            upright
+            ? (offset: CGSize.zero, scale: 1 + (Self.pullScale - 1) * pull)
+            : Self.slide(
+                at: progress, length: length, thickness: home.height,
+                extent: BookProjection(
+                    width: length * aspect, height: length, thickness: length * spineRatio,
+                    yaw: spineYaw + rest.yaw, pitch: rest.pitch
+                )
+                .bounds.width / magnification, rest: rest)
+        let pulled = slide.scale / magnification
+        // A book that slides out inside the stack shades and casts its shadow once it is out.
+        let outStart = rest.slidesInStack ? Self.pullEnd : 0
         return Pose(
             center: CGPoint(
-                x: Self.mix(home.midX + slideX, stage.midX, float),
-                y: Self.mix(home.midY, stage.midY, float)),
+                x: Self.mix(home.midX + slide.offset.width, stage.midX, float),
+                y: Self.mix(home.midY + slide.offset.height, stage.midY, float)),
             height: Self.mix(length, stage.height, float),
             scale: Self.mix(pulled, 1, float),
             // Late in the turn, so a change in the lettering's line count, which a spine's
@@ -254,9 +272,36 @@ struct PullOutPath {
             pitch: Self.mix(rest.pitch, pose.pitch, turn),
             roll: Self.mix(upright ? 0 : -.pi / 2, 0, turn),
             lighting: Self.mix(
-                rest.lighting, 1, Self.phase(progress, from: 0, to: Self.turnStart, .easeInOut)),
-            shadow: pull * (1 - lift),
+                rest.lighting, 1,
+                Self.phase(
+                    progress, from: outStart,
+                    to: rest.slidesInStack ? Self.veilStart : Self.turnStart, .easeInOut)),
+            shadow: Self.phase(progress, from: outStart, to: outStart + Self.pullEnd, .easeInOut)
+                * (1 - lift),
             lift: lift)
+    }
+
+    /// How a book on its back has moved out of its place at `progress`, as an offset from its
+    /// place and a scale, both relative to how it lay. The book comes straight toward the
+    /// reader along the way its spine faces: it grows by up to `pullScale`, moves a little to
+    /// the side it is turned to, and moves down the screen, as a book coming toward a camera
+    /// that looks down on it does, until its top edge, grown by `pullScale`, is just below the
+    /// top edge of its place, clear of the book above.
+    ///
+    /// - Parameters:
+    ///   - length: The spine's length on screen.
+    ///   - thickness: The height of the book's place on screen.
+    ///   - extent: How far the drawn book reaches down the screen as it lay, including a 3D
+    ///     book's top board, from the bottom edge of its place up.
+    static func slide(
+        at progress: Double, length: CGFloat, thickness: CGFloat, extent: CGFloat, rest: Rest
+    ) -> (offset: CGSize, scale: CGFloat) {
+        let pull = phase(progress, from: 0, to: pullEnd, .easeInOut)
+        // `BookProjection`'s camera sits 3.2 lengths away, so growing by `pullScale` moves the
+        // book that much nearer.
+        let side = -sin(rest.pitch) * 3.2 * (pullScale - 1) * length
+        let down = max(0, extent * (1 + pullScale) / 2 - thickness)
+        return (CGSize(width: side * pull, height: down * pull), 1 + (pullScale - 1) * pull)
     }
 
     /// How far `curve` has gone at `progress` through the part of the flight from `start` to
@@ -428,6 +473,8 @@ private struct PullOutFlight: View, Animatable {
         .scaleEffect(pose.scale)
         .rotationEffect(.radians(pose.roll))
         .position(pose.center)
+        // The stack draws a book that slides out inside it until the book is clear.
+        .opacity(path.rest.slidesInStack && progress < PullOutPath.pullEnd ? 0 : 1)
         .background {
             // Below and behind the book, as the lamp above the shelf would cast it.
             EllipticalGradient(
