@@ -89,7 +89,7 @@ struct ShelfView: View {
         if let library = model.library {
             let frame = mode == .pile ? pileFrame : nil
             let books = shownBooks(in: library, frame: frame)
-            if library.books.isEmpty {
+            if !library.books.contains(where: \.hasBeenRead) {
                 ContentUnavailableView(
                     "No books yet", systemImage: "books.vertical",
                     description: Text(
@@ -209,7 +209,11 @@ struct ShelfView: View {
 
     /// The books in the chosen order and filter, and in `frame` when it is set.
     private func shownBooks(in library: LibrarySnapshot, frame: TimeFrame? = nil) -> [CloudBook] {
-        var books = sort.sorted(model.books)
+        // The shelf holds the books you have read, as the Apple TV's default shelf does; 3D also
+        // keeps current reads, which **All books** marks with ribbons. Want to Read and other
+        // unread shelves stay off.
+        var books = sort.sorted(
+            model.books.filter { $0.hasBeenRead || (mode == .pile && $0.isReading == true) })
         if designedOnly { books = books.filter { library.designs[$0.id] != nil } }
         if let frame { books = books.filter(frame.contains) }
         #if DEBUG
@@ -760,6 +764,10 @@ enum ShelfSort: String, CaseIterable, Identifiable {
 }
 
 extension CloudBook {
+    /// Whether the reader has read the book: it is on their **Read** shelf or has a finish date,
+    /// and is not a current read. This matches the Apple TV's default shelf.
+    var hasBeenRead: Bool { isReading != true && (isRead == true || finished != nil) }
+
     /// The start date of the current or last read, parsed at noon UTC like `finishedDate`.
     var startedDate: Date? {
         guard let started, started.count >= 10 else { return nil }

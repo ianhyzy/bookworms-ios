@@ -234,7 +234,9 @@ struct PhoneLibrary: Codable, Equatable, Sendable {
     let syncedAt: Date
     let books: [CloudBook]
 
-    static let url = URL.cachesDirectory.appending(path: "Bookworms/hardcover-library.json")
+    /// Named for its format: books gained `isRead`, so a copy saved before then is not read, and
+    /// the next sync downloads the library again.
+    static let url = URL.cachesDirectory.appending(path: "Bookworms/hardcover-library-2.json")
 
     /// Returns the cached library, or `nil` when signed out or before the first sync.
     static func load() -> PhoneLibrary? {

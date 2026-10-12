@@ -122,6 +122,10 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
     /// The reader's rating, 0...5 in half steps.
     var rating: Double? = nil
     var isReading: Bool? = nil
+    /// Whether the book is on the reader's **Read** shelf, even without a finish date. The Apple
+    /// TV archive carries it; older archives leave it out, and then a finish date alone marks a
+    /// read book (`hasBeenRead`).
+    var isRead: Bool? = nil
     /// Reading progress, 0...1, for current reads.
     var progress: Double? = nil
     /// The start date of a current read as `yyyy-MM-dd`.

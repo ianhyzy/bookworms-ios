@@ -437,6 +437,8 @@ actor HardcoverClient {
 
     /// Hardcover's `status_id` for **Currently Reading**.
     private static let currentlyReadingStatus = 2
+    /// Hardcover's `status_id` for **Read**.
+    private static let readStatus = 3
 
     /// The two-letter code of this iPhone's preferred language. Cover choice considers other
     /// editions only in this language or with no recorded language.
@@ -481,6 +483,9 @@ actor HardcoverClient {
                 pages: edition?.pages ?? source.pages,
                 finished: read?.finishedAt ?? row.lastReadDate,
                 rating: row.rating, isReading: isReading ? true : nil,
+                // As the Apple TV marks read books: on the Read shelf, or finished at some point.
+                isRead: (row.statusID == readStatus || read?.finishedAt != nil
+                    || row.lastReadDate != nil) ? true : nil,
                 progress: isReading
                     ? progress(
                         of: current, pages: row.edition?.pages ?? source.pages,

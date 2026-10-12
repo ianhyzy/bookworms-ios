@@ -235,13 +235,19 @@ final class HardcoverTests: XCTestCase {
                     detailCoverURL: URL(string: "https://covers.example.com/reader-101.jpg"),
                     genres: ["Fantasy", "Mystery"], publicationYear: 2021, format: "Ebook",
                     seriesID: 9, seriesPosition: 1, pages: 336, finished: "2025-03-01",
-                    rating: 4.5, communityRating: 4.12, ratingsCount: 250,
+                    rating: 4.5, isRead: true, communityRating: 4.12, ratingsCount: 250,
                     review: "A quiet triumph & a joy.\n\nWould reread."),
+                CloudBook(
+                    id: 303, title: "Someday Soon", author: "Lena Marsh", coverURL: nil,
+                    detailCoverURL: nil, publicationYear: 2026, pages: 280, ratingsCount: 3),
                 CloudBook(
                     id: 202, title: "Salt and Static", author: "Iris Okafor", coverURL: nil,
                     detailCoverURL: nil, publicationYear: 2024, format: "Read", pages: 200,
                     isReading: true, progress: 0.25, started: "2025-04-10", ratingsCount: 0),
             ])
+        // Only the finished book belongs on the shelf: not the current read, and not the book
+        // on Want to Read.
+        XCTAssertEqual(library.books.filter(\.hasBeenRead).map(\.id), [101])
     }
 
     func testReviewTextBecomesPlainText() {
@@ -364,8 +370,8 @@ final class HardcoverTests: XCTestCase {
 
     private static let me = #"{"data":{"me":[{"id":4242,"username":"fictional_reader"}]}}"#
 
-    /// One fictional page: a finished book with an HTML review, a current read, and an older
-    /// row for the first book that normalization drops.
+    /// One fictional page: a finished book with an HTML review, a current read, a book on Want to
+    /// Read, and an older row for the first book that normalization drops.
     private static let libraryPage = """
         {"data":{"user_books":[
           {"status_id":3,"last_read_date":"2025-03-02","rating":4.5,
@@ -395,6 +401,11 @@ final class HardcoverTests: XCTestCase {
            "user_book_reads":[],
            "current_read":[{"started_at":"2025-04-10","progress":null,"progress_pages":50,
              "progress_seconds":null,"edition":{"pages":null,"audio_seconds":null}}]},
+          {"status_id":1,"last_read_date":null,"rating":null,"review":null,
+           "book":{"id":303,"title":"Someday Soon","pages":280,"release_year":2026,
+             "cached_contributors":[{"author":{"name":"Lena Marsh"},"contribution":null}],
+             "cached_tags":null,"rating":null,"ratings_count":3,"image":null,"book_series":[],"editions":[]},
+           "edition":null,"user_book_reads":[],"current_read":[]},
           {"status_id":3,"last_read_date":"2023-01-05","rating":3,"review":"Older read.",
            "book":{"id":101,"title":"The Lantern Keeper: A Novel","pages":320,"release_year":2021,
              "cached_contributors":[],"cached_tags":null,"rating":4.12,"ratings_count":250,
