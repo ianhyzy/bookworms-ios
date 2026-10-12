@@ -470,46 +470,72 @@ final class BookPileTests: XCTestCase {
         let beside = BoundingBox(min: [1.2, 0, -0.7], max: [3, 4, 0.7])
         let below = BoundingBox(min: [-1, -0.4, -0.7], max: [1, 0, 0.7])
         XCTAssertEqual(
-            PileFlight.rise(of: book, clearing: [onTop, beside, below]), 1.05, accuracy: 0.0001)
+            BookFlight.rise(of: book, clearing: [onTop, beside, below]), 1.05, accuracy: 0.0001)
         // A book still falling high above the stack does not count.
         let falling = BoundingBox(min: [-0.6, 3, -0.4], max: [0.9, 3.5, 0.6])
         XCTAssertEqual(
-            PileFlight.rise(of: book, clearing: [falling, onTop]), 1.05, accuracy: 0.0001)
-        XCTAssertEqual(PileFlight.rise(of: book, clearing: [falling]), 0.4)
+            BookFlight.rise(of: book, clearing: [falling, onTop]), 1.05, accuracy: 0.0001)
+        XCTAssertEqual(BookFlight.rise(of: book, clearing: [falling]), 0.4)
         // A book with nothing over it still comes free of the table, and a tall pile caps it.
-        XCTAssertEqual(PileFlight.rise(of: book, clearing: [beside, below]), 0.4)
+        XCTAssertEqual(BookFlight.rise(of: book, clearing: [beside, below]), 0.4)
         let tower = BoundingBox(min: [0, 0.3, 0], max: [0.5, 20, 0.5])
-        XCTAssertEqual(PileFlight.rise(of: book, clearing: [tower]), 6)
+        XCTAssertEqual(BookFlight.rise(of: book, clearing: [tower]), 6)
+    }
+
+    func testLiftWakesTheBooksOnAndAgainstTheLiftedOne() {
+        let book = BoundingBox(min: [-1, 0, -0.7], max: [1, 0.3, 0.7])
+        let others = [
+            // Resting on it, stacked high above it, and leaning on its side.
+            BoundingBox(min: [-0.5, 0.3, -0.5], max: [0.8, 0.9, 0.5]),
+            BoundingBox(min: [-0.5, 5, -0.5], max: [0.5, 5.5, 0.5]),
+            BoundingBox(min: [1.05, 0, -0.5], max: [2, 1, 0.5]),
+            // Under it and touching, which its leaving can shift.
+            BoundingBox(min: [-1, -0.4, -0.7], max: [1, 0, 0.7]),
+            // Beside it and under it, out of reach.
+            BoundingBox(min: [1.2, 0, -0.7], max: [3, 4, 0.7]),
+            BoundingBox(min: [-1, -0.6, -0.7], max: [1, -0.2, 0.7]),
+        ]
+        XCTAssertEqual(BookFlight.disturbed(by: book, among: others), [0, 1, 2, 3])
+        XCTAssertEqual(BookFlight.disturbed(by: book, among: []), [])
+    }
+
+    func testMostBuriedBookHasTheMostBooksOverIt() {
+        let bottom = BoundingBox(min: [-1, 0, -1], max: [1, 0.3, 1])
+        let middle = BoundingBox(min: [-0.8, 0.3, -0.8], max: [0.8, 0.6, 0.8])
+        let top = BoundingBox(min: [-0.5, 0.6, -0.5], max: [0.5, 0.9, 0.5])
+        let aside = BoundingBox(min: [3, 0, 3], max: [4, 0.3, 4])
+        XCTAssertEqual(BookFlight.mostBuried([top, aside, bottom, middle]), 2)
+        XCTAssertNil(BookFlight.mostBuried([]))
     }
 
     func testFlightLeavesTheRiseAtItsSpeedAndSettlesOnTheTarget() {
         let rise: Float = 1.2
-        let end = PileFlight.riseDuration(rise)
+        let end = BookFlight.riseDuration(rise)
         // A book with nothing on it leaves sooner than one under a stack.
-        XCTAssertLessThan(PileFlight.riseDuration(0.4), end)
-        XCTAssertEqual(PileFlight.riseDuration(6), 0.25)
-        XCTAssertEqual(PileFlight.landing(rise: rise), end + PileFlight.spring.duration)
-        XCTAssertEqual(PileFlight.climb(rise, at: 0), 0)
-        XCTAssertEqual(PileFlight.climb(rise, at: end), rise, accuracy: 0.0001)
+        XCTAssertLessThan(BookFlight.riseDuration(0.4), end)
+        XCTAssertEqual(BookFlight.riseDuration(6), 0.25)
+        XCTAssertEqual(BookFlight.landing(rise: rise), end + BookFlight.spring.duration)
+        XCTAssertEqual(BookFlight.climb(rise, at: 0), 0)
+        XCTAssertEqual(BookFlight.climb(rise, at: end), rise, accuracy: 0.0001)
         let step = 0.0001
         let riseSpeed =
-            (PileFlight.climb(rise, at: end) - PileFlight.climb(rise, at: end - step))
+            (BookFlight.climb(rise, at: end) - BookFlight.climb(rise, at: end - step))
             / Float(step)
-        XCTAssertEqual(riseSpeed, PileFlight.topSpeed(rise), accuracy: 0.05)
+        XCTAssertEqual(riseSpeed, BookFlight.topSpeed(rise), accuracy: 0.05)
 
         let clear = Transform(rotation: PileLayout.lyingFlat, translation: [1, 2, -2])
         let target = Transform(
             rotation: simd_quatf(angle: 2.5, axis: simd_normalize([0.3, 1, 0.2])),
             translation: [0, 20, 10])
         func pose(_ time: Double) -> Transform {
-            PileFlight.pose(
-                from: clear, speed: PileFlight.topSpeed(rise), to: target, time: time)
+            BookFlight.pose(
+                from: clear, speed: BookFlight.topSpeed(rise), to: target, time: time)
         }
         // The flight starts where the rise ends, at the rise's speed, with no hard stop.
         XCTAssertEqual(simd_distance(pose(0).translation, clear.translation), 0, accuracy: 0.0001)
         let velocity = (pose(step).translation - pose(0).translation) / Float(step)
         XCTAssertEqual(
-            simd_distance(velocity, [0, PileFlight.topSpeed(rise), 0]), 0, accuracy: 0.2)
+            simd_distance(velocity, [0, BookFlight.topSpeed(rise), 0]), 0, accuracy: 0.2)
         // It overshoots a little, then settles on the target.
         let distance = simd_distance(target.translation, clear.translation)
         let farthest = stride(from: 0, through: 2, by: 0.01)
@@ -532,28 +558,28 @@ final class BookPileTests: XCTestCase {
         let start = SIMD3<Float>(0, 20, 10)
         let resting = SIMD3<Float>(1, 0.3, -2)
         let gravity = SIMD3<Float>(0, -PileLayout.gravity, 0)
-        let velocity = PileFlight.launch(from: start, to: resting, gravity: gravity)
-        let time = PileFlight.whipDuration
+        let velocity = BookFlight.launch(from: start, to: resting, gravity: gravity)
+        let time = BookFlight.whipDuration
         let landed = start + velocity * time + gravity * time * time / 2
         XCTAssertEqual(simd_distance(landed, resting), 0, accuracy: 0.001)
         // Fast enough to scatter the books it hits, and tumbling.
         XCTAssertGreaterThan(simd_length(velocity), 40)
-        XCTAssertGreaterThan(simd_length(PileFlight.spin(for: velocity)), 10)
+        XCTAssertGreaterThan(simd_length(BookFlight.spin(for: velocity)), 10)
         XCTAssertEqual(
-            simd_length(PileFlight.spin(for: [0, -50, 0])), simd_length(SIMD2<Float>(10, 8)),
+            simd_length(BookFlight.spin(for: [0, -50, 0])), simd_length(SIMD2<Float>(10, 8)),
             accuracy: 0.001)
     }
 
     func testLiftedBookIsShadedLikeTheDetailsBook() {
         let size = SIMD3<Float>(1.5, 2.25, 0.3)
-        let shades = PileFlight.shades(of: size, at: .resting)
+        let shades = BookFlight.shades(of: size, at: .resting)
         XCTAssertEqual(shades.count, 4)
         // At rest, `Book3DView` darkens the cover to about 76 percent and the spine a little
         // less, since the spine turns toward its light from the upper left.
         XCTAssertEqual(shades[0], 0.24, accuracy: 0.01)
         XCTAssertLessThan(shades[1], shades[0])
         // Facing the viewer squarely, the cover takes more of the light.
-        XCTAssertLessThan(PileFlight.shades(of: size, at: BookPose(yaw: 0, pitch: 0))[0], shades[0])
+        XCTAssertLessThan(BookFlight.shades(of: size, at: BookPose(yaw: 0, pitch: 0))[0], shades[0])
     }
 
     func testCameraMixesTowardAnother() {

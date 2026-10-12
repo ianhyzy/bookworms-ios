@@ -9,19 +9,25 @@ import SwiftUI
 /// as it goes. Should the chain stop, such as where a book leans on the next without knocking
 /// it over, the glow marks the book to tap to nudge it on. A tap on any book the chain has not
 /// reached also pushes it on. Tapping a book the chain has passed, or touching and holding any
-/// book, calls `open` to push its details, and the chain is as the reader left it on return.
+/// book, lifts it out of the chain to its details over the darkened scene, as the Pile does
+/// (`LiftedDetails`), and **Back** returns it (see `DominoScene`). With Reduce Motion on, or when
+/// the scene cannot lift the book, `open` pushes the details instead, and the chain is as the
+/// reader left it on return.
 /// **Camera** in the shelf's **Sort and filter** chooses how the camera films the chain
 /// (`DominoCameraMode`). Pinch to zoom, and drag to look along the path; either takes the
 /// camera over until the next push. **Set up again** stands every book again.
 /// Collisions play taps and, while the shelf's **Sounds** is on, clacks (`ImpactFeedback`).
 ///
 /// Leaving stops the haptic and audio engines. Leaving other than for details, such as for
-/// another tab, also frees the books and textures, and they stand again on return. While a
-/// pile image renders, the scene leaves the view, as `BookPileView` explains.
+/// another tab, also puts a lifted book back at once and frees the books and textures, and they
+/// stand again on return. While a pile image renders, the scene leaves the view and a lifted
+/// book goes back, as `BookPileView` explains.
 struct DominoesView: View {
     let books: [CloudBook]
     /// The name of the books' time frame.
     let title: String
+    /// The details of a book lifted out of the chain, which the shelf's bar also reads.
+    let details: LiftedDetails
     let open: (CloudBook) -> Void
 
     @Environment(AppModel.self) private var model
@@ -33,9 +39,12 @@ struct DominoesView: View {
     @AppStorage("BookwormsDominoCamera") private var cameraMode = DominoCameraMode.overview
     @State private var scene = DominoScene()
     @State private var viewport: PileViewport?
+    /// The scene's frame in global coordinates, which the details' book frame converts from.
+    @State private var canvas = CGRect.zero
     /// Counts **Set up again** presses; each stands the books again.
     @State private var generation = 0
-    /// Set while pushed details cover the chain, so leaving keeps it.
+    /// Set while pushed details cover the chain, or while the lifted book's details wait for
+    /// the reader to return from the Share tab, so leaving keeps it.
     @State private var showsBook = false
     /// Set between `onAppear` and `onDisappear`.
     @State private var isShown = false
@@ -62,6 +71,12 @@ struct DominoesView: View {
         }
         .gesture(touchBook)
         .simultaneousGesture(moveCamera)
+        .allowsHitTesting(details.lift == nil)
+        .onGeometryChange(for: CGRect.self) {
+            $0.frame(in: .global)
+        } action: {
+            canvas = $0
+        }
         .ignoresSafeArea()
         .accessibilityElement()
         .accessibilityLabel("Dominoes of \(count)")
@@ -74,6 +89,10 @@ struct DominoesView: View {
             Button("Set up again") { generation += 1 }
         }
         .overlay(alignment: .bottom) { hint }
+        .modifier(
+            LiftedDetailsOverlay(details: details, scene: scene, canvas: canvas) {
+                showsBook = true
+            })
         // Outside `ignoresSafeArea`, the proxy reports the safe area's size and the insets the
         // view extends past.
         .onGeometryChange(for: PileViewport.self) { proxy in
@@ -88,7 +107,15 @@ struct DominoesView: View {
         }
         .task(id: SetUpRequest(ids: books.map(\.id), generation: generation, viewport: viewport)) {
             guard let viewport else { return }
+            scene.planSetUp(books, generation: generation, viewport: viewport)
+            // A new chain, such as one without the lifted book, removed it.
+            if let lift = details.lift, scene.lifter.liftedID != lift.book.id {
+                details.putBack(scene)
+            }
             await scene.setUp(books, generation: generation, viewport: viewport, model: model)
+            #if DEBUG
+                await details.openDebugBook(in: books, scene: scene) { show($0) }
+            #endif
         }
         .onAppear {
             showsBook = false
@@ -100,10 +127,13 @@ struct DominoesView: View {
             // `onChange(of: playsFeedback)` does not run for a view that is being removed.
             scene.feedback.stop()
             guard !showsBook else { return }
+            details.putBack(scene)
             scene.release()
         }
         .onChange(of: PileSnapshotRenderer.isRendering) { _, isRendering in
-            if isRendering { scene.root.removeFromParent() }
+            guard isRendering else { return }
+            details.putBack(scene)
+            scene.root.removeFromParent()
         }
         .onChange(of: sounds, initial: true) { scene.feedback.playsSounds = sounds }
         // Keeps the haptic and audio engines only while collisions can be seen.
@@ -116,25 +146,33 @@ struct DominoesView: View {
         }
         .onChange(of: movesCamera) { if !movesCamera { scene.endCameraMove() } }
         .onChange(of: scene.status.phase) {
-            // Physics runs on under pushed details, which VoiceOver reads instead.
-            guard isShown else { return }
+            // Physics runs on under details, which VoiceOver reads instead.
+            guard isShown, details.lift == nil else { return }
             switch scene.status.phase {
             case .stalled, .done: AccessibilityNotification.Announcement(status).post()
             default: break
             }
         }
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button("Set up again", systemImage: "arrow.counterclockwise") { generation += 1 }
+            if details.lift == nil {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Set up again", systemImage: "arrow.counterclockwise") {
+                        generation += 1
+                    }
+                }
             }
         }
-        // Outside the viewport reading, so the path starts below the button.
+        // Outside the viewport reading, so the path starts below the button, which hides with
+        // the other controls while a lifted book's details show.
         .safeAreaInset(edge: .top, spacing: 0) {
-            FrameChip(title: title, shown: chainLength, total: books.count)
+            if details.lift == nil {
+                FrameChip(title: title, shown: chainLength, total: books.count)
+            }
         }
     }
 
-    /// What to do next, over the bottom of the scene while the chain waits for a push.
+    /// What to do next, over the bottom of the scene while the chain waits for a push and no
+    /// details show.
     @ViewBuilder private var hint: some View {
         let text: String? =
             switch scene.status.phase {
@@ -144,7 +182,7 @@ struct DominoesView: View {
                 "The chain stopped. Tap the glowing book to nudge it on."
             default: nil
             }
-        if let text {
+        if let text, details.lift == nil {
             Text(text)
                 .font(.footnote.weight(.medium))
                 .multilineTextAlignment(.center)
@@ -190,8 +228,8 @@ struct DominoesView: View {
     /// stands.
     private var count: String { FrameChip.books(chainLength, of: books.count) }
 
-    /// A tap pushes the chain on or opens the details of a book it has passed (see
-    /// `DominoScene.tap(at:in:)`); touching and holding opens any book's details.
+    /// A tap pushes the chain on or lifts a book it has passed to its details (see
+    /// `DominoScene.tap(at:in:)`); touching and holding lifts any book.
     private var touchBook: some Gesture {
         LongPressGesture(minimumDuration: 0.5)
             .targetedToAnyEntity()
@@ -207,8 +245,16 @@ struct DominoesView: View {
 
     private func showDetails(_ id: Int?) {
         guard let id, let book = books.first(where: { $0.id == id }) else { return }
-        showsBook = true
-        open(book)
+        show(book)
+    }
+
+    /// Lifts `book` out of the chain to its details, or pushes them with Reduce Motion on or
+    /// when the scene cannot lift it. Does nothing while another book flies.
+    private func show(_ book: CloudBook) {
+        details.open(book, from: scene, reduceMotion: reduceMotion) {
+            showsBook = true
+            open(book)
+        }
     }
 
     /// Pinches zoom toward the fingers; a one-finger drag slides along the path.

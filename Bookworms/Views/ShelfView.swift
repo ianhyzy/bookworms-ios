@@ -25,8 +25,9 @@ struct ShelfView: View {
     /// The centered book, shared by both carousel modes so switching keeps the reader's place.
     @State private var centeredID: Int?
     @State private var path: [Int] = []
-    /// Set while the pile shows a lifted book's details, which replace the shelf's controls.
-    @State private var pileShowsDetails = false
+    /// The book a 3D view lifted out of its scene to show its details, which replace the
+    /// shelf's controls.
+    @State private var liftedDetails = LiftedDetails()
     /// The book that Stack or Shelf pulled out to show its details over the shelf.
     @State private var pullOut = ShelfPullOut()
     @State private var showsAccount = false
@@ -39,7 +40,7 @@ struct ShelfView: View {
                 .background { ShelfPalette.wall.ignoresSafeArea() }
                 .modifier(
                     ShelfBar(
-                        pullOut: pullOut, pileShowsDetails: pileShowsDetails, mode: $mode,
+                        pullOut: pullOut, liftedDetails: liftedDetails, mode: $mode,
                         sort: $sort, designedOnly: $designedOnly, threeDView: shownViewChoice,
                         pileFrame: mode == .pile ? pileFrame : nil))
                 .navigationDestination(for: Int.self) { id in
@@ -132,13 +133,13 @@ struct ShelfView: View {
                 let title = frame?.title ?? Self.years(of: books)
                 switch shownView {
                 case .pile:
-                    BookPileView(
-                        books: books, title: title, frame: frame, showsDetails: $pileShowsDetails
-                    ) {
+                    BookPileView(books: books, title: title, frame: frame, details: liftedDetails) {
                         path.append($0.id)
                     }
                 case .dominoes:
-                    DominoesView(books: books, title: title) { path.append($0.id) }
+                    DominoesView(books: books, title: title, details: liftedDetails) {
+                        path.append($0.id)
+                    }
                 case .bookworm:
                     BookwormView(books: books, title: title)
                 }
@@ -197,8 +198,8 @@ struct ShelfView: View {
         /// Simulator screenshot hooks, read once the library loads:
         /// `-BookwormsShelfScrollTo <index>` centers the book at that index, and
         /// `-BookwormsOpenBook <bookID>` centers that book and, two seconds later, pulls it out
-        /// to its details, or pushes them with Reduce Motion on. In 3D, the Pile view opens the
-        /// book itself once its drop finishes, and other views ignore it.
+        /// to its details, or pushes them with Reduce Motion on. In 3D, the Pile and Dominoes open
+        /// the book themselves once their books are down or standing, and Bookworm ignores it.
         private func applyDebugArguments() {
             guard let library = model.library else { return }
             let books = shownBooks(in: library)
@@ -227,13 +228,13 @@ struct ShelfView: View {
 }
 
 /// The Shelf tab's title and bar: the presentation picker and **Sort and filter**, or, while a
-/// book's details show over the shelf or the pile, **Back** and the book's **Share**.
+/// book's details show over the shelf or a 3D view, **Back** and the book's **Share**.
 ///
 /// A modifier of its own, so a book's pull-out and return update only the bar, not the shelf's
 /// body, which sorts the library.
 private struct ShelfBar: ViewModifier {
     let pullOut: ShelfPullOut
-    let pileShowsDetails: Bool
+    let liftedDetails: LiftedDetails
     @Binding var mode: ShelfPresentation
     @Binding var sort: ShelfSort
     @Binding var designedOnly: Bool
@@ -253,10 +254,13 @@ private struct ShelfBar: ViewModifier {
     /// How the camera films the dominoes, which `DominoesView` reads.
     @AppStorage("BookwormsDominoCamera") private var dominoCamera = DominoCameraMode.overview
 
+    /// Whether a 3D view shows a lifted book's details, with their own **Back** and **Share**.
+    private var threeDShowsDetails: Bool { liftedDetails.lift != nil }
+
     func body(content: Content) -> some View {
         content
             // Details over the shelf show no title, as pushed details do.
-            .navigationTitle(pileShowsDetails || pullOut.showsDetails ? "" : "Shelf")
+            .navigationTitle(threeDShowsDetails || pullOut.showsDetails ? "" : "Shelf")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbar }
     }
@@ -272,7 +276,7 @@ private struct ShelfBar: ViewModifier {
                     model.share(book)
                 }
             }
-        } else if !pileShowsDetails {
+        } else if !threeDShowsDetails {
             ToolbarItem(placement: .principal) {
                 Picker("Presentation", selection: $mode) {
                     ForEach(ShelfPresentation.allCases) { Text($0.title).tag($0) }

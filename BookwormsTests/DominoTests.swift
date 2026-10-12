@@ -1,4 +1,5 @@
 import Foundation
+import RealityKit
 import XCTest
 import simd
 
@@ -261,6 +262,48 @@ final class DominoTests: XCTestCase {
         XCTAssertEqual(phase(next: 0, count: 0, started: false, settled: true), .done)
         XCTAssertFalse(phase(next: 0, count: 0, started: false, settled: false).waitsForPush)
         XCTAssertTrue(DominoPhase.stalled(fallen: 1).waitsForPush)
+    }
+
+    func testLiftedBooksTheChainHasNotReachedStandAgain() {
+        // Past the front, or at the front before any push.
+        XCTAssertTrue(DominoLayout.standsAgain(index: 5, next: 3, started: true))
+        XCTAssertTrue(DominoLayout.standsAgain(index: 0, next: 0, started: false))
+        XCTAssertTrue(DominoLayout.standsAgain(index: 4, next: 0, started: false))
+        // At the front of a running chain, the book before it fell into its place; behind the
+        // front, it had fallen. Either is thrown back.
+        XCTAssertFalse(DominoLayout.standsAgain(index: 3, next: 3, started: true))
+        XCTAssertFalse(DominoLayout.standsAgain(index: 2, next: 3, started: true))
+    }
+
+    func testSetDownDropsAStandingBookIntoItsPlaceFromAbove() throws {
+        let plan = DominoLayout.plan(
+            DominoLayout.chain((0..<12).map { book($0, day: $0 * 3) }), aspect: 0.5)
+        let slot = plan.slots[5]
+        let place = DominoLayout.standingPose(of: slot)
+        // Standing on its tail, a hair above the table.
+        XCTAssertEqual(place.translation.y - slot.size.y / 2, 0.002, accuracy: 1e-5)
+        XCTAssertEqual(place.rotation.act([0, 1, 0]).y, 1, accuracy: 1e-5)
+        // From a details pose high in front of the camera, turned to face it.
+        let start = Transform(
+            rotation: simd_quatf(angle: 2, axis: simd_normalize([0.2, 1, 0.4])),
+            translation: place.translation + [6, 17, 10])
+        func pose(_ progress: Float) -> Transform {
+            BookFlight.setDown(from: start, to: place, progress: progress)
+        }
+        XCTAssertEqual(simd_distance(pose(0).translation, start.translation), 0, accuracy: 1e-4)
+        XCTAssertEqual(simd_distance(pose(1).translation, place.translation), 0, accuracy: 1e-4)
+        XCTAssertEqual(abs(simd_dot(pose(1).rotation.vector, place.rotation.vector)), 1, accuracy: 1e-4)
+        // Within a book's height of its place, it is nearly over it, well inside the gap to
+        // either neighbor, so it drops in without sweeping through them.
+        let gap = DominoLayout.gap(height: try XCTUnwrap(plan.slots.map(\.size.y).min()))
+        for step in 0...100 {
+            let translation = pose(Float(step) / 100).translation
+            guard translation.y < place.translation.y + slot.size.y else { continue }
+            let across = SIMD2(translation.x, translation.z) - slot.position
+            XCTAssertLessThan(simd_length(across), gap / 3, "\(step)")
+        }
+        // It arrives at rest, so it lands without a bounce.
+        XCTAssertLessThan(simd_distance(pose(0.99).translation, place.translation), 0.01)
     }
 
     func testThreeDOffersDominoes() {
