@@ -268,8 +268,29 @@ final class BookPileTests: XCTestCase {
             XCTAssertEqual(shown, 0, "\(size)")
         }
         // The box closes only once a book from the ceiling has landed.
-        let fall = (2 * PileLayout.ceiling / PileLayout.gravity).squareRoot()
+        let fall = stride(from: Float(0), to: 10, by: 0.01)
+            .first { fallen(after: $0) > PileLayout.ceiling }!
         XCTAssertLessThan(Double(fall) + 0.5, PileLayout.boxDelay / .seconds(1))
+    }
+
+    /// How far a falling book drops in `time` seconds from rest, under gravity and air drag.
+    private func fallen(after time: Float) -> Float {
+        let drag = PileLayout.airDrag
+        return PileLayout.gravity / drag * (time - (1 - exp(-drag * time)) / drag)
+    }
+
+    func testAirDragLandsBooksAboutAsFastAsALowDrop() {
+        let starts = PileLayout.dropPlan(Self.books, in: Self.tray, seed: 2)
+            .map(\.transform.translation.y)
+        for height in [starts.min()!, starts.max()!] {
+            let time = stride(from: Float(0), to: 10, by: 0.001)
+                .first { fallen(after: $0) > height }!
+            let speed =
+                PileLayout.gravity / PileLayout.airDrag * (1 - exp(-PileLayout.airDrag * time))
+            // A drop from 9 to 20 units without drag lands at 31 to 47 units a second.
+            XCTAssertGreaterThan(speed, 35, "\(height)")
+            XCTAssertLessThan(speed, 43, "\(height)")
+        }
     }
 
     func testEachWaveFallsBelowTheNextWaveBeforeItStarts() {
@@ -280,8 +301,7 @@ final class BookPileTests: XCTestCase {
             .max()!
         // Physics starts a frame after a wave spawns.
         let time = Float(PileLayout.waveInterval / .seconds(1)) - 1 / 60
-        let fallen = starts.max()! - PileLayout.gravity * time * time / 2
-        XCTAssertLessThan(fallen + reach, starts.min()! - reach)
+        XCTAssertLessThan(starts.max()! - fallen(after: time) + reach, starts.min()! - reach)
     }
 
     func testStillImageGroupsStartApartInsideTheWalls() throws {

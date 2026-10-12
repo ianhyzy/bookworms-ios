@@ -226,8 +226,14 @@ enum PileLayout {
     static let gravity: Float = 55
     static let waveSize = 16
     /// The least time from one wave to the next. It lets the previous wave's highest books
-    /// fall below the next wave's lowest cells before those books start.
-    static let waveInterval = Duration.milliseconds(800)
+    /// fall below the next wave's lowest cells, under `airDrag`, before those books start.
+    static let waveInterval = Duration.milliseconds(950)
+    /// The linear damping of a live drop's falling books, as air drag, until they first touch
+    /// something. A drop starts out of view, high above the table (see `spawnHeight(over:)`),
+    /// and drag keeps its books landing at 37 to 41 units a second, about as fast as from 9 to
+    /// 20 units up without drag, so about nine in ten land front cover up. Landing over 50
+    /// units a second flips about twice as many face down.
+    static let airDrag: Float = 1
     /// Above the highest start a drop plan gives on an iPhone, with room for a book lifted over
     /// others (see `dropPlan`). The walls reach it.
     static let ceiling: Float = 44
@@ -235,8 +241,8 @@ enum PileLayout {
     /// this far outside the view is wholly out of it.
     static let entryClearance: Float = 1.9
     /// How long after the last wave the box of **Phone is the box** closes: longer than a book
-    /// takes to fall from the ceiling, so none is still in the air.
-    static let boxDelay = Duration.seconds(2)
+    /// takes to fall from the ceiling under `airDrag`, so none is still in the air.
+    static let boxDelay = Duration.seconds(2.5)
     /// Half the longest book's length (`BookShape.longest`) plus a little, which keeps a new
     /// book clear of the walls.
     static let reach: Float = 1.5
@@ -579,6 +585,9 @@ final class BookPileScene {
     private var spawned = 0
     private var lastWave = ContinuousClock.now
     private var bookIDs: [Entity.ID: Int] = [:]
+    /// The books of a live drop that have not yet touched anything, with their damping before
+    /// `PileLayout.airDrag`.
+    private var falling: [Entity.ID: Float] = [:]
     private var drag: Drag?
     /// Whether the books stand still in tidy stacks, as kinematic bodies. Picking up a book
     /// frees only that book and the books resting on it. Tall stacks of uneven books can slip
@@ -659,7 +668,10 @@ final class BookPileScene {
             self?.update(event.deltaTime)
         }
         collisions = content.subscribe(to: CollisionEvents.Began.self) { [weak self] event in
-            guard let self, !lifter.handle(event) else { return }
+            guard let self else { return }
+            land(event.entityA)
+            land(event.entityB)
+            guard !lifter.handle(event) else { return }
             feedback.collide(event, pan: pan)
         }
     }
@@ -836,7 +848,12 @@ final class BookPileScene {
             // Keeps the first books until the room's light is ready, so they enter lit.
             if spawned == 0 { await stage.lit() }
             guard !Task.isCancelled, planKey == key else { return }
-            for slot in wave { spawn(slot, mode: holdsStill ? .kinematic : .dynamic) }
+            for slot in wave {
+                guard let book = spawn(slot, mode: holdsStill ? .kinematic : .dynamic),
+                    !holdsStill
+                else { continue }
+                startFall(book)
+            }
             if loading.isLoading { loading.isLoading = false }
             if let group, let groups = self.periods {
                 calendar.show(
@@ -862,6 +879,7 @@ final class BookPileScene {
     private func reset(keeping ids: Set<Int>) {
         shelf.children.removeAll()
         bookIDs = [:]
+        falling = [:]
         drag = nil
         cameraMove = nil
         lifter.reset()
@@ -963,12 +981,14 @@ final class BookPileScene {
         }
     }
 
-    /// Adds a book at its slot's pose and spin. A dynamic book's center of mass moves toward
-    /// its back board (see `PileLayout.centerOfMass`); a still stack's books keep theirs.
-    private func spawn(_ slot: PileSlot, mode: PhysicsBodyMode) {
+    /// Adds a book at its slot's pose and spin, and returns it. A dynamic book's center of mass
+    /// moves toward its back board (see `PileLayout.centerOfMass`); a still stack's books keep
+    /// theirs.
+    @discardableResult
+    private func spawn(_ slot: PileSlot, mode: PhysicsBodyMode) -> ModelEntity? {
         guard let book = factory.makeBook(slot.book.id, mode: mode, lighting: stage.lighting),
             let size = factory.parts[slot.book.id]?.shape.size
-        else { return }
+        else { return nil }
         if mode == .dynamic {
             book.components[PhysicsBodyComponent.self]?.massProperties.centerOfMass.position =
                 PileLayout.centerOfMass(of: size)
@@ -977,6 +997,22 @@ final class BookPileScene {
         book.transform = slot.transform
         shelf.addChild(book)
         bookIDs[book.id] = slot.book.id
+        return book
+    }
+
+    /// Slows a live drop's falling book with `PileLayout.airDrag` until it first touches
+    /// something (see `land`).
+    private func startFall(_ book: ModelEntity) {
+        guard let body = book.components[PhysicsBodyComponent.self] else { return }
+        falling[book.id] = body.linearDamping
+        book.components[PhysicsBodyComponent.self]?.linearDamping = PileLayout.airDrag
+    }
+
+    /// Gives a falling book that touches something its own damping back, so it slides, tumbles,
+    /// and flies when thrown as any other book does.
+    private func land(_ entity: Entity) {
+        guard let damping = falling.removeValue(forKey: entity.id) else { return }
+        entity.components[PhysicsBodyComponent.self]?.linearDamping = damping
     }
 
     /// The ID of the book an entity belongs to, or `nil` for the table.
