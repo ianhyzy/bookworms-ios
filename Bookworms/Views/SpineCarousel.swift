@@ -99,12 +99,16 @@ struct SpineCarousel: View {
     private func stack(in size: CGSize) -> some View {
         let arrangement = StackArrangement(width: size.width)
         let track = arrangement.track(of: books)
-        // A spine overhangs its page by up to half its thickness, and a 3D book's top board rises
-        // above its spine, so the mask hides that much at each end, where the lazy stack may not
-        // have built a book's page.
+        // A lazy stack builds only the pages within its scroll view's bounds. A spine overhangs
+        // its page by up to half its thickness, and a 3D book's top board rises above its spine,
+        // so the mask hides that much at each end. To keep that clear band small at the bottom,
+        // the scroll view reaches `bleed` past the stack's area, into the caption, and builds
+        // the pages there before their boards rise into view. VoiceOver gets the stack's area
+        // alone, so it treats only books on screen as visible.
         let rise = style == .threeD ? StackedBook.rise(of: books, in: arrangement) : 0
+        let bleed = voiceOver ? 0 : rise.rounded(.up)
         let stops = StackArrangement.maskStops(
-            height: size.height, top: track.maxThickness / 2,
+            height: size.height + bleed, top: track.maxThickness / 2,
             bottom: track.maxThickness / 2 + rise)
         return ScrollView(.vertical) {
             VStack(spacing: 0) {
@@ -130,7 +134,7 @@ struct SpineCarousel: View {
                         .zIndex(-Double(page))
                     }
                 }
-                Color.clear.frame(height: track.trailingSpace(viewport: size.height))
+                Color.clear.frame(height: track.trailingSpace(viewport: size.height) + bleed)
             }
         }
         .modifier(
@@ -140,6 +144,13 @@ struct SpineCarousel: View {
         // Fades the stack as one image, so a fading 3D book never shows the book under it through
         // its spine. The mask also hides the top boards that would rise under the bar.
         .mask { LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom) }
+        // Keeps a tap on the caption from opening a book hidden under it. A shape alone lets taps
+        // through to the scroll view; a gesture takes them.
+        .overlay(alignment: .bottom) {
+            Color.clear.frame(height: bleed).contentShape(.rect).onTapGesture {}
+                .accessibilityHidden(true)
+        }
+        .padding(.bottom, -bleed)
     }
 
     /// A stacked book, lying as `style` says, with its spine filling `spine`'s length and
@@ -428,10 +439,10 @@ private struct CenterTracking: ViewModifier {
 /// the scroll offset names. The carousel's lazy stack therefore holds pages of equal length,
 /// with no spacing, so it places even pages it has not built exactly and `offsets` match the
 /// layout. Each page holds the spines whose centers fall within it; a spine may overhang its
-/// page by half its thickness. The stack's mask hides half of `maxThickness` at each end of its
-/// scroll view (`StackArrangement.maskStops(height:top:bottom:)`), so every visible book's page
-/// intersects the scroll view and is built. Shelved spines stay opaque, so the shelf's scroll view
-/// reaches past the screen's sides by half of `maxThickness` instead.
+/// page by half its thickness. The stack's mask hides the ends of its scroll view where a book on
+/// a page that is not built could show (`StackArrangement.maskStops(height:top:bottom:)`), so
+/// every visible book's page intersects the scroll view and is built. Shelved spines stay opaque,
+/// so the shelf's scroll view reaches past the screen's sides by half of `maxThickness` instead.
 struct SpineTrack {
     static let pageLength: CGFloat = 100
 
