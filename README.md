@@ -377,6 +377,6 @@ The tests use fictional books, covers, and canned Hardcover responses, and need 
 
 ## Credits
 
-Spine fonts are open-source Google Fonts families (SIL Open Font License or Apache License), downloaded at runtime with their license files. The app icon uses the Bookworms Apple TV artwork.
+Spine fonts are open-source Google Fonts families (SIL Open Font License or Apache License), downloaded at runtime with their license files. The app icon uses the Bookworms Apple TV artwork. Its dark variant (`AppIcon-Dark.png`) is the same art with the cream background removed, so iOS draws its dark backdrop behind the worms while their eyes and the book's pages keep their light color.
 
 The pile's table (`TableWood`) is [White Oak Veneer](https://polyhaven.com/a/white_oak_veneer) by Jenelle van Heerden from Poly Haven, under [CC0](https://polyhaven.com/license). The bundled file is the 2K diffuse map scaled to 1024 pixels; the app tints it a darker brown, and the Shelf's bookcase darkens it to walnut. The room's light, the page edges' texture, and the impact sounds are generated in code.
