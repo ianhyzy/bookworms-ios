@@ -304,7 +304,7 @@ extension PileCamera {
             // Table units per normalized device unit at the target.
             let reach = Self.distance / camera.zoom * tan(Self.fieldOfView / 2)
             camera.target += turn.act(
-                [offset.x * reach * aspect, 0, -offset.y * reach / sin(Self.pitch)])
+                [offset.x * reach * aspect, 0, -offset.y * reach / sin(camera.pitch)])
             camera.zoom = min(
                 max(camera.zoom / fill * 0.97, zoomRange.lowerBound), zoomRange.upperBound)
         }

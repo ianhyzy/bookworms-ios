@@ -11,6 +11,7 @@ import UIKit
 /// RealityKit applies it, so a narrower view sees less of the table from side to side.
 struct PileCamera: Equatable {
     static let fieldOfView: Float = 38 * .pi / 180
+    /// The pitch the pile and the dominoes' overview look down at.
     static let pitch: Float = 62 * .pi / 180
     static let distance: Float = 30
     static let zoomRange: ClosedRange<Float> = 1...2.5
@@ -18,9 +19,12 @@ struct PileCamera: Equatable {
     var target = SIMD3<Float>.zero
     var yaw: Float = 0
     var zoom: Float = 1
+    /// Another pitch lets pinches and drags take over from the dominoes' Follow camera, which
+    /// looks down less steeply, without tilting the view.
+    var pitch = Self.pitch
 
     var rotation: simd_quatf {
-        simd_quatf(angle: yaw, axis: [0, 1, 0]) * simd_quatf(angle: -Self.pitch, axis: [1, 0, 0])
+        simd_quatf(angle: yaw, axis: [0, 1, 0]) * simd_quatf(angle: -pitch, axis: [1, 0, 0])
     }
 
     var transform: Transform {
@@ -84,7 +88,8 @@ struct PileCamera: Equatable {
     func mixed(with other: PileCamera, _ fraction: Float) -> PileCamera {
         PileCamera(
             target: target + (other.target - target) * fraction,
-            yaw: yaw + (other.yaw - yaw) * fraction, zoom: zoom + (other.zoom - zoom) * fraction)
+            yaw: yaw + (other.yaw - yaw) * fraction, zoom: zoom + (other.zoom - zoom) * fraction,
+            pitch: pitch + (other.pitch - pitch) * fraction)
     }
 }
 

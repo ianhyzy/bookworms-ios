@@ -22,6 +22,8 @@ struct ShelfView: View {
     @AppStorage("BookwormsPileByPeriod") private var dropsByPeriod = false
     /// Whether collisions in 3D play sounds, which the 3D views read.
     @AppStorage("BookwormsThreeDSounds") private var sounds = true
+    /// How the camera films the dominoes, which `DominoesView` reads.
+    @AppStorage("BookwormsDominoCamera") private var dominoCamera = DominoCameraMode.overview
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The centered book, shared by both carousel modes so switching keeps the reader's place.
     @State private var centeredID: Int?
@@ -170,6 +172,13 @@ struct ShelfView: View {
                             .pickerStyle(.menu)
                         }
                         Section {
+                            // Reduce Motion keeps the camera still, so it offers no Follow.
+                            if shownView == .dominoes && !reduceMotion {
+                                Picker("Camera", systemImage: "video", selection: $dominoCamera) {
+                                    ForEach(DominoCameraMode.allCases) { Text($0.title).tag($0) }
+                                }
+                                .pickerStyle(.menu)
+                            }
                             Toggle("Sounds", systemImage: "speaker.wave.2", isOn: $sounds)
                             if shownView == .pile && !reduceMotion {
                                 Toggle(byPeriodTitle, systemImage: "calendar", isOn: $dropsByPeriod)
