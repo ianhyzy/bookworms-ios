@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The library as a 3D carousel of spines, with a caption for the centered book, or in 3D, which
-/// shows the books in the chosen `ThreeDView`, such as a pile on a table (`BookPileView`).
+/// The library as a wheel or a bookcase of spines (`SpineCarousel`), with a caption for the
+/// centered book, or in 3D, which shows the books in the chosen `ThreeDView`, such as a pile on a
+/// table (`BookPileView`).
 ///
 /// Both show the library snapshot that `AppModel` holds; sorting and filtering happen here when
 /// the snapshot or the options change, never while scrolling.

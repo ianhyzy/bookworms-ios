@@ -37,13 +37,6 @@ struct SpineCarousel: View {
     private static let stackSpacing: CGFloat = 6
     /// Shelved books nearly touch, so their spines read as separate books.
     private static let shelfSpacing: CGFloat = 1
-    /// How far the shelf's scroll view reaches past each side of the screen.
-    ///
-    /// Pages hold the spines centered in them, so a spine overhangs its page by up to half its
-    /// thickness, and a lazy stack builds only the pages within its scroll view's bounds. The
-    /// wider bounds keep a page built while any of its spines shows on screen. It exceeds half
-    /// the thickest spine at the largest `Bookcase.scale`.
-    private static let shelfBleed: CGFloat = 48
 
     var body: some View {
         GeometryReader { proxy in
@@ -112,11 +105,17 @@ struct SpineCarousel: View {
     private func shelf(in size: CGSize) -> some View {
         let bookcase = Bookcase(height: size.height)
         let scale = bookcase.scale
-        let bleed = Self.shelfBleed
-        let viewport = size.width + 2 * bleed
         let track = SpineTrack(books: books, spacing: Self.shelfSpacing) {
             $0.shelfSpineSize(scale: scale).width
         }
+        // How far the scroll view reaches past each side of the screen. Pages hold the spines
+        // centered in them, so a spine overhangs its page by up to half its thickness, and a
+        // lazy stack builds only the pages within its scroll view's bounds. Reaching past half
+        // the thickest spine and its contact shadow keeps a page built while any of its spines
+        // shows. VoiceOver gets the screen's width instead, so it treats only spines on screen
+        // as visible and pages by the screen.
+        let bleed = voiceOver ? 0 : (track.maxThickness / 2 + 4).rounded(.up)
+        let viewport = size.width + 2 * bleed
         let leading = track.leadingSpace(viewport: viewport)
         return ScrollView(.horizontal) {
             ZStack(alignment: .topLeading) {
@@ -137,6 +136,8 @@ struct SpineCarousel: View {
                                     .background(alignment: .bottom) {
                                         ContactShadow(width: spine.width)
                                     }
+                                    // VoiceOver reads by shelf order, not by the uneven tops.
+                                    .accessibilitySortPriority(-Double(slot.index))
                                     .padding(.leading, slot.inset)
                                 }
                             }
@@ -145,6 +146,8 @@ struct SpineCarousel: View {
                                 alignment: .bottomLeading)
                         }
                     }
+                    // Scopes the sort priorities to the spines.
+                    .accessibilityElement(children: .contain)
                     Color.clear.frame(width: track.trailingSpace(viewport: viewport))
                 }
             }
@@ -220,10 +223,17 @@ private struct CenterTracking: ViewModifier {
                 let glides = !reduceMotion && distance < viewport / 2
                 withAnimation(glides ? .smooth : nil) { scrollToCenteredBook() }
             }
-            // The same offset centers a different book after the order changes.
+            // The same offset centers a different book after the order changes, and a new order
+            // or a new shelf scale moves the centered book's offset. A reorder can leave the
+            // offsets equal, so both are watched.
             .onChange(of: track.ids) { scrollToCenteredBook() }
-            // A new carousel, such as after a mode switch, opens on the centered book.
-            .onAppear(perform: scrollToCenteredBook)
+            .onChange(of: track.offsets) { scrollToCenteredBook() }
+            // A new carousel, such as after a mode switch, opens on the centered book. One that
+            // reappears, such as after Back from details, keeps its offset, because a free
+            // scroll rarely rests exactly on a book's.
+            .onAppear {
+                if centeredID != scrolledID { scrollToCenteredBook() }
+            }
             .scrollIndicators(.hidden)
             // The stack's spines fade out before its ends, and the shelf's top board meets the
             // bar, so the bar's edge effect would only draw a seam across the walnut.
@@ -255,15 +265,16 @@ private struct SpineSnapping: ScrollTargetBehavior {
 /// layout. Each page holds the spines whose centers fall within it; a spine may overhang its
 /// page by half its thickness. A stacked spine fades out completely once its center leaves the
 /// viewport, so every visible spine's page intersects the viewport and is built. Shelved spines
-/// stay opaque, so the shelf's scroll view reaches past the screen's sides instead
-/// (`SpineCarousel.shelfBleed`).
+/// stay opaque, so the shelf's scroll view reaches past the screen's sides by half of
+/// `maxThickness` instead.
 struct SpineTrack {
     static let pageLength: CGFloat = 100
 
     /// A spine on a page, `inset` from the page's start. The inset is negative for a spine that
-    /// overhangs the page's start.
+    /// overhangs the page's start. `index` is the spine's position in `ids`.
     struct Slot: Identifiable {
         let book: CloudBook
+        let index: Int
         let inset: CGFloat
         var id: Int { book.id }
     }
@@ -274,6 +285,7 @@ struct SpineTrack {
     let pages: [[Slot]]
     /// From the first spine's start to the last spine's end.
     let length: CGFloat
+    let maxThickness: CGFloat
     private let firstThickness: CGFloat
     private let lastThickness: CGFloat
 
@@ -286,15 +298,16 @@ struct SpineTrack {
         let thicknesses = books.map(thickness)
         firstThickness = thicknesses.first ?? 0
         lastThickness = thicknesses.last ?? 0
+        maxThickness = thicknesses.max() ?? 0
         var start: CGFloat = 0
         var offsets: [CGFloat] = []
         var pages: [[Slot]] = []
-        for (book, thickness) in zip(books, thicknesses) {
+        for (index, (book, thickness)) in zip(books, thicknesses).enumerated() {
             offsets.append(start + (thickness - firstThickness) / 2)
             let page = Int((start + thickness / 2) / Self.pageLength)
             while pages.count <= page { pages.append([]) }
             let inset = start - CGFloat(page) * Self.pageLength
-            pages[page].append(Slot(book: book, inset: inset))
+            pages[page].append(Slot(book: book, index: index, inset: inset))
             start += thickness + spacing
         }
         self.offsets = offsets
@@ -408,16 +421,29 @@ private struct Bookcase {
     /// Between a side panel and the nearest book.
     static let gap: CGFloat = 6
 
+    /// The board's shadow on the wall below it, under the bays and the side panels alike.
+    static var dropShadow: some View {
+        LinearGradient(colors: [.black.opacity(0.45), .clear], startPoint: .top, endPoint: .bottom)
+            .frame(height: drop)
+    }
+
+    /// At least the boards and the shadow, so no part gets a negative size, even in a transient
+    /// layout of a scroll view with no height. A shorter scroll view clips the bookcase.
     let height: CGFloat
+
+    init(height: CGFloat) {
+        self.height = max(height, Self.topEdge + Self.surface + Self.lip + Self.drop)
+    }
 
     /// How far down the books stand: partway back on the board's top.
     var base: CGFloat { height - Self.drop - Self.lip - Self.surface * 0.45 }
 
     /// Points per decimeter of book: the most that lets the tallest book (`BookShape.longest`)
     /// clear the shelf above by 20 points, up to 170, so a tall phone still shows about ten
-    /// books across.
+    /// books across. A short shelf, such as a small phone's with the largest text, gets smaller
+    /// spines rather than clipped ones.
     var scale: CGFloat {
-        min(170, max(60, (base - Self.topEdge - 20) / CGFloat(BookShape.longest)))
+        min(170, max(1, (base - Self.topEdge - 20) / CGFloat(BookShape.longest)))
     }
 }
 
@@ -426,7 +452,9 @@ private struct Bookcase {
 ///
 /// The bays between the side panels each span one square wood tile as tall as the bookcase, so
 /// the seamless texture repeats without seams. They sit in a lazy stack, so a long shelf builds
-/// only the bays on screen.
+/// only the bays on screen. Every bay is a whole tile, so the stack places the bays it has not
+/// built exactly, and the right side panel meets the last bay; the last bay is cut to the
+/// shelf's length.
 private struct BookcaseWood: View {
     let bookcase: Bookcase
     let start: CGFloat
@@ -441,21 +469,19 @@ private struct BookcaseWood: View {
             // Above the bays, which its shadow falls on.
             BookcaseSide(bookcase: bookcase).zIndex(1)
             LazyHStack(spacing: 0) {
-                ForEach(0..<count, id: \.self) { bay in
-                    BookcaseBay(
-                        bookcase: bookcase, width: min(tile, inside - CGFloat(bay) * tile))
-                }
+                ForEach(0..<count, id: \.self) { _ in BookcaseBay(bookcase: bookcase) }
             }
+            .frame(width: inside, alignment: .leading)
+            .clipped()
             BookcaseSide(bookcase: bookcase).scaleEffect(x: -1).zIndex(1)
         }
         .accessibilityHidden(true)
     }
 }
 
-/// A stretch of the bookcase behind and under the books, `width` points of one wood tile.
+/// A stretch of the bookcase behind and under the books, one wood tile wide.
 private struct BookcaseBay: View {
     let bookcase: Bookcase
-    let width: CGFloat
 
     var body: some View {
         let tile = bookcase.height
@@ -477,12 +503,11 @@ private struct BookcaseBay: View {
                             .init(color: .black.opacity(0.4), location: 1),
                         ], startPoint: .top, endPoint: .bottom)
                 }
-            // The board's top, darker toward the back.
+            // The board's top, darker toward the back, and light enough in front for the books'
+            // contact shadows to show.
             LinearGradient(
-                colors: [
-                    ShelfPalette.board.mix(with: .black, by: 0.55),
-                    ShelfPalette.board.mix(with: .black, by: 0.15),
-                ], startPoint: .top, endPoint: .bottom
+                colors: [ShelfPalette.board.mix(with: .black, by: 0.35), ShelfPalette.board],
+                startPoint: .top, endPoint: .bottom
             )
             .frame(height: Bookcase.surface)
             // The board's front edge, lit along its top.
@@ -496,38 +521,38 @@ private struct BookcaseBay: View {
                     Rectangle().fill(.white.opacity(0.18)).frame(height: 1)
                 }
                 .frame(height: Bookcase.lip)
-            LinearGradient(
-                colors: [.black.opacity(0.45), .clear], startPoint: .top, endPoint: .bottom
-            )
-            .frame(height: Bookcase.drop)
+            Bookcase.dropShadow
         }
-        .frame(width: width, height: bookcase.height)
+        .frame(width: tile, height: tile)
     }
 }
 
 /// The front of the bookcase's left side panel, from the top to the board's front edge, with its
-/// shadow on the back panel beside it; mirror it for the right.
+/// shadows on the back panel beside it and on the wall below; mirror it for the right.
 private struct BookcaseSide: View {
     let bookcase: Bookcase
 
     var body: some View {
-        WoodGrain(tile: bookcase.height, across: false, shade: 0.5)
-            .overlay {
-                LinearGradient(
-                    colors: [.white.opacity(0.08), .clear, .black.opacity(0.35)],
-                    startPoint: .leading, endPoint: .trailing)
-            }
-            .frame(width: Bookcase.side, height: bookcase.height - Bookcase.drop)
-            .background(alignment: .trailing) {
-                LinearGradient(
-                    colors: [.black.opacity(0.5), .clear], startPoint: .leading,
-                    endPoint: .trailing
-                )
-                .frame(width: 16)
-                .offset(x: 16)
-                .padding(.vertical, Bookcase.topEdge)
-            }
-            .frame(height: bookcase.height, alignment: .top)
+        VStack(spacing: 0) {
+            WoodGrain(tile: bookcase.height, across: false, shade: 0.5)
+                .overlay {
+                    LinearGradient(
+                        colors: [.white.opacity(0.08), .clear, .black.opacity(0.35)],
+                        startPoint: .leading, endPoint: .trailing)
+                }
+                .frame(height: bookcase.height - Bookcase.drop)
+                .background(alignment: .trailing) {
+                    LinearGradient(
+                        colors: [.black.opacity(0.5), .clear], startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .frame(width: 16)
+                    .offset(x: 16)
+                    .padding(.vertical, Bookcase.topEdge)
+                }
+            Bookcase.dropShadow
+        }
+        .frame(width: Bookcase.side)
     }
 }
 
@@ -570,6 +595,9 @@ private struct ContactShadow: View {
 
 /// A lamp above the middle of the shelf, fixed to the screen while the books scroll under it:
 /// a warm pool of light at the top that falls off toward the screen's sides.
+///
+/// It fades out at its top and bottom, so it meets the plain wall above and below the carousel
+/// without a step.
 private struct ShelfLamp: View {
     var body: some View {
         ZStack {
@@ -583,6 +611,15 @@ private struct ShelfLamp: View {
                     .init(color: .clear, location: 0.7),
                     .init(color: .black.opacity(0.5), location: 1),
                 ], startPoint: .leading, endPoint: .trailing)
+        }
+        .mask {
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0),
+                    .init(color: .black, location: 0.06),
+                    .init(color: .black, location: 0.94),
+                    .init(color: .clear, location: 1),
+                ], startPoint: .top, endPoint: .bottom)
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)

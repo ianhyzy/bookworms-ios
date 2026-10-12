@@ -137,6 +137,28 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(order, track.ids)
     }
 
+    func testShelfTrackLaysOutTheShelvedSpines() {
+        let books = (1...40).map { book($0, "Book \($0)", pages: 60 + $0 * 33) }
+        let widths = books.map { $0.shelfSpineSize(scale: 150).width }
+        let track = SpineTrack(books: books, spacing: 1) { $0.shelfSpineSize(scale: 150).width }
+        XCTAssertEqual(
+            track.length, widths.reduce(0, +) + CGFloat(books.count - 1), accuracy: 0.001)
+        // The shelf's scroll view reaches past the screen by half of this.
+        XCTAssertEqual(track.maxThickness, widths.max()!)
+        var start: CGFloat = 0
+        var order: [Int] = []
+        for (page, slots) in track.pages.enumerated() {
+            for slot in slots {
+                let pageStart = CGFloat(page) * SpineTrack.pageLength
+                XCTAssertEqual(pageStart + slot.inset, start, accuracy: 0.001)
+                XCTAssertEqual(slot.index, order.count)
+                start += widths[slot.index] + 1
+                order.append(slot.id)
+            }
+        }
+        XCTAssertEqual(order, track.ids)
+    }
+
     func testCoastSpringsFromTheShownPoseToTheTarget() {
         let start = Date(timeIntervalSince1970: 1_000)
         let coast = Coast(
