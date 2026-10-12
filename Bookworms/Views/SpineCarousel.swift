@@ -21,12 +21,16 @@ enum ShelfMode: String, CaseIterable, Identifiable {
 /// Shelf scrolls freely, with the bookcase's wood as part of the content, and a tap on any
 /// spine opens it. The body does not read `centeredID`; only the button actions do, when
 /// tapped. VoiceOver activation always opens the book.
+///
+/// While `pullOut` has a book out, that book's spine hides, leaving a shadowed gap, and reports
+/// the gap's frame, where the book flies from and back to.
 struct SpineCarousel: View {
     let books: [CloudBook]
     let mode: ShelfMode
     @Binding var centeredID: Int?
     /// The zoom transition's source namespace; each spine is a source keyed by its book ID.
     let namespace: Namespace.ID
+    let pullOut: ShelfPullOut
     let open: (CloudBook) -> Void
 
     @Environment(AppModel.self) private var model
@@ -171,11 +175,49 @@ struct SpineCarousel: View {
                 centeredID = book.id
             }
         } label: {
-            label().matchedTransitionSource(id: book.id, in: namespace)
+            label()
+                .matchedTransitionSource(id: book.id, in: namespace)
+                .modifier(PulledSpine(id: book.id, pullOut: pullOut, upright: mode == .shelf))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(book.title), by \(book.author)")
         .accessibilityHint("Opens the book's details.")
+    }
+}
+
+/// Hides a spine while `pullOut` has its book out, leaving a gap in the shadow of the books beside
+/// it, and reports the gap's frame.
+///
+/// The gap reports its frame as soon as the book is pulled, while the spine still shows, and the
+/// spine hides once the flying book is drawn over it, so no frame shows neither.
+private struct PulledSpine: ViewModifier {
+    let id: Int
+    let pullOut: ShelfPullOut
+    /// Whether the spine stands upright, so its neighbors are on its left and right.
+    let upright: Bool
+
+    func body(content: Content) -> some View {
+        let isPulled = pullOut.book?.id == id
+        content
+            .opacity(isPulled && pullOut.isOut ? 0 : 1)
+            .background {
+                if isPulled {
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black.opacity(0.6), location: 0),
+                            .init(color: .black.opacity(0.3), location: 0.3),
+                            .init(color: .black.opacity(0.3), location: 0.7),
+                            .init(color: .black.opacity(0.6), location: 1),
+                        ], startPoint: upright ? .leading : .top,
+                        endPoint: upright ? .trailing : .bottom
+                    )
+                    .onGeometryChange(for: CGRect.self) {
+                        $0.frame(in: .global)
+                    } action: {
+                        pullOut.home = $0
+                    }
+                }
+            }
     }
 }
 
