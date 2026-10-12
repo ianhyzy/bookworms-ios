@@ -297,8 +297,9 @@ struct DominoCameraRig {
     /// The path's length, up to the last book.
     let length: Float
     let tallest: Float
-    /// The cobwebs the camera pushes in on, in path order.
-    let cobwebs: [Cobweb]
+    /// The cobwebs the camera pushes in on, in path order, less any that a lifted book tore
+    /// (see `forgetCobweb(at:)`).
+    private(set) var cobwebs: [Cobweb]
     /// The composed view the establishing move starts from and the reveal ends in.
     let finale: DominoCameraPose
     let fieldOfView: Float
@@ -413,6 +414,12 @@ struct DominoCameraRig {
                 1.875 * abs(log(Orbit(finale).distance / opening.distance))
                     / Self.zoomRates.establish, Self.establishTimes.lowerBound),
             Self.establishTimes.upperBound)
+    }
+
+    /// Stops pushing in on and leaning toward the cobweb at `distance`, which a book lifted
+    /// out of the chain tore. The rows' shots, which the webs helped choose, stay as they are.
+    mutating func forgetCobweb(at distance: Float) {
+        cobwebs.removeAll { abs($0.distance - distance) < 1e-3 }
     }
 
     /// Continues from `pose` at rest, such as after a pinch or drag moved the camera, past the
