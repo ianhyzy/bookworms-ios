@@ -303,15 +303,17 @@ final class DominoStatus {
 /// The chain's front is the book after the last one that tilted past about 26 degrees. Each
 /// frame checks only the next three books, so the work per frame does not grow with the
 /// chain, and a book that the chain skips counts as passed. A book that falls before the first
-/// push starts the chain as a push does. The chain is stalled once no book has started to
-/// fall for `stallTime`. While the chain waits for a push, a warm glow on the table marks the
-/// book a push tips (`DominoLayout.pushTarget`), and pulses unless Reduce Motion is on.
+/// push starts the chain as a push does. The chain is stalled once its front has not moved
+/// on for `stallTime`: no book has started to fall, and the book at the front has stopped
+/// tipping, so a slow first tip after a push does not count as a stall. While the chain waits
+/// for a push, a warm glow on the table marks the book a push tips
+/// (`DominoLayout.pushTarget`), and pulses unless Reduce Motion is on.
 ///
 /// The camera follows `DominoCameraMode`. Overview frames the whole path; after a push it eases
 /// a little closer, to at most `followRoom` times the overview's zoom, and across the rows with
 /// the front where the path is deeper than the view, and once every book has fallen it eases
 /// back to the whole path. Follow hands the camera to `DominoCameraRig`, built once the books
-/// stand, which films the chain from beside it. Both cameras run while the chain runs, so
+/// stand, which chases the falling front low and close. Both cameras run while the chain runs, so
 /// switching between them blends from one moving view to the other, over a time that keeps the
 /// blend's turn and travel gentle. A pinch or drag takes over from either, from the view as it
 /// shows, until the next push. With Reduce Motion on, the camera follows nothing, and Follow
@@ -387,9 +389,11 @@ final class DominoScene {
     /// The index of the next book to fall.
     private var next = 0
     private var started = false
-    /// Seconds of simulation since the books stood up, and when the front last moved.
+    /// Seconds of simulation since the books stood up, when the front last moved on, and the
+    /// farthest it has come (`frontDistance`).
     private var clock: TimeInterval = 0
     private var lastAdvance: TimeInterval = 0
+    private var farthest: Float = 0
     /// The overview camera, and the camera that pinches and drags move.
     private var view = PileCamera()
     /// The camera that shows the whole path.
@@ -584,6 +588,7 @@ final class DominoScene {
         steering = nil
         clock = 0
         lastAdvance = 0
+        farthest = 0
         cameraMove = nil
         mark(nil)
         #if DEBUG
@@ -896,6 +901,13 @@ final class DominoScene {
             lastAdvance = clock
             started = true
         }
+        // A book still tipping toward the next moves the front on, by more than a book rocks
+        // as it settles against its neighbor.
+        let front = frontDistance
+        if front > farthest + 0.02 {
+            farthest = front
+            lastAdvance = clock
+        }
         tearCobwebs()
         for index in torn.indices.reversed() {
             if !torn[index].advance(by: Float(deltaTime)) { torn.remove(at: index) }
@@ -1094,8 +1106,8 @@ final class DominoScene {
         // after a quarter second, which also bounds the rig's steps.
         let deltaTime = min(deltaTime, 0.25)
         // The rig also smooths the front for the overview camera, so it runs in either mode.
-        // Every book has fallen once the last one tilts past `fallenTilt`; the rig's reveal
-        // starts slowly enough for it to land.
+        // Every book has fallen once the last one tilts past `fallenTilt`; the rig holds on it
+        // while it lands before the reveal starts.
         if isReady, var rig {
             rig.step(
                 .init(distance: frontDistance, started: started, done: next >= books.count),
@@ -1205,17 +1217,23 @@ final class DominoScene {
         private static let cameraLogLimit = 7200
 
         /// Simulator hook: with `-BookwormsDominoCameraLog YES`, logs each frame's time step,
-        /// the front, and the camera's position and direction once every book stands, and
-        /// writes the log to `Library/Caches/Bookworms/domino-camera.csv` every 60 frames. The
-        /// log ends once every book has fallen and the camera has stopped (`moved`), or at
-        /// `cameraLogLimit` lines.
+        /// the front, the camera's position, direction, and roll, whether every book has
+        /// fallen (`done` once the chain has also settled, `fallen` as soon as the last book
+        /// tips), whether the Follow camera's reveal has started, and how upright the last book
+        /// stands, from 1 standing to 0 lying flat, once every book stands. It writes the log to
+        /// `Library/Caches/Bookworms/domino-camera.csv` every 60 frames. The log ends once every
+        /// book has fallen and the camera has stopped (`moved`), or at `cameraLogLimit` lines.
         private func logCamera(_ deltaTime: Float, moved: Bool) {
             guard Self.logsCamera, isReady, !cameraLogEnded else { return }
             let eye = camera.transform.translation
             let forward = camera.transform.rotation.act([0, 0, -1])
-            let values = [
+            let right = camera.transform.rotation.act([1, 0, 0])
+            let values: [Float] = [
                 deltaTime, frontDistance, rig?.estimate ?? 0, eye.x, eye.y, eye.z, forward.x,
                 forward.y, forward.z, status.phase == .done ? 1 : 0,
+                asin(min(max(right.y, -1), 1)), next >= books.count ? 1 : 0,
+                rig?.isRevealing == true ? 1 : 0,
+                books.last.map { $0.transform.rotation.act([0, 1, 0]).y } ?? 1,
             ]
             cameraLog.append(values.map { String(format: "%.5f", $0) }.joined(separator: ","))
             cameraLogEnded =
@@ -1224,13 +1242,15 @@ final class DominoScene {
             let url = URL.cachesDirectory.appending(path: "Bookworms/domino-camera.csv")
             try? FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? (["dt,front,estimate,x,y,z,fx,fy,fz,done"] + cameraLog).joined(separator: "\n")
+            try? (["dt,front,estimate,x,y,z,fx,fy,fz,done,roll,fallen,revealing,last"] + cameraLog)
+                .joined(separator: "\n")
                 .write(to: url, atomically: true, encoding: .utf8)
         }
 
         /// With the camera log on, writes the Follow camera's inputs, with every cobweb as its
-        /// distance and density, to `Library/Caches/Bookworms/domino-rig.txt`, so a logged run
-        /// can be replayed through `DominoCameraRig` off the device.
+        /// distance and density and every book as its distance and height, to
+        /// `Library/Caches/Bookworms/domino-rig.txt`, so a logged run can be replayed through
+        /// `DominoCameraRig` off the device and measured against the books it framed.
         private func logRig(_ rig: DominoCameraRig, cobwebs: [DominoCameraRig.Cobweb]) {
             guard Self.logsCamera else { return }
             func line(_ name: String, _ values: [Float]) -> String {
@@ -1250,6 +1270,9 @@ final class DominoScene {
                     ]),
                 "cobwebs "
                     + cobwebs.map { String(format: "%.4f:%.4f", $0.distance, $0.density) }
+                    .joined(separator: ","),
+                "books "
+                    + slots.map { String(format: "%.4f:%.4f", $0.distance, $0.size.y) }
                     .joined(separator: ","),
             ]
             let url = URL.cachesDirectory.appending(path: "Bookworms/domino-rig.txt")
