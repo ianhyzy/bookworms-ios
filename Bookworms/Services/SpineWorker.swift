@@ -252,14 +252,18 @@ actor SpineWorker {
         return false
     }
 
-    /// Returns the design to save for `book`, or `nil` when iCloud already has this work.
+    /// Returns the design to save for `book`, or `nil` when iCloud already has this work or a
+    /// design whose colors the reader chose (see `SpineDesignV1.action(workItemHash:coverHash:)`).
     private func design(
         for book: CloudBook, cover: CoverImage, workHash: String, context: WorkContext
     ) async throws -> SpineDesignV1? {
         // A ledger miss is not proof: another device may have saved this work already.
-        let existing = try await store.currentDesign(
-            accountID: context.accountID, bookID: book.id)
-        if existing?.workItemHash == workHash, existing?.coverHash == cover.hash { return nil }
+        let saved = try await store.savedDesign(accountID: context.accountID, bookID: book.id)
+        switch saved?.action(workItemHash: workHash, coverHash: cover.hash) ?? .redesign {
+        case .keep: return nil
+        case .save(let design): return design
+        case .redesign: break
+        }
         // Books in one series share a design so their spines match on the shelf.
         if let seriesID = book.seriesID {
             if seriesDesigns[seriesID] == nil, searchedSeries.insert(seriesID).inserted {
@@ -278,13 +282,15 @@ actor SpineWorker {
             book: book, accountID: context.accountID, workItemHash: workHash, cover: cover)
     }
 
-    /// Returns the first current saved design for another book in the series, if any.
+    /// Returns the first saved design from this generator for another book in the series, if
+    /// any.
     private func storedSeriesDesign(
         seriesID: Int, excluding bookID: Int, context: WorkContext
     ) async throws -> SpineDesignV1? {
         for sibling in context.books where sibling.seriesID == seriesID && sibling.id != bookID {
-            if let design = try await store.currentDesign(
-                accountID: context.accountID, bookID: sibling.id)
+            if let design = try await store.savedDesign(
+                accountID: context.accountID, bookID: sibling.id),
+                design.generatorVersion == CloudContract.generatorVersion
             {
                 return design
             }

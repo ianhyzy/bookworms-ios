@@ -153,38 +153,7 @@ struct BookDetailView: View {
     }
 
     private func designCard(look: SpineLook, design: SpineDesignV1?) -> some View {
-        Card {
-            Text("Spine design").font(.headline)
-            SpineView(book: book, look: look)
-                .frame(height: book.slabThickness)
-                .accessibilityHidden(true)
-            if let design {
-                LabeledContent("Font") {
-                    Text(design.fontFamily ?? design.typeface.capitalized)
-                        .font(look.font(size: 19))
-                }
-                Divider()
-                let swatches =
-                    typeSize.isAccessibilitySize
-                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
-                    : AnyLayout(HStackLayout(alignment: .top))
-                swatches {
-                    Swatch(name: "Background", hex: design.backgroundHex, color: look.background)
-                    Swatch(name: "Text", hex: design.foregroundHex, color: look.foreground)
-                    Swatch(name: "Accent", hex: design.accentHex, color: look.accent)
-                }
-                Divider()
-            }
-            if let design {
-                Text("Created \(design.generatedAt, format: .dateTime.year().month().day())")
-                    .font(.footnote)
-                    .foregroundStyle(cardNote)
-            } else {
-                Text("The spine shows a placeholder cloth until it is designed.")
-                    .font(.footnote)
-                    .foregroundStyle(cardNote)
-            }
-        }
+        SpineDesignCard(book: book, look: look, design: design)
     }
 }
 
@@ -369,14 +338,189 @@ private struct Card<Content: View>: View {
     }
 }
 
-/// One design color: a swatch, its role, and its hex value.
+/// The **Spine design** card: the spine, the design's font, and its colors, which the reader can
+/// change.
+///
+/// Each color opens the system color picker. The card's spine shows picked colors at once. The
+/// rest of the app shows them, and the library's store saves them, one second after the last
+/// change or when the card leaves (`AppModel.recolor(_:to:)`), so dragging in the picker
+/// neither redraws 3D textures nor writes to iCloud for each frame. Colors whose text and
+/// background contrast less than 4.5:1 show only here, with a note, and are never saved.
+///
+/// The picker's sheet covers the lower part of the screen, so once the reader picks a color,
+/// the card adds room below itself and scrolls its spine to the top, above the sheet. The
+/// picker's opening tap goes to a UIKit color well that reports nothing to SwiftUI.
+private struct SpineDesignCard: View {
+    let book: CloudBook
+    /// The look of the saved design, as the rest of the app shows it.
+    let look: SpineLook
+    let design: SpineDesignV1?
+
+    @Environment(AppModel.self) private var model
+    @Environment(\.dynamicTypeSize) private var typeSize
+    /// Picked colors that the library does not show yet, or that it shows but failed to save.
+    @State private var draft: SpineColors?
+    @State private var saveError: String?
+    /// Set once the reader picks a color, for as long as the card shows.
+    @State private var isPicking = false
+
+    private static let previewID = "spine-preview"
+
+    private var saved: SpineColors {
+        SpineColors(background: look.background, foreground: look.foreground, accent: look.accent)
+    }
+
+    var body: some View {
+        let shown = draft ?? saved
+        ScrollViewReader { proxy in
+            VStack(spacing: 0) {
+                card(shown: shown)
+                if isPicking {
+                    Color.clear.containerRelativeFrame(.vertical) { height, _ in height * 0.6 }
+                }
+            }
+            .onChange(of: isPicking) {
+                withAnimation { proxy.scrollTo(Self.previewID, anchor: .top) }
+            }
+        }
+        .task(id: draft) {
+            guard let draft else { return }
+            try? await Task.sleep(for: .seconds(1))
+            if !Task.isCancelled { await save(draft) }
+        }
+        .onDisappear {
+            // The card cannot report a failure once it is gone; the colors stay on screen until
+            // the next reload.
+            guard let draft, draft.isReadable else { return }
+            Task { [model, book] in try? await model.recolor(book, to: draft) }
+        }
+        // A new design, such as a redesign from a new cover, replaces the colors being picked.
+        .onChange(of: design?.generatedAt) { draft = nil }
+        #if DEBUG
+            .onAppear(perform: applyDebugColors)
+        #endif
+    }
+
+    private func card(shown: SpineColors) -> some View {
+        Card {
+            Text("Spine design").font(.headline)
+            SpineView(book: book, look: look(with: shown))
+                .frame(height: book.slabThickness)
+                .accessibilityHidden(true)
+                .id(Self.previewID)
+            if let design {
+                LabeledContent("Font") {
+                    Text(design.fontFamily ?? design.typeface.capitalized)
+                        .font(look.font(size: 19))
+                }
+                Divider()
+                let swatches =
+                    typeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+                    : AnyLayout(HStackLayout(alignment: .top))
+                swatches {
+                    Swatch(name: "Background", color: color(\.background))
+                    Swatch(name: "Text", color: color(\.foreground))
+                    Swatch(name: "Accent", color: color(\.accent))
+                }
+                if !shown.isReadable {
+                    note(
+                        "The text needs more contrast with the background. Choose a lighter or darker color to save.",
+                        systemImage: "exclamationmark.triangle")
+                } else if let saveError {
+                    note(saveError, systemImage: "exclamationmark.icloud")
+                } else {
+                    Text("Tap a color to change it.").font(.footnote).foregroundStyle(cardNote)
+                }
+                if let generated = design.generatedColors ?? design.colors, shown != generated {
+                    Button("Reset colors", systemImage: "arrow.uturn.backward") {
+                        draft = generated
+                        Task { await save(generated) }
+                    }
+                    .buttonStyle(.bordered)
+                }
+                Divider()
+            }
+            if let design {
+                Text("Created \(design.generatedAt, format: .dateTime.year().month().day())")
+                    .font(.footnote)
+                    .foregroundStyle(cardNote)
+            } else {
+                Text("The spine shows a placeholder cloth until it is designed.")
+                    .font(.footnote)
+                    .foregroundStyle(cardNote)
+            }
+        }
+    }
+
+    /// A binding to one of the shown colors, which makes the picked colors the draft.
+    private func color(_ role: WritableKeyPath<SpineColors, ColorValue>) -> Binding<ColorValue> {
+        Binding {
+            (draft ?? saved)[keyPath: role]
+        } set: { value in
+            var colors = draft ?? saved
+            colors[keyPath: role] = value
+            draft = colors
+            isPicking = true
+        }
+    }
+
+    private func look(with colors: SpineColors) -> SpineLook {
+        var look = look
+        look.background = colors.background
+        look.foreground = colors.foreground
+        look.accent = colors.accent
+        return look
+    }
+
+    private func note(_ text: String, systemImage: String) -> some View {
+        Label(text, systemImage: systemImage).font(.footnote).foregroundStyle(cardNote)
+    }
+
+    /// Shows and saves readable `colors`, then clears the draft unless the reader has picked
+    /// other colors since.
+    private func save(_ colors: SpineColors) async {
+        guard colors.isReadable else { return }
+        do {
+            try await model.recolor(book, to: colors)
+            saveError = nil
+            if draft == colors { draft = nil }
+        } catch is CancellationError {
+            // A newer draft replaced these colors.
+        } catch {
+            saveError = error.localizedDescription
+        }
+    }
+
+    #if DEBUG
+        @MainActor private static var appliedDebugColors = false
+
+        /// Simulator hook: with `-BookwormsOpenBook <book ID>`,
+        /// `-BookwormsSpineColors "RRGGBB,RRGGBB,RRGGBB"` picks those background, text, and accent
+        /// colors for that book once per launch, as the color pickers would.
+        private func applyDebugColors() {
+            let defaults = UserDefaults.standard
+            guard !Self.appliedDebugColors, design != nil,
+                defaults.string(forKey: "BookwormsOpenBook").flatMap(Int.init) == book.id,
+                let hexes = defaults.string(forKey: "BookwormsSpineColors")?.split(separator: ","),
+                hexes.count == 3,
+                let background = ColorValue(hex: "#\(hexes[0].uppercased())"),
+                let foreground = ColorValue(hex: "#\(hexes[1].uppercased())"),
+                let accent = ColorValue(hex: "#\(hexes[2].uppercased())")
+            else { return }
+            Self.appliedDebugColors = true
+            draft = SpineColors(background: background, foreground: foreground, accent: accent)
+        }
+    #endif
+}
+
+/// One design color: a swatch that opens the system color picker, its role, and its hex value.
 ///
 /// A column for a row of three; at accessibility sizes, where a column breaks the words, a row
 /// with the text beside the swatch.
 private struct Swatch: View {
     let name: String
-    let hex: String
-    let color: ColorValue
+    @Binding var color: ColorValue
 
     @Environment(\.dynamicTypeSize) private var typeSize
 
@@ -385,17 +529,44 @@ private struct Swatch: View {
         let layout =
             isRow ? AnyLayout(HStackLayout(spacing: 12)) : AnyLayout(VStackLayout(spacing: 6))
         layout {
-            Circle()
-                .fill(color.color)
-                .overlay { Circle().strokeBorder(.white.opacity(0.25), lineWidth: 1) }
-                .frame(width: 40, height: 40)
+            // The swatch covers the system color well and lets touches through to it, so the
+            // card keeps its look while the well opens the picker.
+            ColorPicker(
+                "\(name) color",
+                selection: Binding {
+                    color.color
+                } set: {
+                    color = ColorValue($0)
+                },
+                supportsOpacity: false
+            )
+            .labelsHidden()
+            .accessibilityValue(color.hex)
+            .overlay {
+                Circle()
+                    .fill(color.color)
+                    .overlay { Circle().strokeBorder(.white.opacity(0.25), lineWidth: 1) }
+                    .frame(width: 40, height: 40)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+            .frame(width: 40, height: 40)
             VStack(alignment: isRow ? .leading : .center, spacing: isRow ? 2 : 6) {
                 Text(name).font(.caption)
-                Text(hex).font(.caption.monospaced()).foregroundStyle(cardNote)
+                Text(color.hex).font(.caption.monospaced()).foregroundStyle(cardNote)
             }
+            .accessibilityHidden(true)
         }
         .frame(maxWidth: isRow ? nil : .infinity)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(name) color, \(hex)")
+    }
+}
+
+extension ColorValue {
+    /// The sRGB color nearest `color`, which can lie outside sRGB, such as a Display P3 color
+    /// from the system color picker.
+    fileprivate init(_ color: Color) {
+        let resolved = color.resolve(in: EnvironmentValues())
+        func byte(_ value: Float) -> Int { Int((min(max(value, 0), 1) * 255).rounded()) }
+        self.init(red: byte(resolved.red), green: byte(resolved.green), blue: byte(resolved.blue))
     }
 }

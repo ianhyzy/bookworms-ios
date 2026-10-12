@@ -55,7 +55,7 @@ actor CloudSpineStore: SpineStore {
         }
     }
 
-    func currentDesign(accountID: String, bookID: Int) async throws -> SpineDesignV1? {
+    func savedDesign(accountID: String, bookID: Int) async throws -> SpineDesignV1? {
         let id = CKRecord.ID(
             recordName: CloudContract.designRecordName(accountID: accountID, bookID: bookID))
         let record: CKRecord
@@ -63,8 +63,7 @@ actor CloudSpineStore: SpineStore {
             where error.code == .unknownItem
         { return nil }
         guard let existing = Self.design(in: record), existing.accountID == accountID,
-            existing.bookID == bookID,
-            existing.generatorVersion == CloudContract.generatorVersion
+            existing.bookID == bookID
         else { return nil }
         return existing
     }
@@ -97,6 +96,31 @@ actor CloudSpineStore: SpineStore {
     }
 
     func save(_ design: SpineDesignV1) async throws {
+        try await write(design) { existing in
+            // Another run already saved this work from this generator.
+            guard let existing else { return false }
+            return existing.accountID == design.accountID && existing.bookID == design.bookID
+                && existing.workItemHash == design.workItemHash
+                && existing.coverHash == design.coverHash
+                && existing.generatorVersion == design.generatorVersion
+        }
+    }
+
+    func saveRecolored(_ design: SpineDesignV1) async throws {
+        try await write(design) { existing in
+            guard let existing, existing.isSameDesign(as: design) else {
+                throw CompanionError.designChanged
+            }
+            return existing == design
+        }
+    }
+
+    /// Writes `design` to its record unless `keepsSaved`, given the record's valid design if any,
+    /// returns `true` or throws. Saves with `ifServerRecordUnchanged` and retries up to three
+    /// times when another device changes the record meanwhile.
+    private func write(
+        _ design: SpineDesignV1, unless keepsSaved: (SpineDesignV1?) throws -> Bool
+    ) async throws {
         try design.validate()
         let id = CKRecord.ID(
             recordName: CloudContract.designRecordName(
@@ -112,15 +136,7 @@ actor CloudSpineStore: SpineStore {
             guard record.recordType == "SpineDesignV1" else {
                 throw CompanionError.invalidCloudData
             }
-            // Another run already saved this work from this generator.
-            if let existing = Self.design(in: record), existing.accountID == design.accountID,
-                existing.bookID == design.bookID,
-                existing.workItemHash == design.workItemHash,
-                existing.coverHash == design.coverHash,
-                existing.generatorVersion == design.generatorVersion
-            {
-                return
-            }
+            if try keepsSaved(Self.design(in: record)) { return }
             record["payload"] = payload as CKRecordValue
             do {
                 let result = try await database.modifyRecords(
