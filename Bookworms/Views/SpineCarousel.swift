@@ -30,14 +30,14 @@ enum StackStyle: String {
     /// How `book` lies in the stack, which is also where its flight to the details starts.
     /// `covered` says whether another book lies on it, hiding all of a 3D book but its spine.
     func rest(of book: CloudBook, covered: Bool) -> PullOutPath.Rest {
-        let tilt = StackArrangement.tilt(of: book)
+        let twist = StackArrangement.twist(of: book)
         switch self {
         case .flat:
-            return PullOutPath.Rest(tilt: tilt)
+            // A flat spine shows no other face, so its flight starts with the spine alone.
+            return PullOutPath.Rest(pitch: twist, isCovered: true)
         case .threeD:
             return PullOutPath.Rest(
-                tilt: tilt, yaw: -Self.lookDown, pitch: StackArrangement.twist(of: book),
-                lighting: Self.lighting, isCovered: covered)
+                yaw: -Self.lookDown, pitch: twist, lighting: Self.lighting, isCovered: covered)
         }
     }
 }
@@ -163,7 +163,12 @@ struct SpineCarousel: View {
         case .flat:
             SpineView(book: book, look: look)
                 .frame(width: spine.width, height: spine.height)
-                .rotationEffect(.radians(rest.tilt))
+                // Turned as `Book3DView` turns a 3D book by `rest.pitch`, so 2D, 3D, and the
+                // flight agree on which way the spine faces.
+                .rotation3DEffect(
+                    .radians(-rest.pitch), axis: (x: 0, y: 1, z: 0),
+                    perspective: StackArrangement.perspective
+                )
                 .modifier(PulledSpine(id: book.id, pullOut: pullOut, upright: false, rest: rest))
         case .threeD:
             StackedBook(book: book, look: look, spine: spine, rest: rest, pullOut: pullOut)
@@ -305,7 +310,7 @@ private struct StackedBook: View {
             pitch: rest.pitch, thicknessRatio: spine.height / spine.width, lighting: rest.lighting
         )
         .scaleEffect(scale)
-        .rotationEffect(.radians(-.pi / 2 + rest.tilt))
+        .rotationEffect(.radians(-.pi / 2))
         .frame(width: drawn.width, height: drawn.height)
         .frame(width: spine.width, height: spine.height, alignment: .bottom)
         .modifier(
@@ -324,7 +329,7 @@ private struct StackedBook: View {
 ///
 /// The gap reports its frame as soon as the book is pulled, while the spine still shows, and the
 /// spine hides once the flying book is drawn over it, so no frame shows neither. The frame is the
-/// layout frame, before `rest.tilt`, which the flight applies itself; `lift` moves it to the
+/// layout frame, before the book's turn, which the flight applies itself; `lift` moves it to the
 /// center of the drawn book where that differs from the slot's.
 private struct PulledSpine: ViewModifier {
     let id: Int
@@ -350,8 +355,6 @@ private struct PulledSpine: ViewModifier {
                         ], startPoint: upright ? .leading : .top,
                         endPoint: upright ? .trailing : .bottom
                     )
-                    .rotationEffect(.radians(rest.tilt))
-                    // Measured outside the tilt, which would otherwise report its bounding box.
                     .background {
                         Color.clear.onGeometryChange(for: CGRect.self) {
                             $0.frame(in: .global).offsetBy(dx: 0, dy: lift)
@@ -530,33 +533,27 @@ struct SpineTrack {
 
 /// Where **Stack** lays each book in a scroll view `width` points wide, so the books look
 /// casually piled: the spine's size, how far the book lies off the stack's middle, and how far it
-/// turns.
+/// turns about the vertical axis, so its spine faces a little left or right.
 ///
 /// Spines have the shelf's sizes (`CloudBook.shelfSpineSize(scale:)`) lying on their side, at the
 /// largest scale that fits the longest possible book across the screen. A book's offsets come from
 /// its ID, so it lies the same way on every launch and in every order. Each offset is the square
 /// of an even spread, keeping its sign, so most books lie nearly straight and few reach the
-/// limits. Each book rests on the one below it, touching it where they meet (`gap(above:below:)`).
+/// limits. Each book lies flat on the one below it, level and touching along their length, as
+/// gravity would leave a real stack; books never tilt in the screen's plane.
 struct StackArrangement {
     /// How far a book can lie off the middle, as a share of the width.
     static let maximumShift: CGFloat = 0.03
-    /// How far a book can turn in the screen's plane: 1.5 degrees.
-    static let maximumTilt = 1.5 * Double.pi / 180
-    /// How far a 3D book can turn about the screen's vertical axis, in radians. A turn past about
-    /// 0.16 shows the page edges at one end of the book.
+    /// How far a book can turn about the screen's vertical axis, so its spine faces a little
+    /// left or right, in radians. A 3D book turned past about 0.16 shows the page edges at one end.
     static let maximumTwist = 0.3
+    /// The `rotation3DEffect` perspective that matches `BookProjection`'s camera, which sits 3.2
+    /// book lengths away, for a flat spine as long as its book.
+    static let perspective = 1 / 3.2
     /// Space between the screen's edges and the longest book lying in the middle.
     static let margin: CGFloat = 16
     /// How far the stack fades in from each end of the masked part of its scroll view.
     static let fade: CGFloat = 96
-
-    /// A book's place in the stack: its center's distance right of the middle, its length, and
-    /// its clockwise turn in radians.
-    struct Lie {
-        var center: CGFloat
-        var length: CGFloat
-        var tilt: Double
-    }
 
     let width: CGFloat
     /// Points per decimeter of book, up to the shelf's largest.
@@ -574,7 +571,7 @@ struct StackArrangement {
         return CGSize(width: upright.height, height: upright.width)
     }
 
-    /// The distance from the scroll view's leading edge to the spine's, before its tilt.
+    /// The distance from the scroll view's leading edge to the spine's, before its turn.
     func leading(of book: CloudBook) -> CGFloat {
         (width - spine(of: book).width) / 2 + shift(of: book)
     }
@@ -583,35 +580,15 @@ struct StackArrangement {
         width * Self.maximumShift * Self.spread(book, salt: 70)
     }
 
-    static func tilt(of book: CloudBook) -> Double { maximumTilt * spread(book, salt: 71) }
-
     static func twist(of book: CloudBook) -> Double { maximumTwist * spread(book, salt: 72) }
 
-    /// The books from the top of the stack to the bottom.
+    /// The books from the top of the stack to the bottom, each lying flat on the one below it.
     func track(of books: [CloudBook]) -> SpineTrack {
         SpineTrack(books: books) {
             spine(of: $0).height
-        } gap: { above, below in
-            Self.gap(above: lie(of: above), below: lie(of: below))
+        } gap: { _, _ in
+            0
         }
-    }
-
-    func lie(of book: CloudBook) -> Lie {
-        Lie(center: shift(of: book), length: spine(of: book).width, tilt: Self.tilt(of: book))
-    }
-
-    /// The space from the bottom of `above`'s spine to the top of `below`'s, both measured at the
-    /// spine's center before its tilt, that makes the two touch at one point and nowhere overlap.
-    ///
-    /// Along the length the books share, each spine's edge is a line, so the books first meet at
-    /// one end of that span. The tilt's small change to a spine's ends and thickness is ignored.
-    static func gap(above: Lie, below: Lie) -> CGFloat {
-        let start = max(above.center - above.length / 2, below.center - below.length / 2)
-        let end = min(above.center + above.length / 2, below.center + below.length / 2)
-        func overlap(at x: CGFloat) -> CGFloat {
-            (x - above.center) * tan(above.tilt) - (x - below.center) * tan(below.tilt)
-        }
-        return max(overlap(at: start), overlap(at: end))
     }
 
     /// The stops of the stack's mask, from the top of a scroll view `height` points tall to its

@@ -27,8 +27,13 @@ struct YearStackCard: View {
                     ForEach(layout.slabs) { slab in
                         ShareSpine(book: slab.book, look: input.look(for: slab.book))
                             .frame(width: slab.size.width, height: slab.size.height)
+                            // Turned as Stack turns a flat spine, so it faces a little left or
+                            // right while lying flat on the book below it.
+                            .rotation3DEffect(
+                                .degrees(slab.turn), axis: (x: 0, y: 1, z: 0),
+                                perspective: StackArrangement.perspective
+                            )
                             .shadow(color: .black.opacity(0.4), radius: 5, y: 3)
-                            .rotationEffect(.degrees(slab.tilt))
                             .position(slab.center)
                     }
                 }
@@ -66,8 +71,9 @@ struct StackLayout {
         let book: CloudBook
         let center: CGPoint
         let size: CGSize
-        /// The tilt in degrees.
-        let tilt: Double
+        /// The turn about the vertical axis, in degrees, that faces the spine a little left or
+        /// right. Spines never tilt in the image's plane: each lies flat on the one below.
+        let turn: Double
         var id: Int { book.id }
     }
 
@@ -124,18 +130,19 @@ struct StackLayout {
                 columns.count == 1
                 ? area.width / 2 : columnWidth / 2 + CGFloat(column) * (columnWidth + gap)
             var bottom = height
-            for (index, book) in books.enumerated() {
+            for book in books {
                 let thickness = weight(book) * unit
                 let length = columnWidth * (0.84 + 0.16 * ShareStyle.unit(seed, book.id, 1))
                 let shift =
                     (ShareStyle.unit(seed, book.id, 2) - 0.5) * min(40, columnWidth - length)
-                // The bottom book lies flat on the shelf.
-                let tilt = index == 0 ? 0 : (ShareStyle.unit(seed, book.id, 3) - 0.5) * 2.6
+                // Up to 10 degrees, mostly much less, as `StackArrangement` spreads its turns.
+                let even = 2 * ShareStyle.unit(seed, book.id, 3) - 1
+                let turn = 10 * even * abs(even)
                 slabs.append(
                     Slab(
                         book: book,
                         center: CGPoint(x: centerX + shift, y: bottom - thickness / 2),
-                        size: CGSize(width: length, height: thickness), tilt: tilt))
+                        size: CGSize(width: length, height: thickness), turn: turn))
                 bottom -= thickness
             }
         }

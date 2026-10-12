@@ -183,12 +183,8 @@ struct PullOutPath {
     static let turnStart = 0.24
     /// The progress at which the shelf starts to dim.
     static let veilStart = 0.45
-    /// How much larger a spine on **Shelf** looks once its book has slid out toward the reader.
-    static let shelfPullScale = 1.15
-    /// How much larger a spine on **Stack** looks once its book has slid out of the stack.
-    static let stackPullScale = 1.05
-    /// How far a book on **Stack** slides to the right, as a share of its length.
-    static let stackSlide = 0.22
+    /// How much larger a spine looks once its book has slid out toward the reader.
+    static let pullScale = 1.15
     /// The float gathers speed, then settles gently on the stage.
     static let floatCurve = UnitCurve.bezier(
         startControlPoint: UnitPoint(x: 0.4, y: 0), endControlPoint: UnitPoint(x: 0.2, y: 1))
@@ -211,8 +207,6 @@ struct PullOutPath {
     /// How a book lies in its place, as turns from facing its spine to the reader, upright on
     /// **Shelf** or on its back on **Stack**. The defaults lie straight, as a flat spine.
     struct Rest: Equatable {
-        /// A clockwise turn in the screen's plane, in radians, that sets the book askew.
-        var tilt = 0.0
         /// Added to the yaw that faces the spine to the reader. Negative shows the front cover,
         /// which lies on top of a book on its back.
         var yaw = 0.0
@@ -243,9 +237,12 @@ struct PullOutPath {
         let length = upright ? home.height : home.width
         let spineRatio = (upright ? home.width : home.height) / max(1, length)
         let magnification = Self.spineMagnification(aspect: aspect, thicknessRatio: spineRatio)
-        let growth = upright ? Self.shelfPullScale : Self.stackPullScale
-        let pulled = (1 + (growth - 1) * pull) / magnification
-        let slideX = upright ? 0 : Self.stackSlide * length * pull
+        let pulled = (1 + (Self.pullScale - 1) * pull) / magnification
+        // A book on its back comes out along the way its spine faces: straight toward the reader,
+        // and a little to the side it is turned to. `BookProjection`'s camera sits 3.2 lengths
+        // away, so growing by `pullScale` moves the book that much nearer.
+        let slideX =
+            upright ? 0 : -sin(rest.pitch) * 3.2 * (Self.pullScale - 1) * length * pull
         // The spine-on pose nearest the details' pose, so a book the reader spun turns back the
         // short way.
         let spineYaw = .pi / 2 + 2 * .pi * ((pose.yaw - .pi / 2) / (2 * .pi)).rounded()
@@ -260,7 +257,7 @@ struct PullOutPath {
             thicknessRatio: Self.mix(spineRatio, thicknessRatio, turn * turn),
             yaw: Self.mix(spineYaw + rest.yaw, pose.yaw, turn),
             pitch: Self.mix(rest.pitch, pose.pitch, turn),
-            roll: Self.mix((upright ? 0 : -.pi / 2) + rest.tilt, 0, turn),
+            roll: Self.mix(upright ? 0 : -.pi / 2, 0, turn),
             lighting: Self.mix(
                 rest.lighting, 1, Self.phase(progress, from: 0, to: Self.turnStart, .easeInOut)),
             faces: rest.isCovered

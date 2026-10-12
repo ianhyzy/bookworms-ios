@@ -47,29 +47,6 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertLessThan(typical, book(4, "Longer", pages: 600).slabThickness)
     }
 
-    func testStackedBooksTouchWhereTheyMeetAndNeverOverlap() {
-        // Opposite tilts meet at one end and open a wedge at the other.
-        let above = StackArrangement.Lie(center: -6, length: 260, tilt: 0.02)
-        let below = StackArrangement.Lie(center: 8, length: 300, tilt: -0.015)
-        let gap = StackArrangement.gap(above: above, below: below)
-        // The upper book's bottom edge and the lower book's top edge, with the lower book's top
-        // at its center `gap` below the upper book's bottom at its center.
-        func clearance(at x: CGFloat) -> CGFloat {
-            (gap + (x - below.center) * tan(below.tilt)) - (x - above.center) * tan(above.tilt)
-        }
-        let start = max(above.center - above.length / 2, below.center - below.length / 2)
-        let end = min(above.center + above.length / 2, below.center + below.length / 2)
-        let samples = (0...100).map { clearance(at: start + (end - start) * CGFloat($0) / 100) }
-        XCTAssertGreaterThanOrEqual(samples.min()!, -0.0001)
-        XCTAssertEqual(min(samples.first!, samples.last!), 0, accuracy: 0.0001)
-        XCTAssertGreaterThan(max(samples.first!, samples.last!), 5)
-
-        // Level books touch along their whole length.
-        let level = StackArrangement.Lie(center: 10, length: 200, tilt: 0)
-        let levelBelow = StackArrangement.Lie(center: -6, length: 260, tilt: 0)
-        XCTAssertEqual(StackArrangement.gap(above: level, below: levelBelow), 0)
-    }
-
     func testStackLaysBooksSlightlyAskewWithinTheScreen() {
         let layout = StackArrangement(width: 402)
         let books = (1...200).map { book($0, "Book \($0)", pages: 60 + $0 * 7) }
@@ -80,7 +57,7 @@ final class ShelfLogicTests: XCTestCase {
             XCTAssertLessThanOrEqual(
                 abs(layout.shift(of: book)), 402 * StackArrangement.maximumShift)
             XCTAssertLessThanOrEqual(
-                abs(StackArrangement.tilt(of: book)), StackArrangement.maximumTilt)
+                abs(StackArrangement.twist(of: book)), StackArrangement.maximumTwist)
             // Even the longest book, shifted, stays clear of the screen's edges.
             XCTAssertGreaterThanOrEqual(layout.leading(of: book), StackArrangement.margin - 0.001)
             XCTAssertLessThanOrEqual(
@@ -89,20 +66,20 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertLessThanOrEqual(
             layout.scale * CGFloat(BookShape.longest) + 2 * 402 * StackArrangement.maximumShift,
             402 - 2 * StackArrangement.margin + 0.001)
-        // Most books lie nearly straight, and the spread is the same on every launch.
-        let tilts = books.map { abs(StackArrangement.tilt(of: $0)) }
-        let straight = tilts.filter { $0 < StackArrangement.maximumTilt / 2 }.count
+        // Most books face nearly straight out, and the spread is the same on every launch.
+        let twists = books.map { abs(StackArrangement.twist(of: $0)) }
+        let straight = twists.filter { $0 < StackArrangement.maximumTwist / 2 }.count
         XCTAssertGreaterThan(straight, books.count * 6 / 10)
         XCTAssertEqual(
-            StackArrangement.tilt(of: books[3]), 0.000_634_752_280_834_7, accuracy: 1e-12)
-        // Each book rests on the one below it.
+            StackArrangement.twist(of: book(4, "Renamed", pages: 900)),
+            StackArrangement.twist(of: books[3]))
+        XCTAssertNotEqual(StackArrangement.twist(of: books[3]), 0)
+        // Each book lies flat on the one below it, touching along its length.
         let track = layout.track(of: books)
         XCTAssertEqual(track.ids, books.map(\.id))
         for index in books.indices.dropLast() {
             let (above, below) = (books[index], books[index + 1])
-            let step =
-                (layout.spine(of: above).height + layout.spine(of: below).height) / 2
-                + StackArrangement.gap(above: layout.lie(of: above), below: layout.lie(of: below))
+            let step = (layout.spine(of: above).height + layout.spine(of: below).height) / 2
             XCTAssertEqual(track.offsets[index + 1] - track.offsets[index], step, accuracy: 0.001)
         }
     }
@@ -321,7 +298,7 @@ final class ShelfLogicTests: XCTestCase {
         // its shadow shows.
         let pulled = path.pose(at: PullOutPath.floatStart)
         XCTAssertGreaterThan(pulled.scale / start.scale, 1.1)
-        XCTAssertLessThanOrEqual(pulled.scale / start.scale, PullOutPath.shelfPullScale)
+        XCTAssertLessThanOrEqual(pulled.scale / start.scale, PullOutPath.pullScale)
         XCTAssertEqual(pulled.center, start.center)
         XCTAssertEqual(pulled.yaw, .pi / 2, accuracy: 0.0001)
         XCTAssertEqual(pulled.height, 280, accuracy: 0.001)
@@ -404,9 +381,10 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertLessThan(abs(start.yaw - spun.yaw), .pi)
         XCTAssertEqual(sin(start.yaw), 1, accuracy: 0.0001)
 
-        // It slides most of the way along its length, out of the wheel, before it stands up.
+        // A book that faces straight out comes straight toward the reader before it stands up.
         let slid = path.pose(at: PullOutPath.turnStart)
-        XCTAssertGreaterThan(slid.center.x - home.midX, 0.9 * PullOutPath.stackSlide * home.width)
+        XCTAssertEqual(slid.center.x, home.midX, accuracy: 0.001)
+        XCTAssertGreaterThan(slid.scale / start.scale, 1.1)
         XCTAssertEqual(slid.roll, -.pi / 2, accuracy: 0.0001)
         XCTAssertEqual(slid.yaw, start.yaw, accuracy: 0.0001)
 
@@ -419,12 +397,12 @@ final class ShelfLogicTests: XCTestCase {
     func testThreeDStackedBookStartsAsItLiesAndLandsInTheDetails() {
         let home = CGRect(x: 40, y: 400, width: 280, height: 32)
         let rest = PullOutPath.Rest(
-            tilt: 0.02, yaw: -0.3, pitch: 0.2, lighting: 0.6, isCovered: true)
+            yaw: -0.3, pitch: 0.2, lighting: 0.6, isCovered: true)
         let path = PullOutPath(
             home: home, upright: false, stage: CGRect(x: 0, y: 100, width: 402, height: 380),
             pose: .resting, aspect: 2 / 3, thicknessRatio: 0.1, rest: rest)
 
-        // Drawn as the stack draws it: askew, turned to show its top board and an end, shaded.
+        // Drawn as the stack draws it: turned to show its top board and an end, and shaded.
         let start = path.pose(at: 0)
         XCTAssertEqual(start.center, CGPoint(x: home.midX, y: home.midY))
         XCTAssertEqual(start.height, 280, accuracy: 0.001)
@@ -433,11 +411,16 @@ final class ShelfLogicTests: XCTestCase {
             start.scale,
             1 / PullOutPath.spineMagnification(aspect: 2 / 3, thicknessRatio: 32 / 280),
             accuracy: 0.0001)
-        XCTAssertEqual(start.roll, -.pi / 2 + 0.02, accuracy: 0.0001)
+        XCTAssertEqual(start.roll, -.pi / 2, accuracy: 0.0001)
         XCTAssertEqual(sin(start.yaw - rest.yaw), 1, accuracy: 0.0001)
         XCTAssertEqual(start.pitch, 0.2, accuracy: 0.0001)
         XCTAssertEqual(start.lighting, 0.6, accuracy: 0.0001)
         XCTAssertEqual(path.pose(at: -0.1), start)
+        // Turned to face a little left, it comes out toward the reader and a little left.
+        let pulled = path.pose(at: PullOutPath.floatStart)
+        XCTAssertLessThan(pulled.center.x, start.center.x)
+        XCTAssertEqual(pulled.center.y, start.center.y, accuracy: 0.001)
+        XCTAssertGreaterThan(pulled.scale / start.scale, 1.1)
         // Only the spine shows until the book lifts away from the books above it.
         XCTAssertEqual(start.faces, 0)
         XCTAssertEqual(path.pose(at: PullOutPath.floatStart).faces, 0)
