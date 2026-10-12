@@ -29,6 +29,8 @@ final class ShelfPullOut {
     private(set) var isOut = false
     /// The spine's place in global coordinates, which the hidden spine reports.
     var home: CGRect?
+    /// How the book lies in its place, which the hidden spine reports with `home`.
+    var rest = PullOutPath.Rest()
     /// The frame of **Shelf**'s lamp in global coordinates, which the lamp reports. While a book
     /// is out, the flight draws the lamp over the book, so the book keeps the light its spine had.
     var lampFrame: CGRect?
@@ -134,11 +136,11 @@ final class ShelfPullOut {
 ///
 /// 1. The book slides out of its place. On **Shelf**, it comes straight toward the reader, which
 ///    shows as its spine growing; on **Stack**, it also slides along its length, out of the
-///    wheel. It casts a shadow on the shelf, and the faces' shading fades in.
+///    stack. It casts a shadow on the shelf, and the faces' shading fades in.
 /// 2. As the slide ends, the book starts to float to the stage, growing or shrinking to the
-///    stage's height, and to turn from facing its spine to the details' pose, while a book from
-///    **Stack** stands up from lying on its back. The float and the turn start before the slide
-///    has quite ended, so the book never stops, but only once it is almost out of its place.
+///    stage's height, and to turn from the way it lay (`Rest`) to the details' pose, while a book
+///    from **Stack** stands up from lying on its back. The float and the turn start before the
+///    slide has quite ended, so the book never stops, but only once it is almost out of its place.
 /// 3. Once the book is on its way, the shelf dims behind it.
 ///
 /// The return retraces the same path. Progress outside 0...1 leaves the book at that end.
@@ -160,10 +162,13 @@ struct PullOutPath {
         var yaw: Double
         var pitch: Double
         /// A turn in the screen's plane, in radians: -π/2 lays an upright book on its back with
-        /// its head on the left, as **Stack** shows spines.
+        /// its head on the left, as **Stack** shows books.
         var roll: Double
-        /// `Book3DView.lighting`: 0 in the book's place, where it matches the unshaded spine.
+        /// `Book3DView.lighting`: `Rest.lighting` in the book's place, 0 for an unshaded spine.
         var lighting: Double
+        /// `Book3DView.faceOpacity`: 0 while the books above a book from the 3D stack still
+        /// hide all but its spine, and 1 once it has lifted away from them.
+        var faces: Double
         /// The opacity of the book's shadow on the shelf behind it.
         var shadow: Double
         /// How far the shelf has dimmed behind the book, 0...1, which also lights the stage.
@@ -180,7 +185,7 @@ struct PullOutPath {
     static let veilStart = 0.45
     /// How much larger a spine on **Shelf** looks once its book has slid out toward the reader.
     static let shelfPullScale = 1.15
-    /// How much larger a spine on **Stack** looks once its book has slid out of the wheel.
+    /// How much larger a spine on **Stack** looks once its book has slid out of the stack.
     static let stackPullScale = 1.05
     /// How far a book on **Stack** slides to the right, as a share of its length.
     static let stackSlide = 0.22
@@ -200,6 +205,35 @@ struct PullOutPath {
     let aspect: CGFloat
     /// The book's own thickness as a share of its height.
     let thicknessRatio: CGFloat
+    /// How the book lay in its place, beyond facing its spine to the reader.
+    var rest = Rest()
+
+    /// How a book lies in its place, as turns from facing its spine to the reader, upright on
+    /// **Shelf** or on its back on **Stack**. The defaults lie straight, as a flat spine.
+    struct Rest: Equatable {
+        /// A clockwise turn in the screen's plane, in radians, that sets the book askew.
+        var tilt = 0.0
+        /// Added to the yaw that faces the spine to the reader. Negative shows the front cover,
+        /// which lies on top of a book on its back.
+        var yaw = 0.0
+        var pitch = 0.0
+        /// `Book3DView.lighting`, 0 for a flat spine.
+        var lighting = 0.0
+        /// Whether the books above hide every face of the book but its spine, as they hide a 3D
+        /// book's top board and page edges in the stack. The flight is drawn over the shelf, so
+        /// it starts with only the spine and shows the other faces as the book lifts away.
+        var isCovered = false
+    }
+
+    /// How much larger than the book's height `Book3DView` draws a book that faces its spine to
+    /// the viewer: the spine lies in front of the book's center, nearer the camera. A book drawn
+    /// in place of a spine shrinks by this factor to match the spine's length.
+    static func spineMagnification(aspect: CGFloat, thicknessRatio: CGFloat) -> CGFloat {
+        BookProjection(
+            width: aspect, height: 1, thickness: thicknessRatio, yaw: .pi / 2, pitch: 0
+        )
+        .bounds.height
+    }
 
     func pose(at progress: Double) -> Pose {
         let pull = Self.phase(progress, from: 0, to: Self.pullEnd, .easeInOut)
@@ -208,12 +242,7 @@ struct PullOutPath {
         let lift = Self.phase(progress, from: Self.veilStart, to: 1, .easeInOut)
         let length = upright ? home.height : home.width
         let spineRatio = (upright ? home.width : home.height) / max(1, length)
-        // Facing the viewer, the spine lies in front of the book's center, so `Book3DView`
-        // draws it larger than the book's height by this factor.
-        let magnification = BookProjection(
-            width: aspect, height: 1, thickness: spineRatio, yaw: .pi / 2, pitch: 0
-        )
-        .bounds.height
+        let magnification = Self.spineMagnification(aspect: aspect, thicknessRatio: spineRatio)
         let growth = upright ? Self.shelfPullScale : Self.stackPullScale
         let pulled = (1 + (growth - 1) * pull) / magnification
         let slideX = upright ? 0 : Self.stackSlide * length * pull
@@ -229,10 +258,13 @@ struct PullOutPath {
             // Late in the turn, so a change in the lettering's line count, which a spine's
             // thickness sets, happens once the spine has turned away from the reader.
             thicknessRatio: Self.mix(spineRatio, thicknessRatio, turn * turn),
-            yaw: Self.mix(spineYaw, pose.yaw, turn),
-            pitch: Self.mix(0, pose.pitch, turn),
-            roll: upright ? 0 : Self.mix(-.pi / 2, 0, turn),
-            lighting: Self.phase(progress, from: 0, to: Self.turnStart, .easeInOut),
+            yaw: Self.mix(spineYaw + rest.yaw, pose.yaw, turn),
+            pitch: Self.mix(rest.pitch, pose.pitch, turn),
+            roll: Self.mix((upright ? 0 : -.pi / 2) + rest.tilt, 0, turn),
+            lighting: Self.mix(
+                rest.lighting, 1, Self.phase(progress, from: 0, to: Self.turnStart, .easeInOut)),
+            faces: rest.isCovered
+                ? Self.phase(progress, from: Self.floatStart, to: Self.veilStart, .easeInOut) : 1,
             shadow: pull * (1 - lift),
             lift: lift)
     }
@@ -352,7 +384,8 @@ private struct PullOutFlightHost: View {
                         path: PullOutPath(
                             home: home, upright: pullOut.upright, stage: stage,
                             pose: pullOut.pose, aspect: Book3DView.aspect(of: cover),
-                            thicknessRatio: Book3DView.thicknessRatio(of: current, cover: cover)),
+                            thicknessRatio: Book3DView.thicknessRatio(of: current, cover: cover),
+                            rest: pullOut.rest),
                         lamp: pullOut.upright ? pullOut.lampFrame?.applying(shift) : nil,
                         progress: pullOut.progress
                     )
@@ -400,7 +433,8 @@ private struct PullOutFlight: View, Animatable {
         .bounds
         Book3DView(
             book: book, look: look, cover: cover, height: pose.height, yaw: pose.yaw,
-            pitch: pose.pitch, thicknessRatio: pose.thicknessRatio, lighting: pose.lighting
+            pitch: pose.pitch, thicknessRatio: pose.thicknessRatio, lighting: pose.lighting,
+            faceOpacity: pose.faces
         )
         .scaleEffect(pose.scale)
         .rotationEffect(.radians(pose.roll))

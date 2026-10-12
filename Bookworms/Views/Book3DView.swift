@@ -25,6 +25,9 @@ struct Book3DView: View {
     /// How much of the light's shading the faces show, from 0, every face evenly lit as a flat
     /// spine on the shelf is, to 1. A book pulled off the shelf starts unshaded, as its spine.
     var lighting: Double = 1
+    /// The opacity of every face but the spine. A book pulled out of the 3D stack starts with
+    /// only its spine showing, because the books above it hide the rest.
+    var faceOpacity: Double = 1
 
     var body: some View {
         let projection = BookProjection(
@@ -36,6 +39,7 @@ struct Book3DView: View {
                 content(for: face.kind, size: face.size)
                     .frame(width: face.size.width, height: face.size.height)
                     .overlay(Color.black.opacity(face.shade * lighting))
+                    .opacity(face.kind == .spine ? 1 : faceOpacity)
                     .projectionEffect(face.transform)
             }
         }
@@ -56,11 +60,15 @@ struct Book3DView: View {
         return CGFloat(size.z / size.y)
     }
 
-    /// The book's width-to-height ratio: the cover's, clamped to 0.55...0.85, else 2:3.
+    /// The width-to-height ratios that `aspect(of:)` allows.
+    static let aspects: ClosedRange<CGFloat> = 0.55...0.85
+
+    /// The book's width-to-height ratio: the cover's, clamped to `aspects`, else 2:3.
     /// Layouts that size a book before drawing it use this, so their space matches the book.
     static func aspect(of cover: UIImage?) -> CGFloat {
         guard let cover, cover.size.height > 0 else { return 2 / 3 }
-        return min(0.85, max(0.55, cover.size.width / cover.size.height))
+        return min(
+            aspects.upperBound, max(aspects.lowerBound, cover.size.width / cover.size.height))
     }
 
     @ViewBuilder

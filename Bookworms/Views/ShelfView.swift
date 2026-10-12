@@ -1,13 +1,13 @@
 import SwiftUI
 
-/// The library as a wheel or a bookcase of spines (`SpineCarousel`), with a caption for the
-/// centered book, or in 3D, which shows the books in the chosen `ThreeDView`, such as a pile on a
-/// table (`BookPileView`).
+/// The library as a stack of books or a bookcase of spines (`SpineCarousel`), with a caption for
+/// the centered book, or in 3D, which shows the books in the chosen `ThreeDView`, such as a pile
+/// on a table (`BookPileView`).
 ///
 /// Both show the library snapshot that `AppModel` holds; sorting and filtering happen here when
 /// the snapshot or the options change, never while scrolling.
 ///
-/// A tapped spine's book slides out of the carousel and floats into its details over the shelf
+/// A tapped book slides out of the carousel and floats into its details over the shelf
 /// (`ShelfPullOut`), as a book the Pile lifts does. With Reduce Motion on, its details push
 /// instead.
 struct ShelfView: View {
@@ -125,8 +125,8 @@ struct ShelfView: View {
                     SpineCarousel(
                         books: books, mode: carousel, centeredID: $centeredID, namespace: namespace,
                         pullOut: pullOut
-                    ) { book, canPull in
-                        if reduceMotion || !canPull {
+                    ) { book in
+                        if reduceMotion {
                             path.append(book.id)
                         } else {
                             pullOut.pull(book, upright: carousel == .shelf)
@@ -236,8 +236,9 @@ struct ShelfView: View {
     #endif
 }
 
-/// The Shelf tab's title and bar: the presentation picker and **Sort and filter**, or, while a
-/// book's details show over the shelf or a 3D view, **Back** and the book's **Share**.
+/// The Shelf tab's title and bar: the presentation picker, **Sort and filter**, and in **Stack**
+/// the **3D** toggle, or, while a book's details show over the shelf or a 3D view,
+/// **Back** and the book's **Share**.
 ///
 /// A modifier of its own, so a book's pull-out and return update only the bar, not the shelf's
 /// body, which sorts the library.
@@ -262,6 +263,8 @@ private struct ShelfBar: ViewModifier {
     @AppStorage("BookwormsThreeDSounds") private var sounds = true
     /// How the camera films the dominoes, which `DominoesView` reads.
     @AppStorage("BookwormsDominoCamera") private var dominoCamera = DominoCameraMode.overview
+    /// How **Stack** draws its books, which `SpineCarousel` reads.
+    @AppStorage("BookwormsStackStyle") private var stackStyle = StackStyle.flat
 
     /// Whether a 3D view shows a lifted book's details, with their own **Back** and **Share**.
     private var threeDShowsDetails: Bool { liftedDetails.lift != nil }
@@ -286,6 +289,20 @@ private struct ShelfBar: ViewModifier {
                 }
             }
         } else if !threeDShowsDetails {
+            if mode == .stack {
+                ToolbarItem(placement: .topBarLeading) {
+                    // A cube rather than lettering, which would repeat the picker's 3D.
+                    Toggle(
+                        "3D", systemImage: "cube",
+                        isOn: Binding {
+                            stackStyle == .threeD
+                        } set: {
+                            stackStyle = $0 ? .threeD : .flat
+                        }
+                    )
+                    .toggleStyle(.button)
+                }
+            }
             ToolbarItem(placement: .principal) {
                 Picker("Presentation", selection: $mode) {
                     ForEach(ShelfPresentation.allCases) { Text($0.title).tag($0) }
