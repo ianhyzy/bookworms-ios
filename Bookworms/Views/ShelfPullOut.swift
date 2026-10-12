@@ -509,5 +509,6 @@ private struct PullOutFlight: View, Animatable {
                     .opacity(1 - pose.lift)
             }
         }
+        .transaction { $0.animation = nil }
     }
 }
