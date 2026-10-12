@@ -23,6 +23,9 @@ struct BookDetailView: View {
     /// The chosen cover the shown spine design comes from, as far as this screen knows: the
     /// cover when the details opened, then the cover when a new design arrives.
     @State private var designedCover: URL?
+    /// Whether the reader picked a spine color since last scrolling, which keeps room below the
+    /// **Spine design** card for the color picker's sheet.
+    @State private var picksColors = false
 
     init(book: CloudBook, hostedBook: HostedBook? = nil) {
         opened = book
@@ -50,6 +53,13 @@ struct BookDetailView: View {
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 24)
+        }
+        // The color picker's sheet blocks scrolling while it shows, so a scroll means it closed.
+        // The room goes once the scroll settles, so its removal does not jerk the reader's drag.
+        .onScrollPhaseChange { old, new in
+            if new == .idle, old == .interacting || old == .decelerating {
+                withAnimation { picksColors = false }
+            }
         }
         .background {
             if hostedBook == nil { ShelfPalette.wall.ignoresSafeArea() }
@@ -153,7 +163,7 @@ struct BookDetailView: View {
     }
 
     private func designCard(look: SpineLook, design: SpineDesignV1?) -> some View {
-        SpineDesignCard(book: book, look: look, design: design)
+        SpineDesignCard(book: book, look: look, design: design, isPicking: $picksColors)
     }
 }
 
@@ -348,8 +358,9 @@ private struct Card<Content: View>: View {
 /// background contrast less than 4.5:1 show only here, with a note, and are never saved.
 ///
 /// The picker's sheet covers the lower part of the screen, so once the reader picks a color,
-/// the card adds room below itself and scrolls its spine to the top, above the sheet. The
-/// picker's opening tap goes to a UIKit color well that reports nothing to SwiftUI.
+/// the card adds room below itself and scrolls its spine and contrast note to the top, above
+/// the sheet. The room stays until the details scroll again. The picker's opening tap goes to a
+/// UIKit color well that reports nothing to SwiftUI, and its closing reports nothing either.
 private struct SpineDesignCard: View {
     let book: CloudBook
     /// The look of the saved design, as the rest of the app shows it.
@@ -361,8 +372,8 @@ private struct SpineDesignCard: View {
     /// Picked colors that the library does not show yet, or that it shows but failed to save.
     @State private var draft: SpineColors?
     @State private var saveError: String?
-    /// Set once the reader picks a color, for as long as the card shows.
-    @State private var isPicking = false
+    /// Set when the reader picks a color; the details clear it when they scroll.
+    @Binding var isPicking: Bool
 
     private static let previewID = "spine-preview"
 
@@ -380,6 +391,7 @@ private struct SpineDesignCard: View {
                 }
             }
             .onChange(of: isPicking) {
+                guard isPicking else { return }
                 withAnimation { proxy.scrollTo(Self.previewID, anchor: .top) }
             }
         }
@@ -409,6 +421,12 @@ private struct SpineDesignCard: View {
                 .accessibilityHidden(true)
                 .id(Self.previewID)
             if let design {
+                // Under the spine, so the note shows above the picker's sheet.
+                if !shown.isReadable {
+                    note(
+                        "The text needs more contrast with the background. Choose a lighter or darker color to save.",
+                        systemImage: "exclamationmark.triangle")
+                }
                 LabeledContent("Font") {
                     Text(design.fontFamily ?? design.typeface.capitalized)
                         .font(look.font(size: 19))
@@ -423,14 +441,12 @@ private struct SpineDesignCard: View {
                     Swatch(name: "Text", color: color(\.foreground))
                     Swatch(name: "Accent", color: color(\.accent))
                 }
-                if !shown.isReadable {
-                    note(
-                        "The text needs more contrast with the background. Choose a lighter or darker color to save.",
-                        systemImage: "exclamationmark.triangle")
-                } else if let saveError {
-                    note(saveError, systemImage: "exclamationmark.icloud")
-                } else {
-                    Text("Tap a color to change it.").font(.footnote).foregroundStyle(cardNote)
+                if shown.isReadable {
+                    if let saveError {
+                        note(saveError, systemImage: "exclamationmark.icloud")
+                    } else {
+                        Text("Tap a color to change it.").font(.footnote).foregroundStyle(cardNote)
+                    }
                 }
                 if let generated = design.generatedColors ?? design.colors, shown != generated {
                     Button("Reset colors", systemImage: "arrow.uturn.backward") {

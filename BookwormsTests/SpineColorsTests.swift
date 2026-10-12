@@ -4,7 +4,8 @@ import XCTest
 @testable import Bookworms
 
 /// Covers the reader's spine colors: the provenance record that Reset restores from, the
-/// contrast gate, which saved designs a generation run keeps, and the preview store's save.
+/// contrast gate, which saved designs a generation run keeps, series reuse, and the preview
+/// store's save.
 final class SpineColorsTests: XCTestCase {
     private let work = String(repeating: "a", count: 64)
     private let cover = String(repeating: "b", count: 64)
@@ -96,6 +97,26 @@ final class SpineColorsTests: XCTestCase {
 
         // A new cover redesigns the spine.
         XCTAssertEqual(edited.action(workItemHash: work, coverHash: otherCover), .redesign)
+    }
+
+    func testSeriesReuseCopiesTheGeneratorsColorsNotTheReaders() async throws {
+        // No font family, so the reuse downloads no font.
+        let generated = SpineDesignV1(
+            version: 1, accountID: "42", bookID: 7, workItemHash: work, coverHash: cover,
+            generatorVersion: CloudContract.generatorVersion,
+            generatedAt: Date(timeIntervalSince1970: 1_000_000), backgroundHex: "#000000",
+            foregroundHex: "#FFFFFF", accentHex: "#FF0000", typeface: "serif", weight: 600,
+            uppercase: false)
+        let sibling = CloudBook(
+            id: 8, title: "Fictional Sequel", author: "An Author", coverURL: nil,
+            detailCoverURL: nil)
+        let reused = try await BookAnalyzer()
+            .seriesDesign(
+                from: generated.recolored(reader), book: sibling, accountID: "42",
+                workItemHash: work, coverHash: cover)
+        XCTAssertEqual(reused?.colors, generated.colors)
+        XCTAssertNil(reused?.generatedColors)
+        XCTAssertEqual(reused?.provenance, "series-reuse:7")
     }
 
     func testPreviewStoreReplacesOnlyTheRecoloredDesign() async throws {
