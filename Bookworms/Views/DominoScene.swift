@@ -308,13 +308,14 @@ final class DominoStatus {
 /// book a push tips (`DominoLayout.pushTarget`), and pulses unless Reduce Motion is on.
 ///
 /// The camera follows `DominoCameraMode`. Overview frames the whole path; after a push it eases
-/// a little closer, close enough to fit a row, and across the rows with the front where the
-/// path is deeper than the view, and once every book has fallen it eases back to the whole
-/// path. Follow hands the camera to `DominoCameraRig`, built once the books stand, which films
-/// the chain from beside it. Both cameras run while the chain runs, so switching between them
-/// blends from one moving view to the other, over a time that keeps the blend's turn and travel
-/// gentle. A pinch or drag takes over from either, from the view as it shows, until the next
-/// push. With Reduce Motion on, the camera follows nothing, and Follow shows the overview.
+/// a little closer, to at most `followRoom` times the overview's zoom, and across the rows with
+/// the front where the path is deeper than the view, and once every book has fallen it eases
+/// back to the whole path. Follow hands the camera to `DominoCameraRig`, built once the books
+/// stand, which films the chain from beside it. Both cameras run while the chain runs, so
+/// switching between them blends from one moving view to the other, over a time that keeps the
+/// blend's turn and travel gentle. A pinch or drag takes over from either, from the view as it
+/// shows, until the next push. With Reduce Motion on, the camera follows nothing, and Follow
+/// shows the overview.
 ///
 /// Once the chain has started, a cobweb tears when either of its books tilts past `tearTilt`,
 /// as the near book's back cover starts to sweep into it. Like the front, each frame checks
@@ -335,7 +336,10 @@ final class DominoScene {
     /// The overview's zoom as a share of the zoom that fits the path, so the path has room
     /// around it, and the Follow camera's finale's.
     private static let overviewRoom: Float = 0.88
-    private static let finaleRoom: Float = 0.95
+    private static let finaleRoom: Float = 0.9
+    /// The most the overview camera eases in past the overview while the chain falls, as a
+    /// share of the overview's zoom, so the fallen books keep their room in the view.
+    private static let followRoom: Float = 1.05
     /// How fast a blend from one camera to another turns and travels on average, in radians
     /// and units per second, and the shortest and longest it takes, in seconds.
     private static let handoffTurnRate: Float = 0.3
@@ -391,7 +395,8 @@ final class DominoScene {
     /// The camera that shows the whole path.
     private var overview = PileCamera()
     /// The zoom at which the overview camera follows the front: close enough to fit a row and
-    /// its turns, and the books that land past them, across the view, or the overview's.
+    /// its turns, and the books that land past them, across the view, or the overview's, and
+    /// at most `followRoom` times the overview's.
     private var followZoom: Float = 1
     private var aspect: Float = 0.5
     /// Whether the camera mode drives the camera, rather than the reader's last pinch or drag.
@@ -624,9 +629,11 @@ final class DominoScene {
         // The view's width at the follow zoom fits the row with 10 percent to spare.
         let tallest = plan.slots.map(\.size.y).max() ?? 0
         let span = plan.path.rowLength + 2 * plan.path.radius + 2 * tallest
-        followZoom = max(
-            overview.zoom,
-            PileCamera.distance * 2 * tan(PileCamera.fieldOfView / 2) * aspect * 0.9 / span)
+        followZoom = min(
+            max(
+                overview.zoom,
+                PileCamera.distance * 2 * tan(PileCamera.fieldOfView / 2) * aspect * 0.9 / span),
+            overview.zoom * Self.followRoom)
         view = overview
         handoff = nil
         steering = nil
@@ -657,10 +664,14 @@ final class DominoScene {
             return DominoLayout.cobweb(days: far.day - near.day)
                 .map { .init(distance: (near.distance + far.distance) / 2, density: $0) }
         }
-        return DominoCameraRig(
+        let rig = DominoCameraRig(
             path: path, offset: path.point(at: first.distance).position - first.position,
             length: last.distance, tallest: slots.map(\.size.y).max() ?? 0, cobwebs: webs,
             finale: finale, fieldOfView: PileCamera.fieldOfView, aspect: aspect, area: area)
+        #if DEBUG
+            logRig(rig, cobwebs: webs)
+        #endif
+        return rig
     }
 
     /// Stands the book of `slot`, with `cobweb` hanging between it and the book before it.
@@ -1215,6 +1226,36 @@ final class DominoScene {
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try? (["dt,front,estimate,x,y,z,fx,fy,fz,done"] + cameraLog).joined(separator: "\n")
                 .write(to: url, atomically: true, encoding: .utf8)
+        }
+
+        /// With the camera log on, writes the Follow camera's inputs, with every cobweb as its
+        /// distance and density, to `Library/Caches/Bookworms/domino-rig.txt`, so a logged run
+        /// can be replayed through `DominoCameraRig` off the device.
+        private func logRig(_ rig: DominoCameraRig, cobwebs: [DominoCameraRig.Cobweb]) {
+            guard Self.logsCamera else { return }
+            func line(_ name: String, _ values: [Float]) -> String {
+                ([name] + values.map { String(format: "%.5f", $0) }).joined(separator: " ")
+            }
+            let lines = [
+                line("rowLength", [rig.path.rowLength]),
+                line("offset", [rig.offset.x, rig.offset.y]),
+                line("length", [rig.length]), line("tallest", [rig.tallest]),
+                line("aspect", [rig.aspect]),
+                line("area", [rig.area.low.x, rig.area.low.y, rig.area.high.x, rig.area.high.y]),
+                line(
+                    "finale",
+                    [
+                        rig.finale.eye.x, rig.finale.eye.y, rig.finale.eye.z, rig.finale.target.x,
+                        rig.finale.target.y, rig.finale.target.z,
+                    ]),
+                "cobwebs "
+                    + cobwebs.map { String(format: "%.4f:%.4f", $0.distance, $0.density) }
+                    .joined(separator: ","),
+            ]
+            let url = URL.cachesDirectory.appending(path: "Bookworms/domino-rig.txt")
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
         }
     #endif
 }
