@@ -254,14 +254,17 @@ enum DominoLayout {
 
     /// Whether a book lifted out of the chain from `index` stands in its place again when it
     /// returns, rather than being thrown back, given `next`, the first book that has not
-    /// fallen, and whether the chain has `started`.
+    /// fallen. `place` is the box the book stands in, and `others` the other books' bounds, in
+    /// the frame of the book's standing pose (`standingPose(of:)`), whose y axis points up.
     ///
-    /// It stands again while the chain has not reached it: past the front, or at the front of
-    /// a chain no push has started. A book at the front of a started chain has lost the book
-    /// before it, which fell into its place, so it is thrown back into that book, as a book the
-    /// chain has passed is.
-    static func standsAgain(index: Int, next: Int, started: Bool) -> Bool {
-        index > next || (index == next && !started)
+    /// It stands again when it had not fallen, at or past the front, and no other book reaches
+    /// into its place or over it. A book that had fallen is thrown back. So is a book whose place
+    /// another book has filled, such as the book before it, fallen in: standing in that place,
+    /// it would start inside that book, and the two would fly apart.
+    static func standsAgain(index: Int, next: Int, place: BoundingBox, others: [BoundingBox])
+        -> Bool
+    {
+        index >= next && BookFlight.disturbed(by: place, among: others, margin: 0).isEmpty
     }
 
     /// The pose of the book of `slot` standing in its place, a hair above the table, so it
@@ -343,12 +346,14 @@ final class DominoStatus {
 /// as the near book's back cover starts to sweep into it. Like the front, each frame checks
 /// only the webs near the front.
 ///
-/// A book lifted to its details (`BookLifter`) tears the cobwebs it holds. While it flies, the
-/// chain counts it as standing in its place, so its flight neither moves the front on nor
-/// starts the chain, and the camera modes give the camera to the flight (see `aim`), which
-/// hands it back once the book is back. A book the chain has not reached stands in its place
-/// again when it returns (`DominoLayout.standsAgain`), set down rather than thrown, so it
-/// knocks nothing over; any other book is thrown back into the books around its place.
+/// A book lifted to its details (`BookLifter`) tears the cobwebs it holds, and the Follow camera
+/// no longer pushes in on them. While it flies, the chain counts it as standing in its place, so
+/// its flight neither moves the front on nor starts the chain, and the camera modes give the
+/// camera to the flight (see `aim`), which brings it back to them as the book returns. A book
+/// the chain has not reached stands in its place again when it returns, while no other book
+/// fills that place (`DominoLayout.standsAgain`): it is set down rather than thrown, so it
+/// knocks nothing over and does not push the chain. Any other book is thrown back into the
+/// books around its place, more softly than in the pile, which has walls to stop it.
 @MainActor
 final class DominoScene {
     /// The scene root, which runs the physics simulation.
@@ -359,6 +364,9 @@ final class DominoScene {
     /// The flight of a book lifted to its details.
     let lifter: BookLifter
 
+    /// How far beside a lifted book its rise clears the books (`BookFlight.rise`): past the
+    /// widest gap to a standing neighbor (`DominoLayout.gap`), and short of the books past them.
+    private static let riseMargin = DominoLayout.gap(height: BookShape.longest) + 0.05
     /// How fast a push tips a book forward, in radians per second.
     private static let pushSpeed: Float = 2.5
     private static let stallTime: TimeInterval = 1
@@ -399,6 +407,9 @@ final class DominoScene {
     /// it, and its overlaps play no sound. Its filter is the default one, because a raycast
     /// skips a shape whose filter collides with nothing.
     private let hitBox = Entity()
+    /// An empty entity in a returning book's standing pose, in whose frame `returnPose`
+    /// measures the other books.
+    private let probe = Entity()
     private let glow: ModelEntity
     private let pulse: AnimationResource?
     /// The index of the book `marker` marks, if it shows.
@@ -463,8 +474,9 @@ final class DominoScene {
     private var collisions: EventSubscription?
     /// The index of the book in flight, while one flies.
     private var flying: Int?
-    /// While a book flies, the view when it lifted, and the view the flight rises to.
-    private var flightViews: (reader: Transform, flight: Transform)?
+    /// While a book flies, the view the camera rises from, until **Back** returns the book to
+    /// the camera mode's view (`nil`), and the view the flight rises to.
+    private var flightViews: (from: Transform?, flight: Transform)?
 
     private struct Key: Equatable {
         let ids: [Int]
@@ -490,7 +502,10 @@ final class DominoScene {
         root.addChild(camera)
         root.addChild(stage.root)
         root.addChild(shelf)
-        lifter = BookLifter(root: root, camera: camera, factory: factory, feedback: feedback)
+        // No walls stop a book that bounces off the chain, so its first hit keeps little speed.
+        lifter = BookLifter(
+            root: root, camera: camera, factory: factory, feedback: feedback,
+            keeps: (sideways: 0.1, fall: 0.25, tumble: 0.2))
         glow = Self.makeGlow()
         pulse = try? AnimationResource.generate(
             with: FromToByAnimation<Float>(
@@ -501,7 +516,9 @@ final class DominoScene {
         hitBox.components.set(InputTargetComponent())
         marker.isEnabled = false
         root.addChild(marker)
+        root.addChild(probe)
         factory.coverArrived = { [weak self] id, material in self?.retexture(id, cover: material) }
+        lifter.standing = { [weak self] in self?.returnPose }
     }
 
     /// Calls `update` every frame, and plays collisions through `feedback`, while the view
@@ -792,10 +809,25 @@ final class DominoScene {
     /// passed it, fallen or standing, for its details. A tap on `hitBox` or on any book the
     /// chain has not reached pushes the chain on (see `pushNext`), so a near miss beside a
     /// thin book still pushes, and returns `nil`, as does a tap on the table.
-    ///
-    /// It casts its own ray from the camera: a targeted tap gesture fires only on a touch that
-    /// lands on a book, even where `hitBox` lies around it.
     func tap(at point: CGPoint, in size: CGSize) -> Int? {
+        guard let index = book(at: point, in: size) else { return nil }
+        if index < next { return slots[index].book.id }
+        pushNext()
+        return nil
+    }
+
+    /// The ID of any book under `point`, in a view of `size`, the marked book's on `hitBox`,
+    /// or `nil` for the table, for a touch and hold.
+    func bookID(at point: CGPoint, in size: CGSize) -> Int? {
+        book(at: point, in: size).map { slots[$0].book.id }
+    }
+
+    /// The index of the book under `point`, in a view of `size`, the marked book's on
+    /// `hitBox`, or `nil` for the table.
+    ///
+    /// It casts its own ray from the camera: a targeted gesture fires only on a touch that
+    /// lands on a book, even where `hitBox` lies around it.
+    private func book(at point: CGPoint, in size: CGSize) -> Int? {
         guard size.width > 0, size.height > 0, let scene = root.scene else { return nil }
         let ray = ray(through: point, in: size)
         guard
@@ -805,18 +837,9 @@ final class DominoScene {
                     relativeTo: root
                 )
                 .first?
-                .entity,
-            let index = entity == hitBox ? marked : indices[entity.id]
+                .entity
         else { return nil }
-        if index < next { return slots[index].book.id }
-        pushNext()
-        return nil
-    }
-
-    /// The ID of the book an entity belongs to, the marked book's for `hitBox`, or `nil` for
-    /// the table.
-    func bookID(for entity: Entity) -> Int? {
-        (entity == hitBox ? marked : indices[entity.id]).map { slots[$0].book.id }
+        return entity == hitBox ? marked : indices[entity.id]
     }
 
     /// The book a push tips (see `DominoLayout.pushTarget`).
@@ -1081,51 +1104,63 @@ final class DominoScene {
     /// leaving the chain as it was, while the books stand up, when the book is not in the chain,
     /// or when the view does not show the scene.
     ///
-    /// The book tears the cobwebs it holds. The camera rises to look down at the overview's
-    /// pitch on the table under the view's middle, with the view's turn, from no nearer than
-    /// the pile's default framing, so the book in front of it clears the chain and the veil
-    /// dims the whole view (see `BookLifter`).
+    /// The book rises clear of its standing neighbors (`riseMargin`) and tears the cobwebs it
+    /// holds. The camera rises to look down at the overview's pitch on the table under the
+    /// view's middle, with the view's turn, from the pile's default distance, so the book in
+    /// front of it clears the chain, the veil dims the whole view, and a throw back comes from
+    /// no farther than in the pile (see `BookLifter`).
     func lift(_ id: Int) -> Double? {
         guard root.scene != nil, isReady, let index = slots.firstIndex(where: { $0.book.id == id }),
-            let landing = lifter.lift(books[index], id: id, among: books, aspect: aspect)
+            let landing = lifter.lift(
+                books[index], id: id, among: books, aspect: aspect, margin: Self.riseMargin)
         else { return nil }
         endCameraMove()
         flying = index
-        for web in cobwebs.indices.reversed() where (index - 1...index).contains(cobwebs[web].book) {
+        for web in cobwebs.indices.reversed()
+        where (index - 1...index).contains(cobwebs[web].book) {
             var torn = cobwebs.remove(at: web)
             torn.tear(near: books[torn.book], far: books[torn.book + 1], fadesOnly: reducesMotion)
             self.torn.append(torn)
+            rig?.forgetCobweb(at: (slots[torn.book].distance + slots[torn.book + 1].distance) / 2)
         }
-        let reader = camera.transform
-        let matched = overviewCamera(matching: reader)
+        let matched = overviewCamera(matching: camera.transform)
         flightViews = (
-            reader,
-            PileCamera(target: matched.target, yaw: matched.yaw, zoom: min(matched.zoom, 1))
-                .transform
+            camera.transform, PileCamera(target: matched.target, yaw: matched.yaw).transform
         )
         return landing
     }
 
-    /// Returns the lifted book: sets it down standing in its place when the chain has not
-    /// reached it, and otherwise throws it back into the books around its place.
+    /// Returns the lifted book: sets it down standing in its place when it stands again
+    /// (`returnPose`), and otherwise throws it back into the books around its place. The camera
+    /// returns to the camera mode's view as it moves on, rather than to the view the book left.
     func throwBack() {
-        lifter.throwBack(placing: returnPose)
+        lifter.throwBack()
+        flightViews?.from = nil
     }
 
     /// Ends a lift or a return at once: puts the book back as `throwBack` would return it, at
-    /// rest, and the camera and veil as they were.
+    /// rest, or just above its place, and the camera and veil as they were.
     func dropLifted() {
         guard flying != nil else { return }
-        lifter.drop(placing: returnPose, aim: aim)
+        lifter.drop(aim: aim)
         endFlight()
     }
 
     /// The standing pose a returning book takes in its place, or `nil` for a book that is thrown
-    /// back (see `DominoLayout.standsAgain`).
+    /// back: one that had fallen, or one whose place another book has filled (see
+    /// `DominoLayout.standsAgain`). The lifter asks as the book leaves its details and again as
+    /// it lands.
     private var returnPose: Transform? {
-        guard let flying, DominoLayout.standsAgain(index: flying, next: next, started: started)
-        else { return nil }
-        return DominoLayout.standingPose(of: slots[flying])
+        guard let flying else { return nil }
+        let slot = slots[flying]
+        let place = DominoLayout.standingPose(of: slot)
+        probe.transform = place
+        let size = factory.parts[slot.book.id]?.shape.size ?? slot.size
+        let others = books.indices.filter { $0 != flying }
+            .map { books[$0].visualBounds(relativeTo: probe) }
+        return DominoLayout.standsAgain(
+            index: flying, next: next, place: BoundingBox(min: -size / 2, max: size / 2),
+            others: others) ? place : nil
     }
 
     /// Moves the book in flight, and the camera through `aim`, after the camera modes have
@@ -1136,21 +1171,28 @@ final class DominoScene {
         if !lifter.isFlying { endFlight() }
     }
 
-    /// Moves the camera `share` of the way from the reader's view to the flight's.
+    /// Moves the camera `share` of the way to the flight's view: from the view the book left,
+    /// or once the book returns, from the camera mode's view as it moves on (`current`).
     private func aim(_ share: Float) {
         guard let flightViews else { return }
+        let from = flightViews.from ?? current
         camera.transform = Transform(
-            rotation: simd_slerp(flightViews.reader.rotation, flightViews.flight.rotation, share),
-            translation: flightViews.reader.translation
-                + (flightViews.flight.translation - flightViews.reader.translation) * share)
+            rotation: simd_slerp(from.rotation, flightViews.flight.rotation, share),
+            translation: from.translation + (flightViews.flight.translation - from.translation)
+                * share)
     }
 
-    /// Hands the camera back to the camera mode, which blends to it from the reader's view,
-    /// where the flight left the camera, as a switch between modes does.
+    /// Hands the camera back to the camera mode. A return has brought the camera to its view;
+    /// a book put back during its lift left the camera at the view it lifted from, so the
+    /// camera mode blends from there, as a switch between modes does.
     private func endFlight() {
+        if flightViews?.from == nil {
+            handoff = nil
+        } else {
+            blend(from: .still(camera.transform))
+        }
         flying = nil
         flightViews = nil
-        blend(from: .still(camera.transform))
     }
 
     // MARK: Camera

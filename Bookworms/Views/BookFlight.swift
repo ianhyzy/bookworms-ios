@@ -3,15 +3,22 @@ import SwiftUI
 
 /// How a book leaves a 3D scene for its details and returns. Times are in seconds.
 ///
-/// The book first rises straight up until it clears the books around and on it, speeding up as
+/// The book first rises straight up until it clears the books that lay over it, speeding up as
 /// it goes. A spring then carries it from the top of the rise to its details, starting at the
 /// rise's speed and overshooting slightly. Back throws it at the place it left, on a path that
-/// gravity bends, so it lands there after `whipDuration`, or sets it down in a place it must
-/// stand in again (see `setDown`).
+/// gravity bends, so it lands there after `whipDuration(from:to:)`, or sets it down in a place
+/// it must stand in again (see `setDown`).
 enum BookFlight {
     static let spring = Spring(duration: 0.8, bounce: 0.2)
+    /// The shortest a throw back takes, and the fastest it flies on average, in units per
+    /// second, about as fast as from a pile at the default zoom, so a throw from farther away
+    /// takes longer rather than hitting harder.
     static let whipDuration: Float = 0.26
-    static let setDownDuration: Float = 0.4
+    static let whipSpeed: Float = 80
+    static let setDownDuration: Float = 0.5
+    /// The share of a set-down that crosses to the top of the rise over the book's place; the
+    /// rest drops it in.
+    static let crossing: Float = 0.6
     /// How far the veil stays behind the book's middle: more than half the largest book's
     /// diagonal, 3.72 units, so the book never passes through it.
     static let veilGap: Float = 2
@@ -20,16 +27,19 @@ enum BookFlight {
     static let sceneHeight: Float = 4.5
 
     /// How far a book with `bounds` rises: until its bottom clears, by 0.15 units, the top of
-    /// every book in `others` that overlaps it from above and rests on it or on another such
-    /// book. A book more than 0.5 units above that stack, such as one still falling, does not
-    /// count. It rises at least 0.4 units, to come free of the table, and at most 6, the height
-    /// of the tallest pile.
-    static func rise(of bounds: BoundingBox, clearing others: [BoundingBox]) -> Float {
+    /// every book in `others` that overlaps its footprint, grown by `margin` on each side, from
+    /// above, and rests on it or on another such book. A margin takes in books standing beside
+    /// it, such as a domino's neighbors. A book more than 0.5 units above that stack, such as
+    /// one still falling, does not count. It rises at least 0.4 units, to come free of the
+    /// table, and at most 6, the height of the tallest pile.
+    static func rise(of bounds: BoundingBox, clearing others: [BoundingBox], margin: Float = 0)
+        -> Float
+    {
         var top = bounds.min.y
         for other in others.sorted(by: { $0.min.y < $1.min.y })
-        where other.max.y > bounds.min.y && other.max.x > bounds.min.x
-            && other.min.x < bounds.max.x && other.max.z > bounds.min.z
-            && other.min.z < bounds.max.z
+        where other.max.y > bounds.min.y && other.max.x > bounds.min.x - margin
+            && other.min.x < bounds.max.x + margin && other.max.z > bounds.min.z - margin
+            && other.min.z < bounds.max.z + margin
         {
             // Sorted by height, so every later book starts higher still.
             guard other.min.y <= max(top, bounds.max.y) + 0.5 else { break }
@@ -66,9 +76,11 @@ enum BookFlight {
         return counts.indices.max { counts[$0] < counts[$1] }
     }
 
-    /// How long a rise of `rise` takes: 0.12 seconds for the least rise, up to 0.25 for a rise
-    /// of 3 units or more, so a book with nothing on it leaves at once.
-    static func riseDuration(_ rise: Float) -> Double { Double(min(0.25, 0.1 + rise * 0.05)) }
+    /// How long a rise of `rise` takes: 0.14 seconds for the least rise, so a book with nothing
+    /// on it leaves at once, up to 0.3 for a rise of 2 units or more. The books a book carries
+    /// leave it at its top speed when it stops colliding, so a slower rise tosses them less
+    /// high.
+    static func riseDuration(_ rise: Float) -> Double { Double(min(0.3, 0.1 + rise * 0.1)) }
 
     /// When a book that rises `rise` reaches its details, to the eye; the spring settles within
     /// a few points.
@@ -123,11 +135,19 @@ enum BookFlight {
                 + [0, speed * coast, 0])
     }
 
-    /// The velocity that throws a body from `start` to `end` in `whipDuration` under `gravity`.
+    /// How long a throw from `start` to `end` takes: `whipDuration`, or longer for a throw that
+    /// would fly faster than `whipSpeed` on average.
+    static func whipDuration(from start: SIMD3<Float>, to end: SIMD3<Float>) -> Float {
+        max(whipDuration, simd_distance(start, end) / whipSpeed)
+    }
+
+    /// The velocity that throws a body from `start` to `end` under `gravity` in
+    /// `whipDuration(from:to:)`.
     static func launch(from start: SIMD3<Float>, to end: SIMD3<Float>, gravity: SIMD3<Float>)
         -> SIMD3<Float>
     {
-        (end - start) / whipDuration - gravity * whipDuration / 2
+        let time = whipDuration(from: start, to: end)
+        return (end - start) / time - gravity * time / 2
     }
 
     /// A lively tumble for a book thrown at `velocity`: end over end along its path, with a
@@ -138,21 +158,29 @@ enum BookFlight {
         return axis * 10 + velocity / max(simd_length(velocity), 1e-3) * 8
     }
 
-    /// The pose `progress` of the way, from 0 to 1, through setting a book down from `start`,
-    /// above its place, in `end`.
+    /// The pose `progress` of the way, from 0 to 1, through setting a book down from `start` in
+    /// `end`, a book's place that it rose `rise` from.
     ///
-    /// The book crosses to its place early and comes down late, easing in, so it drops into its
-    /// place from above rather than sweeping through the books beside it, and it turns to its
-    /// pose on the way. It arrives at rest, so it lands without a bounce.
-    static func setDown(from start: Transform, to end: Transform, progress: Float) -> Transform {
-        let progress = min(1, max(0, progress))
-        let across = 1 - pow(1 - progress, 3)
-        let down = progress * progress * (3 - 2 * progress)
-        var translation = start.translation + (end.translation - start.translation) * across
-        translation.y = start.translation.y + (end.translation.y - start.translation.y) * down
+    /// Over the first `crossing` of the time, the book moves in a straight line to the top of
+    /// that rise, easing in and out, and turns to its pose on the way. The line runs from in
+    /// front of the camera down toward the place, so the book stays in view and does not sweep
+    /// high over the scene. Then the book drops straight down into its place, easing in and
+    /// out, so it clears the books beside its place, which the rise cleared, and arrives at
+    /// rest, without a bounce.
+    static func setDown(from start: Transform, to end: Transform, rise: Float, progress: Float)
+        -> Transform
+    {
+        func ease(_ value: Float) -> Float {
+            let value = min(1, max(0, value))
+            return value * value * (3 - 2 * value)
+        }
+        let across = ease(progress / crossing)
+        let down = ease((progress - crossing) / (1 - crossing))
+        let top = end.translation + [0, rise, 0]
         return Transform(
-            scale: end.scale, rotation: simd_slerp(start.rotation, end.rotation, down),
-            translation: translation)
+            scale: end.scale, rotation: simd_slerp(start.rotation, end.rotation, across),
+            translation: start.translation + (top - start.translation) * across
+                - [0, rise * down, 0])
     }
 }
 
@@ -178,9 +206,10 @@ protocol LiftingScene: AnyObject {
 /// for `BookPileScene` and `DominoScene`.
 ///
 /// The book is kinematic. It rises at a velocity set every frame, as a held book moves, so it
-/// shoves the books around and on it aside. Clear of them, it collides with nothing, so the books
-/// it carried fall back, and it follows `BookFlight.pose` to the pose that the details' frame
-/// and turn give, and stays on it. From there until it is back in its place, it is drawn as
+/// pushes the books on it up or aside. At the top of its rise, it collides with nothing, so the
+/// books it carried, which rode up on it, fall back, and it follows `BookFlight.pose` to the
+/// pose that the details' frame and turn give, and stays on it. Leaving upward, it passes
+/// through those books for a frame or two before they fall clear. From there until it is back in its place, it is drawn as
 /// `Book3DView` draws the details' book: unlit, each face darkened by that view's light, and
 /// without a ribbon. A walnut veil, a child of the camera, dims the scene behind it.
 ///
@@ -188,9 +217,10 @@ protocol LiftingScene: AnyObject {
 /// the lifted book or touches it (`BookFlight.disturbed`) wakes as the book starts to rise and
 /// again as it stops colliding. The books it carried then fall into the gap and settle.
 ///
-/// The scene moves its camera: each update passes `aim` the camera's share of the way from the
-/// reader's view to the view the scene shows the flight from, which the veil's opacity also
-/// follows. Collisions reach the scene first, which hands them to `handle`.
+/// The book returns thrown, or set down standing where `standing` gives a pose. The scene moves
+/// its camera: each update passes `aim` the camera's share of the way from the view it shows
+/// the scene from to the view it shows the flight from, which the veil's opacity also follows.
+/// Collisions reach the scene first, which hands them to `handle`.
 @MainActor
 final class BookLifter {
     private let root: Entity
@@ -200,6 +230,14 @@ final class BookLifter {
     /// The collision group that a thrown book passes through until its first hit: the pile's
     /// walls, since the details pose can lie outside them.
     private let passes: CollisionGroup
+    /// The share of a thrown book's sideways speed, its fall, and its tumble that its first hit
+    /// keeps (see `land`).
+    private let keeps: (sideways: Float, fall: Float, tumble: Float)
+    /// The pose a returning book stands in, in its place, or `nil` when it is thrown back or,
+    /// put back at once, dropped over its place. The scene answers for the book in flight. The
+    /// lifter asks as the book leaves the details and again as it lands, because the scene's
+    /// books can fill its place in between.
+    var standing: (@MainActor () -> Transform?)?
     private var lifted: Lifted?
     private var returning: Return?
     /// A camera-facing walnut plane that dims the scene behind a lifted book, made by the first
@@ -230,28 +268,37 @@ final class BookLifter {
         /// Counts the prompt frames in a row since `throwBack` asked for the book back; `nil`
         /// until it does.
         var steadyFrames: Int?
-        /// Where `throwBack` sets the book down, or `nil` to throw it.
-        var place: Transform?
+        #if DEBUG
+            /// The books the lift woke, and the frames since it started, for the lift log.
+            var riders: [ModelEntity] = []
+            var frames = 0
+        #endif
     }
 
-    /// A book on its way back: thrown, until its first hit, or set down in `flight.place`.
+    /// A book on its way back: thrown, until its first hit, or set down in `place`.
     private struct Return {
         let flight: Lifted
         /// The pose the book leaves the details from.
         let start: Transform
+        let place: Transform?
+        let duration: Float
         var elapsed: Float = 0
+        /// Whether the book has its scene textures again: a thrown book from its first hit, and
+        /// a book set down from the start of its drop.
         var landed = false
     }
 
     init(
         root: Entity, camera: PerspectiveCamera, factory: BookFactory, feedback: ImpactFeedback,
-        passes: CollisionGroup = []
+        passes: CollisionGroup = [],
+        keeps: (sideways: Float, fall: Float, tumble: Float) = (0.25, 1, 0.5)
     ) {
         self.root = root
         self.camera = camera
         self.factory = factory
         self.feedback = feedback
         self.passes = passes
+        self.keeps = keeps
     }
 
     /// The ID of the lifted book, if any.
@@ -264,11 +311,12 @@ final class BookLifter {
     var book: ModelEntity? { lifted?.book ?? returning?.flight.book }
 
     /// Starts lifting `book`, the book with `id`, out from among `books`, in a view of
-    /// width-to-height `aspect`, and returns the seconds until it reaches its details. Returns
-    /// `nil` while another book flies or when the book has no parts.
-    func lift(_ book: ModelEntity, id: Int, among books: [ModelEntity], aspect: Float)
-        -> Double?
-    {
+    /// width-to-height `aspect`, and returns the seconds until it reaches its details. It
+    /// rises clear of the books over its footprint grown by `margin` (see `BookFlight.rise`).
+    /// Returns `nil` while another book flies or when the book has no parts.
+    func lift(
+        _ book: ModelEntity, id: Int, among books: [ModelEntity], aspect: Float, margin: Float = 0
+    ) -> Double? {
         guard !isFlying, let parts = factory.parts[id] else { return nil }
         self.aspect = aspect
         let others = books.filter { $0 !== book }
@@ -276,12 +324,16 @@ final class BookLifter {
         book.components[PhysicsBodyComponent.self]?.mode = .kinematic
         book.components.set(PhysicsMotionComponent())
         let rise = BookFlight.rise(
-            of: bounds, clearing: others.map { $0.visualBounds(relativeTo: root) })
+            of: bounds, clearing: others.map { $0.visualBounds(relativeTo: root) }, margin: margin)
         lifted = Lifted(
             book: book, id: id, size: parts.shape.size, resting: book.transform, rise: rise,
             others: others, bounds: bounds, materials: parts.materials)
         // Asleep, they would let the rising book pass through them.
-        wake(others, around: bounds)
+        #if DEBUG
+            lifted?.riders = wake(others, around: bounds)
+        #else
+            wake(others, around: bounds)
+        #endif
         if veil == nil { veil = makeVeil() }
         return BookFlight.landing(rise: rise)
     }
@@ -328,19 +380,19 @@ final class BookLifter {
         redraw()
     }
 
-    /// Returns the lifted book: throws it back at the place it left, fast and tumbling, so it
-    /// crashes into the books that fell into its place, or, given `placing`, sets it down there
-    /// (see `BookFlight.setDown`). The camera and the veil return over the same time.
+    /// Returns the lifted book: sets it down standing in the pose `standing` gives (see
+    /// `BookFlight.setDown`), or else throws it back at the place it left, fast and tumbling,
+    /// so it crashes into the books that fell into its place. The camera and the veil return
+    /// over the same time.
     ///
     /// The book leaves once three frames in a row follow one another closely, so a main-thread
     /// stall from the caller's own changes passes while it holds still. A thrown book's details
     /// pose can lie outside the scene's walls or above its ceiling, so it passes through them
     /// until it first hits something, which happens inside them, with a hard tap and knock.
     /// Continuous collision detection keeps it out of the table.
-    func throwBack(placing: Transform? = nil) {
+    func throwBack() {
         guard let lifted, lifted.steadyFrames == nil else { return }
         self.lifted?.steadyFrames = 0
-        self.lifted?.place = placing
         // Stops a rise in progress while the book waits.
         lifted.book.components.set(PhysicsMotionComponent())
     }
@@ -364,33 +416,20 @@ final class BookLifter {
     /// Lands a thrown book at its first hit and returns `true`, or returns `false` for any
     /// other collision, which the scene plays as usual.
     func handle(_ event: CollisionEvents.Began) -> Bool {
-        guard let returning, returning.flight.place == nil, !returning.landed,
+        guard let returning, returning.place == nil, !returning.landed,
             event.entityA === returning.flight.book || event.entityB === returning.flight.book
         else { return false }
         land(impulse: event.impulse)
         return true
     }
 
-    /// Ends a lift or a return at once: puts the book at rest in its scene textures, in
-    /// `placing`, in the place a set-down return was taking it to, or else just above the place
-    /// it left, over the books that fell into it, and the camera, through `aim`, and the veil
-    /// as they were.
-    func drop(placing: Transform? = nil, aim: (Float) -> Void) {
+    /// Ends a lift or a return at once: puts the book at rest (see `put`), and the camera,
+    /// through `aim`, and the veil as they were.
+    func drop(aim: (Float) -> Void) {
         guard let flight = lifted ?? returning?.flight else { return }
         lifted = nil
         returning = nil
-        undress(flight)
-        let book = flight.book
-        book.components[PhysicsBodyComponent.self]?.mode = .dynamic
-        book.components[CollisionComponent.self]?.filter = .default
-        book.components.set(PhysicsMotionComponent())
-        if let place = placing ?? flight.place {
-            book.transform = place
-        } else {
-            var pose = flight.resting
-            pose.translation.y += flight.rise
-            book.transform = pose
-        }
+        put(flight, at: standing?())
         aim(0)
         showVeil(0)
     }
@@ -404,20 +443,29 @@ final class BookLifter {
 
     // MARK: Flight
 
-    /// Wakes the dynamic books among `books` that a book with `bounds` can disturb.
-    private func wake(_ books: [ModelEntity], around bounds: BoundingBox) {
-        let disturbed = BookFlight.disturbed(
-            by: bounds, among: books.map { $0.visualBounds(relativeTo: root) })
-        for index in disturbed
-        where books[index].components[PhysicsBodyComponent.self]?.mode == .dynamic {
-            books[index].applyLinearImpulse([0, -1e-4, 0], relativeTo: nil)
+    /// Wakes the dynamic books among `books` that a book with `bounds` can disturb, and
+    /// returns them.
+    @discardableResult
+    private func wake(_ books: [ModelEntity], around bounds: BoundingBox) -> [ModelEntity] {
+        let disturbed =
+            BookFlight.disturbed(
+                by: bounds, among: books.map { $0.visualBounds(relativeTo: root) }
+            )
+            .map { books[$0] }
+            .filter { $0.components[PhysicsBodyComponent.self]?.mode == .dynamic }
+        for book in disturbed {
+            book.applyLinearImpulse([0, -1e-4, 0], relativeTo: nil)
         }
+        return disturbed
     }
 
     /// Moves the lifted book up out of the scene, then along its flight to the details, while
     /// the camera eases to the scene's flight view and the veil darkens.
     private func moveLifted(by deltaTime: TimeInterval, aim: (Float) -> Void) {
         guard var lifted else { return }
+        #if DEBUG
+            logLift(&lifted)
+        #endif
         // A late frame, such as the one that follows mounting the details, slows the flight
         // briefly rather than skipping it ahead.
         lifted.elapsed += min(deltaTime, 1.0 / 20)
@@ -473,20 +521,24 @@ final class BookLifter {
             time: lifted.elapsed - BookFlight.riseDuration(lifted.rise))
     }
 
+    /// Sends the lifted book back: set down in the pose `standing` gives now, or thrown.
     private func launch() {
         guard let lifted else { return }
         self.lifted = nil
         let book = lifted.book
-        if lifted.place == nil {
+        let place = standing?()
+        var duration = BookFlight.setDownDuration
+        if place == nil {
             book.components[PhysicsBodyComponent.self]?.mode = .dynamic
             book.components[CollisionComponent.self]?.filter = CollisionFilter(
                 group: .default, mask: CollisionGroup.all.subtracting(passes))
             let gravity =
                 root.components[PhysicsSimulationComponent.self]?.gravity
                 ?? [0, -PileLayout.gravity, 0]
+            let start = book.position(relativeTo: root)
             let velocity = BookFlight.launch(
-                from: book.position(relativeTo: root), to: lifted.resting.translation,
-                gravity: gravity)
+                from: start, to: lifted.resting.translation, gravity: gravity)
+            duration = BookFlight.whipDuration(from: start, to: lifted.resting.translation)
             book.components.set(
                 PhysicsMotionComponent(
                     linearVelocity: velocity, angularVelocity: BookFlight.spin(for: velocity)))
@@ -495,7 +547,7 @@ final class BookLifter {
             book.components[CollisionComponent.self]?.filter = CollisionFilter(
                 group: [], mask: [])
         }
-        returning = Return(flight: lifted, start: book.transform)
+        returning = Return(flight: lifted, start: book.transform, place: place, duration: duration)
     }
 
     /// Returns the camera and veil to the scene while a book returns, and moves a book that is
@@ -507,19 +559,23 @@ final class BookLifter {
         guard var returning else { return }
         returning.elapsed += min(deltaTime, 1.0 / 20)
         let flight = returning.flight
-        let duration = flight.place == nil ? BookFlight.whipDuration : BookFlight.setDownDuration
-        let progress = min(1, returning.elapsed / duration)
+        let progress = min(1, returning.elapsed / returning.duration)
         let share = flight.share * (1 - progress * progress * (3 - 2 * progress))
         aim(share)
-        if let place = flight.place {
+        if let place = returning.place {
             flight.book.transform = BookFlight.setDown(
-                from: returning.start, to: place, progress: progress)
+                from: returning.start, to: place, rise: flight.rise, progress: progress)
+            // Lit like the scene again as it drops into it.
+            if progress >= BookFlight.crossing, !returning.landed {
+                returning.landed = true
+                undress(flight)
+            }
         }
         showVeil(share, behind: flight.book)
         self.returning = returning
         guard progress >= 1 else { return }
-        if let place = flight.place {
-            settle(flight, at: place)
+        if returning.place != nil {
+            settle(flight)
         } else {
             // It reaches its old place now, inside the walls, if nothing stopped it on the way.
             land(impulse: nil)
@@ -532,9 +588,9 @@ final class BookLifter {
     /// or `nil` when the book reached its place without one, which counts as a hit at its speed.
     ///
     /// The throw comes in at tens of units per second, mostly sideways, and tumbling, which
-    /// would carry the book across the scene and out of it after the crash. The hit keeps a
-    /// quarter of the sideways speed, all of the fall, and half of the tumble, so the book
-    /// stays near where it hit.
+    /// would carry the book across the scene and out of it after the crash. The hit keeps
+    /// `keeps` of the sideways speed, the fall, and the tumble, so the book stays near where it
+    /// hit.
     private func land(impulse: Float?) {
         guard let returning, !returning.landed else { return }
         self.returning?.landed = true
@@ -544,8 +600,8 @@ final class BookLifter {
         let speed = simd_length(
             book.components[PhysicsMotionComponent.self]?.linearVelocity ?? .zero)
         if var motion = book.components[PhysicsMotionComponent.self] {
-            motion.linearVelocity *= [0.25, 1, 0.25]
-            motion.angularVelocity *= 0.5
+            motion.linearVelocity *= [keeps.sideways, keeps.fall, keeps.sideways]
+            motion.angularVelocity *= keeps.tumble
             book.components.set(motion)
         }
         undress(returning.flight)
@@ -554,18 +610,35 @@ final class BookLifter {
             pan: pan, minimum: 0.85)
     }
 
-    /// Stands a book that was set down in `place`, at rest and colliding again, in its scene
-    /// textures, with a soft knock.
-    private func settle(_ flight: Lifted, at place: Transform) {
+    /// Ends a set-down: stands the book in its place, with a soft knock, if `standing` still
+    /// gives a pose, or else, with a book come into its place since it left the details, puts
+    /// it over that book (see `put`).
+    private func settle(_ flight: Lifted) {
+        let place = standing?()
+        put(flight, at: place)
+        guard place != nil else { return }
         let book = flight.book
-        book.transform = place
-        book.components[CollisionComponent.self]?.filter = .default
-        book.components[PhysicsBodyComponent.self]?.mode = .dynamic
-        book.components.set(PhysicsMotionComponent())
-        undress(flight)
         feedback.impact(
             impulse: 0, mass: book.components[PhysicsBodyComponent.self]?.massProperties.mass ?? 0,
             position: book.position(relativeTo: root), pan: pan, minimum: 0.3)
+    }
+
+    /// Puts the book of `flight` at rest and colliding again, in its scene textures: standing
+    /// in `place`, or else at the top of its rise over the place it left, so it falls onto the
+    /// books that fell into that place.
+    private func put(_ flight: Lifted, at place: Transform?) {
+        undress(flight)
+        let book = flight.book
+        book.components[PhysicsBodyComponent.self]?.mode = .dynamic
+        book.components[CollisionComponent.self]?.filter = .default
+        book.components.set(PhysicsMotionComponent())
+        if let place {
+            book.transform = place
+        } else {
+            var pose = flight.resting
+            pose.translation.y += flight.rise
+            book.transform = pose
+        }
     }
 
     /// Gives a lifted book its scene textures again, which keeps their memory bounded, and its
@@ -641,4 +714,35 @@ final class BookLifter {
         veil.components.set(
             OpacityComponent(opacity: level * min(1, max(0, (sceneDepth - veilDepth) / 4))))
     }
+
+    #if DEBUG
+        /// Whether `-BookwormsLiftLog YES` asks for the lift log, read once.
+        private static let logsLift = UserDefaults.standard.bool(forKey: "BookwormsLiftLog")
+        private var liftLog: [String] = []
+
+        /// Simulator hook: with `-BookwormsLiftLog YES`, logs the first 30 frames of each lift
+        /// to `Library/Caches/Bookworms/lift-log.csv`: the lifted book's height, then each book
+        /// the lift woke, by its order among them, with its height and velocity. It shows
+        /// whether the books on the lifted one move with it as it rises.
+        private func logLift(_ lifted: inout Lifted) {
+            guard Self.logsLift, lifted.frames < 30 else { return }
+            if lifted.frames == 0 { liftLog = ["frame,elapsed,book,y,vx,vy,vz"] }
+            lifted.frames += 1
+            for (index, book) in ([lifted.book] + lifted.riders).enumerated() {
+                let velocity =
+                    book.components[PhysicsMotionComponent.self]?.linearVelocity ?? .zero
+                let values = [
+                    book.position(relativeTo: root).y, velocity.x, velocity.y, velocity.z,
+                ]
+                liftLog.append(
+                    "\(lifted.frames),\(String(format: "%.4f", lifted.elapsed)),\(index - 1),"
+                        + values.map { String(format: "%.4f", $0) }.joined(separator: ","))
+            }
+            guard lifted.frames == 30 else { return }
+            let url = URL.cachesDirectory.appending(path: "Bookworms/lift-log.csv")
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? liftLog.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        }
+    #endif
 }

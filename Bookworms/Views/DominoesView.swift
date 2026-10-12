@@ -50,6 +50,9 @@ struct DominoesView: View {
     @State private var isShown = false
     /// Set while fingers move the camera, and reset when they lift.
     @GestureState private var movesCamera = false
+    /// Where the current touch started, for a touch and hold, which `LongPressGesture` does not
+    /// locate.
+    @GestureState private var touch: CGPoint?
 
     private struct SetUpRequest: Equatable {
         let ids: [Int]
@@ -70,6 +73,12 @@ struct DominoesView: View {
             }
         }
         .gesture(touchBook)
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .updating($touch) { value, touch, _ in
+                    touch = value.startLocation
+                }
+        )
         .simultaneousGesture(moveCamera)
         .allowsHitTesting(details.lift == nil)
         .onGeometryChange(for: CGRect.self) {
@@ -92,7 +101,8 @@ struct DominoesView: View {
         .modifier(
             LiftedDetailsOverlay(details: details, scene: scene, canvas: canvas) {
                 showsBook = true
-            })
+            }
+        )
         // Outside `ignoresSafeArea`, the proxy reports the safe area's size and the insets the
         // view extends past.
         .onGeometryChange(for: PileViewport.self) { proxy in
@@ -229,16 +239,16 @@ struct DominoesView: View {
     private var count: String { FrameChip.books(chainLength, of: books.count) }
 
     /// A tap pushes the chain on or lifts a book it has passed to its details (see
-    /// `DominoScene.tap(at:in:)`); touching and holding lifts any book.
+    /// `DominoScene.tap(at:in:)`); touching and holding lifts any book. Both find the book with
+    /// the scene's own ray, which also finds a standing book's glow around it.
     private var touchBook: some Gesture {
         LongPressGesture(minimumDuration: 0.5)
-            .targetedToAnyEntity()
             .exclusively(before: SpatialTapGesture())
             .onEnded { value in
+                let size = viewport?.size ?? .zero
                 switch value {
-                case .first(let press): showDetails(scene.bookID(for: press.entity))
-                case .second(let tap):
-                    showDetails(scene.tap(at: tap.location, in: viewport?.size ?? .zero))
+                case .first: showDetails(touch.flatMap { scene.bookID(at: $0, in: size) })
+                case .second(let tap): showDetails(scene.tap(at: tap.location, in: size))
                 }
             }
     }

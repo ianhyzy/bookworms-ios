@@ -131,7 +131,8 @@ struct BookPileView: View {
         .modifier(
             LiftedDetailsOverlay(details: details, scene: scene, canvas: canvas) {
                 showsBook = true
-            })
+            }
+        )
         // Outside `ignoresSafeArea`, the proxy reports the safe area's size and the insets the
         // view extends past.
         .onGeometryChange(for: PileViewport.self) { proxy in

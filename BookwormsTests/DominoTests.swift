@@ -264,15 +264,29 @@ final class DominoTests: XCTestCase {
         XCTAssertTrue(DominoPhase.stalled(fallen: 1).waitsForPush)
     }
 
-    func testLiftedBooksTheChainHasNotReachedStandAgain() {
-        // Past the front, or at the front before any push.
-        XCTAssertTrue(DominoLayout.standsAgain(index: 5, next: 3, started: true))
-        XCTAssertTrue(DominoLayout.standsAgain(index: 0, next: 0, started: false))
-        XCTAssertTrue(DominoLayout.standsAgain(index: 4, next: 0, started: false))
-        // At the front of a running chain, the book before it fell into its place; behind the
-        // front, it had fallen. Either is thrown back.
-        XCTAssertFalse(DominoLayout.standsAgain(index: 3, next: 3, started: true))
-        XCTAssertFalse(DominoLayout.standsAgain(index: 2, next: 3, started: true))
+    func testLiftedBooksStandAgainOnlyUnfallenAndInAFreePlace() {
+        // A book's place in its own frame, its neighbors standing 0.6 units off its covers, and
+        // the book before it fallen into its place.
+        let place = BoundingBox(min: [-0.75, -1.1, -0.15], max: [0.75, 1.1, 0.15])
+        let neighbors = [
+            BoundingBox(min: [-0.75, -1.1, 0.75], max: [0.75, 1.3, 1.05]),
+            BoundingBox(min: [-0.7, -1.1, -1.05], max: [0.7, 0.9, -0.75]),
+        ]
+        let fallen = BoundingBox(min: [-0.75, -1.1, -0.9], max: [0.75, -0.6, 1.0])
+        func stands(_ index: Int, next: Int, _ others: [BoundingBox]) -> Bool {
+            DominoLayout.standsAgain(index: index, next: next, place: place, others: others)
+        }
+        // At or past the front, between standing neighbors: whether or not a push started the
+        // chain, and at the front of a chain that stopped short of it.
+        XCTAssertTrue(stands(3, next: 3, neighbors))
+        XCTAssertTrue(stands(5, next: 3, neighbors))
+        XCTAssertTrue(stands(0, next: 0, []))
+        // A book fallen into its place, or one leaning over it, sends it back thrown.
+        XCTAssertFalse(stands(3, next: 3, neighbors + [fallen]))
+        let leaning = BoundingBox(min: [-0.7, 0.5, -1.2], max: [0.7, 1.6, 0.9])
+        XCTAssertFalse(stands(4, next: 3, [leaning]))
+        // A book the chain had passed is thrown back, even into a free place.
+        XCTAssertFalse(stands(2, next: 3, neighbors))
     }
 
     func testSetDownDropsAStandingBookIntoItsPlaceFromAbove() throws {
@@ -283,24 +297,36 @@ final class DominoTests: XCTestCase {
         // Standing on its tail, a hair above the table.
         XCTAssertEqual(place.translation.y - slot.size.y / 2, 0.002, accuracy: 1e-5)
         XCTAssertEqual(place.rotation.act([0, 1, 0]).y, 1, accuracy: 1e-5)
-        // From a details pose high in front of the camera, turned to face it.
+        // From a details pose high in front of the camera, turned to face it, back to a place
+        // it rose 2.6 units from, clear of its neighbors.
+        let rise: Float = 2.6
         let start = Transform(
             rotation: simd_quatf(angle: 2, axis: simd_normalize([0.2, 1, 0.4])),
             translation: place.translation + [6, 17, 10])
         func pose(_ progress: Float) -> Transform {
-            BookFlight.setDown(from: start, to: place, progress: progress)
+            BookFlight.setDown(from: start, to: place, rise: rise, progress: progress)
         }
         XCTAssertEqual(simd_distance(pose(0).translation, start.translation), 0, accuracy: 1e-4)
         XCTAssertEqual(simd_distance(pose(1).translation, place.translation), 0, accuracy: 1e-4)
-        XCTAssertEqual(abs(simd_dot(pose(1).rotation.vector, place.rotation.vector)), 1, accuracy: 1e-4)
-        // Within a book's height of its place, it is nearly over it, well inside the gap to
-        // either neighbor, so it drops in without sweeping through them.
-        let gap = DominoLayout.gap(height: try XCTUnwrap(plan.slots.map(\.size.y).min()))
+        XCTAssertEqual(
+            abs(simd_dot(pose(1).rotation.vector, place.rotation.vector)), 1, accuracy: 1e-4)
+        // It eases out of the details rather than leaping away, so it stays in view.
+        let way = simd_distance(start.translation, place.translation)
+        XCTAssertLessThan(simd_distance(pose(0.02).translation, start.translation), way * 0.01)
+        // It comes no lower than the top of its rise until it is over its place, then drops
+        // straight in, standing, so it never sweeps through the books beside its place.
         for step in 0...100 {
-            let translation = pose(Float(step) / 100).translation
-            guard translation.y < place.translation.y + slot.size.y else { continue }
-            let across = SIMD2(translation.x, translation.z) - slot.position
-            XCTAssertLessThan(simd_length(across), gap / 3, "\(step)")
+            let progress = Float(step) / 100
+            let translation = pose(progress).translation
+            let across = simd_length(SIMD2(translation.x, translation.z) - slot.position)
+            if across > 1e-3 {
+                XCTAssertGreaterThanOrEqual(
+                    translation.y, place.translation.y + rise - 1e-3, "\(step)")
+            } else {
+                XCTAssertEqual(
+                    abs(simd_dot(pose(progress).rotation.vector, place.rotation.vector)), 1,
+                    accuracy: 1e-4, "\(step)")
+            }
         }
         // It arrives at rest, so it lands without a bounce.
         XCTAssertLessThan(simd_distance(pose(0.99).translation, place.translation), 0.01)

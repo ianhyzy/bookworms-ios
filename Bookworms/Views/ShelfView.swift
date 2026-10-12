@@ -42,7 +42,8 @@ struct ShelfView: View {
                     ShelfBar(
                         pullOut: pullOut, liftedDetails: liftedDetails, mode: $mode,
                         sort: $sort, designedOnly: $designedOnly, threeDView: shownViewChoice,
-                        pileFrame: mode == .pile ? pileFrame : nil))
+                        pileFrame: mode == .pile ? pileFrame : nil)
+                )
                 .navigationDestination(for: Int.self) { id in
                     if let book = model.books.first(where: { $0.id == id }) {
                         BookDetailView(book: book)

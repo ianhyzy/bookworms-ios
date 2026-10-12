@@ -437,8 +437,9 @@ final class BookPileTests: XCTestCase {
         // A 380-point book centered 350 points from the top of an 874-point view.
         let center = SIMD2<Float>(0.1, 1 - 2 * 350.0 / 874)
         let height: Float = 2 * 380.0 / 874
-        let upright = camera.detailPose(
-            center: center, height: height, size: size, pose: BookPose(yaw: 0, pitch: 0),
+        let upright = PileCamera.detailPose(
+            seenFrom: camera.transform, center: center, height: height, size: size,
+            pose: BookPose(yaw: 0, pitch: 0),
             aspect: aspect)
         let middle = camera.project(upright.translation, aspect: aspect)
         XCTAssertEqual(middle.x, center.x, accuracy: 0.0001)
@@ -451,8 +452,9 @@ final class BookPileTests: XCTestCase {
         XCTAssertEqual(top.x, bottom.x, accuracy: 0.001)
 
         // At rest, the front cover, the spine, and the head face the camera, as in the details.
-        let resting = camera.detailPose(
-            center: center, height: height, size: size, pose: .resting, aspect: aspect)
+        let resting = PileCamera.detailPose(
+            seenFrom: camera.transform, center: center, height: height, size: size,
+            pose: .resting, aspect: aspect)
         let toCamera = camera.transform.translation - resting.translation
         func faces(_ axis: SIMD3<Float>) -> Bool {
             simd_dot(resting.rotation.act(axis), toCamera) > 0
@@ -480,6 +482,22 @@ final class BookPileTests: XCTestCase {
         XCTAssertEqual(BookFlight.rise(of: book, clearing: [beside, below]), 0.4)
         let tower = BoundingBox(min: [0, 0.3, 0], max: [0.5, 20, 0.5])
         XCTAssertEqual(BookFlight.rise(of: book, clearing: [tower]), 6)
+    }
+
+    func testRiseClearsStandingNeighborsWithinItsMargin() {
+        // A standing domino, a taller neighbor 0.6 units off its back cover, and the book past
+        // that one.
+        let book = BoundingBox(min: [-0.75, 0, -0.15], max: [0.75, 2.2, 0.15])
+        let neighbor = BoundingBox(min: [-0.8, 0, 0.75], max: [0.8, 2.8, 1.05])
+        let beyond = BoundingBox(min: [-0.8, 0, 1.9], max: [0.8, 3.5, 2.2])
+        // Without a margin, it rises only to come free of the table, and its top stays below
+        // its neighbor's.
+        XCTAssertEqual(BookFlight.rise(of: book, clearing: [neighbor, beyond]), 0.4)
+        // With the dominoes' margin, it rises until its bottom clears its neighbor's top, but
+        // not the book past it.
+        XCTAssertEqual(
+            BookFlight.rise(of: book, clearing: [neighbor, beyond], margin: 0.89), 2.95,
+            accuracy: 0.0001)
     }
 
     func testLiftWakesTheBooksOnAndAgainstTheLiftedOne() {
@@ -513,7 +531,7 @@ final class BookPileTests: XCTestCase {
         let end = BookFlight.riseDuration(rise)
         // A book with nothing on it leaves sooner than one under a stack.
         XCTAssertLessThan(BookFlight.riseDuration(0.4), end)
-        XCTAssertEqual(BookFlight.riseDuration(6), 0.25)
+        XCTAssertEqual(BookFlight.riseDuration(6), 0.3, accuracy: 1e-6)
         XCTAssertEqual(BookFlight.landing(rise: rise), end + BookFlight.spring.duration)
         XCTAssertEqual(BookFlight.climb(rise, at: 0), 0)
         XCTAssertEqual(BookFlight.climb(rise, at: end), rise, accuracy: 0.0001)
@@ -559,11 +577,22 @@ final class BookPileTests: XCTestCase {
         let resting = SIMD3<Float>(1, 0.3, -2)
         let gravity = SIMD3<Float>(0, -PileLayout.gravity, 0)
         let velocity = BookFlight.launch(from: start, to: resting, gravity: gravity)
-        let time = BookFlight.whipDuration
+        let time = BookFlight.whipDuration(from: start, to: resting)
         let landed = start + velocity * time + gravity * time * time / 2
         XCTAssertEqual(simd_distance(landed, resting), 0, accuracy: 0.001)
         // Fast enough to scatter the books it hits, and tumbling.
         XCTAssertGreaterThan(simd_length(velocity), 40)
+        // A short throw takes the shortest time; a long one takes longer, so it flies no faster
+        // on average than `whipSpeed`.
+        XCTAssertEqual(
+            BookFlight.whipDuration(from: [0, 10, 5], to: [0, 0.3, 0]), BookFlight.whipDuration)
+        let far = SIMD3<Float>(20, 30, 25)
+        let farTime = BookFlight.whipDuration(from: far, to: resting)
+        XCTAssertEqual(simd_distance(far, resting) / farTime, BookFlight.whipSpeed, accuracy: 0.001)
+        let farVelocity = BookFlight.launch(from: far, to: resting, gravity: gravity)
+        XCTAssertEqual(
+            simd_distance(far + farVelocity * farTime + gravity * farTime * farTime / 2, resting),
+            0, accuracy: 0.001)
         XCTAssertGreaterThan(simd_length(BookFlight.spin(for: velocity)), 10)
         XCTAssertEqual(
             simd_length(BookFlight.spin(for: [0, -50, 0])), simd_length(SIMD2<Float>(10, 8)),

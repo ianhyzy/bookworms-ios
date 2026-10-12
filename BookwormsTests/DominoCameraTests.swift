@@ -549,6 +549,22 @@ final class DominoCameraTests: XCTestCase {
         XCTAssertGreaterThan(Float(before.filter(shows).count), Float(before.count) * 0.8)
     }
 
+    func testATornWebNoLongerDrawsTheCamera() {
+        // A web that a lifted book tore before the front reached it: the camera no longer
+        // pushes in on it or leans toward it.
+        let path = chain(276).rig.path
+        let web = DominoCameraRig.Cobweb(
+            distance: 3 * path.period + path.rowLength / 2, density: 1)
+        var (torn, _) = chain(276, cobwebs: [web])
+        var (whole, _) = chain(276, cobwebs: [web])
+        torn.forgetCobweb(at: web.distance + 1e-4)
+        XCTAssertEqual(torn.cobwebs, [])
+        XCTAssertEqual(whole.cobwebs, [web])
+        XCTAssertNotEqual(
+            run(&torn, count: 276, speed: 13, even: true).map(\.pose),
+            run(&whole, count: 276, speed: 13, even: true).map(\.pose))
+    }
+
     func testAWebAtThePushLeavesTheCameraAlone() {
         // The opening already frames the first books, so a dense web between the first two
         // books, which tears on the push, changes nothing.

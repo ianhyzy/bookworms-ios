@@ -56,23 +56,14 @@ struct PileCamera: Equatable {
     }
 
     /// The pose that shows a book of `size` (see `BookShape.size`) as `Book3DView` draws it at
-    /// `pose`, in a view of width-to-height `aspect`.
+    /// `pose`, in a view of width-to-height `aspect`, to a camera at `camera` with this camera's
+    /// field of view.
     ///
     /// `center` and `height` give the book's place in normalized device coordinates, where the
     /// view is 2 units tall. The book's middle sits on `center`, at the depth where its height
     /// spans `height`, as `Book3DView` draws its height at the book's middle. The book faces
     /// along the ray to the camera rather than the camera's axis, so off center it turns as it
     /// would in front of `Book3DView`'s camera, which looks straight at it.
-    func detailPose(
-        center: SIMD2<Float>, height: Float, size: SIMD3<Float>, pose: BookPose, aspect: Float
-    ) -> Transform {
-        Self.detailPose(
-            seenFrom: transform, center: center, height: height, size: size, pose: pose,
-            aspect: aspect)
-    }
-
-    /// `detailPose` for any camera at `camera`, with this camera's field of view, such as the
-    /// dominoes' Follow camera.
     static func detailPose(
         seenFrom camera: Transform, center: SIMD2<Float>, height: Float, size: SIMD3<Float>,
         pose: BookPose, aspect: Float
