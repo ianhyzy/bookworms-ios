@@ -22,6 +22,9 @@ struct Book3DView: View {
     /// spine is thicker than its book (`CloudBook.shelfSpineSize(scale:)`), so a book pulled off
     /// the shelf starts at the spine's proportion.
     var thicknessRatio: CGFloat? = nil
+    /// How much of the light's shading the faces show, from 0, every face evenly lit as a flat
+    /// spine on the shelf is, to 1. A book pulled off the shelf starts unshaded, as its spine.
+    var lighting: Double = 1
 
     var body: some View {
         let projection = BookProjection(
@@ -32,7 +35,7 @@ struct Book3DView: View {
             ForEach(projection.visibleFaces) { face in
                 content(for: face.kind, size: face.size)
                     .frame(width: face.size.width, height: face.size.height)
-                    .overlay(Color.black.opacity(face.shade))
+                    .overlay(Color.black.opacity(face.shade * lighting))
                     .projectionEffect(face.transform)
             }
         }

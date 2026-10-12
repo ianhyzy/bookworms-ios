@@ -19,8 +19,8 @@ enum ShelfMode: String, CaseIterable, Identifiable {
 /// cannot drive a wheel: its phase reaches ±1 about one spine's length from its threshold.) A
 /// tap on the centered spine opens it, and a tap on another spine brings it to the center.
 /// Shelf scrolls freely, with the bookcase's wood as part of the content, and a tap on any
-/// spine opens it. The body does not read `centeredID`; only the button actions do, when
-/// tapped. VoiceOver activation always opens the book.
+/// spine opens it. The body does not read `centeredID` or `scrollOffset`; only the button
+/// actions do, when tapped. VoiceOver activation always opens the book.
 ///
 /// While `pullOut` has a book out, that book's spine hides, leaving a shadowed gap, and reports
 /// the gap's frame, where the book flies from and back to.
@@ -31,10 +31,15 @@ struct SpineCarousel: View {
     /// The zoom transition's source namespace; each spine is a source keyed by its book ID.
     let namespace: Namespace.ID
     let pullOut: ShelfPullOut
-    let open: (CloudBook) -> Void
+    /// Opens a book's details. The flag says whether the book can slide out of its spine: the
+    /// flying book starts flat at the spine's layout frame, which a stacked spine matches only
+    /// while it rests at the wheel's center.
+    let open: (CloudBook, Bool) -> Void
 
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
+    /// Stack's scroll offset, which tells whether a spine rests at the wheel's center.
+    @State private var scrollOffset: CGFloat = 0
 
     /// Space between the screen edges and a stacked spine's ends.
     private static let sideMargin: CGFloat = 20
@@ -48,6 +53,10 @@ struct SpineCarousel: View {
             case .stack: stack(in: proxy.size)
             case .shelf: shelf(in: proxy.size)
             }
+        }
+        // A pulled book that a library update removes has no place to return to.
+        .onChange(of: books.map(\.id)) { _, ids in
+            if let id = pullOut.book?.id, !ids.contains(id) { pullOut.close() }
         }
         .background {
             // A pool of warm light behind the centered spine, larger than the carousel so its
@@ -75,7 +84,7 @@ struct SpineCarousel: View {
                         ZStack(alignment: .top) {
                             ForEach(track.pages[page]) { slot in
                                 let thickness = slot.book.slabThickness
-                                spineButton(slot.book) {
+                                spineButton(slot.book, offset: track.offsets[slot.index]) {
                                     SpineView(book: slot.book, look: model.look(for: slot.book))
                                         .frame(width: length, height: thickness)
                                 }
@@ -103,7 +112,8 @@ struct SpineCarousel: View {
         .scrollTargetBehavior(SpineSnapping(track: track))
         .modifier(
             CenterTracking(
-                track: track, axis: .vertical, viewport: size.height, centeredID: $centeredID))
+                track: track, axis: .vertical, viewport: size.height, centeredID: $centeredID,
+                offset: $scrollOffset))
     }
 
     private func shelf(in size: CGSize) -> some View {
@@ -159,18 +169,22 @@ struct SpineCarousel: View {
         }
         .modifier(
             CenterTracking(
-                track: track, axis: .horizontal, viewport: size.width, centeredID: $centeredID)
+                track: track, axis: .horizontal, viewport: size.width, centeredID: $centeredID,
+                offset: .constant(0))
         )
         .padding(.horizontal, -bleed)
-        .overlay { ShelfLamp() }
+        .overlay { ShelfLamp().modifier(LampHandOff(pullOut: pullOut)) }
     }
 
-    private func spineButton(_ book: CloudBook, @ViewBuilder label: () -> some View)
-        -> some View
-    {
+    /// A spine's button. `offset` is the scroll offset that centers a stacked spine.
+    private func spineButton(
+        _ book: CloudBook, offset: CGFloat = 0, @ViewBuilder label: () -> some View
+    ) -> some View {
         Button {
-            if voiceOver || mode == .shelf || book.id == (centeredID ?? books.first?.id) {
-                open(book)
+            if mode == .shelf || abs(scrollOffset - offset) < 0.5 {
+                open(book, true)
+            } else if voiceOver || book.id == (centeredID ?? books.first?.id) {
+                open(book, false)
             } else {
                 centeredID = book.id
             }
@@ -204,10 +218,10 @@ private struct PulledSpine: ViewModifier {
                 if isPulled {
                     LinearGradient(
                         stops: [
-                            .init(color: .black.opacity(0.6), location: 0),
-                            .init(color: .black.opacity(0.3), location: 0.3),
-                            .init(color: .black.opacity(0.3), location: 0.7),
-                            .init(color: .black.opacity(0.6), location: 1),
+                            .init(color: .black.opacity(0.75), location: 0),
+                            .init(color: .black.opacity(0.4), location: 0.3),
+                            .init(color: .black.opacity(0.4), location: 0.7),
+                            .init(color: .black.opacity(0.75), location: 1),
                         ], startPoint: upright ? .leading : .top,
                         endPoint: upright ? .trailing : .bottom
                     )
@@ -222,7 +236,7 @@ private struct PulledSpine: ViewModifier {
 }
 
 /// Keeps `centeredID` on the spine at the center, and scrolls to `centeredID` when something
-/// other than scrolling changes it.
+/// other than scrolling changes it. Reports the scroll offset through `offset`.
 ///
 /// Tracking and scrolling use `SpineTrack` offsets, as `SpineSnapping` does, which match the
 /// layout exactly. Offsets count from the end of the scroll view's content inset, as
@@ -234,6 +248,7 @@ private struct CenterTracking: ViewModifier {
     /// The length along `axis` that shows on screen.
     let viewport: CGFloat
     @Binding var centeredID: Int?
+    @Binding var offset: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var position = ScrollPosition()
     /// The book that scrolling last brought to the center, which tells scrolling apart from
@@ -250,6 +265,7 @@ private struct CenterTracking: ViewModifier {
                     ? geometry.contentOffset.y + geometry.contentInsets.top
                     : geometry.contentOffset.x + geometry.contentInsets.leading
             } action: { old, offset in
+                self.offset = offset
                 // The first call reports the starting offset, before `onAppear` scrolls to
                 // `centeredID`, so only an actual change moves `centeredID`.
                 let id = track.id(nearest: offset)
@@ -635,12 +651,28 @@ private struct ContactShadow: View {
     }
 }
 
+/// Hides the shelf's lamp while `pullOut` has a book out, when the book's flight draws the lamp
+/// over the book instead, and reports the lamp's frame for that.
+private struct LampHandOff: ViewModifier {
+    let pullOut: ShelfPullOut
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(pullOut.isOut ? 0 : 1)
+            .onGeometryChange(for: CGRect.self) {
+                $0.frame(in: .global)
+            } action: {
+                pullOut.lampFrame = $0
+            }
+    }
+}
+
 /// A lamp above the middle of the shelf, fixed to the screen while the books scroll under it:
 /// a warm pool of light at the top that falls off toward the screen's sides.
 ///
 /// It fades out at its top and bottom, so it meets the plain wall above and below the carousel
 /// without a step.
-private struct ShelfLamp: View {
+struct ShelfLamp: View {
     var body: some View {
         ZStack {
             RadialGradient(

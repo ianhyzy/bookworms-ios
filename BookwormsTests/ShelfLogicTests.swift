@@ -197,19 +197,24 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(start.roll, 0)
         XCTAssertEqual(start.center, CGPoint(x: 115, y: 440))
         XCTAssertEqual(start.lift, 0)
+        // Unshaded and casting no shadow, as the flat spine it replaces.
+        XCTAssertEqual(start.lighting, 0)
+        XCTAssertEqual(start.shadow, 0)
         let size = drawnSize(start, aspect: 2 / 3)
         XCTAssertEqual(size.width, 30, accuracy: 0.01)
         XCTAssertEqual(size.height, 280, accuracy: 0.01)
         // A spring's undershoot leaves the book in its place.
         XCTAssertEqual(path.pose(at: -0.1), start)
 
-        // The slide out grows the spine toward the reader without moving or turning it.
+        // The slide out grows the spine toward the reader without moving or turning it, and
+        // its shadow shows.
         let pulled = path.pose(at: PullOutPath.floatStart)
-        XCTAssertGreaterThan(pulled.scale / start.scale, 1.08)
-        XCTAssertLessThanOrEqual(pulled.scale / start.scale, PullOutPath.pullScale)
+        XCTAssertGreaterThan(pulled.scale / start.scale, 1.1)
+        XCTAssertLessThanOrEqual(pulled.scale / start.scale, PullOutPath.shelfPullScale)
         XCTAssertEqual(pulled.center, start.center)
         XCTAssertEqual(pulled.yaw, .pi / 2, accuracy: 0.0001)
         XCTAssertEqual(pulled.height, 280, accuracy: 0.001)
+        XCTAssertGreaterThan(pulled.shadow, 0.5)
 
         // It lands in the details' pose, size, and place.
         let end = path.pose(at: 1)
@@ -221,6 +226,31 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(end.center.x, stage.midX, accuracy: 0.001)
         XCTAssertEqual(end.center.y, stage.midY, accuracy: 0.001)
         XCTAssertEqual(end.lift, 1, accuracy: 0.0001)
+        XCTAssertEqual(end.lighting, 1, accuracy: 0.0001)
+        XCTAssertEqual(end.shadow, 0, accuracy: 0.0001)
+        XCTAssertEqual(path.pose(at: 1.2), end)
+    }
+
+    func testPulledBookLeavesItsPlaceBeforeItTurnsAndTheShelfDims() {
+        let path = PullOutPath(
+            home: CGRect(x: 100, y: 200, width: 60, height: 420), upright: true,
+            stage: CGRect(x: 0, y: 150, width: 402, height: 380), pose: .resting, aspect: 2 / 3,
+            thicknessRatio: 0.08)
+        for step in 0...1000 {
+            let progress = Double(step) / 1000
+            let pose = path.pose(at: progress)
+            if progress <= PullOutPath.turnStart {
+                XCTAssertEqual(pose.yaw, .pi / 2, accuracy: 0.0001)
+                XCTAssertEqual(pose.pitch, 0, accuracy: 0.0001)
+            }
+            if progress <= PullOutPath.veilStart { XCTAssertEqual(pose.lift, 0) }
+        }
+        // It has almost finished its slide out, and its shading has faded in, by the time it
+        // turns.
+        let turning = path.pose(at: PullOutPath.turnStart)
+        XCTAssertGreaterThan(turning.scale / path.pose(at: 0).scale, 1.13)
+        XCTAssertEqual(turning.lighting, 1, accuracy: 0.0001)
+        XCTAssertLessThan(path.pose(at: PullOutPath.turnStart + 0.05).yaw, .pi / 2)
     }
 
     func testPulledBookMovesSmoothlyWithoutStopping() {
@@ -237,8 +267,7 @@ final class ShelfLogicTests: XCTestCase {
             XCTAssertLessThan(abs(pose.center.y - previous.center.y), 1)
             XCTAssertLessThan(abs(pose.yaw - previous.yaw), 0.01)
             XCTAssertLessThan(abs(size - previousSize), 1)
-            // The book grows and turns toward the details the whole way.
-            XCTAssertGreaterThanOrEqual(size, previousSize - 0.001)
+            // The book never turns back on its way, and the shelf never brightens.
             XCTAssertLessThanOrEqual(pose.yaw, previous.yaw + 0.0001)
             XCTAssertGreaterThanOrEqual(pose.lift, previous.lift)
             previous = pose
@@ -263,6 +292,12 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(size.height, 362, accuracy: 0.01)
         XCTAssertLessThan(abs(start.yaw - spun.yaw), .pi)
         XCTAssertEqual(sin(start.yaw), 1, accuracy: 0.0001)
+
+        // It slides most of the way along its length, out of the wheel, before it stands up.
+        let slid = path.pose(at: PullOutPath.turnStart)
+        XCTAssertGreaterThan(slid.center.x - home.midX, 0.9 * PullOutPath.stackSlide * home.width)
+        XCTAssertEqual(slid.roll, -.pi / 2, accuracy: 0.0001)
+        XCTAssertEqual(slid.yaw, start.yaw, accuracy: 0.0001)
 
         let end = path.pose(at: 1)
         XCTAssertEqual(end.roll, 0, accuracy: 0.0001)

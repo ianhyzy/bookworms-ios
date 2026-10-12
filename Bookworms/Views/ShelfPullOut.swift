@@ -6,20 +6,19 @@ import SwiftUI
 /// The tapped spine, the flying book, and the shelf's bars share this state. The spine hides
 /// while its book is out, leaving a shadowed gap, and reports the gap's frame. The details'
 /// transparent stand-in reports the frame of their book stage and the pose a drag gives their
-/// book. One spring on `progress` drives the flight, and `PullOutPath` turns it into the book's
+/// book. One value, `progress`, drives the flight, and `PullOutPath` turns it into the book's
 /// place, size, and pose, so **Back** during the flight reverses it from where it is.
 @MainActor
 @Observable
 final class ShelfPullOut {
-    /// The opening spring, which overshoots slightly, as the Pile's flight does.
-    static let opening = Animation.spring(duration: 1.3, bounce: 0.06)
-    /// When the details fade in after the flight starts: once the opening spring has brought the
-    /// book within a few points of the stage.
-    static let landing = Duration.seconds(0.9)
-    /// The return, which starts as the details finish fading out. It eases in and out rather
-    /// than springing: a spring from rest would rush the float back and leave the slide into the
-    /// gap to its long, slow tail.
-    static let closing = Animation.easeInOut(duration: 0.9).delay(0.12)
+    /// The opening. It runs at an even pace because `PullOutPath` eases each part of the flight
+    /// itself, so the parts keep their share of the time. The book lands, and the details fade
+    /// in, as it ends, about when a book the Pile lifts lands.
+    static let opening = Animation.linear(duration: 1.1)
+    /// The return, which starts as the details finish fading out and retraces the opening. It
+    /// eases out, so the book leaves the stage at once rather than as slowly as it settled there,
+    /// and slows as it slides into its place.
+    static let closing = Animation.easeOut(duration: 1).delay(0.12)
 
     /// The book that is out, from the tap until it is back in its place.
     private(set) var book: CloudBook?
@@ -30,6 +29,9 @@ final class ShelfPullOut {
     private(set) var isOut = false
     /// The spine's place in global coordinates, which the hidden spine reports.
     var home: CGRect?
+    /// The frame of **Shelf**'s lamp in global coordinates, which the lamp reports. While a book
+    /// is out, the flight draws the lamp over the book, so the book keeps the light its spine had.
+    var lampFrame: CGRect?
     /// The details' book stage in global coordinates, which `HostedBook.place` reports.
     var stage: CGRect?
     /// The pose the details give their book, which `HostedBook.turn` reports.
@@ -69,11 +71,12 @@ final class ShelfPullOut {
         guard book != nil, !isOut, !isReturning else { return }
         let revision = revision
         isOut = true
-        withAnimation(Self.opening) { progress = 1 }
-        Task {
-            try? await Task.sleep(for: Self.landing)
+        withAnimation(Self.opening, completionCriteria: .logicallyComplete) {
+            progress = 1
+        } completion: { [self] in
             guard self.revision == revision else { return }
-            withAnimation(.easeOut(duration: 0.3)) { showsText = true }
+            // As the Pile's details fade in.
+            withAnimation(.easeOut(duration: 0.25)) { showsText = true }
             AccessibilityNotification.ScreenChanged(nil).post()
             #if DEBUG
                 // Simulator hook: `-BookwormsPileBack <seconds>` goes back that long after the
@@ -81,8 +84,10 @@ final class ShelfPullOut {
                 if let delay = UserDefaults.standard.string(forKey: "BookwormsPileBack")
                     .flatMap(Double.init)
                 {
-                    try? await Task.sleep(for: .seconds(delay))
-                    if self.revision == revision { putBack() }
+                    Task {
+                        try? await Task.sleep(for: .seconds(delay))
+                        if self.revision == revision { putBack() }
+                    }
                 }
             #endif
         }
@@ -125,13 +130,18 @@ final class ShelfPullOut {
 /// A pulled book's flight from its place on the shelf to the details' book stage, as a function
 /// of the flight's progress, in one coordinate space.
 ///
-/// The flight has two overlapping parts. First the book slides straight out of its place toward
-/// the reader, which shows as its spine growing by `pullScale`; it does not turn, so it clears
-/// its neighbors. Then it floats to the stage, grows to the stage's height, and turns from facing
-/// its spine to the details' pose, while a book from **Stack** also stands up from lying on its
-/// back. The float starts before the slide ends, so the book never stops on the way. Progress
-/// past 1, from a spring's overshoot, carries the float past the stage; progress below 0 leaves
-/// the book in its place.
+/// Each part of the flight runs over its own share of the progress, with its own easing:
+///
+/// 1. The book slides out of its place. On **Shelf**, it comes straight toward the reader, which
+///    shows as its spine growing; on **Stack**, it also slides along its length, out of the
+///    wheel. It casts a shadow on the shelf, and the faces' shading fades in.
+/// 2. As the slide ends, the book starts to float to the stage, growing or shrinking to the
+///    stage's height, and to turn from facing its spine to the details' pose, while a book from
+///    **Stack** stands up from lying on its back. The float and the turn start before the slide
+///    has quite ended, so the book never stops, but only once it is almost out of its place.
+/// 3. Once the book is on its way, the shelf dims behind it.
+///
+/// The return retraces the same path. Progress outside 0...1 leaves the book at that end.
 ///
 /// Until the float starts, `Book3DView` lays the spine out at the carousel spine's own size, so
 /// its lettering matches the spine it replaces, and a uniform scale sizes it on screen. The float
@@ -152,16 +162,31 @@ struct PullOutPath {
         /// A turn in the screen's plane, in radians: -π/2 lays an upright book on its back with
         /// its head on the left, as **Stack** shows spines.
         var roll: Double
-        /// How far the float has gone, 0...1, which dims the shelf and lights the stage.
+        /// `Book3DView.lighting`: 0 in the book's place, where it matches the unshaded spine.
+        var lighting: Double
+        /// The opacity of the book's shadow on the shelf behind it.
+        var shadow: Double
+        /// How far the shelf has dimmed behind the book, 0...1, which also lights the stage.
         var lift: Double
     }
 
     /// The progress at which the slide out of the shelf ends.
-    static let pullEnd = 0.32
+    static let pullEnd = 0.3
     /// The progress at which the float to the stage begins.
-    static let floatStart = 0.26
-    /// How much larger the spine looks once the book has slid out toward the reader.
-    static let pullScale = 1.1
+    static let floatStart = 0.22
+    /// The progress at which the book starts to turn, with its shading fully faded in.
+    static let turnStart = 0.24
+    /// The progress at which the shelf starts to dim.
+    static let veilStart = 0.45
+    /// How much larger a spine on **Shelf** looks once its book has slid out toward the reader.
+    static let shelfPullScale = 1.15
+    /// How much larger a spine on **Stack** looks once its book has slid out of the wheel.
+    static let stackPullScale = 1.05
+    /// How far a book on **Stack** slides to the right, as a share of its length.
+    static let stackSlide = 0.22
+    /// The float gathers speed, then settles gently on the stage.
+    static let floatCurve = UnitCurve.bezier(
+        startControlPoint: UnitPoint(x: 0.4, y: 0), endControlPoint: UnitPoint(x: 0.2, y: 1))
 
     /// The spine's frame in its place.
     let home: CGRect
@@ -177,8 +202,10 @@ struct PullOutPath {
     let thicknessRatio: CGFloat
 
     func pose(at progress: Double) -> Pose {
-        let pull = Self.easeOut(min(1, max(0, progress / Self.pullEnd)))
-        let float = Self.easeIn(max(0, (progress - Self.floatStart) / (1 - Self.floatStart)))
+        let pull = Self.phase(progress, from: 0, to: Self.pullEnd, .easeInOut)
+        let float = Self.phase(progress, from: Self.floatStart, to: 1, Self.floatCurve)
+        let turn = Self.phase(progress, from: Self.turnStart, to: 1, .easeInOut)
+        let lift = Self.phase(progress, from: Self.veilStart, to: 1, .easeInOut)
         let length = upright ? home.height : home.width
         let spineRatio = (upright ? home.width : home.height) / max(1, length)
         // Facing the viewer, the spine lies in front of the book's center, so `Book3DView`
@@ -187,61 +214,107 @@ struct PullOutPath {
             width: aspect, height: 1, thickness: spineRatio, yaw: .pi / 2, pitch: 0
         )
         .bounds.height
-        let pulled = (1 + (Self.pullScale - 1) * pull) / magnification
+        let growth = upright ? Self.shelfPullScale : Self.stackPullScale
+        let pulled = (1 + (growth - 1) * pull) / magnification
+        let slideX = upright ? 0 : Self.stackSlide * length * pull
         // The spine-on pose nearest the details' pose, so a book the reader spun turns back the
         // short way.
         let spineYaw = .pi / 2 + 2 * .pi * ((pose.yaw - .pi / 2) / (2 * .pi)).rounded()
         return Pose(
             center: CGPoint(
-                x: Self.mix(home.midX, stage.midX, float), y: Self.mix(home.midY, stage.midY, float)
-            ),
+                x: Self.mix(home.midX + slideX, stage.midX, float),
+                y: Self.mix(home.midY, stage.midY, float)),
             height: Self.mix(length, stage.height, float),
             scale: Self.mix(pulled, 1, float),
-            // Late in the float, so a change in the lettering's line count, which a spine's
+            // Late in the turn, so a change in the lettering's line count, which a spine's
             // thickness sets, happens once the spine has turned away from the reader.
-            thicknessRatio: Self.mix(spineRatio, thicknessRatio, float * float),
-            yaw: Self.mix(spineYaw, pose.yaw, float),
-            pitch: Self.mix(0, pose.pitch, float),
-            roll: upright ? 0 : Self.mix(-.pi / 2, 0, float),
-            lift: min(1, float))
+            thicknessRatio: Self.mix(spineRatio, thicknessRatio, turn * turn),
+            yaw: Self.mix(spineYaw, pose.yaw, turn),
+            pitch: Self.mix(0, pose.pitch, turn),
+            roll: upright ? 0 : Self.mix(-.pi / 2, 0, turn),
+            lighting: Self.phase(progress, from: 0, to: Self.turnStart, .easeInOut),
+            shadow: pull * (1 - lift),
+            lift: lift)
+    }
+
+    /// How far `curve` has gone at `progress` through the part of the flight from `start` to
+    /// `end`: 0 before it, and 1 after it.
+    private static func phase(
+        _ progress: Double, from start: Double, to end: Double, _ curve: UnitCurve
+    ) -> Double {
+        curve.value(at: min(1, max(0, (progress - start) / (end - start))))
     }
 
     private static func mix<T: BinaryFloatingPoint>(_ from: T, _ to: T, _ amount: Double) -> T {
         from + (to - from) * T(amount)
     }
+}
 
-    /// Starts at full speed and slows to a stop at 1.
-    private static func easeOut(_ x: Double) -> Double { x * (2 - x) }
+/// Shows the book that `pullOut` has out, and its details, over the carousel, which waits
+/// meanwhile and which VoiceOver skips while the details show.
+///
+/// A modifier of its own, so a pull and a return update only it, not the shelf's body, which
+/// sorts the library.
+struct ShelfPullOutStage: ViewModifier {
+    let pullOut: ShelfPullOut
 
-    /// Starts from rest and reaches 1 at full speed, so the spring's own easing ends the float.
-    private static func easeIn(_ x: Double) -> Double { x * x * (2 - x) }
+    func body(content: Content) -> some View {
+        content
+            .allowsHitTesting(pullOut.book == nil)
+            .accessibilityHidden(pullOut.showsDetails)
+            .overlay {
+                if let book = pullOut.book { ShelfPullOutLayer(book: book, pullOut: pullOut) }
+            }
+            .onAppear { pullOut.keepsForShare = false }
+            // Another tab or 3D closes the details at once, except for the book's Share, which
+            // keeps them for the reader's return, as pushed details stay.
+            .onDisappear { if !pullOut.keepsForShare { pullOut.close() } }
+    }
 }
 
 /// The pulled-out book's flight and details, over the shelf.
 ///
 /// The details join the hierarchy at the tap, hidden, since the book flies to their stand-in's
 /// frame. They fade in once the book lands, and their stand-in then places and turns the flying
-/// book, so the book scrolls and turns with them. A scroll view's edge effect darkens the tab
-/// bar's glass even while the details are hidden, so it shows only while they do.
-struct ShelfPullOutLayer: View {
+/// book, so the book scrolls and turns with them. Their scroll edge effects stay hidden: the
+/// walnut veil already darkens the bars' backdrop, and an edge effect that switched on as the
+/// details faded in would flip the tab bar's glass from light to dark in one frame.
+private struct ShelfPullOutLayer: View {
     let book: CloudBook
     let pullOut: ShelfPullOut
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .leading) {
             PullOutFlightHost(book: book, pullOut: pullOut)
             BookDetailView(
                 book: book,
                 hostedBook: HostedBook(
                     place: { [pullOut] in pullOut.stage = $0 },
-                    turn: { [pullOut] in pullOut.pose = $0 })
+                    // The return starts from the pose on screen and ignores the rest of a coast,
+                    // which could otherwise carry the book past a fore-edge-on pose and flip the
+                    // spine it turns back to.
+                    turn: { [pullOut] in if !pullOut.isReturning { pullOut.pose = $0 } })
             )
-            .scrollEdgeEffectHidden(!pullOut.showsText)
+            .scrollEdgeEffectHidden()
             .opacity(pullOut.showsText ? 1 : 0)
             .allowsHitTesting(pullOut.showsText)
             .accessibilityHidden(!pullOut.showsText)
             // Pushed details close with VoiceOver's escape gesture through the navigation stack.
             .accessibilityAction(.escape) { pullOut.putBack() }
+            // A swipe in from the leading edge goes back, as it pops pushed details.
+            Color.clear
+                .frame(width: 20)
+                .contentShape(.rect)
+                .gesture(
+                    DragGesture(minimumDistance: 12).onEnded { drag in
+                        let width = max(drag.translation.width, drag.predictedEndTranslation.width)
+                        if width > 80, drag.translation.width > abs(drag.translation.height) {
+                            pullOut.putBack()
+                        }
+                    }
+                )
+                .allowsHitTesting(pullOut.showsText)
+                .accessibilityHidden(true)
         }
     }
 }
@@ -277,6 +350,7 @@ private struct PullOutFlightHost: View {
                             home: home, upright: pullOut.upright, stage: stage,
                             pose: pullOut.pose, aspect: Book3DView.aspect(of: cover),
                             thicknessRatio: Book3DView.thicknessRatio(of: current, cover: cover)),
+                        lamp: pullOut.upright ? pullOut.lampFrame?.applying(shift) : nil,
                         progress: pullOut.progress
                     )
                     .onAppear { pullOut.fly() }
@@ -295,8 +369,8 @@ private struct PullOutFlightHost: View {
     }
 }
 
-/// The book in flight, with the walnut veil that dims the shelf behind it and the lamp's glow
-/// that the details show behind their book.
+/// The book in flight, with its shadow on the shelf, the walnut veil that dims the shelf behind
+/// it, the lamp's glow that the details show behind their book, and **Shelf**'s lamp over it.
 ///
 /// SwiftUI animates `progress`, and the body samples `path` at each value, so the book follows
 /// the path rather than a straight blend of its endpoints.
@@ -305,6 +379,8 @@ private struct PullOutFlight: View, Animatable {
     let look: SpineLook
     let cover: UIImage?
     let path: PullOutPath
+    /// The frame of **Shelf**'s lamp, which the shelf hides while the book is out.
+    let lamp: CGRect?
     var progress: Double
 
     nonisolated var animatableData: Double {
@@ -314,13 +390,33 @@ private struct PullOutFlight: View, Animatable {
 
     var body: some View {
         let pose = path.pose(at: progress)
+        let bounds = BookProjection(
+            width: pose.height * path.aspect, height: pose.height,
+            thickness: pose.height * pose.thicknessRatio, yaw: pose.yaw, pitch: pose.pitch
+        )
+        .bounds
         Book3DView(
             book: book, look: look, cover: cover, height: pose.height, yaw: pose.yaw,
-            pitch: pose.pitch, thicknessRatio: pose.thicknessRatio
+            pitch: pose.pitch, thicknessRatio: pose.thicknessRatio, lighting: pose.lighting
         )
         .scaleEffect(pose.scale)
         .rotationEffect(.radians(pose.roll))
         .position(pose.center)
+        .background {
+            // Below and behind the book, as the lamp above the shelf would cast it.
+            EllipticalGradient(
+                stops: [
+                    .init(color: .black.opacity(0.55), location: 0.5),
+                    .init(color: .clear, location: 1),
+                ]
+            )
+            .frame(
+                width: bounds.width * pose.scale + 28, height: bounds.height * pose.scale + 28
+            )
+            .rotationEffect(.radians(pose.roll))
+            .position(x: pose.center.x + 3, y: pose.center.y + 9)
+            .opacity(pose.shadow)
+        }
         .background {
             RadialGradient(
                 colors: [ShelfPalette.lamp.opacity(0.22), .clear], center: .center,
@@ -332,5 +428,13 @@ private struct PullOutFlight: View, Animatable {
         }
         // The pushed details' backdrop, which covers the shelf once the book lands.
         .background { ShelfPalette.wall.ignoresSafeArea().opacity(pose.lift) }
+        .overlay {
+            if let lamp {
+                ShelfLamp()
+                    .frame(width: lamp.width, height: lamp.height)
+                    .position(x: lamp.midX, y: lamp.midY)
+                    .opacity(1 - pose.lift)
+            }
+        }
     }
 }
