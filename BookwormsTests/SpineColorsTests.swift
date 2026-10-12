@@ -71,32 +71,69 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertThrowsError(try design().recolored(unreadable).validate())
     }
 
-    func testGenerationKeepsReaderColorsUntilTheCoverChanges() {
+    func testGenerationKeepsReaderColorsUntilTheReaderChoosesACover() {
         let edited = design(generator: "ios-pcc-v0").recolored(reader)
         let otherWork = String(repeating: "c", count: 64)
         let otherCover = String(repeating: "d", count: 64)
+        func action(
+            _ design: SpineDesignV1, work: String? = nil, cover: String? = nil,
+            readerChoseCover: Bool = false
+        ) -> SavedDesignAction {
+            design.action(
+                workItemHash: work ?? self.work, coverHash: cover ?? self.cover,
+                readerChoseCover: readerChoseCover)
+        }
 
         // Generator colors: kept only for the same work and cover from this generator.
-        XCTAssertEqual(design().action(workItemHash: work, coverHash: cover), .keep)
-        XCTAssertEqual(
-            design(generator: "ios-pcc-v0").action(workItemHash: work, coverHash: cover),
-            .redesign)
-        XCTAssertEqual(design().action(workItemHash: otherWork, coverHash: cover), .redesign)
-        XCTAssertEqual(design().action(workItemHash: work, coverHash: otherCover), .redesign)
+        XCTAssertEqual(action(design()), .keep)
+        XCTAssertEqual(action(design(generator: "ios-pcc-v0")), .redesign)
+        XCTAssertEqual(action(design(), work: otherWork), .redesign)
+        XCTAssertEqual(action(design(), cover: otherCover), .redesign)
 
         // Reader colors outlast a generator change, and move to the new work-item hash.
-        XCTAssertEqual(edited.action(workItemHash: work, coverHash: cover), .keep)
-        guard case .save(let rehashed) = edited.action(workItemHash: otherWork, coverHash: cover)
-        else { return XCTFail("Reader colors should move to the new work-item hash") }
+        XCTAssertEqual(action(edited), .keep)
+        XCTAssertEqual(action(edited, readerChoseCover: true), .keep)
+        guard case .save(let rehashed) = action(edited, work: otherWork) else {
+            return XCTFail("Reader colors should move to the new work-item hash")
+        }
         XCTAssertEqual(rehashed.workItemHash, otherWork)
+        XCTAssertEqual(rehashed.coverHash, cover)
         XCTAssertEqual(rehashed.colors, reader)
         XCTAssertEqual(rehashed.provenance, edited.provenance)
         XCTAssertEqual(rehashed.generatedAt, edited.generatedAt)
         XCTAssertEqual(rehashed.generatorVersion, "ios-pcc-v0")
         XCTAssertNoThrow(try rehashed.validate())
 
-        // A new cover redesigns the spine.
-        XCTAssertEqual(edited.action(workItemHash: work, coverHash: otherCover), .redesign)
+        // New bytes for the same cover, such as a new default cover, keep the reader's colors.
+        guard case .save(let recovered) = action(edited, cover: otherCover) else {
+            return XCTFail("Reader colors should move to the new cover hash")
+        }
+        XCTAssertEqual(recovered.coverHash, otherCover)
+        XCTAssertEqual(recovered.workItemHash, work)
+        XCTAssertEqual(recovered.colors, reader)
+        XCTAssertEqual(recovered.generatedColors, edited.generatedColors)
+        XCTAssertEqual(recovered.generatedAt, edited.generatedAt)
+
+        // A cover the reader chose redesigns the spine.
+        XCTAssertEqual(action(edited, cover: otherCover, readerChoseCover: true), .redesign)
+    }
+
+    func testLedgerTellsWhetherTheReaderChoseAnotherCover() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appending(path: "bookworms-ledger-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let ledger = WorkLedger(url: url)
+        let chosen = URL(string: "https://example.com/chosen.jpg")!
+
+        let unknown = await ledger.readerChoseCover(recordName: "record", chosenCover: chosen)
+        XCTAssertFalse(unknown)
+
+        try await ledger.recordSuccess(
+            recordName: "record", workItemHash: work, coverHash: cover, chosenCover: nil)
+        let sameDefault = await ledger.readerChoseCover(recordName: "record", chosenCover: nil)
+        let newChoice = await ledger.readerChoseCover(recordName: "record", chosenCover: chosen)
+        XCTAssertFalse(sameDefault)
+        XCTAssertTrue(newChoice)
     }
 
     func testSeriesReuseCopiesTheGeneratorsColorsNotTheReaders() async throws {

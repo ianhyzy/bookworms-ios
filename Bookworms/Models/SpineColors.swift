@@ -16,7 +16,8 @@ enum SavedDesignAction: Equatable {
     /// Leaves the saved design in place.
     case keep
     /// Saves this copy of the saved design, which keeps the reader's colors under the book's new
-    /// work-item hash, so readers that check the hash, such as the Apple TV, still accept it.
+    /// work-item and cover hashes, so readers that check the work-item hash, such as the Apple
+    /// TV, still accept it.
     case save(SpineDesignV1)
     /// Designs the book again.
     case redesign
@@ -79,7 +80,8 @@ extension SpineDesignV1 {
         var joined = [other, token].filter { !$0.isEmpty }.joined(separator: " ")
         if joined.count > 80 { joined = token }
         return rebuilt(
-            workItemHash: workItemHash, colors: colors, provenance: joined.isEmpty ? nil : joined)
+            workItemHash: workItemHash, coverHash: coverHash, colors: colors,
+            provenance: joined.isEmpty ? nil : joined)
     }
 
     /// Whether `other` is this design or a recoloring of it: the same account, book, work-item
@@ -92,25 +94,32 @@ extension SpineDesignV1 {
 
     /// What a generation run does with this saved design for a book whose work-item hash is
     /// `workItemHash` and whose cover, downloaded for this run, hashes to `coverHash`.
+    /// `readerChoseCover` tells whether the reader chose another cover since the book's last
+    /// check, such as with **Change cover**.
     ///
-    /// A design of another cover is redesigned. Otherwise the reader's colors outlast generator
-    /// and metadata changes: only a new cover, such as one chosen with **Change cover**,
-    /// redesigns a recolored spine. A design with the generator's colors is kept while it comes
-    /// from this generator and its work-item hash matches.
-    func action(workItemHash: String, coverHash: String) -> SavedDesignAction {
-        guard self.coverHash == coverHash else { return .redesign }
-        if generatedColors != nil, let colors {
-            guard self.workItemHash != workItemHash else { return .keep }
+    /// The reader's colors outlast generator, metadata, and cover-image changes: only a cover the
+    /// reader chose, with new image bytes, redesigns a recolored spine. Otherwise a recolored
+    /// design whose hashes changed is saved again under the new hashes, with its colors and
+    /// `generatedAt`. A design with the generator's colors is kept while it comes from this
+    /// generator and both hashes match.
+    func action(workItemHash: String, coverHash: String, readerChoseCover: Bool)
+        -> SavedDesignAction
+    {
+        let newCover = self.coverHash != coverHash
+        let isCurrent = !newCover && self.workItemHash == workItemHash
+        if generatedColors != nil, let colors, !(readerChoseCover && newCover) {
+            guard !isCurrent else { return .keep }
             return .save(
-                rebuilt(workItemHash: workItemHash, colors: colors, provenance: provenance))
+                rebuilt(
+                    workItemHash: workItemHash, coverHash: coverHash, colors: colors,
+                    provenance: provenance))
         }
-        return self.workItemHash == workItemHash
-            && generatorVersion == CloudContract.generatorVersion ? .keep : .redesign
+        return isCurrent && generatorVersion == CloudContract.generatorVersion ? .keep : .redesign
     }
 
-    private func rebuilt(workItemHash: String, colors: SpineColors, provenance: String?)
-        -> SpineDesignV1
-    {
+    private func rebuilt(
+        workItemHash: String, coverHash: String, colors: SpineColors, provenance: String?
+    ) -> SpineDesignV1 {
         SpineDesignV1(
             version: version, accountID: accountID, bookID: bookID, workItemHash: workItemHash,
             coverHash: coverHash, generatorVersion: generatorVersion, generatedAt: generatedAt,

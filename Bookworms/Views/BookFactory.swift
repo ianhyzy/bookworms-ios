@@ -181,9 +181,13 @@ final class BookFactory {
 
     /// Draws a built book's parts again with `look`, keeping its shape, when its spine design
     /// changed since they were built, such as after the reader recolored it in its details.
+    ///
+    /// A cancelled call, or one that another restyle overtook while it drew, leaves the parts
+    /// as they are, so an older look never replaces a newer one.
     func restyle(_ book: CloudBook, cover: UIImage?, look: SpineLook) async {
         guard let built = parts[book.id], built.look != look,
-            let restyled = await makeParts(book, cover: cover, look: look, shape: built.shape)
+            let restyled = await makeParts(book, cover: cover, look: look, shape: built.shape),
+            !Task.isCancelled, parts[book.id]?.look == built.look
         else { return }
         parts[book.id] = restyled
     }

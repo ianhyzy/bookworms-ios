@@ -67,6 +67,13 @@ actor WorkLedger {
         return now.timeIntervalSince(entry.checkedAt) >= Self.recheckInterval
     }
 
+    /// Whether `chosenCover` differs from the reader's chosen cover at the book's last check. A
+    /// book without an entry counts as unchanged, so a lost ledger never discards colors the
+    /// reader chose.
+    func readerChoseCover(recordName: String, chosenCover: URL?) -> Bool {
+        entries[recordName].map { $0.chosenCover != chosenCover } ?? false
+    }
+
     func recordSuccess(
         recordName: String, workItemHash: String, coverHash: String, chosenCover: URL? = nil,
         now: Date = Date()
