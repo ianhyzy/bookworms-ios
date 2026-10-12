@@ -31,6 +31,8 @@ struct ShelfView: View {
     /// The book that Stack or Shelf pulled out to show its details over the shelf.
     @State private var pullOut = ShelfPullOut()
     @State private var showsAccount = false
+    /// Set once the first launch outside preview mode has offered the Hardcover sheet.
+    @AppStorage("BookwormsOfferedHardcover") private var offeredHardcover = false
     @Namespace private var namespace
 
     var body: some View {
@@ -62,6 +64,12 @@ struct ShelfView: View {
         // Kept on the stack, so the sheet stays open when the library it brings replaces the
         // empty state.
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
+        // Hardcover is the library's own source, so the first launch offers it once.
+        .task {
+            guard !offeredHardcover, !model.isPreview else { return }
+            offeredHardcover = true
+            if !model.account.isSignedIn { showsAccount = true }
+        }
         .onChange(of: sort) { recenter() }
         .onChange(of: designedOnly) { recenter() }
         // The shelf's controls return as a pulled-out book flies back, and a book can only
@@ -499,7 +507,7 @@ enum LibraryStatus: Equatable {
             // The note concerns only the Apple TV's library, so it must not read as a step that
             // connecting Hardcover also needs.
             [
-                "Turn on iCloud storage in the Bookworms app on your Apple TV, or connect Hardcover on this iPhone.",
+                "Connect Hardcover to bring in the books you've read, or turn on iCloud storage in the Bookworms app on your Apple TV.",
                 note.map { "Apple TV library: \($0)" },
             ]
             .compactMap(\.self).joined(separator: "\n\n")

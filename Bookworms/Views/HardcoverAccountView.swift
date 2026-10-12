@@ -1,18 +1,19 @@
+import SafariServices
 import SwiftUI
 import UIKit
 
 /// The Hardcover account sheet: why to connect, the device-code sign-in, and the signed-in
 /// account with **Sync now** and **Sign out**.
 ///
-/// Hardcover's approval page opens in Safari inside the app (`openURL` with `prefersInApp`), so
-/// the code stays one swipe away and the sheet updates when polling sees the approval. The device
-/// flow has no redirect back to the app, which is what `ASWebAuthenticationSession` waits for.
+/// Hardcover's approval page opens in Safari over this sheet, with the code already copied, and
+/// closes when polling sees the approval. The device flow has no redirect back to the app, which is
+/// what `ASWebAuthenticationSession` waits for.
 struct HardcoverAccountView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
     @State private var copiedCode = false
     @State private var confirmsSignOut = false
+    @State private var showsApprovalPage = false
 
     private var account: HardcoverAccount { model.account }
 
@@ -30,9 +31,22 @@ struct HardcoverAccountView: View {
             .navigationTitle("Hardcover")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(account.isSignedIn || account.signIn != nil ? "Done" : "Not now") {
+                        dismiss()
+                    }
+                }
             }
-            .onChange(of: account.signIn) { copiedCode = false }
+            .sheet(isPresented: $showsApprovalPage) {
+                if case .waiting(_, let url) = account.signIn {
+                    ApprovalPage(url: url).ignoresSafeArea()
+                }
+            }
+            .onChange(of: account.signIn) {
+                copiedCode = false
+                // The page has done its job once the code is approved, cancelled, or expired.
+                showsApprovalPage = false
+            }
         }
         #if DEBUG
             // `-BookwormsStubSignIn YES` shows the code step with a fictional code.
@@ -49,8 +63,9 @@ struct HardcoverAccountView: View {
     @ViewBuilder private var signedOut: some View {
         Section {
             reason(
-                "Use Bookworms without an Apple TV", "Your books come straight from Hardcover.",
-                systemImage: "iphone")
+                "Your reading history",
+                "Every book on your Hardcover shelves, with the dates you finished and your ratings.",
+                systemImage: "books.vertical")
             reason(
                 "Bring your reviews", "Bookworms gets the reviews you wrote along with your books.",
                 systemImage: "text.quote")
@@ -87,7 +102,7 @@ struct HardcoverAccountView: View {
         switch signIn {
         case .requestingCode:
             Section { LabeledContent("Getting a code") { ProgressView() } }
-        case .waiting(let code, let url):
+        case .waiting(let code, _):
             Section {
                 VStack(spacing: 8) {
                     Text("Your code")
@@ -109,7 +124,9 @@ struct HardcoverAccountView: View {
                     copiedCode = true
                 }
                 Button("Open Hardcover", systemImage: "safari") {
-                    openURL(url, prefersInApp: true)
+                    UIPasteboard.general.string = code
+                    copiedCode = true
+                    showsApprovalPage = true
                 }
             } footer: {
                 Text(
@@ -173,4 +190,18 @@ struct HardcoverAccountView: View {
                 }
         }
     }
+}
+
+/// Hardcover's approval page in Safari inside the app.
+///
+/// The account sheet presents it itself: `openURL(_:prefersInApp:)` presents Safari from the
+/// window's root view controller, which UIKit refuses while that controller presents the sheet.
+private struct ApprovalPage: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        SFSafariViewController(url: url)
+    }
+
+    func updateUIViewController(_ controller: SFSafariViewController, context: Context) {}
 }
