@@ -133,6 +133,17 @@ struct ShelfView: View {
                     ) { book in
                         if reduceMotion {
                             path.append(book.id)
+                        } else if carousel == .stack, centeredID != book.id {
+                            // The stack glides the book to the middle of the screen first, as
+                            // it centers the book for the return (`centerPulledBook`), so the
+                            // book slides out in full view, clear of the stack's faded ends,
+                            // where the stack's faded copy would otherwise hand off to the
+                            // flight's opaque one.
+                            centeredID = book.id
+                            Task {
+                                try? await Task.sleep(for: .seconds(SpineCarousel.glide))
+                                if mode.carousel == .stack { pullOut.pull(book, upright: false) }
+                            }
                         } else {
                             pullOut.pull(book, upright: carousel == .shelf)
                         }

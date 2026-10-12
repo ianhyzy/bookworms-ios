@@ -70,6 +70,8 @@ struct SpineCarousel: View {
 
     /// Shelved books nearly touch, so their spines read as separate books.
     private static let shelfSpacing: CGFloat = 1
+    /// How long the carousel takes to glide a book on screen to the center, in seconds.
+    static let glide = 0.5
 
     var body: some View {
         GeometryReader { proxy in
@@ -312,9 +314,12 @@ private struct StackedBook: View {
         .scaleEffect(scale)
         .rotationEffect(.radians(-.pi / 2))
         .frame(width: drawn.width, height: drawn.height)
+        // Read from the tap on, not from `isOut`: this view must already depend on `progress`
+        // when `ShelfPullOut.fly` animates it, or the animation never reaches the slide and the
+        // book holds still until the flight takes over.
         .modifier(
             StackSlide(
-                progress: pullOut.book?.id == book.id && pullOut.isOut ? pullOut.progress : 0,
+                progress: pullOut.book?.id == book.id ? pullOut.progress : 0,
                 spine: spine, extent: drawn.height, rest: rest)
         )
         .frame(width: spine.width, height: spine.height, alignment: .bottom)
@@ -354,6 +359,7 @@ private struct StackSlide: ViewModifier, Animatable {
             .scaleEffect(slide.scale)
             .offset(slide.offset)
             .opacity(progress < PullOutPath.pullEnd ? 1 : 0)
+            .transaction { $0.animation = nil }
     }
 }
 
@@ -443,7 +449,9 @@ private struct CenterTracking: ViewModifier {
                 // after a new sort.
                 let distance = abs(track.offset(of: centeredID) - track.offset(of: scrolledID))
                 let glides = !reduceMotion && distance < viewport / 2
-                withAnimation(glides ? .smooth : nil) { scrollToCenteredBook() }
+                withAnimation(glides ? .smooth(duration: SpineCarousel.glide) : nil) {
+                    scrollToCenteredBook()
+                }
             }
             // The same offset centers a different book after the order changes, and a new order
             // or a new scale moves the centered book's offset. A reorder can leave the offsets
