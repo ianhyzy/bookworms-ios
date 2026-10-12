@@ -303,9 +303,11 @@ final class DominoStatus {
 /// The chain's front is the book after the last one that tilted past about 26 degrees. Each
 /// frame checks only the next three books, so the work per frame does not grow with the
 /// chain, and a book that the chain skips counts as passed. A book that falls before the first
-/// push starts the chain as a push does. The chain is stalled once no book has started to
-/// fall for `stallTime`. While the chain waits for a push, a warm glow on the table marks the
-/// book a push tips (`DominoLayout.pushTarget`), and pulses unless Reduce Motion is on.
+/// push starts the chain as a push does. The chain is stalled once its front has not moved
+/// on for `stallTime`: no book has started to fall, and the book at the front has stopped
+/// tipping, so a slow first tip after a push does not count as a stall. While the chain waits
+/// for a push, a warm glow on the table marks the book a push tips
+/// (`DominoLayout.pushTarget`), and pulses unless Reduce Motion is on.
 ///
 /// The camera follows `DominoCameraMode`. Overview frames the whole path; after a push it eases
 /// a little closer, to at most `followRoom` times the overview's zoom, and across the rows with
@@ -387,9 +389,11 @@ final class DominoScene {
     /// The index of the next book to fall.
     private var next = 0
     private var started = false
-    /// Seconds of simulation since the books stood up, and when the front last moved.
+    /// Seconds of simulation since the books stood up, when the front last moved on, and the
+    /// farthest it has come (`frontDistance`).
     private var clock: TimeInterval = 0
     private var lastAdvance: TimeInterval = 0
+    private var farthest: Float = 0
     /// The overview camera, and the camera that pinches and drags move.
     private var view = PileCamera()
     /// The camera that shows the whole path.
@@ -584,6 +588,7 @@ final class DominoScene {
         steering = nil
         clock = 0
         lastAdvance = 0
+        farthest = 0
         cameraMove = nil
         mark(nil)
         #if DEBUG
@@ -895,6 +900,13 @@ final class DominoScene {
             next = index + 1
             lastAdvance = clock
             started = true
+        }
+        // A book still tipping toward the next moves the front on, by more than a book rocks
+        // as it settles against its neighbor.
+        let front = frontDistance
+        if front > farthest + 0.02 {
+            farthest = front
+            lastAdvance = clock
         }
         tearCobwebs()
         for index in torn.indices.reversed() {
