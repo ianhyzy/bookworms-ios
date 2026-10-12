@@ -6,6 +6,10 @@ import SwiftUI
 ///
 /// Both show the library snapshot that `AppModel` holds; sorting and filtering happen here when
 /// the snapshot or the options change, never while scrolling.
+///
+/// A tapped spine's book slides out of the carousel and floats into its details over the shelf
+/// (`ShelfPullOut`), as a book the Pile lifts does. With Reduce Motion on, its details push
+/// instead.
 struct ShelfView: View {
     @Environment(AppModel.self) private var model
     @AppStorage("BookwormsShelfMode") private var mode = ShelfPresentation.stack
@@ -17,20 +21,14 @@ struct ShelfView: View {
     /// `FrameChip` sets it. Until the reader chooses one, the views show the current year.
     @AppStorage(TimeFrame.pileSettingKey)
     private var pileFrameSetting = TimeFrame.defaultPileSetting
-    /// How the pile follows the phone's tilt, which `BookPileView` reads.
-    @AppStorage("BookwormsPileTiltMode") private var tilt = PileTilt.table
-    /// Whether the pile drops period by period, which `BookPileView` reads.
-    @AppStorage("BookwormsPileByPeriod") private var dropsByPeriod = false
-    /// Whether collisions in 3D play sounds, which the 3D views read.
-    @AppStorage("BookwormsThreeDSounds") private var sounds = true
-    /// How the camera films the dominoes, which `DominoesView` reads.
-    @AppStorage("BookwormsDominoCamera") private var dominoCamera = DominoCameraMode.overview
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The centered book, shared by both carousel modes so switching keeps the reader's place.
     @State private var centeredID: Int?
     @State private var path: [Int] = []
     /// Set while the pile shows a lifted book's details, which replace the shelf's controls.
     @State private var pileShowsDetails = false
+    /// The book that Stack or Shelf pulled out to show its details over the shelf.
+    @State private var pullOut = ShelfPullOut()
     @State private var showsAccount = false
     @Namespace private var namespace
 
@@ -39,10 +37,11 @@ struct ShelfView: View {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background { ShelfPalette.wall.ignoresSafeArea() }
-                // The pile's details show no title, as pushed details do.
-                .navigationTitle(pileShowsDetails ? "" : "Shelf")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar { toolbar }
+                .modifier(
+                    ShelfBar(
+                        pullOut: pullOut, pileShowsDetails: pileShowsDetails, mode: $mode,
+                        sort: $sort, designedOnly: $designedOnly, threeDView: shownViewChoice,
+                        pileFrame: mode == .pile ? pileFrame : nil))
                 .navigationDestination(for: Int.self) { id in
                     if let book = model.books.first(where: { $0.id == id }) {
                         BookDetailView(book: book)
@@ -63,6 +62,9 @@ struct ShelfView: View {
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
         .onChange(of: sort) { recenter() }
         .onChange(of: designedOnly) { recenter() }
+        // The shelf's controls return as a pulled-out book flies back, and a book can only
+        // return to a spine that is still where it left it.
+        .onChange(of: mode) { pullOut.close() }
         #if DEBUG
             .onChange(of: model.books.count, initial: true) { applyDebugArguments() }
         #endif
@@ -111,13 +113,21 @@ struct ShelfView: View {
             } else if let carousel = mode.carousel {
                 VStack(spacing: 0) {
                     SpineCarousel(
-                        books: books, mode: carousel, centeredID: $centeredID, namespace: namespace
-                    ) { path.append($0.id) }
+                        books: books, mode: carousel, centeredID: $centeredID, namespace: namespace,
+                        pullOut: pullOut
+                    ) { book, canPull in
+                        if reduceMotion || !canPull {
+                            path.append(book.id)
+                        } else {
+                            pullOut.pull(book, upright: carousel == .shelf)
+                        }
+                    }
                     ShelfCaption(books: books, centeredID: $centeredID)
                         // Larger sizes overflow the caption's fixed height; the book's details
                         // show the same record at any size.
                         .dynamicTypeSize(...DynamicTypeSize.accessibility3)
                 }
+                .modifier(ShelfPullOutStage(pullOut: pullOut))
             } else {
                 let title = frame?.title ?? Self.years(of: books)
                 switch shownView {
@@ -152,64 +162,6 @@ struct ShelfView: View {
         }
     }
 
-    @ToolbarContentBuilder private var toolbar: some ToolbarContent {
-        if !pileShowsDetails {
-            ToolbarItem(placement: .principal) {
-                Picker("Presentation", selection: $mode) {
-                    ForEach(ShelfPresentation.allCases) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .fixedSize()
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu("Sort and filter", systemImage: "line.3.horizontal.decrease") {
-                    // In the menu rather than the bar, which the presentation picker and the
-                    // pile's own buttons fill.
-                    if mode == .pile {
-                        if ThreeDView.offered.count > 1 {
-                            Picker("View", systemImage: "cube", selection: shownViewChoice) {
-                                ForEach(ThreeDView.offered) { Text($0.title).tag($0) }
-                            }
-                            .pickerStyle(.menu)
-                        }
-                        Section {
-                            // Reduce Motion keeps the camera still, so it offers no Follow.
-                            if shownView == .dominoes && !reduceMotion {
-                                Picker("Camera", systemImage: "video", selection: $dominoCamera) {
-                                    ForEach(DominoCameraMode.allCases) { Text($0.title).tag($0) }
-                                }
-                                .pickerStyle(.menu)
-                            }
-                            Toggle("Sounds", systemImage: "speaker.wave.2", isOn: $sounds)
-                            if shownView == .pile && !reduceMotion {
-                                Toggle(byPeriodTitle, systemImage: "calendar", isOn: $dropsByPeriod)
-                            }
-                            if shownView == .pile && BookPileScene.canTilt && !reduceMotion {
-                                Picker("Tilt", systemImage: "gyroscope", selection: $tilt) {
-                                    ForEach(PileTilt.allCases) { Text($0.title).tag($0) }
-                                }
-                                .pickerStyle(.menu)
-                            }
-                        }
-                    }
-                    Picker("Sort by", selection: $sort) {
-                        ForEach(ShelfSort.allCases) { Text($0.title).tag($0) }
-                    }
-                    Toggle("Designed only", isOn: $designedOnly)
-                }
-            }
-        }
-    }
-
-    /// Names the drop by period for the time frame's periods.
-    private var byPeriodTitle: String {
-        switch pileFrame {
-        case .year: "Drop by month"
-        case .month: "Drop by week"
-        case .lifetime, nil: "Drop by year"
-        }
-    }
-
     /// The pile's time frame, or `nil` for every book.
     private var pileFrame: TimeFrame? {
         TimeFrame.pileFrame(setting: pileFrameSetting, in: model.books)
@@ -236,6 +188,7 @@ struct ShelfView: View {
 
     /// Returns to the first book after the order or filter changes.
     private func recenter() {
+        pullOut.close()
         guard let library = model.library else { return }
         centeredID = shownBooks(in: library).first?.id
     }
@@ -243,8 +196,9 @@ struct ShelfView: View {
     #if DEBUG
         /// Simulator screenshot hooks, read once the library loads:
         /// `-BookwormsShelfScrollTo <index>` centers the book at that index, and
-        /// `-BookwormsOpenBook <bookID>` opens that book's details. In 3D, the Pile view opens
-        /// the book itself once its drop finishes, and other views ignore it.
+        /// `-BookwormsOpenBook <bookID>` centers that book and, two seconds later, pulls it out
+        /// to its details, or pushes them with Reduce Motion on. In 3D, the Pile view opens the
+        /// book itself once its drop finishes, and other views ignore it.
         private func applyDebugArguments() {
             guard let library = model.library else { return }
             let books = shownBooks(in: library)
@@ -254,15 +208,127 @@ struct ShelfView: View {
             {
                 centeredID = books[index].id
             }
-            if mode != .pile,
+            if let carousel = mode.carousel,
                 let id = defaults.string(forKey: "BookwormsOpenBook").flatMap(Int.init),
                 path.isEmpty
             {
                 centeredID = id
-                path = [id]
+                if reduceMotion {
+                    path = [id]
+                } else if let book = books.first(where: { $0.id == id }) {
+                    Task {
+                        try? await Task.sleep(for: .seconds(2))
+                        pullOut.pull(book, upright: carousel == .shelf)
+                    }
+                }
             }
         }
     #endif
+}
+
+/// The Shelf tab's title and bar: the presentation picker and **Sort and filter**, or, while a
+/// book's details show over the shelf or the pile, **Back** and the book's **Share**.
+///
+/// A modifier of its own, so a book's pull-out and return update only the bar, not the shelf's
+/// body, which sorts the library.
+private struct ShelfBar: ViewModifier {
+    let pullOut: ShelfPullOut
+    let pileShowsDetails: Bool
+    @Binding var mode: ShelfPresentation
+    @Binding var sort: ShelfSort
+    @Binding var designedOnly: Bool
+    /// The 3D view shown, for **View**.
+    @Binding var threeDView: ThreeDView
+    /// The 3D views' time frame while 3D shows, or `nil` for every book.
+    let pileFrame: TimeFrame?
+
+    @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// How the pile follows the phone's tilt, which `BookPileView` reads.
+    @AppStorage("BookwormsPileTiltMode") private var tilt = PileTilt.table
+    /// Whether the pile drops period by period, which `BookPileView` reads.
+    @AppStorage("BookwormsPileByPeriod") private var dropsByPeriod = false
+    /// Whether collisions in 3D play sounds, which the 3D views read.
+    @AppStorage("BookwormsThreeDSounds") private var sounds = true
+    /// How the camera films the dominoes, which `DominoesView` reads.
+    @AppStorage("BookwormsDominoCamera") private var dominoCamera = DominoCameraMode.overview
+
+    func body(content: Content) -> some View {
+        content
+            // Details over the shelf show no title, as pushed details do.
+            .navigationTitle(pileShowsDetails || pullOut.showsDetails ? "" : "Shelf")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { toolbar }
+    }
+
+    @ToolbarContentBuilder private var toolbar: some ToolbarContent {
+        if let book = pullOut.book, pullOut.showsDetails {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Back", systemImage: "chevron.backward") { pullOut.putBack() }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button("Share", systemImage: "square.and.arrow.up") {
+                    pullOut.keepsForShare = true
+                    model.share(book)
+                }
+            }
+        } else if !pileShowsDetails {
+            ToolbarItem(placement: .principal) {
+                Picker("Presentation", selection: $mode) {
+                    ForEach(ShelfPresentation.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .fixedSize()
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu("Sort and filter", systemImage: "line.3.horizontal.decrease") {
+                    // In the menu rather than the bar, which the presentation picker and the
+                    // pile's own buttons fill.
+                    if mode == .pile {
+                        if ThreeDView.offered.count > 1 {
+                            Picker("View", systemImage: "cube", selection: $threeDView) {
+                                ForEach(ThreeDView.offered) { Text($0.title).tag($0) }
+                            }
+                            .pickerStyle(.menu)
+                        }
+                        Section {
+                            // Reduce Motion keeps the camera still, so it offers no Follow.
+                            if threeDView == .dominoes && !reduceMotion {
+                                Picker("Camera", systemImage: "video", selection: $dominoCamera) {
+                                    ForEach(DominoCameraMode.allCases) { Text($0.title).tag($0) }
+                                }
+                                .pickerStyle(.menu)
+                            }
+                            Toggle("Sounds", systemImage: "speaker.wave.2", isOn: $sounds)
+                            if threeDView == .pile && !reduceMotion {
+                                Toggle(byPeriodTitle, systemImage: "calendar", isOn: $dropsByPeriod)
+                            }
+                            if threeDView == .pile && BookPileScene.canTilt && !reduceMotion {
+                                Picker("Tilt", systemImage: "gyroscope", selection: $tilt) {
+                                    ForEach(PileTilt.allCases) { Text($0.title).tag($0) }
+                                }
+                                .pickerStyle(.menu)
+                            }
+                        }
+                    }
+                    Picker("Sort by", selection: $sort) {
+                        ForEach(ShelfSort.allCases) { Text($0.title).tag($0) }
+                    }
+                    Toggle("Designed only", isOn: $designedOnly)
+                }
+            }
+        }
+    }
+
+    /// Names the drop by period for the time frame's periods.
+    private var byPeriodTitle: String {
+        switch pileFrame {
+        case .year: "Drop by month"
+        case .month: "Drop by week"
+        case .lifetime, nil: "Drop by year"
+        }
+    }
+
 }
 
 /// The 3D views' time frame and book count, such as "2025" and "39", in a glass button under

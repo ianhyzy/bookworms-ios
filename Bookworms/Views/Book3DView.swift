@@ -18,18 +18,24 @@ struct Book3DView: View {
     var yaw: Double = 0.45
     /// Rotation about the horizontal axis in radians. Negative tips the head toward the viewer.
     var pitch: Double = -0.12
+    /// The thickness as a share of the height, or `nil` for the book's own proportion. A shelf's
+    /// spine is thicker than its book (`CloudBook.shelfSpineSize(scale:)`), so a book pulled off
+    /// the shelf starts at the spine's proportion.
+    var thicknessRatio: CGFloat? = nil
+    /// How much of the light's shading the faces show, from 0, every face evenly lit as a flat
+    /// spine on the shelf is, to 1. A book pulled off the shelf starts unshaded, as its spine.
+    var lighting: Double = 1
 
     var body: some View {
-        let size = BookShape(of: book, coverAspect: coverAspect).size
         let projection = BookProjection(
             width: height * coverAspect, height: height,
-            thickness: height * CGFloat(size.z / size.y),
+            thickness: height * (thicknessRatio ?? Self.thicknessRatio(of: book, cover: cover)),
             yaw: yaw, pitch: pitch)
         ZStack(alignment: .topLeading) {
             ForEach(projection.visibleFaces) { face in
                 content(for: face.kind, size: face.size)
                     .frame(width: face.size.width, height: face.size.height)
-                    .overlay(Color.black.opacity(face.shade))
+                    .overlay(Color.black.opacity(face.shade * lighting))
                     .projectionEffect(face.transform)
             }
         }
@@ -42,6 +48,13 @@ struct Book3DView: View {
     }
 
     private var coverAspect: CGFloat { Self.aspect(of: cover) }
+
+    /// The book's thickness as a share of its height, in the proportion the 3D views give it
+    /// (`BookShape`).
+    static func thicknessRatio(of book: CloudBook, cover: UIImage?) -> CGFloat {
+        let size = BookShape(of: book, coverAspect: aspect(of: cover)).size
+        return CGFloat(size.z / size.y)
+    }
 
     /// The book's width-to-height ratio: the cover's, clamped to 0.55...0.85, else 2:3.
     /// Layouts that size a book before drawing it use this, so their space matches the book.

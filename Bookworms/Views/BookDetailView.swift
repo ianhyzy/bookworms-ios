@@ -4,8 +4,9 @@ import SwiftUI
 /// **Change cover**.
 ///
 /// With a `HostedBook`, the details draw no book, backdrop, or **Share** button of their own: a
-/// transparent stand-in takes the book's place and turns as it would, a scene behind the
-/// details draws the book there, and the host's bar offers **Share**.
+/// transparent stand-in takes the book's place and turns as it would, the host draws the book
+/// there behind the details, such as the Pile's RealityKit book or the shelf's pulled-out book,
+/// and the host's bar offers **Share**.
 struct BookDetailView: View {
     /// The book as the shelf opened it. The view shows the library's current copy, so a new
     /// cover or design appears at once.
@@ -208,7 +209,7 @@ struct BookPose: Equatable {
     }
 }
 
-/// Where a scene behind `BookDetailView` draws the details' book, and how it turns.
+/// Where a host behind `BookDetailView` draws the details' book, and how it turns.
 struct HostedBook {
     /// Receives the frame of the book's height, `TurningBook.bookHeight` points tall and
     /// centered where the details center their book, in global coordinates, whenever it moves.
