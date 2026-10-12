@@ -190,22 +190,30 @@ struct BookPose: Equatable {
 /// Where a host behind `BookDetailView` draws the details' book, and how it turns.
 struct HostedBook {
     /// Receives the frame of the book's height, `TurningBook.bookHeight` points tall and
-    /// centered where the details center their book, in global coordinates, whenever it moves.
+    /// centered where the details center their book, in global coordinates, whenever it moves,
+    /// including as it drifts.
     let place: (CGRect) -> Void
-    /// Receives the pose the details' book would show, whenever it changes.
+    /// Receives the pose the details' book would show, drift included, whenever it changes.
     let turn: (BookPose) -> Void
+    /// Whether the host's book has landed in the details, which starts its drift. The drift
+    /// then runs until the details leave, so a return starts from the drifted frame and pose.
+    let hasLanded: Bool
 }
 
 /// A `Book3DView` to turn with a drag. Yaw is unbounded and pitch stays within a gentle tilt.
 /// On release the book coasts with the swipe's momentum and its tilt eases back to rest, unless
-/// Reduce Motion is on, when it stays where the finger left it. With a `host`, the book is a
-/// transparent stand-in that reports its frame and pose for the host to draw.
+/// Reduce Motion is on, when it stays where the finger left it. Once the book arrives, it floats
+/// gently (see `Drift`), unless Reduce Motion is on. With a `host`, the book is a transparent
+/// stand-in that reports its frame and pose for the host to draw.
 ///
-/// The coast is a function of time that `TimelineView` samples, rather than a SwiftUI
-/// animation, so a drag that interrupts it starts from the pose on screen. The drag claims
-/// touches that start on the book, so the page scrolls from the text below.
+/// The coast and the drift are functions of time that `TimelineView` samples, rather than
+/// SwiftUI animations, so a drag that interrupts a coast starts from the pose on screen. The
+/// drift adds to the dragged or coasting pose, so a drag neither stops nor restarts it. The
+/// timeline renders the drift alone at most 30 times a second, enough for its slow motion,
+/// and pauses while the book's stage is scrolled out of view. The drag claims touches that
+/// start on the book, so the page scrolls from the text below.
 private struct TurningBook: View {
-    static let bookHeight: CGFloat = 380
+    nonisolated static let bookHeight: CGFloat = 380
 
     let book: CloudBook
     let look: SpineLook
@@ -217,28 +225,46 @@ private struct TurningBook: View {
     @State private var pose = BookPose.resting
     /// The coast in progress, if any.
     @State private var coast: Coast?
+    /// The idle float, from the moment the book arrives in its details, or `nil` with Reduce
+    /// Motion on.
+    @State private var drift: Drift?
+    /// Whether some of the book's stage shows in the details' scroll view.
+    @State private var isOnScreen = true
+    /// When the stage last scrolled out of view, while it stays out.
+    @State private var hiddenSince: Date?
     /// The pose on screen when the current drag began. SwiftUI resets it when a drag ends or
     /// is cancelled, so the next drag starts from the current pose.
     @GestureState private var dragStart: BookPose?
 
     var body: some View {
-        TimelineView(.animation(paused: coast == nil)) { context in
-            let shown = coast?.pose(at: context.date) ?? pose
+        let drifts = drift != nil && isOnScreen
+        TimelineView(
+            .animation(
+                minimumInterval: coast == nil ? 1.0 / 30 : nil, paused: coast == nil && !drifts)
+        ) { context in
+            let turned = coast?.pose(at: context.date) ?? pose
+            let float = drift?.offset(at: context.date)
+            let shown = BookPose(yaw: turned.yaw + (float?.yaw ?? 0), pitch: turned.pitch)
+            let shift = float?.translation ?? .zero
             if let host {
                 Color.clear
                     .frame(height: Self.bookHeight)
+                    // Inside the offset, so the reported frame drifts with it.
                     .onGeometryChange(for: CGRect.self) {
                         $0.frame(in: .global)
                     } action: {
                         host.place($0)
                     }
+                    .offset(shift)
                     .onChange(of: shown, initial: true) { host.turn(shown) }
                     .accessibilityElement()
                     .accessibilityLabel("\(book.title), by \(book.author)")
             } else {
                 Book3DView(
                     book: book, look: look, cover: cover, height: Self.bookHeight,
-                    yaw: shown.yaw, pitch: shown.pitch)
+                    yaw: shown.yaw, pitch: shown.pitch
+                )
+                .offset(shift)
             }
         }
         .frame(maxWidth: .infinity)
@@ -257,6 +283,17 @@ private struct TurningBook: View {
         }
         .contentShape(.rect)
         .gesture(spin)
+        // The pushed details' book arrives as they appear, and a host's book once it lands.
+        .onChange(of: host?.hasLanded ?? true, initial: true) { _, arrived in
+            if arrived, drift == nil, !reduceMotion { drift = Drift(start: .now) }
+        }
+        // Reduce Motion stops the drift at once, and turning it off eases the drift in again.
+        .onChange(of: reduceMotion) { _, reduced in
+            drift = reduced || host?.hasLanded == false ? nil : Drift(start: .now)
+        }
+        // The drift pauses while the stage is out of view and resumes where it paused, so it
+        // never jumps, whatever part of the stage counts as visible.
+        .onScrollVisibilityChange(threshold: 0.01) { visibilityChanged($0) }
         // Pauses the timeline once the coast settles.
         .task(id: coast) {
             guard coast != nil else { return }
@@ -294,6 +331,18 @@ private struct TurningBook: View {
             }
     }
 
+    /// Pauses the drift while the stage is out of view, and resumes it where it paused.
+    private func visibilityChanged(_ visible: Bool) {
+        isOnScreen = visible
+        if !visible {
+            hiddenSince = .now
+        } else if let hiddenSince, let current = drift {
+            drift = Drift(
+                start: current.start.addingTimeInterval(Date.now.timeIntervalSince(hiddenSince)))
+            self.hiddenSince = nil
+        }
+    }
+
     /// Springs from the pose on screen to `target`.
     private func settle(at target: BookPose) {
         coast = Coast(from: coast?.pose(at: .now) ?? pose, to: target, start: .now)
@@ -328,6 +377,44 @@ struct Coast: Equatable {
         return BookPose(
             yaw: from.yaw + (to.yaw - from.yaw) * progress,
             pitch: from.pitch + (to.pitch - from.pitch) * progress)
+    }
+}
+
+/// The details' book's idle float, as the Apple TV's Book Wall floats a book in its details.
+///
+/// Three independent sine waves move the book up and down over 40 seconds, from side to side
+/// over 48 seconds, and sway its yaw 2 degrees each way over 60 seconds, rising first. A
+/// smootherstep ramp eases them in over their first 4 seconds, so the offset and its velocity
+/// both start at zero and the book leaves the pose it arrived in without a jump.
+///
+/// The Book Wall drifts its detail book, roughly 600 points tall on the TV's 1080-point screen,
+/// 24 points vertically and 6 horizontally: about 4 and 1 percent of its height. The phone keeps
+/// those shares of its own book's height, about 15 and 4 points, so the book floats as far for
+/// its size.
+struct Drift: Equatable {
+    static let verticalAmplitude = 0.04 * TurningBook.bookHeight
+    static let horizontalAmplitude = 0.01 * TurningBook.bookHeight
+    static let swayAmplitude = Double.pi / 90
+    static let rampDuration = 4.0
+
+    /// When the book arrived in its details.
+    let start: Date
+
+    /// The book's displacement at `date`: `translation` in points, with y down, and `yaw` in
+    /// radians to add to its pose.
+    func offset(at date: Date) -> (translation: CGSize, yaw: Double) {
+        let time = max(0, date.timeIntervalSince(start))
+        let ramp = min(1, time / Self.rampDuration)
+        let eased = ramp * ramp * ramp * (ramp * (ramp * 6 - 15) + 10)
+        func wave(_ amplitude: Double, period: Double) -> Double {
+            amplitude * sin(2 * .pi * time / period) * eased
+        }
+        return (
+            CGSize(
+                width: wave(Self.horizontalAmplitude, period: 48),
+                height: -wave(Self.verticalAmplitude, period: 40)),
+            wave(Self.swayAmplitude, period: 60)
+        )
     }
 }
 

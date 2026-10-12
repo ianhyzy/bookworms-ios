@@ -187,7 +187,7 @@ struct LiftedDetailsOverlay: ViewModifier {
                     scene.lifter.place(
                         frame.offsetBy(dx: -canvas.minX, dy: -canvas.minY), in: canvas.size)
                 },
-                turn: { [scene] in scene.lifter.turn($0) })
+                turn: { [scene] in scene.lifter.turn($0) }, hasLanded: lift.showsText)
         )
         .scrollEdgeEffectHidden(!lift.showsText)
         .opacity(lift.showsText ? 1 : 0)
