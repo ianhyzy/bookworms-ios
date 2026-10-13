@@ -1390,9 +1390,10 @@ final class BookPileScene {
 
     /// Takes the books of `handover` back from the dominoes as the desk's arrangement, wherever
     /// they lie: they stay where they are, moving as they moved, in tidy stacks' stillness when
-    /// `tidy`. Walls go up around them and the view, and the camera takes the handover's view,
-    /// which stays its home, the view it zooms out to, until the next drop. The box of **Phone
-    /// is the box** stays open meanwhile, since it fits only the default view.
+    /// `tidy`. Walls go up along what the view shows, and around any book outside it, and the
+    /// camera takes the handover's view, which stays its home, the view it zooms out to, until
+    /// the next drop. The box of **Phone is the box** stays open meanwhile, since it fits only
+    /// the default view.
     ///
     /// The pile's key becomes the one `planDrop` gives for `books`, `tidy`, `periods`, and
     /// `generation`, so the view's next drop request keeps these books rather than dropping
@@ -1417,18 +1418,29 @@ final class BookPileScene {
         holdsStill = tidy
         planKey = PlanKey(
             ids: books.map(\.id), tidy: tidy, periods: tidy ? nil : periods, generation: generation)
-        // Walls around the books, a little past them, and at least as far out as the view's.
+        let camera = PileCamera(matching: handover.camera)
+        // What the handed-over view shows between the bars, which the walls fit for a view that
+        // looks along the table's middle without turning, as the overview and the spread's do.
+        var centered = camera
+        centered.target.x = 0
+        let seen =
+            abs(camera.yaw) < 0.05 && abs(camera.target.x) < 1
+            ? PileTray(viewport: viewport, camera: centered) : nil
+        let room = seen ?? fitted
+        // Walls along what the view shows, and around the books, a little past them, should
+        // any lie outside it.
+        var walls = room
         if !shelf.children.isEmpty {
             let bounds = shelf.visualBounds(relativeTo: root)
             let side = max(abs(bounds.min.x), abs(bounds.max.x)) + PileLayout.reach
-            build(
-                PileTray(
-                    farZ: min(fitted.farZ, bounds.min.z - PileLayout.reach),
-                    nearZ: max(fitted.nearZ, bounds.max.z + PileLayout.reach),
-                    farHalfWidth: max(fitted.farHalfWidth, side),
-                    nearHalfWidth: max(fitted.nearHalfWidth, side)))
+            walls = PileTray(
+                farZ: min(room.farZ, bounds.min.z - PileLayout.reach),
+                nearZ: max(room.nearZ, bounds.max.z + PileLayout.reach),
+                farHalfWidth: max(room.farHalfWidth, side),
+                nearHalfWidth: max(room.nearHalfWidth, side))
         }
-        look(through: PileCamera(matching: handover.camera))
+        build(walls)
+        look(through: camera)
         home = view
         isAdopted = true
         loading.isLoading = false
