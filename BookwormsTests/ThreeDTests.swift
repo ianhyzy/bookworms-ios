@@ -320,8 +320,8 @@ final class ThreeDTests: XCTestCase {
         XCTAssertTrue(throttle.admit(0.2, at: 0.08))
     }
 
-    func testThreeDViewsAreTitledByName() {
-        XCTAssertEqual(ThreeDView.pile.title, "Pile")
+    func testTheDeskSceneKeepsItsSavedName() {
+        XCTAssertEqual(ThreeDView.pile.title, "Desk")
         XCTAssertEqual(ThreeDView(rawValue: "pile"), .pile)
     }
 }
