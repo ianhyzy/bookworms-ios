@@ -447,6 +447,12 @@ struct DominoCameraRig {
     /// `landTime` to land.
     var isRevealing: Bool { doneTime > Self.landTime }
 
+    /// Whether the reveal has ended, with the camera resting on `finale`.
+    var isRevealed: Bool { isRevealing && revealClock >= revealTime }
+
+    /// Whether the establishing move has ended, with the camera on the first book.
+    var isEstablished: Bool { established >= establishTime }
+
     /// Advances the camera by `deltaTime` seconds, following `input`, and returns its pose.
     @discardableResult
     mutating func step(_ input: Front, by deltaTime: Float) -> DominoCameraPose {
@@ -591,23 +597,29 @@ struct DominoCameraRig {
             (Float(index) * 0.618_034 + salt).truncatingRemainder(dividingBy: 1)
         }
         let pace = typicalPace
-        // The longest swing leaves `dwell` of each row and turn steady; the widest turns at
-        // `swingRate` for that long.
-        let longest = min(
-            max(path.period / pace - dwell, swingTimes.lowerBound), swingTimes.upperBound)
-        let widest = swingRate * longest
+        let rows = path.row(at: length).row + 1
+        // The longest swing round a turn leaves `dwell` of the shorter of its rows, with that
+        // row's turn, steady; the widest turns at `swingRate` for that long. Rows can differ in
+        // length, as the worm's do.
+        func longest(_ turn: Int) -> Float {
+            let period = min(path.period(turn), path.period(turn + 1))
+            return min(max(period / pace - dwell, swingTimes.lowerBound), swingTimes.upperBound)
+        }
+        func widest(_ turn: Int) -> Float { swingRate * longest(turn) }
         // A swing turns the camera by a straight angle less both rows' angles from behind, so
         // a row filmed nearer behind than `low` would need a wider swing to either neighbor
         // than fits, even one filmed from as near beside as `sides` allows.
-        let low = max(sides.lowerBound, .pi - sides.upperBound - widest)
-        let rows = Int(length / path.period) + 1
+        func low(_ row: Int) -> Float {
+            let turns = [row - 1, row].filter { $0 >= 0 && $0 < rows - 1 }
+            let widest = turns.map(widest).min() ?? widest(row)
+            return max(sides.lowerBound, .pi - sides.upperBound - widest)
+        }
         // The row whose shot films each web as it tears: the row it hangs along, or the next
         // row for a web past the middle of a turn.
         let webRows = Set(
             cobwebs.map { web in
-                let row = (web.distance / path.period).rounded(.down)
-                let along = web.distance - row * path.period
-                return Int(row) + (along > path.rowLength + .pi * path.radius / 2 ? 1 : 0)
+                let (row, along) = path.row(at: web.distance)
+                return row + (along > path.rowLength(row) + .pi * path.radius / 2 ? 1 : 0)
             })
         let over = (0..<(rows - 1))
             .map {
@@ -623,6 +635,7 @@ struct DominoCameraRig {
         // nearly beside the front.
         var angles: [Float] = []
         for row in 0..<rows {
+            let low = low(row)
             let band: Float = row.isMultiple(of: 2) ? 0.5 : 0.2
             var wanted = low + (sides.upperBound - low) * (band + 0.5 * vary(row, 0.35))
             if webRows.contains(row) {
@@ -633,7 +646,7 @@ struct DominoCameraRig {
                 wanted =
                     besides.lowerBound + (besides.upperBound - besides.lowerBound) * vary(row, 0.35)
             }
-            angles.append(row == 0 ? wanted : max(wanted, .pi - widest - angles[row - 1]))
+            angles.append(row == 0 ? wanted : max(wanted, .pi - widest(row - 1) - angles[row - 1]))
         }
         let shots = angles.indices.map { row in
             let low = elevations.lowerBound
@@ -651,13 +664,14 @@ struct DominoCameraRig {
             // A swing takes longer the bigger it is. Over a turn it cranes over, the camera
             // cranes up toward `craneOver` over most of the longest swing's time, but no faster
             // than `craneRate`.
+            let longest = longest(turn)
             let fitted = min(max(swing / swingRate, swingTimes.lowerBound), longest)
             let time = over[turn] ? max(longest * 0.75, fitted) : fitted
             let higher = max(from.elevation, to.elevation)
             let extra =
                 over[turn] ? min(max(craneOver - higher, 0), craneRate * time / .pi) : crane * swing
             return Swing(
-                middle: Float(turn) * path.period + path.rowLength + .pi * path.radius / 2
+                middle: path.start(ofRow: turn) + path.rowLength(turn) + .pi * path.radius / 2
                     - swingLead * pace,
                 reach: time * pace / 2,
                 lift: abs(to.elevation - from.elevation) / 2 + extra)
@@ -869,10 +883,10 @@ struct DominoCameraRig {
                 ((place.y - depth - reach) / depth).rounded(.down))...Int(
                 ((place.y + reach) / depth).rounded(.up))
         for row in rows where row >= 0 {
-            let start = Float(row) * path.period
+            let start = path.start(ofRow: row)
             // The row's standing stretch, then its turn's, sampled along the turn.
             let low = max(start, standing)
-            let high = min(start + path.rowLength, length)
+            let high = min(start + path.rowLength(row), length)
             if low <= high {
                 let a = path.point(at: low).position
                 let b = path.point(at: high).position
@@ -882,8 +896,8 @@ struct DominoCameraRig {
                     ? min(max(simd_dot(place - a, along) / simd_length_squared(along), 0), 1) : 0
                 nearest = min(nearest, simd_distance(place, a + along * share))
             }
-            let turnLow = max(start + path.rowLength, standing)
-            let turnHigh = min(start + path.period, length)
+            let turnLow = max(start + path.rowLength(row), standing)
+            let turnHigh = min(start + path.period(row), length)
             guard turnLow <= turnHigh else { continue }
             for index in 0...8 {
                 let distance = turnLow + (turnHigh - turnLow) * Float(index) / 8

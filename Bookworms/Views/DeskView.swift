@@ -14,7 +14,7 @@ struct DeskView: View {
     @AppStorage("BookwormsShelfSort") private var sort = ShelfSort.finished
     @AppStorage("BookwormsShelfDesignedOnly") private var designedOnly = false
     /// The 3D view the desk shows.
-    @AppStorage("BookwormsThreeDView") private var threeDView = ThreeDView.pile
+    @AppStorage("BookwormsThreeDView") private var threeDView = ThreeDView.dominoes
     /// The scenes' time frame as `TimeFrame.setting` writes it; empty for every book.
     /// `FrameChip` sets it. Until the reader chooses one, the scenes show the current year.
     @AppStorage(TimeFrame.pileSettingKey) private var frameSetting = TimeFrame.defaultPileSetting
@@ -95,12 +95,12 @@ struct DeskView: View {
         }
     }
 
-    /// The chosen 3D view, or the Pile when the saved choice is one the app does not offer.
+    /// The chosen 3D view, or Dominoes when the saved choice is one the app does not offer.
     private var shownView: ThreeDView {
-        ThreeDView.offered.contains(threeDView) ? threeDView : .pile
+        ThreeDView.offered.contains(threeDView) ? threeDView : .dominoes
     }
 
-    /// Reads `shownView` and saves the reader's choice, for the **Pile | Dominoes** control.
+    /// Reads `shownView` and saves the reader's choice, for the **Dominoes | Pile** control.
     private var shownViewChoice: Binding<ThreeDView> {
         Binding {
             shownView
@@ -136,7 +136,7 @@ struct DeskView: View {
     }
 }
 
-/// Desk's title and bar: the **Pile | Dominoes** control and the options menu. While a lifted
+/// Desk's title and bar: the **Dominoes | Pile** control and the options menu. While a lifted
 /// book's details show, they give way to the details' **Back** and **Share**
 /// (`LiftedDetailsOverlay`).
 ///
@@ -321,14 +321,15 @@ struct FrameChip: View {
 /// The scenes Desk can show. Each takes the desk's books within the time frame that all of them
 /// share, and orders them as the view needs. Adding a view takes a case here, titled by its raw
 /// value, its arm in `DeskView.content`, and an entry in `offered`, which the
-/// **Pile | Dominoes** control lists.
+/// **Dominoes | Pile** control lists.
 enum ThreeDView: String, CaseIterable, Identifiable {
     case pile
     case dominoes
     case bookworm
 
-    /// The views the app shows. The Bookworm keeps its code but is not offered for now.
-    static let offered: [ThreeDView] = [.pile, .dominoes]
+    /// The views the app shows, Dominoes first and by default. The Bookworm keeps its code but
+    /// is not offered for now.
+    static let offered: [ThreeDView] = [.dominoes, .pile]
 
     var id: Self { self }
     var title: String { rawValue.capitalized }

@@ -4,6 +4,7 @@ import CoreVideo
 import ImageIO
 import RealityKit
 import UniformTypeIdentifiers
+import os
 
 /// The timeline of a pile video: its frames, the physics steps behind each, and when and how
 /// each book falls into place.
@@ -182,47 +183,50 @@ enum ImpactMix {
     }
 }
 
-/// Writes a pile video to a QuickTime movie: HEVC frames, an AAC soundtrack, and the metadata
-/// that pairs the movie with a still as a Live Photo.
+/// Writes a pile or dominoes video to a QuickTime movie: HEVC frames, an AAC soundtrack, and,
+/// for a pile, the metadata that pairs the movie with a still as a Live Photo.
 ///
-/// The movie names the Live Photo's content identifier and marks a frame as the still's time;
-/// the still carries the same identifier (see `writeStill`). Frames and sound arrive in step,
-/// each frame's `PileMovieTiming.samplesPerFrame` samples just before the frame. The writer
-/// interleaves them, so either input can refuse more until the other catches up; a separate
-/// task therefore appends the sound, so neither input's wait holds up the other.
+/// The frames are encoded as they render, into a file of their own with one input, which
+/// takes each frame as soon as the encoder has room for it. The sound and the metadata join
+/// them in a second pass (`finish(hits:before:)`), which copies the frames without decoding
+/// them, encodes the soundtrack mixed from the recorded hits (`ImpactMix`), and, for a Live
+/// Photo's movie, names its content identifier and marks a frame as the still's time; the
+/// still carries the same identifier (see `writeStill`). A writer with several inputs pairs
+/// their samples as it writes, and stops taking frames while it waits for sound it has not
+/// been given: fed one frame's sound at a time, it did so partway through long clips. In the
+/// second pass each track feeds the writer from a task of its own, so every track always has
+/// its next sample ready.
 ///
-/// Each frame waits until the video input takes it, which bounds the frames waiting for the
-/// encoder and the pixel buffers they hold. The inputs' `append` waits have no timeout and do
-/// not return when their task or the writer is cancelled, while a render holds the turn that
-/// the live pile and every share image wait on. Every wait therefore ends at a deadline, which
-/// fails the movie without waiting for the `append` any further.
+/// Each frame is offered with `appendImmediately` until the encoder takes it, 4 milliseconds
+/// apart (see `offer`), which bounds the frames waiting for the encoder and the pixel buffers
+/// they hold. The inputs' own `append` waits do not return when their task or the writer is
+/// cancelled, while a render holds the turn that the live pile and every share image wait on,
+/// so every wait ends at a deadline, which fails the movie without waiting any further.
 @MainActor
 final class PileMovieWriter {
+    /// How long the frames may take to finish, and the movie to be written from them.
+    static let finishTimeout = Duration.seconds(30)
+
+    private let url: URL
+    /// The frames alone, which `finish(hits:before:)` replaces with the movie.
+    private let framesURL: URL
+    private let identifier: String?
     private let writer: AVAssetWriter
     private let frames: AVAssetWriterInput.PixelBufferReceiver
-    private let stillTime: AVAssetWriterInput.MetadataReceiver
-    private let soundFormat: CMAudioFormatDescription
-    /// The mixed sound, in order, for `soundtrack` to append: at most the soundtrack, about
-    /// 2 MB.
-    private let soundFeed: AsyncStream<Sound>.Continuation
-    /// Appends the sound that `soundFeed` yields to the audio input.
-    private let soundtrack: Task<Void, any Error>
-
-    private typealias Sound = CMReadySampleBuffer<CMSampleBuffer.DynamicContent>
+    private var frameCount = 0
+    private var stillFrame = 0
 
     private static let stillImageTimeIdentifier = "mdta/com.apple.quicktime.still-image-time"
+    nonisolated private static let log = Logger(
+        subsystem: "gay.ian.Bookworms.iOS", category: "video")
 
     /// Prepares a movie of `width` by `height` pixels at `url`, which must not exist yet, for
-    /// the Live Photo content identifier `identifier`.
-    init(url: URL, width: Int, height: Int, identifier: String) throws {
-        writer = try AVAssetWriter(outputURL: url, fileType: .mov)
-        let content = AVMutableMetadataItem()
-        content.keySpace = .quickTimeMetadata
-        content.key = AVMetadataKey.quickTimeMetadataKeyContentIdentifier.rawValue as NSString
-        content.value = identifier as NSString
-        content.dataType = kCMMetadataBaseDataType_UTF8 as String
-        writer.metadata = [content]
-
+    /// the Live Photo content identifier `identifier`, or a plain movie without one.
+    init(url: URL, width: Int, height: Int, identifier: String?) throws {
+        self.url = url
+        self.identifier = identifier
+        framesURL = url.deletingPathExtension().appendingPathExtension("frames.mov")
+        writer = try AVAssetWriter(outputURL: framesURL, fileType: .mov)
         // Display P3 primaries, as `RealityRenderer` draws its frames.
         let video = AVAssetWriterInput(
             mediaType: .video,
@@ -238,75 +242,31 @@ final class PileMovieWriter {
                 AVVideoCompressionPropertiesKey: [
                     AVVideoAverageBitRateKey: 12_000_000,
                     AVVideoExpectedSourceFrameRateKey: Int(PileMovieTiming.framesPerSecond),
+                    AVVideoMaxKeyFrameIntervalKey: 2 * Int(PileMovieTiming.framesPerSecond),
+                    AVVideoAllowFrameReorderingKey: false,
                 ],
             ])
-        let audio = AVAssetWriterInput(
-            mediaType: .audio,
-            outputSettings: [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: ImpactSound.sampleRate,
-                AVNumberOfChannelsKey: 2,
-                AVEncoderBitRateKey: 128_000,
-            ])
-        // A timed metadata track whose one sample marks the Live Photo's still.
-        var description: CMFormatDescription?
-        CMMetadataFormatDescriptionCreateWithMetadataSpecifications(
-            allocator: kCFAllocatorDefault, metadataType: kCMMetadataFormatType_Boxed,
-            metadataSpecifications: [
-                [
-                    kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier:
-                        Self.stillImageTimeIdentifier,
-                    kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType:
-                        kCMMetadataBaseDataType_SInt8,
-                ]
-            ] as CFArray, formatDescriptionOut: &description)
-        let metadata = AVAssetWriterInput(
-            mediaType: .metadata, outputSettings: nil, sourceFormatHint: description)
-        guard [video, audio, metadata].allSatisfy(writer.canAdd) else {
-            throw PileSnapshotError.drawingFailed
-        }
+        guard writer.canAdd(video) else { throw PileSnapshotError.drawingFailed }
         frames = writer.inputPixelBufferReceiver(
             for: video,
             pixelBufferAttributes: CVPixelBufferCreationAttributes(
                 pixelFormatType: CVPixelFormatType(rawValue: kCVPixelFormatType_32BGRA),
                 size: CVImageSize(width: width, height: height), compatibility: .cgBitmapContext))
-        stillTime = writer.inputMetadataReceiver(for: metadata)
-        soundFormat = try CMAudioFormatDescription(
-            audioStreamBasicDescription: AudioStreamBasicDescription(
-                mSampleRate: ImpactSound.sampleRate, mFormatID: kAudioFormatLinearPCM,
-                mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
-                mBytesPerPacket: 8, mFramesPerPacket: 1, mBytesPerFrame: 8, mChannelsPerFrame: 2,
-                mBitsPerChannel: 32, mReserved: 0))
-        let sound = writer.inputReceiver(for: audio)
-        let (chunks, feed) = AsyncStream.makeStream(of: Sound.self)
-        soundFeed = feed
-        soundtrack = Task { for await chunk in chunks { try await sound.append(chunk) } }
     }
 
-    /// Starts the movie at time zero and marks frame `stillFrame` as the Live Photo's still.
+    /// Starts the frames at time zero and, for a Live Photo's movie, notes frame `stillFrame`
+    /// as its still.
     ///
-    /// - Throws: `PileSnapshotError` when the writer fails or does not take the mark by
-    ///   `deadline`.
-    func start(stillFrame: Int, before deadline: ContinuousClock.Instant) async throws {
+    /// - Throws: `PileSnapshotError` when the writer fails to start.
+    func start(stillFrame: Int) throws {
+        self.stillFrame = stillFrame
         try writer.start()
         writer.startSession(atSourceTime: .zero)
-        let item = AVMutableMetadataItem()
-        item.identifier = AVMetadataIdentifier(rawValue: Self.stillImageTimeIdentifier)
-        item.value = 0 as NSNumber
-        item.dataType = kCMMetadataBaseDataType_SInt8 as String
-        let mark = AVTimedMetadataGroup(
-            items: [item],
-            timeRange: CMTimeRange(
-                start: PileMovieTiming.time(ofFrame: stillFrame),
-                duration: PileMovieTiming.time(ofFrame: 1)))
-        let stillTime = stillTime
-        try await wait(until: deadline) { try await stillTime.append(mark) }
-        stillTime.finish()
     }
 
     /// Adds a frame of 32-bit BGRA `pixels`, with rows `bytesPerRow` apart and the top row
-    /// first, as frame `frame`, with `overlay` drawn over it (see `PileMovieOverlay`), and waits
-    /// until the video input takes it.
+    /// first, as frame `frame`, with `overlay` drawn over it at `opacity` (see
+    /// `PileMovieOverlay`), and waits until the encoder takes it.
     ///
     /// Copies the pixels at once, so the caller can reuse their memory when this returns.
     ///
@@ -315,10 +275,13 @@ final class PileMovieWriter {
     /// - Throws: `PileSnapshotError` when the writer fails or does not take the frame by
     ///   `deadline`.
     func appendFrame(
-        _ pixels: UnsafeRawPointer, bytesPerRow: Int, overlay: CGImage, at frame: Int,
-        snapshot: Int?, before deadline: ContinuousClock.Instant
+        _ pixels: UnsafeRawPointer, bytesPerRow: Int, overlay: CGImage, opacity: CGFloat = 1,
+        at frame: Int, snapshot: Int?, before deadline: ContinuousClock.Instant
     ) async throws -> CGImage? {
         guard let pool = frames.pixelBufferPool else {
+            Self.log.error(
+                "No pixel buffer pool at frame \(frame): writer status \(self.writer.status.rawValue), \(String(describing: self.writer.error))"
+            )
             throw writer.error ?? PileSnapshotError.drawingFailed
         }
         var buffer = try pool.makeMutablePixelBuffer()
@@ -331,52 +294,191 @@ final class PileMovieWriter {
             }
             return PileMovieOverlay.draw(
                 overlay, over: base, width: size.width, height: size.height,
-                bytesPerRow: plane.properties.bytesPerRow, snapshot: snapshot)
+                bytesPerRow: plane.properties.bytesPerRow, opacity: opacity, snapshot: snapshot)
         }
         let finished = CVReadOnlyPixelBuffer(buffer)
         let time = PileMovieTiming.time(ofFrame: frame)
-        let frames = frames
-        try await wait(until: deadline) { try await frames.append(finished, with: time) }
+        try await Self.offer("frame \(frame)", to: writer, until: deadline) {
+            try frames.appendImmediately(finished, with: time)
+        }
+        frameCount = max(frameCount, frame + 1)
         return image
     }
 
-    /// Adds interleaved stereo `samples`, from `ImpactMix`, that start at sample frame `start`.
-    /// Returns at once; the audio input takes them as the interleaving allows.
-    func appendSound(_ samples: [Float], at start: Int) {
-        let audio = CMReadySampleBuffer(
-            audioDataBuffer: CMReadOnlyDataBlockBuffer(samples.withUnsafeBytes { Data($0) }),
-            formatDescription: soundFormat, sampleCount: samples.count / 2,
-            presentationTimeStamp: CMTime(
-                value: CMTimeValue(start), timescale: CMTimeScale(ImpactSound.sampleRate)))
-        soundFeed.yield(Sound(audio))
+    /// Offers `what` to one of `writer`'s inputs with `append` until the input takes it, 4
+    /// milliseconds between offers, and throws `PileSnapshotError.drawingFailed` when the
+    /// writer fails or `deadline` passes first.
+    private static func offer(
+        _ what: String, to writer: AVAssetWriter, until deadline: ContinuousClock.Instant,
+        _ append: () throws -> Bool
+    ) async throws {
+        while try !append() {
+            guard writer.status == .writing else {
+                throw writer.error ?? PileSnapshotError.drawingFailed
+            }
+            guard ContinuousClock.now < deadline else {
+                Self.log.error("The writer did not take \(what) by its deadline")
+                throw PileSnapshotError.drawingFailed
+            }
+            try await Task.sleep(for: .milliseconds(4))
+        }
     }
 
-    /// Finishes the movie file once the audio input has taken all the sound. Cancels the movie
-    /// when that fails.
+    /// Finishes the frames, then writes the movie: the frames, the soundtrack mixed from
+    /// `hits`, and a Live Photo's metadata. Cancels the movie when that fails, leaving
+    /// incomplete files for the caller to delete.
     ///
-    /// - Throws: `PileSnapshotError` when the writer fails or does not finish by `deadline`.
-    func finish(before deadline: ContinuousClock.Instant) async throws {
+    /// - Throws: `PileSnapshotError` when a writer fails or the movie is not done by
+    ///   `deadline`.
+    func finish(hits: [ImpactRecord], before deadline: ContinuousClock.Instant) async throws {
         do {
-            // Without more frames to wait for, the audio input takes the rest of the sound.
             frames.finish()
-            soundFeed.finish()
-            let soundtrack = soundtrack
-            try await wait(until: deadline) { try await soundtrack.value }
             let writer = writer
-            try await wait(until: deadline) { await writer.finishWriting() }
+            try await wait(for: "the frames", until: deadline) { await writer.finishWriting() }
             guard writer.status == .completed else {
                 throw writer.error ?? PileSnapshotError.drawingFailed
             }
+            let sound = ImpactMix.samples(
+                hits, in: 0..<frameCount * PileMovieTiming.samplesPerFrame)
+            let began = ContinuousClock.now
+            try await wait(for: "the movie", until: deadline) { try await self.mux(sound) }
+            Self.log.notice(
+                "Wrote the movie in \((ContinuousClock.now - began) / .seconds(1), format: .fixed(precision: 1)) s"
+            )
+            try? FileManager.default.removeItem(at: framesURL)
         } catch {
             cancel()
             throw error
         }
     }
 
-    /// Stops writing and leaves an incomplete file, which the caller deletes.
+    /// Writes the movie at `url` from the finished frames and `sound`, the whole interleaved
+    /// stereo soundtrack at `ImpactSound.sampleRate`.
+    private func mux(_ sound: [Float]) async throws {
+        let asset = AVURLAsset(url: framesURL)
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else {
+            throw PileSnapshotError.drawingFailed
+        }
+        let reader = try AVAssetReader(asset: asset)
+        let pictures = reader.outputProvider(
+            for: AVAssetReaderTrackOutput(track: track, outputSettings: nil))
+
+        let movie = try AVAssetWriter(outputURL: url, fileType: .mov)
+        let video = AVAssetWriterInput(
+            mediaType: .video, outputSettings: nil,
+            sourceFormatHint: try await track.load(.formatDescriptions).first)
+        let audio = AVAssetWriterInput(
+            mediaType: .audio,
+            outputSettings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: ImpactSound.sampleRate,
+                AVNumberOfChannelsKey: 2,
+                AVEncoderBitRateKey: 128_000,
+            ])
+        var metadata: AVAssetWriterInput?
+        if let identifier {
+            let content = AVMutableMetadataItem()
+            content.keySpace = .quickTimeMetadata
+            content.key = AVMetadataKey.quickTimeMetadataKeyContentIdentifier.rawValue as NSString
+            content.value = identifier as NSString
+            content.dataType = kCMMetadataBaseDataType_UTF8 as String
+            movie.metadata = [content]
+            // A timed metadata track whose one sample marks the Live Photo's still.
+            var description: CMFormatDescription?
+            CMMetadataFormatDescriptionCreateWithMetadataSpecifications(
+                allocator: kCFAllocatorDefault, metadataType: kCMMetadataFormatType_Boxed,
+                metadataSpecifications: [
+                    [
+                        kCMMetadataFormatDescriptionMetadataSpecificationKey_Identifier:
+                            Self.stillImageTimeIdentifier,
+                        kCMMetadataFormatDescriptionMetadataSpecificationKey_DataType:
+                            kCMMetadataBaseDataType_SInt8,
+                    ]
+                ] as CFArray, formatDescriptionOut: &description)
+            metadata = AVAssetWriterInput(
+                mediaType: .metadata, outputSettings: nil, sourceFormatHint: description)
+        }
+        guard ([video, audio] + [metadata].compactMap(\.self)).allSatisfy(movie.canAdd) else {
+            throw PileSnapshotError.drawingFailed
+        }
+        let frames = movie.inputReceiver(for: video)
+        let samples = movie.inputReceiver(for: audio)
+        let marks: AVAssetWriterInput.MetadataReceiver? =
+            if let metadata { movie.inputMetadataReceiver(for: metadata) } else { nil }
+        let format = try CMAudioFormatDescription(
+            audioStreamBasicDescription: AudioStreamBasicDescription(
+                mSampleRate: ImpactSound.sampleRate, mFormatID: kAudioFormatLinearPCM,
+                mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+                mBytesPerPacket: 8, mFramesPerPacket: 1, mBytesPerFrame: 8, mChannelsPerFrame: 2,
+                mBitsPerChannel: 32, mReserved: 0))
+        let stillTime = PileMovieTiming.time(ofFrame: stillFrame)
+
+        // A second of sound at a time, as one sample buffer.
+        let count = sound.count / 2
+        func second(from start: Int) -> CMReadySampleBuffer<CMSampleBuffer.DynamicContent> {
+            let end = min(start + Int(ImpactSound.sampleRate), count)
+            let data = sound[start * 2..<end * 2].withUnsafeBytes { Data($0) }
+            return CMReadySampleBuffer<CMSampleBuffer.DynamicContent>(
+                CMReadySampleBuffer(
+                    audioDataBuffer: CMReadOnlyDataBlockBuffer(data),
+                    formatDescription: format, sampleCount: end - start,
+                    presentationTimeStamp: CMTime(
+                        value: CMTimeValue(start), timescale: CMTimeScale(ImpactSound.sampleRate))
+                ))
+        }
+        var mark: AVTimedMetadataGroup?
+        if marks != nil {
+            let item = AVMutableMetadataItem()
+            item.identifier = AVMetadataIdentifier(rawValue: Self.stillImageTimeIdentifier)
+            item.value = 0 as NSNumber
+            item.dataType = kCMMetadataBaseDataType_SInt8 as String
+            mark = AVTimedMetadataGroup(
+                items: [item],
+                timeRange: CMTimeRange(start: stillTime, duration: PileMovieTiming.time(ofFrame: 1))
+            )
+        }
+
+        try movie.start()
+        movie.startSession(atSourceTime: .zero)
+        try reader.start()
+        // The writer pairs the tracks' samples as it writes, taking one track's while another's
+        // waits, so each pass offers every track its next sample and sleeps only when none is
+        // taken.
+        var picture = try await pictures.next()
+        var start = 0
+        var chunk = second(from: 0)
+        while picture != nil || start < count || mark != nil {
+            var taken = false
+            if let next = picture, try frames.appendImmediately(next) {
+                picture = try await pictures.next()
+                if picture == nil { frames.finish() }
+                taken = true
+            }
+            if start < count, try samples.appendImmediately(chunk) {
+                start += Int(ImpactSound.sampleRate)
+                if start < count { chunk = second(from: start) } else { samples.finish() }
+                taken = true
+            }
+            if let marks, let group = mark, try marks.appendImmediately(group) {
+                mark = nil
+                marks.finish()
+                taken = true
+            }
+            if !taken {
+                guard movie.status == .writing else {
+                    throw movie.error ?? PileSnapshotError.drawingFailed
+                }
+                try await Task.sleep(for: .milliseconds(4))
+            }
+        }
+        await movie.finishWriting()
+        guard movie.status == .completed else {
+            throw movie.error ?? PileSnapshotError.drawingFailed
+        }
+    }
+
+    /// Stops writing the frames and leaves incomplete files, which the caller deletes.
     func cancel() {
-        soundFeed.finish()
-        soundtrack.cancel()
         if writer.status == .writing { writer.cancelWriting() }
     }
 
@@ -384,7 +486,7 @@ final class PileMovieWriter {
     /// and leaves the operation to end on its own, if ever. Cancelling the calling task does
     /// not end the wait sooner.
     private func wait(
-        until deadline: ContinuousClock.Instant,
+        for what: String, until deadline: ContinuousClock.Instant,
         _ operation: @escaping @MainActor () async throws -> Void
     ) async throws {
         let outcome = Outcome()
@@ -392,6 +494,9 @@ final class PileMovieWriter {
             outcome.continuation = continuation
             let timer = Task {
                 try await Task.sleep(until: deadline)
+                Self.log.error(
+                    "The writer did not finish \(what) by its deadline: status \(self.writer.status.rawValue), \(String(describing: self.writer.error))"
+                )
                 outcome.resume(with: .failure(PileSnapshotError.drawingFailed))
             }
             Task {
@@ -416,19 +521,18 @@ final class PileMovieWriter {
         }
     }
 
-    /// Writes `image` to `url` as a JPEG that names `identifier` as its Live Photo content
-    /// identifier, in the Apple maker note's key 17, which pairs it with the movie.
-    nonisolated static func writeStill(_ image: CGImage, identifier: String, to url: URL) throws {
+    /// Writes `image` to `url` as a JPEG that names `identifier`, if any, as its Live Photo
+    /// content identifier, in the Apple maker note's key 17, which pairs it with the movie.
+    nonisolated static func writeStill(_ image: CGImage, identifier: String?, to url: URL)
+        throws
+    {
         guard
             let destination = CGImageDestinationCreateWithURL(
                 url as CFURL, UTType.jpeg.identifier as CFString, 1, nil)
         else { throw PileSnapshotError.drawingFailed }
-        CGImageDestinationAddImage(
-            destination, image,
-            [
-                kCGImagePropertyMakerAppleDictionary: ["17": identifier],
-                kCGImageDestinationLossyCompressionQuality: 0.92,
-            ] as CFDictionary)
+        var properties: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: 0.92]
+        if let identifier { properties[kCGImagePropertyMakerAppleDictionary] = ["17": identifier] }
+        CGImageDestinationAddImage(destination, image, properties as CFDictionary)
         guard CGImageDestinationFinalize(destination) else {
             throw PileSnapshotError.drawingFailed
         }
@@ -446,20 +550,24 @@ enum PileMovieOverlay {
         return context.makeImage()
     }
 
-    /// Draws `overlay` over a frame of 32-bit BGRA `pixels` in Display P3, `width` by
-    /// `height` with rows `bytesPerRow` apart and the top row first, ignoring their alpha byte.
-    /// Returns a copy of the result, `snapshot` times smaller in each dimension, when `snapshot`
-    /// is set.
+    /// Draws `overlay` at `opacity` over a frame of 32-bit BGRA `pixels` in Display P3,
+    /// `width` by `height` with rows `bytesPerRow` apart and the top row first, ignoring their
+    /// alpha byte. Returns a copy of the result, `snapshot` times smaller in each dimension,
+    /// when `snapshot` is set.
     static func draw(
         _ overlay: CGImage, over pixels: UnsafeMutableRawPointer, width: Int, height: Int,
-        bytesPerRow: Int, snapshot: Int?
+        bytesPerRow: Int, opacity: CGFloat = 1, snapshot: Int?
     ) -> CGImage? {
         guard
             let context = context(
                 width: width, height: height, alpha: false, data: pixels, bytesPerRow: bytesPerRow)
         else { return nil }
         let bounds = CGRect(x: 0, y: 0, width: width, height: height)
-        context.draw(overlay, in: bounds)
+        if opacity > 0 {
+            context.setAlpha(opacity)
+            context.draw(overlay, in: bounds)
+            context.setAlpha(1)
+        }
         guard let snapshot, let frame = context.makeImage() else { return nil }
         guard snapshot > 1,
             let small = self.context(

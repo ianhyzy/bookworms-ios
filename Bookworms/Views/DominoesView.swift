@@ -7,10 +7,11 @@ import SwiftUI
 /// ready, a spinner shows over the table (`SceneLoading`); then the books drop into their places
 /// from above the top of the screen (see `DominoScene`).
 ///
-/// A tap on the first book, which a glow marks, topples the whole chain, tearing the cobwebs
-/// as it goes. Should the chain stop, such as where a book leans on the next without knocking
-/// it over, the glow marks the book to tap to nudge it on. A tap on any book the chain has not
-/// reached also pushes it on. Tapping a book the chain has passed, or touching and holding any
+/// A pointing hand floats before the first book, as a finger about to poke it; a tap on the
+/// hand or the book topples the whole chain, tearing the cobwebs as it goes. Should the chain
+/// stop, such as where a book leans on the next without knocking it over, the hand points at
+/// the book to tap to nudge it on. A tap on any book the chain has not reached also pushes it
+/// on. Tapping a book the chain has passed, or touching and holding any
 /// book, lifts it out of the chain to its details over the darkened scene, as the Pile does
 /// (`LiftedDetails`), and **Back** returns it (see `DominoScene`). With Reduce Motion on, or when
 /// the scene cannot lift the book, `open` pushes the details instead, and the chain is as the
@@ -20,11 +21,13 @@ import SwiftUI
 /// camera over until the next push. **Set up again** stands every book again.
 /// Collisions play taps and, while the desk's **Sounds** is on, clacks (`ImpactFeedback`).
 ///
-/// Leaving stops the haptic and audio engines and disables the table and books, so nothing
-/// simulates or draws out of sight. Leaving other than for details, such as for another tab,
-/// also puts a lifted book back at once and frees the books and textures, and they stand again
-/// on return. While a pile image renders, the scene leaves the view and a lifted
-/// book goes back, as `BookPileView` explains.
+/// The scene's view lives only while Desk is on screen (`DeskSceneView`), so a hidden tab runs
+/// no frame loop; the scene keeps its books, so the chain is as the reader left it on return,
+/// standing or fallen. Leaving stops the haptic and audio engines, and leaving other than for
+/// details, such as for another tab, puts a lifted book back at once. A memory warning while
+/// the tab is hidden frees the books and textures, and they stand again on return. While a
+/// pile image renders, the scene leaves the view and a lifted book goes back, as
+/// `BookPileView` explains.
 struct DominoesView: View {
     let books: [CloudBook]
     /// The name of the books' time frame.
@@ -52,6 +55,8 @@ struct DominoesView: View {
     /// Set between `onAppear` and `onDisappear`. The view stays in the hierarchy under a pushed
     /// book or in a tab that is not selected.
     @State private var isShown = false
+    /// Set while the video sheet is open.
+    @State private var sharesRun = false
     /// Set while fingers move the camera, and reset when they lift.
     @GestureState private var movesCamera = false
     /// Where the current touch started, for a touch and hold, which `LongPressGesture` does not
@@ -65,25 +70,23 @@ struct DominoesView: View {
     }
 
     var body: some View {
-        RealityView { content in
-            content.camera = .virtual
-            content.renderingEffects.antialiasing = .multisample4X
-            scene.attach(to: &content)
-            if PileSnapshotRenderer.isRendering { scene.root.removeFromParent() }
-        } update: { content in
-            // Puts back what a finished pile image took out of the scene.
-            if !PileSnapshotRenderer.isRendering && scene.root.scene == nil {
-                content.add(scene.root)
-            }
+        DeskSceneView { view in
+            scene.attach(to: view)
+            if PileSnapshotRenderer.isRendering { scene.detach() }
         }
-        .gesture(touchBook)
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 0)
-                .updating($touch) { value, touch, _ in
-                    touch = value.startLocation
-                }
-        )
-        .simultaneousGesture(moveCamera)
+        // A SwiftUI layer takes the touches: gestures on the hosted view would not fire.
+        .overlay {
+            Color.clear
+                .contentShape(.rect)
+                .gesture(touchBook)
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 0)
+                        .updating($touch) { value, touch, _ in
+                            touch = value.startLocation
+                        }
+                )
+                .simultaneousGesture(moveCamera)
+        }
         .allowsHitTesting(details.lift == nil)
         .onGeometryChange(for: CGRect.self) {
             $0.frame(in: .global)
@@ -101,7 +104,7 @@ struct DominoesView: View {
             }
             Button("Set up again") { generation += 1 }
         }
-        .overlay(alignment: .bottom) { hint }
+        .overlay { heading }
         .settingUp(scene.loading.isLoading)
         .modifier(
             LiftedDetailsOverlay(details: details, scene: scene, canvas: canvas) {
@@ -135,24 +138,33 @@ struct DominoesView: View {
         .onAppear {
             showsBook = false
             isShown = true
-            scene.root.isEnabled = true
         }
         .onDisappear {
             isShown = false
             scene.endCameraMove()
             // `onChange(of: playsFeedback)` does not run for a view that is being removed.
             scene.feedback.stop()
-            // A hidden tab keeps its `RealityView`, which RealityKit goes on updating and
-            // drawing, so the root is disabled until the view shows again.
-            scene.root.isEnabled = false
-            guard !showsBook else { return }
+            if !showsBook { details.putBack(scene) }
+        }
+        // Leaves the view nothing to draw while a pile image renders, in whichever tab, and
+        // puts the scene back when it ends.
+        .onChange(of: PileSnapshotRenderer.isRendering) { _, isRendering in
+            if isRendering {
+                details.putBack(scene)
+                scene.detach()
+            } else {
+                scene.reattach()
+            }
+        }
+        // The books and their textures are the chain's only large memory; a hidden chain gives
+        // them up under pressure and stands again on return.
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: UIApplication.didReceiveMemoryWarningNotification)
+        ) { _ in
+            guard !isShown else { return }
             details.putBack(scene)
             scene.release()
-        }
-        .onChange(of: PileSnapshotRenderer.isRendering) { _, isRendering in
-            guard isRendering else { return }
-            details.putBack(scene)
-            scene.root.removeFromParent()
         }
         .onChange(of: sounds, initial: true) { scene.feedback.playsSounds = sounds }
         // Keeps the haptic and audio engines only while collisions can be seen.
@@ -168,9 +180,13 @@ struct DominoesView: View {
             // Physics runs on under details, which VoiceOver reads instead.
             guard isShown, details.lift == nil else { return }
             switch scene.status.phase {
-            case .stalled, .done: AccessibilityNotification.Announcement(status).post()
+            case .stalled, .done, .finished:
+                AccessibilityNotification.Announcement(status).post()
             default: break
             }
+            #if DEBUG
+                if scene.status.phase == .finished, DominoVideoDebug.opensSheet { sharesRun = true }
+            #endif
         }
         .toolbar {
             if details.lift == nil {
@@ -179,8 +195,15 @@ struct DominoesView: View {
                         generation += 1
                     }
                 }
+                // A video of the run, once the books have gathered.
+                if scene.status.phase == .finished {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Share", systemImage: "square.and.arrow.up") { sharesRun = true }
+                    }
+                }
             }
         }
+        .sheet(isPresented: $sharesRun) { PileVideoSheet(dominoes: books, title: title) }
         // Outside the viewport reading, so the path starts below the button, which hides with
         // the other controls while a lifted book's details show.
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -190,29 +213,21 @@ struct DominoesView: View {
         }
     }
 
-    /// What to do next, over the bottom of the scene while the chain waits for a push and no
-    /// details show.
-    @ViewBuilder private var hint: some View {
-        let text: String? =
-            switch scene.status.phase {
-            case .standing:
-                "Tap the glowing book to start the chain. Touch and hold any book for its details."
-            case .stalled:
-                "The chain stopped. Tap the glowing book to nudge it on."
-            default: nil
-            }
-        if let text, details.lift == nil {
-            Text(text)
-                .font(.footnote.weight(.medium))
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .glassEffect(.regular, in: .rect(cornerRadius: 16))
-                .padding(.horizontal, 24)
-                .padding(.bottom, 12)
-                .allowsHitTesting(false)
-                // VoiceOver reads the same status as the scene's value.
-                .accessibilityHidden(true)
+    /// The heading over the gathered books, in the share images' style, once every book lies
+    /// in the spread; it fades in, and stays until **Set up again**.
+    @ViewBuilder private var heading: some View {
+        if scene.status.phase == .finished, details.lift == nil, let viewport {
+            // The overlay lies within the safe area, below the time frame button and above the
+            // tab bar, so the card needs no insets of its own.
+            DominoFinaleCard(
+                title: title, count: books.count, pages: DominoFinaleCard.pages(of: books),
+                scale: viewport.size.width / ShareAspect.story.size.width,
+                insets: EdgeInsets(top: 8, leading: 0, bottom: 0, trailing: 0)
+            )
+            .allowsHitTesting(false)
+            .transition(.opacity.animation(.easeIn(duration: 0.6)))
+            // VoiceOver reads the same totals as the scene's value.
+            .accessibilityHidden(true)
         }
     }
 
@@ -225,6 +240,9 @@ struct DominoesView: View {
         case .stalled(let fallen):
             "Stopped after \(fallen) of \(chainLength) books. Push the next book to go on."
         case .done: "Every book has fallen."
+        case .gathering: "The books are gathering."
+        case .finished:
+            "\(title): \(FrameChip.books(chainLength, of: books.count)) lie face up. Share offers a video and an image of the run."
         }
     }
 
