@@ -508,6 +508,42 @@ final class ShareRenderTests: XCTestCase {
         XCTAssertLessThan(long[0].slices[1].size.height, spines[1].slices[1].size.height)
     }
 
+    /// A bundle's slices wear the first book's cloth with at most a faint step in tone, and the
+    /// step never brings the cloth closer to the series name's ink.
+    func testBundleClothStepsFaintlyAwayFromTheInk() {
+        let pairs: [(cloth: String, ink: String)] = [
+            ("#1F3A5F", "#F5EBD7"), ("#EFE3C3", "#2A1E12"), ("#B0182A", "#FFFFFF"),
+            ("#777777", "#000000"), ("#000000", "#FFFFFF"), ("#FFFFFF", "#000000"),
+        ]
+        for pair in pairs {
+            var look = SpineLook(
+                book: CloudBook(
+                    id: 1, title: "Book", author: "Author", coverURL: nil, detailCoverURL: nil),
+                design: nil, face: nil)
+            look.background = ColorValue(hex: pair.cloth)!
+            look.foreground = ColorValue(hex: pair.ink)!
+            let own = look.background.contrast(with: look.foreground)
+            let cloths = (1...40)
+                .map { id in
+                    ShareSpine.cloth(
+                        look,
+                        book: CloudBook(
+                            id: id, title: "Book", author: "Author", coverURL: nil,
+                            detailCoverURL: nil))
+                }
+            for cloth in cloths {
+                XCTAssertGreaterThanOrEqual(cloth.contrast(with: look.foreground), own, pair.cloth)
+                XCTAssertLessThanOrEqual(
+                    abs(SpineContrast.lab(cloth).l - SpineContrast.lab(look.background).l),
+                    ShareSpine.clothStep + 0.01, pair.cloth)
+            }
+            // Black can't darken and white can't lighten; other cloths step a little.
+            if !["#000000", "#FFFFFF"].contains(pair.cloth) {
+                XCTAssertGreaterThan(Set(cloths).count, 1, pair.cloth)
+            }
+        }
+    }
+
     /// Spines keep the Library's Stack proportions at every scale, in one column.
     func testStackSpinesKeepStackProportionsInOneColumn() {
         let books = [100, 180, 320, 480, 760, 1200].enumerated()

@@ -45,7 +45,7 @@ struct YearStackCard: View {
                 ZStack(alignment: .topLeading) {
                     ForEach(layout.slabs) { slab in
                         ShareSpine(
-                            spine: slab.spine, looks: slab.spine.books.map(input.look(for:)),
+                            spine: slab.spine, look: input.look(for: slab.spine.book),
                             scale: layout.scale
                         )
                         // Turned as Stack turns a flat spine, so it faces a little left or right
@@ -386,42 +386,89 @@ struct ShareSpine: View {
     /// The smallest size two-line lettering starts at. Only spines thick enough for it wrap a
     /// title, so a wrapped title stays about as large as one line on an ordinary spine.
     nonisolated static let wrappedLettering: CGFloat = 36
+    /// The largest step in OKLab lightness between a bundle slice's cloth and its design's.
+    nonisolated static let clothStep = 0.04
 
     let spine: StackSpine
-    /// The looks of `spine.books`, in order.
-    let looks: [SpineLook]
+    /// The look of `spine.book`. A bundle's slices all wear its design.
+    let look: SpineLook
     let scale: CGFloat
 
     var body: some View {
         let length = spine.size.width * scale
         let thickness = spine.size.height * scale
         let count = spine.books.count
-        let looks = Self.sliceLooks(spine, looks: looks)
         let box = Self.letteringBox(spine, scale: scale)
-        VStack(spacing: 0) {
-            ForEach(spine.slices.indices, id: \.self) { index in
-                let slice = spine.slices[index]
+        Group {
+            if count > 1 {
+                bundle(length: length)
+            } else {
                 SpineView(
                     book: CloudBook(
-                        id: slice.book.id, title: "", author: "", coverURL: nil,
+                        id: spine.book.id, title: "", author: "", coverURL: nil,
                         detailCoverURL: nil),
-                    look: looks[index]
-                )
-                .frame(width: slice.size.width * scale, height: slice.size.height * scale)
-                // Tied slices lie a little off true, up to 1 percent of the length either way.
-                .offset(
-                    x: count > 1 ? (ShareStyle.unit(0, slice.book.id, 80) - 0.5) * length * 0.02 : 0
-                )
+                    look: look)
             }
         }
         .frame(width: length, height: thickness)
         .overlay(alignment: .leading) {
-            Self.lettering(spine.titles, look: looks[0], width: box.width, thickness: thickness)
+            Self.lettering(spine.titles, look: look, width: box.width, thickness: thickness)
                 .padding(.leading, box.leading)
         }
         .overlay {
             if count > 1 { Tie(length: length, thickness: thickness, count: count) }
         }
+    }
+
+    /// A bundle's slices as one edition of the series, bound alike in `look`'s design, so the
+    /// series name reads as one run across them, as on a boxed set's spines.
+    ///
+    /// Each slice's cloth differs from the next only by a faint step in tone (`cloth(_:book:)`),
+    /// and the seams are hairline grooves. The accent bands run in line across every slice. The
+    /// slices lie square, as twine pulls a bundle, within a fraction of a percent.
+    private func bundle(length: CGFloat) -> some View {
+        let band = max(2, spine.slices[0].size.height * scale * 0.07)
+        return VStack(spacing: 0) {
+            ForEach(spine.slices.indices, id: \.self) { index in
+                let slice = spine.slices[index]
+                Self.cloth(look, book: slice.book).color
+                    .overlay {
+                        HStack(spacing: 0) {
+                            Rectangle().fill(look.accent.color).frame(width: band)
+                            Spacer(minLength: 0)
+                            Rectangle().fill(look.accent.color).frame(width: band)
+                        }
+                        .padding(.horizontal, max(6, length * 0.035))
+                    }
+                    // A groove: the crease between two spines, lit along the lower one's edge.
+                    .overlay(alignment: .top) {
+                        if index > 0 {
+                            VStack(spacing: 0) {
+                                Color.black.opacity(0.3).frame(height: 1.5)
+                                Color.white.opacity(0.1).frame(height: 1)
+                            }
+                        }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 2))
+                    .frame(height: slice.size.height * scale)
+                    .offset(x: (ShareStyle.unit(0, slice.book.id, 80) - 0.5) * length * 0.006)
+            }
+        }
+    }
+
+    /// The cloth of `book`'s slice in a bundle that wears `look`'s design: the design's own,
+    /// stepped by up to `clothStep` in OKLab lightness, as `book` decides, away from the ink.
+    ///
+    /// The step only widens the gap between the cloth and the lettering, so the series name reads
+    /// on every slice at least as well as on the design's own cloth. Where the gamut would
+    /// narrow it instead, the slice keeps the design's cloth.
+    nonisolated static func cloth(_ look: SpineLook, book: CloudBook) -> ColorValue {
+        var lab = SpineContrast.lab(look.background)
+        let away: Double = SpineContrast.lab(look.foreground).l > lab.l ? -1 : 1
+        lab.l = min(1, max(0, lab.l + away * clothStep * ShareStyle.unit(0, book.id, 81)))
+        let stepped = SpineContrast.color(lab)
+        let own = look.background.contrast(with: look.foreground)
+        return stepped.contrast(with: look.foreground) >= own ? stepped : look.background
     }
 
     /// The thinnest, in pixels, that `spine` can be drawn and stay legible: thick enough for one
@@ -430,17 +477,6 @@ struct ShareSpine: View {
         let lettering = minimumLettering / letteringRatio
         guard spine.books.count > 1 else { return lettering }
         return max(lettering, minimumLettering / (Tie.tagShare * SeriesTag.countShare))
-    }
-
-    /// The slices' looks: each book's own, unless the first book's lettering, which runs across
-    /// every slice, would lack contrast on one of them. Then every slice takes the first book's
-    /// look, as a series in one edition would.
-    static func sliceLooks(_ spine: StackSpine, looks: [SpineLook]) -> [SpineLook] {
-        let shown = Array(looks.prefix(spine.slices.count))
-        let isReadable = shown.allSatisfy {
-            $0.background.contrast(with: shown[0].foreground) >= 3
-        }
-        return isReadable ? shown : shown.map { _ in shown[0] }
     }
 
     /// The fewest pixels per decimeter, up to `limit`, at which `spine` letters one of its titles
