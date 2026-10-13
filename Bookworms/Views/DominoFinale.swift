@@ -17,8 +17,8 @@ import simd
 /// before the camera comes to rest. The last book waits where it fell; as the camera settles,
 /// it springs up out of the spread toward the viewer, hangs there a beat, and slams down into
 /// its place, landing `snapLanding` after the camera stops (`snapPose(from:to:top:time:)`).
-/// Out of the lamp's beam, the room lights it more (`DeskStage.light(_:boost:)`), so it shows
-/// as brightly as the books under it (`boost(at:over:radius:)`).
+/// Out of the lamp's beam, the room lights it more (`DeskStage.light(_:boost:)`), so it stays
+/// lit rather than going dark (`boost(at:over:radius:)`).
 /// The poses are pure functions of time, so tests replay them.
 enum DominoFinale {
     /// How long the camera's move to the spread's view takes, in seconds.

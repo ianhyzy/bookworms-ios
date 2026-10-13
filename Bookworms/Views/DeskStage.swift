@@ -91,9 +91,9 @@ final class DeskStage {
     }
 
     /// Lights the parts of `entity` that the room lights, such as a book's model, with the
-    /// room's light `boost` stops brighter, as a book held out of the lamp's beam needs to show
-    /// as brightly as the books in it, or with the room's own light for no boost. One entity
-    /// at a time can have a boost: a later call sets it for every entity it lights.
+    /// room's light `boost` stops brighter, as a book held out of the lamp's beam needs to stay
+    /// lit, or with the room's own light for no boost. One entity at a time can have a boost: a
+    /// later call sets it for every entity it lights.
     func light(_ entity: Entity, boost: Float) {
         var source = lighting
         if boost > 0, var light = lighting.components[ImageBasedLightComponent.self] {
