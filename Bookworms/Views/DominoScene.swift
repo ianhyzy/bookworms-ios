@@ -1,3 +1,4 @@
+import Combine
 import CoreMedia
 import RealityKit
 import SwiftUI
@@ -435,6 +436,8 @@ final class DominoScene {
 
     /// The camera that shows.
     private let camera = PerspectiveCamera()
+    /// The current view's anchor that holds `root` (see `attach`).
+    private var holder: AnchorEntity?
     private let factory = BookFactory()
     private let stage = DeskStage()
     private var poolRadius: Float?
@@ -511,8 +514,8 @@ final class DominoScene {
     /// whether they pinch, and the drag's translation then.
     private var cameraMove:
         (start: PileCamera, focus: SIMD3<Float>, pinches: Bool, translation: CGSize)?
-    private var updates: EventSubscription?
-    private var collisions: EventSubscription?
+    private var updates: (any Cancellable)?
+    private var collisions: (any Cancellable)?
     /// The books dropping into their places, in chain order (see `enter(by:)`).
     private var entering: [Entry] = []
     /// Seconds of frames since the scene was attached, which time the books' drops, and when the
@@ -589,24 +592,39 @@ final class DominoScene {
         root.addChild(probe)
         factory.coverArrived = { [weak self] id, material in self?.retexture(id, cover: material) }
         lifter.standing = { [weak self] in self?.returnPose }
+        feedback.speeds = ImpactSound.dominoSpeeds
     }
 
-    /// Calls `update` every frame, and plays collisions through `feedback`, while `root` is
-    /// active in the view's scene.
-    func attach(to content: inout RealityViewCameraContent) {
-        content.add(root)
-        updates = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
+    /// Shows the scene in `view`, and calls `update` every frame and plays collisions through
+    /// `feedback` while `root` is active there. Each view gets an anchor of its own, under
+    /// which the root hangs; a view that goes leaves the root under its orphaned anchor, and
+    /// the next view's anchor takes it (see `DeskSceneView`).
+    func attach(to view: ARView) {
+        let holder = AnchorEntity(world: .zero)
+        holder.addChild(root)
+        view.scene.addAnchor(holder)
+        self.holder = holder
+        updates = view.scene.subscribe(to: SceneEvents.Update.self) { [weak self] event in
             // Physics stops while the root is inactive, disabled out of sight or out of the
             // scene while a pile image renders, so the scene's clocks and camera wait too.
             guard let self, root.isActive else { return }
             update(event.deltaTime)
         }
-        collisions = content.subscribe(to: CollisionEvents.Began.self) { [weak self] event in
+        collisions = view.scene.subscribe(to: CollisionEvents.Began.self) { [weak self] event in
             guard let self, event.entityA != hitBox, event.entityB != hitBox,
                 !lifter.handle(event)
             else { return }
             feedback.collide(event, pan: pan)
         }
+    }
+
+    /// Takes the root out of the view's scene, so nothing draws while a pile image renders.
+    func detach() { root.removeFromParent() }
+
+    /// Puts the root back under the current view's anchor after `detach`.
+    func reattach() {
+        guard root.parent == nil, let holder else { return }
+        holder.addChild(root)
     }
 
     /// Hides the dust, holds the marker's glow steady, and stops the camera from following the

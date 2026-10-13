@@ -1,3 +1,4 @@
+import Combine
 import CoreMotion
 import RealityKit
 import SwiftUI
@@ -542,6 +543,8 @@ final class BookPileScene {
 
     /// The camera the pile is seen through, for a renderer that draws the scene without a view.
     let camera = PerspectiveCamera()
+    /// The current view's anchor that holds `root` (see `attach`).
+    private var holder: AnchorEntity?
     /// Haptics and sounds for collisions, which `BookPileView` starts and stops.
     let feedback = ImpactFeedback()
     /// Set from a new pile's plan until its first books fall (see `planDrop`).
@@ -583,8 +586,8 @@ final class BookPileScene {
     private var periods: [PilePeriod]?
     private let calendar = PileCalendar()
     private var gravity = SIMD3<Float>(0, -PileLayout.gravity, 0)
-    private var updates: EventSubscription?
-    private var collisions: EventSubscription?
+    private var updates: (any Cancellable)?
+    private var collisions: (any Cancellable)?
     /// The flight of a book lifted to its details, and the reader's camera when it lifted,
     /// which returns with the book.
     let lifter: BookLifter
@@ -634,18 +637,22 @@ final class BookPileScene {
         factory.coverArrived = { [weak self] id, material in self?.retexture(id, cover: material) }
     }
 
-    /// Calls `update` every frame, and plays collisions through `feedback`, while `root` is
-    /// active in the view's scene. A thrown-back book's first hit lands it instead (see
-    /// `BookLifter.handle`).
-    func attach(to content: inout RealityViewCameraContent) {
-        content.add(root)
-        updates = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
+    /// Shows the scene in `view`, and calls `update` every frame and plays collisions through
+    /// `feedback` while `root` is active there. A thrown-back book's first hit lands it instead
+    /// (see `BookLifter.handle`). Each view gets an anchor of its own under which the root
+    /// hangs, as `DominoScene.attach` explains.
+    func attach(to view: ARView) {
+        let holder = AnchorEntity(world: .zero)
+        holder.addChild(root)
+        view.scene.addAnchor(holder)
+        self.holder = holder
+        updates = view.scene.subscribe(to: SceneEvents.Update.self) { [weak self] event in
             // Physics stops while the root is inactive, disabled out of sight or out of the
             // scene while a pile image renders, so the scene's clocks and camera wait too.
             guard let self, root.isActive else { return }
             update(event.deltaTime)
         }
-        collisions = content.subscribe(to: CollisionEvents.Began.self) { [weak self] event in
+        collisions = view.scene.subscribe(to: CollisionEvents.Began.self) { [weak self] event in
             guard let self else { return }
             land(event.entityA)
             land(event.entityB)
@@ -653,6 +660,43 @@ final class BookPileScene {
             feedback.collide(event, pan: pan)
         }
     }
+
+    /// Takes the root out of the view's scene, so nothing draws while a pile image renders.
+    func detach() { root.removeFromParent() }
+
+    /// Puts the root back under the current view's anchor after `detach`.
+    func reattach() {
+        guard root.parent == nil, let holder else { return }
+        holder.addChild(root)
+    }
+
+    /// The ray from the camera, as the reader's view shows the pile, through `point` in a view
+    /// of `size`, or `nil` for an empty view.
+    func ray(through point: CGPoint, in size: CGSize) -> (
+        origin: SIMD3<Float>, direction: SIMD3<Float>
+    )? {
+        guard size.width > 0, size.height > 0 else { return nil }
+        return view.ray(
+            ndc: [Float(point.x / size.width) * 2 - 1, 1 - Float(point.y / size.height) * 2],
+            aspect: aspect)
+    }
+
+    /// The book under `point`, in a view of `size`, or `nil` for the table or an empty view.
+    func book(at point: CGPoint, in size: CGSize) -> ModelEntity? {
+        guard let ray = ray(through: point, in: size), let scene = root.scene,
+            let hit =
+                scene.raycast(
+                    origin: ray.origin, direction: ray.direction, length: 300, query: .nearest,
+                    relativeTo: root
+                )
+                .first?
+                .entity as? ModelEntity, bookIDs[hit.id] != nil
+        else { return nil }
+        return hit
+    }
+
+    /// The book a finger holds, while one does.
+    var heldBook: ModelEntity? { drag?.book }
 
     /// Where `point` shows from left to right on screen, as a stereo position from -0.8 to 0.8,
     /// so no hit plays from one side alone.

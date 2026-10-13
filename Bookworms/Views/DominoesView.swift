@@ -20,11 +20,13 @@ import SwiftUI
 /// camera over until the next push. **Set up again** stands every book again.
 /// Collisions play taps and, while the desk's **Sounds** is on, clacks (`ImpactFeedback`).
 ///
-/// Leaving stops the haptic and audio engines and disables the table and books, so nothing
-/// simulates or draws out of sight. Leaving other than for details, such as for another tab,
-/// also puts a lifted book back at once and frees the books and textures, and they stand again
-/// on return. While a pile image renders, the scene leaves the view and a lifted
-/// book goes back, as `BookPileView` explains.
+/// The scene's view lives only while Desk is on screen (`DeskSceneView`), so a hidden tab runs
+/// no frame loop; the scene keeps its books, so the chain is as the reader left it on return,
+/// standing or fallen. Leaving stops the haptic and audio engines, and leaving other than for
+/// details, such as for another tab, puts a lifted book back at once. A memory warning while
+/// the tab is hidden frees the books and textures, and they stand again on return. While a
+/// pile image renders, the scene leaves the view and a lifted book goes back, as
+/// `BookPileView` explains.
 struct DominoesView: View {
     let books: [CloudBook]
     /// The name of the books' time frame.
@@ -65,25 +67,23 @@ struct DominoesView: View {
     }
 
     var body: some View {
-        RealityView { content in
-            content.camera = .virtual
-            content.renderingEffects.antialiasing = .multisample4X
-            scene.attach(to: &content)
-            if PileSnapshotRenderer.isRendering { scene.root.removeFromParent() }
-        } update: { content in
-            // Puts back what a finished pile image took out of the scene.
-            if !PileSnapshotRenderer.isRendering && scene.root.scene == nil {
-                content.add(scene.root)
-            }
+        DeskSceneView { view in
+            scene.attach(to: view)
+            if PileSnapshotRenderer.isRendering { scene.detach() }
         }
-        .gesture(touchBook)
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 0)
-                .updating($touch) { value, touch, _ in
-                    touch = value.startLocation
-                }
-        )
-        .simultaneousGesture(moveCamera)
+        // A SwiftUI layer takes the touches: gestures on the hosted view would not fire.
+        .overlay {
+            Color.clear
+                .contentShape(.rect)
+                .gesture(touchBook)
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 0)
+                        .updating($touch) { value, touch, _ in
+                            touch = value.startLocation
+                        }
+                )
+                .simultaneousGesture(moveCamera)
+        }
         .allowsHitTesting(details.lift == nil)
         .onGeometryChange(for: CGRect.self) {
             $0.frame(in: .global)
@@ -135,24 +135,33 @@ struct DominoesView: View {
         .onAppear {
             showsBook = false
             isShown = true
-            scene.root.isEnabled = true
         }
         .onDisappear {
             isShown = false
             scene.endCameraMove()
             // `onChange(of: playsFeedback)` does not run for a view that is being removed.
             scene.feedback.stop()
-            // A hidden tab keeps its `RealityView`, which RealityKit goes on updating and
-            // drawing, so the root is disabled until the view shows again.
-            scene.root.isEnabled = false
-            guard !showsBook else { return }
+            if !showsBook { details.putBack(scene) }
+        }
+        // Leaves the view nothing to draw while a pile image renders, in whichever tab, and
+        // puts the scene back when it ends.
+        .onChange(of: PileSnapshotRenderer.isRendering) { _, isRendering in
+            if isRendering {
+                details.putBack(scene)
+                scene.detach()
+            } else {
+                scene.reattach()
+            }
+        }
+        // The books and their textures are the chain's only large memory; a hidden chain gives
+        // them up under pressure and stands again on return.
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: UIApplication.didReceiveMemoryWarningNotification)
+        ) { _ in
+            guard !isShown else { return }
             details.putBack(scene)
             scene.release()
-        }
-        .onChange(of: PileSnapshotRenderer.isRendering) { _, isRendering in
-            guard isRendering else { return }
-            details.putBack(scene)
-            scene.root.removeFromParent()
         }
         .onChange(of: sounds, initial: true) { scene.feedback.playsSounds = sounds }
         // Keeps the haptic and audio engines only while collisions can be seen.

@@ -48,12 +48,25 @@ enum ImpactSound {
     /// Hits weaker than this are neither heard nor felt, so a settling pile stays quiet.
     static let threshold: Float = 0.04
 
-    /// How hard a hit lands, from 0 to 1: the moving book's change in speed, from 2 units per
-    /// second (a nudge) up to 24 (a long fall), weighted by its mass, so a heavy book lands
-    /// harder than a light one at the same speed.
-    static func strength(impulse: Float, mass: Float) -> Float {
+    /// The change in speed, in units per second, that a hit in a pile needs to be heard at
+    /// all, and the change at which it is as hard as hits get: a nudge, and a long fall.
+    static let pileSpeeds: ClosedRange<Float> = 2...24
+    /// The same for a domino chain, whose books tip into each other from standing, so a hit
+    /// changes a book's speed by far less than a drop into a pile does. In a 39-book chain
+    /// (`-BookwormsImpactLog YES`), half the hits change it by under 0.9 units per second, nine
+    /// in ten by under 2.1, and the hardest, books landing flat on the table, by 3. Hits under
+    /// about 0.4, the books settling, stay silent.
+    static let dominoSpeeds: ClosedRange<Float> = 0.25...3.2
+
+    /// How hard a hit lands, from 0 to 1: the moving book's change in speed, from the bottom of
+    /// `speeds` up to its top, weighted by its mass, so a heavy book lands harder than a light
+    /// one at the same speed.
+    static func strength(
+        impulse: Float, mass: Float, speeds: ClosedRange<Float> = pileSpeeds
+    ) -> Float {
         let speed = impulse / max(mass, 0.05)
-        let hardness = min(1, max(0, (speed - 2) / 22))
+        let hardness = min(
+            1, max(0, (speed - speeds.lowerBound) / (speeds.upperBound - speeds.lowerBound)))
         let weight = min(1.3, max(0.5, mass / 0.6))
         return min(1, hardness * weight)
     }
@@ -135,14 +148,18 @@ struct ImpactThrottle {
 /// Taps and knocks for collisions in a 3D scene.
 ///
 /// The scene passes each `CollisionEvents.Began` to `collide(_:pan:)`. A hit plays a Core
-/// Haptics tap whose intensity follows its strength (`ImpactSound.strength`), sharper for a
-/// light book, and, while `playsSounds`, a short synthesized sound: a thud for a heavy book, a
-/// slap for a light one, panned to where the hit shows on screen. Taps come at most every 60
-/// ms and sounds every 30 ms, unless a hit is much stronger (`ImpactThrottle`). Sounds take
-/// the variants in turn, so a recording names the samples that played.
+/// Haptics tap whose intensity follows its strength (`ImpactSound.strength`, over the scene's
+/// `speeds`), from a floor every admitted hit can be felt at, sharper for a light book, and,
+/// while `playsSounds`, a short synthesized sound: a thud for a heavy book, a slap for a light
+/// one, panned to where the hit shows on screen. Taps come at most every 60 ms and sounds every
+/// 30 ms, unless a hit is much stronger (`ImpactThrottle`). Sounds take the variants in turn,
+/// so a recording names the samples that played.
 ///
 /// `ImpactAudio` plays the sounds away from the main actor. Devices without haptics, such as
-/// the Simulator, only play sounds. `start` and `stop` bound both engines' lifetimes.
+/// the Simulator, only play sounds. `start` and `stop` bound both engines' lifetimes. The
+/// haptic engine shuts itself down while no hit plays, such as while a chain stands waiting
+/// for a push, and the next tap starts it again. The audio session's ambient category follows
+/// the silent switch.
 ///
 /// `startRecording` keeps every hit whose sound passes the throttle, with its simulation time,
 /// until `finishRecording`, so an offline renderer can mix the same `ImpactSound` samples.
@@ -155,6 +172,12 @@ final class ImpactFeedback {
             setAudio(playsSounds)
         }
     }
+    /// The changes in speed that span a hit's strength, from barely audible to as hard as hits
+    /// get, for the scene's kind of collisions (see `ImpactSound.strength`).
+    var speeds = ImpactSound.pileSpeeds
+
+    /// The least intensity a haptic tap plays at: lighter taps go unfelt in the hand.
+    static let tapFloor: Float = 0.35
 
     nonisolated private static let log = Logger(
         subsystem: "gay.ian.Bookworms.iOS", category: "impacts")
@@ -164,6 +187,8 @@ final class ImpactFeedback {
     private var audioRequest = 0
     private var isActive = false
     private var haptics: CHHapticEngine?
+    /// Whether the haptic engine runs, which its idle shutdown and interruptions end.
+    private var hapticsRunning = false
     private var hapticThrottle = ImpactThrottle(interval: 0.06)
     private var soundThrottle = ImpactThrottle(interval: 0.03)
     /// Counts the sounds, which take the variants in turn.
@@ -186,6 +211,7 @@ final class ImpactFeedback {
         isActive = false
         haptics?.stop()
         haptics = nil
+        hapticsRunning = false
         setAudio(false)
     }
 
@@ -213,12 +239,21 @@ final class ImpactFeedback {
         impulse: Float, mass: Float, position: SIMD3<Float>,
         pan: (SIMD3<Float>) -> Float, minimum: Float = 0
     ) {
-        let strength = max(minimum, ImpactSound.strength(impulse: impulse, mass: mass))
+        let strength = max(
+            minimum, ImpactSound.strength(impulse: impulse, mass: mass, speeds: speeds))
+        var played = (tap: false, sound: false)
+        #if DEBUG
+            defer { logHit(impulse: impulse, mass: mass, strength: strength, played: played) }
+        #endif
         guard strength >= ImpactSound.threshold else { return }
-        if hapticThrottle.admit(strength, at: clock), haptics != nil {
+        // The throttle admits taps whether or not the hardware plays them, so a device plays
+        // the same taps as the log counts.
+        played.tap = hapticThrottle.admit(strength, at: clock)
+        if played.tap, haptics != nil {
             tap(strength: strength, sharpness: mass < ImpactSound.heavyMass ? 0.6 : 0.25)
         }
         guard soundThrottle.admit(strength, at: clock) else { return }
+        played.sound = true
         let kind = ImpactSound.kind(mass: mass)
         let variant = sounds % ImpactSound.variants
         let stereo = pan(position)
@@ -235,6 +270,33 @@ final class ImpactFeedback {
             await audio.play(kind, variant: variant, volume: strength, pan: stereo)
         }
     }
+
+    #if DEBUG
+        /// Whether `-BookwormsImpactLog YES` asks for the hit log, read once.
+        private static let logsHits = UserDefaults.standard.bool(forKey: "BookwormsImpactLog")
+        private var hitLog: [String] = []
+
+        /// Simulator hook: with `-BookwormsImpactLog YES`, appends every hit the scene reports
+        /// to `Library/Caches/Bookworms/impact-log.csv`: the clock, its impulse, the body's mass,
+        /// its strength, and whether it played a tap and a sound, which the throttles decide.
+        /// The Simulator plays no haptics, so there `tap` says whether a device would have.
+        /// The file is written every 20 hits.
+        private func logHit(
+            impulse: Float, mass: Float, strength: Float, played: (tap: Bool, sound: Bool)
+        ) {
+            guard Self.logsHits else { return }
+            if hitLog.isEmpty { hitLog = ["clock,impulse,mass,strength,tap,sound"] }
+            hitLog.append(
+                [clock, Double(impulse), Double(mass), Double(strength)]
+                    .map { String(format: "%.4f", $0) }
+                    .joined(separator: ",") + ",\(played.tap ? 1 : 0),\(played.sound ? 1 : 0)")
+            guard hitLog.count.isMultiple(of: 20) else { return }
+            let url = URL.cachesDirectory.appending(path: "Bookworms/impact-log.csv")
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? hitLog.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        }
+    #endif
 
     /// Starts keeping every hit whose sound passes the throttle, replacing a recording in
     /// progress.
@@ -262,24 +324,38 @@ final class ImpactFeedback {
             let engine = try? CHHapticEngine()
         else { return }
         engine.playsHapticsOnly = true
+        // The engine stops itself once no tap has played for a while, such as while a chain
+        // stands waiting for a push; `tap` starts it again. A stopped engine ignores players.
         engine.isAutoShutdownEnabled = true
+        engine.stoppedHandler = { [weak self] _ in
+            Task { @MainActor in self?.hapticsRunning = false }
+        }
         engine.resetHandler = { [weak self] in
-            Task { @MainActor in try? self?.haptics?.start() }
+            Task { @MainActor in self?.hapticsRunning = false }
         }
         haptics = engine
-        engine.start { error in
+        engine.start { [weak self] error in
+            Task { @MainActor in self?.hapticsRunning = error == nil }
             if let error { Self.log.error("Haptics did not start: \(error)") }
         }
     }
 
+    /// Plays a transient tap at least `tapFloor` strong, starting the engine again first if
+    /// it stopped.
     private func tap(strength: Float, sharpness: Float) {
+        guard let haptics else { return }
+        if !hapticsRunning {
+            guard (try? haptics.start()) != nil else { return }
+            hapticsRunning = true
+        }
+        let intensity = Self.tapFloor + (1 - Self.tapFloor) * strength
         let event = CHHapticEvent(
             eventType: .hapticTransient,
             parameters: [
-                CHHapticEventParameter(parameterID: .hapticIntensity, value: strength),
+                CHHapticEventParameter(parameterID: .hapticIntensity, value: intensity),
                 CHHapticEventParameter(parameterID: .hapticSharpness, value: sharpness),
             ], relativeTime: 0)
-        guard let haptics, let pattern = try? CHHapticPattern(events: [event], parameters: []),
+        guard let pattern = try? CHHapticPattern(events: [event], parameters: []),
             let player = try? haptics.makePlayer(with: pattern)
         else { return }
         try? player.start(atTime: CHHapticTimeImmediate)

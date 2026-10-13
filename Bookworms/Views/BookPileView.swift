@@ -29,11 +29,12 @@ struct PileViewport: Equatable {
 /// pile. With Reduce Motion on, or when the pile cannot lift the book, a tap calls `open` to
 /// push the details instead.
 ///
-/// Out of sight, under pushed details or in another tab, the table and books are disabled, so
-/// nothing simulates or draws. Returning from pushed details, or from the Share tab
-/// that the lifted book's **Share** opens, finds the pile as the reader left it. Leaving the
-/// pile any other way, such as for another tab, puts a lifted or returning book back at once
-/// and frees the books and textures, and the books drop again on the reader's return.
+/// The scene's view lives only while Desk is on screen and no share sheet covers the pile
+/// (`DeskSceneView`), so a hidden tab runs no frame loop; the scene keeps its books, so the
+/// pile is as the reader left it on return. Under pushed details, the table and books are
+/// disabled, so nothing simulates or draws. Leaving the pile other than for details, such as
+/// for another tab, puts a lifted or returning book back at once. A memory warning while the
+/// tab is hidden frees the books and textures, and the books drop again on the reader's return.
 ///
 /// **Share** makes an image of `books`, up to `PileSnapshotRenderer.maximumBooks` of them, in a
 /// new pile headed `title`. While its sheet is open, the pile leaves the screen and keeps its
@@ -42,9 +43,7 @@ struct PileViewport: Equatable {
 /// RealityKit's render thread can crash drawing this view while a share image's offscreen
 /// renderer steps the same engine, so while any pile image renders, such as the Share tab's
 /// Pile template, the table and books leave the view's scene, and a lifted book goes back. A
-/// book cannot lift while they are out. RealityKit keeps updating a `RealityView` in a tab that
-/// is not selected, and a view removed there lingers until its tab shows again and then takes
-/// its scene along, so the view itself stays.
+/// book cannot lift while they are out.
 struct BookPileView: View {
     /// The most books the pile drops. Tall enough stacks of more would reach the ceiling, and
     /// their textures would outgrow the memory `BookPileScene` budgets for.
@@ -102,20 +101,18 @@ struct BookPileView: View {
             if sharesPile {
                 Color.clear
             } else {
-                RealityView { content in
-                    content.camera = .virtual
-                    content.renderingEffects.antialiasing = .multisample4X
-                    scene.attach(to: &content)
-                    if PileSnapshotRenderer.isRendering { scene.root.removeFromParent() }
-                } update: { content in
-                    // Puts back what a finished render took out of the scene.
-                    if !PileSnapshotRenderer.isRendering && scene.root.scene == nil {
-                        content.add(scene.root)
-                    }
+                DeskSceneView { view in
+                    scene.attach(to: view)
+                    if PileSnapshotRenderer.isRendering { scene.detach() }
                 }
-                .gesture(throwBook)
-                .gesture(openBook)
-                .simultaneousGesture(moveCamera)
+                // A SwiftUI layer takes the touches: gestures on the hosted view would not fire.
+                .overlay {
+                    Color.clear
+                        .contentShape(.rect)
+                        .gesture(throwBook)
+                        .gesture(openBook)
+                        .simultaneousGesture(moveCamera)
+                }
                 .allowsHitTesting(details.lift == nil)
                 .onGeometryChange(for: CGRect.self) {
                     $0.frame(in: .global)
@@ -178,7 +175,6 @@ struct BookPileView: View {
         .onAppear {
             showsBook = false
             isShown = true
-            scene.root.isEnabled = true
             #if DEBUG
                 if PileSnapshotDebug.opensSheet { sharesPile = true }
             #endif
@@ -190,18 +186,27 @@ struct BookPileView: View {
             // A view removed from the hierarchy, such as for another 3D view, gets no
             // `playsFeedback` change, so this releases the engines and the audio session.
             scene.feedback.stop()
-            // A hidden tab keeps its `RealityView`, which RealityKit goes on updating and
-            // drawing, so the root is disabled until the view shows again.
-            scene.root.isEnabled = false
-            guard !showsBook else { return }
+            if !showsBook { details.putBack(scene) }
+        }
+        // Leaves the view nothing to draw while a share image renders, in whichever tab, and
+        // puts the scene back when it ends.
+        .onChange(of: PileSnapshotRenderer.isRendering) { _, isRendering in
+            if isRendering {
+                details.putBack(scene)
+                scene.detach()
+            } else {
+                scene.reattach()
+            }
+        }
+        // The books and their textures are the pile's only large memory; a hidden pile gives
+        // them up under pressure and drops again on return.
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: UIApplication.didReceiveMemoryWarningNotification)
+        ) { _ in
+            guard !isShown else { return }
             details.putBack(scene)
             scene.release()
-        }
-        // Leaves the view nothing to draw while a share image renders, in whichever tab.
-        .onChange(of: PileSnapshotRenderer.isRendering) { _, isRendering in
-            guard isRendering else { return }
-            details.putBack(scene)
-            scene.root.removeFromParent()
         }
         // Stops sampling motion while nothing reads it, and takes a new reference afterward.
         .onChange(of: tracksMotion) { scene.setTilt(tiltMode, tracking: tracksMotion) }
@@ -253,21 +258,24 @@ struct BookPileView: View {
 
     private var dropTitle: String { reduceMotion ? "Stack again" : "Drop again" }
 
+    /// A drag that starts on a book picks it up and steers it under the finger; the scene's
+    /// own ray finds the book, since the view takes no entity-targeted gestures.
     private var throwBook: some Gesture {
         DragGesture(minimumDistance: 6)
-            .targetedToAnyEntity()
             .updating($holdsBook) { _, holds, _ in holds = true }
             .onChanged { value in
-                scene.drag(
-                    value.entity, along: value.ray(through: value.location, in: .local, to: .scene))
+                let size = viewport?.size ?? .zero
+                guard let book = scene.heldBook ?? scene.book(at: value.startLocation, in: size)
+                else { return }
+                scene.drag(book, along: scene.ray(through: value.location, in: size))
             }
     }
 
     private var openBook: some Gesture {
         SpatialTapGesture()
-            .targetedToAnyEntity()
             .onEnded { value in
-                guard let id = scene.bookID(for: value.entity),
+                guard let entity = scene.book(at: value.location, in: viewport?.size ?? .zero),
+                    let id = scene.bookID(for: entity),
                     let book = books.first(where: { $0.id == id })
                 else { return }
                 show(book)
