@@ -87,7 +87,7 @@ struct PileSnapshotSheet: View {
                 }
             }
             .padding()
-            .navigationTitle("Share pile")
+            .navigationTitle("Share desk")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -135,7 +135,7 @@ struct PileSnapshotSheet: View {
                     .accessibilityLabel("\(image.name) preview")
             } else if failed && !isPending {
                 ContentUnavailableView(
-                    "Couldn't draw the pile", systemImage: "exclamationmark.triangle",
+                    "Couldn't draw the desk", systemImage: "exclamationmark.triangle",
                     description: Text("Try Shuffle or another size."))
             }
             if isPending {
@@ -179,7 +179,7 @@ struct PileSnapshotSheet: View {
                 model: model)
             // A render cancelled after its last check still returns; a newer one is on its way.
             try Task.checkCancellation()
-            image = ShareImage(image: drawn, name: "Pile \(title)")
+            image = ShareImage(image: drawn, name: "Desk \(title)")
             failed = false
             #if DEBUG
                 PileSnapshotDebug.write(drawn)

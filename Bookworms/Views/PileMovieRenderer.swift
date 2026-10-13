@@ -15,7 +15,7 @@ struct PileMovie: Sendable {
     var livePhoto: URL?
     /// The last frame, for previews.
     let poster: CGImage
-    /// The name to share the movie under, such as "Pile 2025".
+    /// The name to share the movie under, such as "Desk 2025".
     let name: String
 
     /// Deletes the movie, the still, and their folder.
@@ -65,7 +65,7 @@ extension PileSnapshotRenderer {
         let layout = PileSnapshotLayout(aspect: aspect, count: shown.count)
         removeStaleClips()
         let folder = URL.temporaryDirectory.appending(path: "PileVideo-\(UUID().uuidString)")
-        let name = "Pile \(title)"
+        let name = "Desk \(title)"
         let file = name.replacing("/", with: "-").replacing(":", with: "-")
         let identifier = UUID().uuidString
         do {

@@ -13,8 +13,9 @@ import os
 /// starts again when the app is active again, and the seed makes the same clip. Closing the
 /// sheet cancels a render in progress, and the video's files are deleted once the sheet is
 /// gone. The finished clip loops in the preview, except with Reduce Motion on, when it waits
-/// for Play. **Share** offers the MP4 in the share sheet, which reports the result in a toast
-/// (`shareSheet(_:onComplete:)`). **Save as Live Photo** asks to add to Photos, then saves the
+/// for **Play**; a tap pauses or plays it. The preview leaves out the credit at the clip's
+/// bottom edge, which the shared MP4 and the Live Photo carry. **Share** offers the MP4 in the
+/// share sheet, which reports the result in a toast (`shareSheet(_:onComplete:)`). **Save as Live Photo** asks to add to Photos, then saves the
 /// clip's last frame paired with the clip's QuickTime copy, and reports the result in a toast.
 struct PileVideoSheet: View {
     let books: [CloudBook]
@@ -38,6 +39,7 @@ struct PileVideoSheet: View {
     @State private var failed = false
     @State private var footage = Footage()
     @State private var player: AVQueuePlayer?
+    @State private var isPlaying = false
     @State private var looper: AVPlayerLooper?
     @State private var files: SharedFiles?
     @State private var isSaving = false
@@ -61,7 +63,7 @@ struct PileVideoSheet: View {
                 }
             }
             .padding()
-            .navigationTitle("Pile video")
+            .navigationTitle("Desk video")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -86,24 +88,46 @@ struct PileVideoSheet: View {
         .task(id: scenePhase == .active) {
             if scenePhase == .active { await render() }
         }
-        // Dark from either tab, like Share pile: the clip's heading and table are dark.
+        // Dark from either tab, like Share desk: the clip's heading and table are dark.
         .preferredColorScheme(.dark)
     }
 
+    /// The clip, or its latest frame and progress while it renders. The frames end in the
+    /// credit, which the app leaves out: the preview is `ShareCredit.height` shorter than the
+    /// clip at the bottom, and as much at the top, above the heading, and fills its width, so
+    /// the credit falls outside it. The clip has no system controls, whose full-screen view
+    /// would show the whole frame: a tap pauses or plays it, and **Play** shows while it is
+    /// paused.
     private var preview: some View {
         ZStack {
             // Fills the video's shape before there is one.
             Rectangle().fill(.quaternary)
-            if let player {
-                VideoPlayer(player: player)
-            } else if failed {
-                ContentUnavailableView(
-                    "Couldn't film the pile", systemImage: "exclamationmark.triangle",
-                    description: Text("Close this, then try Shuffle or another size."))
-            } else {
-                if let frame {
-                    Image(decorative: frame, scale: 1).resizable()
+            Color.clear.overlay {
+                if let player {
+                    FilledPlayer(player: player)
+                        .onTapGesture { play(!isPlaying) }
+                        .accessibilityElement()
+                        .accessibilityLabel("Video preview")
+                        .accessibilityAction(named: isPlaying ? "Pause" : "Play") {
+                            play(!isPlaying)
+                        }
+                } else if let frame, !failed {
+                    Image(decorative: frame, scale: 1).resizable().scaledToFill()
                 }
+            }
+            if player != nil, !isPlaying {
+                Button("Play", systemImage: "play.fill") { play(true) }
+                    .labelStyle(.iconOnly)
+                    .font(.title)
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.circle)
+                    .controlSize(.large)
+            }
+            if failed {
+                ContentUnavailableView(
+                    "Couldn't film the desk", systemImage: "exclamationmark.triangle",
+                    description: Text("Close this, then try Shuffle or another size."))
+            } else if player == nil {
                 Group {
                     if let progress {
                         ProgressView(value: progress) {
@@ -122,7 +146,9 @@ struct PileVideoSheet: View {
                 .frame(maxHeight: .infinity, alignment: frame == nil ? .center : .bottom)
             }
         }
-        .aspectRatio(aspect.size.width / aspect.size.height, contentMode: .fit)
+        .aspectRatio(
+            aspect.size.width / (aspect.size.height - 2 * ShareCredit.height), contentMode: .fit
+        )
         .clipShape(.rect(cornerRadius: 12))
         .frame(maxHeight: .infinity)
     }
@@ -146,7 +172,7 @@ struct PileVideoSheet: View {
             let player = AVQueuePlayer()
             looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: made.movie))
             self.player = player
-            if !reduceMotion { player.play() }
+            play(!reduceMotion)
             AccessibilityNotification.Announcement("Video ready").post()
             #if DEBUG
                 PileVideoDebug.write(made)
@@ -160,6 +186,12 @@ struct PileVideoSheet: View {
             Self.log.error("The video failed: \(error)")
             failed = true
         }
+    }
+
+    /// Plays or pauses the clip.
+    private func play(_ plays: Bool) {
+        isPlaying = plays
+        if plays { player?.play() } else { player?.pause() }
     }
 
     /// Saves the clip's QuickTime copy and its last frame to Photos as one Live Photo, with the
@@ -186,6 +218,28 @@ struct PileVideoSheet: View {
             Self.log.error("The Live Photo could not be saved: \(error)")
             model.toasts.show(.failure("Couldn't save to Photos"))
         }
+    }
+}
+
+/// A player layer whose video fills its view, cropping the video's edges, which SwiftUI's
+/// `VideoPlayer` cannot do.
+private struct FilledPlayer: UIViewRepresentable {
+    let player: AVPlayer
+
+    final class PlayerView: UIView {
+        override static var layerClass: AnyClass { AVPlayerLayer.self }
+        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+    }
+
+    func makeUIView(context: Context) -> PlayerView {
+        let view = PlayerView()
+        view.playerLayer.videoGravity = .resizeAspectFill
+        view.playerLayer.player = player
+        return view
+    }
+
+    func updateUIView(_ view: PlayerView, context: Context) {
+        view.playerLayer.player = player
     }
 }
 

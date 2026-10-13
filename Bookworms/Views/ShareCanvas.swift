@@ -16,7 +16,7 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         case .topFive: "Top Five"
         case .hotTakes: "Hot Takes"
         case .spectrum: "Spine Spectrum"
-        case .pile: "Pile"
+        case .pile: "Desk"
         case .justFinished: "Just Finished"
         case .review: "Review"
         case .currentlyReading: "Currently Reading"
@@ -271,6 +271,10 @@ struct ShareCanvas: View {
 /// The quiet credit that every exported share image and video carries at its bottom edge, in
 /// the bottom margin that every card keeps free of content. Previews in the app leave it out.
 struct ShareCredit: View {
+    /// The strip at the bottom of an export that the credit and its shadow take, in pixels,
+    /// which an in-app preview of a video leaves out.
+    static let height: CGFloat = 40
+
     var body: some View {
         Text("Created with Bookworms for iPhone")
             .font(.system(size: 22, weight: .medium))

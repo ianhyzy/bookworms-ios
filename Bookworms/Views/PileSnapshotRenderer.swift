@@ -270,7 +270,7 @@ enum PileSnapshotRenderer {
 enum PileSnapshotError: LocalizedError {
     case drawingFailed
 
-    var errorDescription: String? { "The pile could not be drawn." }
+    var errorDescription: String? { "The desk could not be drawn." }
 }
 
 /// Where a pile share image puts its heading and its books, and how sharp their textures are.
