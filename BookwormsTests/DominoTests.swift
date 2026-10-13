@@ -5,8 +5,8 @@ import simd
 
 @testable import Bookworms
 
-/// The dominoes' layout: finish order, the spacing rule, the winding path, its fit, and the
-/// cobwebs over long gaps.
+/// The dominoes' layout: finish order, the spacing rule, the winding path, its fit, the worm's
+/// rows, the cobwebs over long gaps, the finale's flights, and the video's length.
 final class DominoTests: XCTestCase {
     private static let day = 86_400.0
     private static let start = Date(timeIntervalSince1970: 1_577_880_000)  // 2020-01-01 12:00 UTC
@@ -386,6 +386,149 @@ final class DominoTests: XCTestCase {
     func testThreeDOffersDominoes() {
         XCTAssertEqual(ThreeDView.dominoes.title, "Dominoes")
         XCTAssertEqual(ThreeDView(rawValue: "dominoes"), .dominoes)
+    }
+
+    // MARK: Worm path
+
+    func testAPathOfOneLengthWindsOnWithoutEnd() {
+        let path = DominoPath(rowLength: 8)
+        XCTAssertEqual(path.rowLength(0), 8)
+        XCTAssertEqual(path.rowLength(7), 8)
+        XCTAssertEqual(path.period(3), 8 + .pi * DominoLayout.turnRadius, accuracy: 1e-5)
+        XCTAssertEqual(path.start(ofRow: 3), 3 * path.period, accuracy: 1e-4)
+        let (row, along) = path.row(at: 2 * path.period + 5)
+        XCTAssertEqual(row, 2)
+        XCTAssertEqual(along, 5, accuracy: 1e-4)
+        // The eighth row starts where the seventh turn ends, back at the first row's start.
+        XCTAssertEqual(path.point(at: path.start(ofRow: 8)).position.x, -4, accuracy: 1e-4)
+    }
+
+    func testRowsOfTheirOwnLengthsJoinThroughTheTurns() {
+        let path = DominoPath(rowLengths: [4, 10, 6])
+        var previous = path.point(at: 0)
+        XCTAssertEqual(previous.position, [-2, 0])
+        for step in 1...600 {
+            let point = path.point(at: Float(step) * 0.1)
+            XCTAssertEqual(simd_distance(point.position, previous.position), 0.1, accuracy: 0.002)
+            XCTAssertEqual(simd_length(point.heading), 1, accuracy: 1e-4)
+            previous = point
+        }
+        // The second row runs back from the first row's end for its own length, and the third
+        // on from there.
+        XCTAssertEqual(path.point(at: path.start(ofRow: 1)).position.x, 2, accuracy: 1e-4)
+        XCTAssertEqual(
+            path.point(at: path.start(ofRow: 1) + 10).position.x, -8, accuracy: 1e-4)
+        XCTAssertEqual(path.point(at: path.start(ofRow: 2)).position.x, -8, accuracy: 1e-4)
+        XCTAssertEqual(path.point(at: path.start(ofRow: 2)).position.y, 8, accuracy: 1e-4)
+        // Past the given rows, each is as long as the last and alternates between its ends.
+        XCTAssertEqual(path.rowLength(5), 6)
+        XCTAssertEqual(path.point(at: path.start(ofRow: 3)).position.x, -2, accuracy: 1e-4)
+        XCTAssertEqual(path.point(at: path.start(ofRow: 4)).position.x, -8, accuracy: 1e-4)
+        XCTAssertTrue(path.isTurning(at: path.start(ofRow: 1) + 10.5))
+        XCTAssertFalse(path.isTurning(at: path.start(ofRow: 2) + 1))
+    }
+
+    func testShortChainsWindInEvenRowsAndLongOnesFillTheWorm() throws {
+        XCTAssertNil(DominoLayout.wormRowLengths(for: 35))
+        let rows = try XCTUnwrap(DominoLayout.wormRowLengths(for: 270))
+        XCTAssertGreaterThanOrEqual(rows.count, DominoLayout.wormRows)
+        // The rows and their turns just hold the chain.
+        let total = rows.reduce(0, +) + Float(rows.count - 1) * .pi * DominoLayout.turnRadius
+        XCTAssertGreaterThanOrEqual(total, 270)
+        XCTAssertLessThan(total, 270 + rows.last! + .pi * DominoLayout.turnRadius)
+        // The head rounds: the first rows grow, then the body narrows a little to the bottom.
+        XCTAssertLessThan(rows[0], rows[1])
+        XCTAssertLessThan(rows[1], rows[2])
+        let widest = rows.max()!
+        XCTAssertGreaterThan(rows.last!, widest * 0.8)
+        XCTAssertLessThan(rows.last!, widest)
+        // The plan takes the worm for a long chain, and even rows for a short one.
+        let long = DominoLayout.plan(
+            DominoLayout.chain((0..<280).map { book($0, day: $0 * 3) }), aspect: 0.5)
+        XCTAssertGreaterThan(long.path.rowLengths.count, DominoLayout.wormRows)
+        let short = DominoLayout.plan(
+            DominoLayout.chain((0..<30).map { book($0, day: $0 * 3) }), aspect: 0.5)
+        XCTAssertEqual(short.path.rowLengths.count, 1)
+        // Every book keeps its spacing on the worm's rows and turns.
+        for (slot, next) in zip(long.slots, long.slots.dropFirst()) {
+            let gap = next.distance - slot.distance - (slot.size.z + next.size.z) / 2
+            XCTAssertGreaterThanOrEqual(gap, DominoLayout.gap(height: slot.size.y) - 1e-3)
+            XCTAssertLessThan(gap, slot.size.y * 0.4)
+        }
+    }
+
+    // MARK: Finale
+
+    func testTheGatheringLandsBooksInOrderWithinItsTime() {
+        for count in [1, 12, 60, 300] {
+            let starts = (0..<count).map { DominoFinale.start(of: $0, count: count) }
+            XCTAssertEqual(starts.first, 0)
+            XCTAssertLessThanOrEqual(starts.last!, DominoFinale.spreadTime + 1e-4)
+            XCTAssertEqual(starts, starts.sorted())
+            XCTAssertEqual(
+                DominoFinale.duration(count: count), starts.last! + DominoFinale.flightTime,
+                accuracy: 1e-5)
+            XCTAssertLessThan(DominoFinale.duration(count: count), 5)
+        }
+        XCTAssertEqual(DominoFinale.step(count: 12), DominoFinale.longestStep)
+    }
+
+    func testAFlightLiftsTurnsAndSettlesAtRest() {
+        let from = Transform(
+            rotation: simd_quatf(angle: 1.2, axis: simd_normalize([0.3, 1, 0.2])),
+            translation: [-6, 0.1, 4])
+        let to = Transform(rotation: PileSpread.upright, translation: [3, 0.15, -2])
+        func pose(_ progress: Float) -> Transform {
+            DominoFinale.pose(from: from, to: to, peak: 2.6, progress: progress)
+        }
+        XCTAssertEqual(simd_distance(pose(0).translation, from.translation), 0, accuracy: 1e-5)
+        XCTAssertEqual(simd_distance(pose(1).translation, to.translation), 0, accuracy: 1e-5)
+        XCTAssertEqual(
+            abs(simd_dot(pose(1).rotation.vector, to.rotation.vector)), 1, accuracy: 1e-5)
+        // It rises to its peak at the middle and comes no lower than its ends on the way.
+        XCTAssertEqual(
+            pose(0.5).translation.y, max(from.translation.y, to.translation.y) + 2.6, accuracy: 1e-4
+        )
+        for step in 0...20 {
+            let y = pose(Float(step) / 20).translation.y
+            XCTAssertGreaterThanOrEqual(y, min(from.translation.y, to.translation.y) - 1e-5)
+        }
+        // It leaves and lands at rest: the first and last hundredths barely move.
+        let way = simd_distance(from.translation, to.translation)
+        XCTAssertLessThan(simd_distance(pose(0.01).translation, from.translation), way * 0.002)
+        XCTAssertLessThan(simd_distance(pose(0.99).translation, to.translation), way * 0.002)
+    }
+
+    func testTheSpreadTurnsWithTheCamera() {
+        let slot = PileSlot(
+            book: book(1, day: 0),
+            transform: Transform(rotation: PileSpread.upright, translation: [2, 0.1, -3]))
+        let camera = PileCamera(target: [1, 0, -1], zoom: 1.4)
+        let turned = DominoFinale.turned([slot], camera: camera, by: .pi / 2)
+        let moved = turned.slots[0].transform.translation
+        XCTAssertEqual(moved.x, -3, accuracy: 1e-4)
+        XCTAssertEqual(moved.z, -2, accuracy: 1e-4)
+        XCTAssertEqual(turned.camera.yaw, .pi / 2, accuracy: 1e-5)
+        XCTAssertEqual(turned.camera.target.x, -1, accuracy: 1e-4)
+        XCTAssertEqual(turned.camera.target.z, -1, accuracy: 1e-4)
+        XCTAssertEqual(turned.camera.zoom, 1.4)
+        // The book's head still points away from the turned camera.
+        let head = turned.slots[0].transform.rotation.act([0, 1, 0])
+        let away = turned.camera.rotation.act([0, 0, -1])
+        XCTAssertGreaterThan(simd_dot(SIMD3(head.x, 0, head.z), SIMD3(away.x, 0, away.z)), 0.9)
+    }
+
+    func testAVideoFitsThirtySeconds() {
+        // A year's chain runs at live speed; a long one speeds up to fit, within its limit.
+        XCTAssertEqual(DominoMovieTiming.speed(run: 4, fixed: 18), 1)
+        XCTAssertEqual(DominoMovieTiming.speed(run: 28, fixed: 18), 28 / 12, accuracy: 1e-5)
+        XCTAssertEqual(DominoMovieTiming.speed(run: 60, fixed: 28), 4)
+        for (run, fixed): (Float, Float) in [(4, 18), (28, 18), (43, 16)] {
+            let speed = DominoMovieTiming.speed(run: run, fixed: fixed)
+            XCTAssertLessThanOrEqual(fixed + run / speed, DominoMovieTiming.longest + 1e-4)
+        }
+        XCTAssertEqual(
+            DominoMovieTiming.runEstimate(length: 95), 95 / DominoCameraRig.typicalPace)
     }
 
     /// Whether two standing books' footprints overlap, taking each as wide as its height allows,

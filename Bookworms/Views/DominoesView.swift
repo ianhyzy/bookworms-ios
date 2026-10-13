@@ -55,6 +55,8 @@ struct DominoesView: View {
     /// Set between `onAppear` and `onDisappear`. The view stays in the hierarchy under a pushed
     /// book or in a tab that is not selected.
     @State private var isShown = false
+    /// Set while the video sheet is open.
+    @State private var sharesRun = false
     /// Set while fingers move the camera, and reset when they lift.
     @GestureState private var movesCamera = false
     /// Where the current touch started, for a touch and hold, which `LongPressGesture` does not
@@ -102,6 +104,7 @@ struct DominoesView: View {
             }
             Button("Set up again") { generation += 1 }
         }
+        .overlay { heading }
         .settingUp(scene.loading.isLoading)
         .modifier(
             LiftedDetailsOverlay(details: details, scene: scene, canvas: canvas) {
@@ -177,9 +180,13 @@ struct DominoesView: View {
             // Physics runs on under details, which VoiceOver reads instead.
             guard isShown, details.lift == nil else { return }
             switch scene.status.phase {
-            case .stalled, .done: AccessibilityNotification.Announcement(status).post()
+            case .stalled, .done, .finished:
+                AccessibilityNotification.Announcement(status).post()
             default: break
             }
+            #if DEBUG
+                if scene.status.phase == .finished, DominoVideoDebug.opensSheet { sharesRun = true }
+            #endif
         }
         .toolbar {
             if details.lift == nil {
@@ -188,14 +195,39 @@ struct DominoesView: View {
                         generation += 1
                     }
                 }
+                // A video of the run, once the books have gathered.
+                if scene.status.phase == .finished {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Share", systemImage: "square.and.arrow.up") { sharesRun = true }
+                    }
+                }
             }
         }
+        .sheet(isPresented: $sharesRun) { PileVideoSheet(dominoes: books, title: title) }
         // Outside the viewport reading, so the path starts below the button, which hides with
         // the other controls while a lifted book's details show.
         .safeAreaInset(edge: .top, spacing: 0) {
             if details.lift == nil {
                 FrameChip(title: title, shown: chainLength, total: books.count)
             }
+        }
+    }
+
+    /// The heading over the gathered books, in the share images' style, once every book lies
+    /// in the spread; it fades in, and stays until **Set up again**.
+    @ViewBuilder private var heading: some View {
+        if scene.status.phase == .finished, details.lift == nil, let viewport {
+            // The overlay lies within the safe area, below the time frame button and above the
+            // tab bar, so the card needs no insets of its own.
+            DominoFinaleCard(
+                title: title, count: books.count, pages: DominoFinaleCard.pages(of: books),
+                scale: viewport.size.width / ShareAspect.story.size.width,
+                insets: EdgeInsets(top: 8, leading: 0, bottom: 0, trailing: 0)
+            )
+            .allowsHitTesting(false)
+            .transition(.opacity.animation(.easeIn(duration: 0.6)))
+            // VoiceOver reads the same totals as the scene's value.
+            .accessibilityHidden(true)
         }
     }
 
@@ -208,6 +240,9 @@ struct DominoesView: View {
         case .stalled(let fallen):
             "Stopped after \(fallen) of \(chainLength) books. Push the next book to go on."
         case .done: "Every book has fallen."
+        case .gathering: "The books are gathering."
+        case .finished:
+            "\(title): \(FrameChip.books(chainLength, of: books.count)) lie face up. Share offers a video and an image of the run."
         }
     }
 

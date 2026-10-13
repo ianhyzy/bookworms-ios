@@ -1,6 +1,7 @@
 import Metal
 import RealityKit
 import SwiftUI
+import os
 
 /// A pile video on disk: the movie, and the still of its last frame, which pair as a Live
 /// Photo. Both live in a folder of their own in the temporary directory.
@@ -33,13 +34,12 @@ extension PileSnapshotRenderer {
     /// The scene steps on the main actor, `PileMovieTiming.stepsPerFrame` steps per frame.
     /// Each frame renders into a Metal texture, which a blit copies into memory (`FrameTarget`);
     /// `PileMovieWriter` copies it into a pixel buffer, draws the heading and credit over it
-    /// there, and encodes it. Hits that `ImpactFeedback` would play are recorded, and each
-    /// frame's share of the soundtrack is mixed from them (`ImpactMix`) as soon as the frame
-    /// shows.
+    /// there, and encodes it. Hits that `ImpactFeedback` would play are recorded, and the
+    /// soundtrack is mixed from them (`ImpactMix`) once the frames are done.
     ///
     /// The render's turn ends with the last frame, so finishing the movie and the still never
     /// holds up the live pile or a share image. Each frame must render and reach the encoder
-    /// within `frameTimeout`, and the movie must finish within it too.
+    /// within `frameTimeout`, and the movie must finish within `PileMovieWriter.finishTimeout`.
     ///
     /// `progress` gets `nil` while fonts and covers load, then the fraction of frames done.
     /// `preview` gets every sixth finished frame at half size, and the last at full size, for
@@ -67,7 +67,7 @@ extension PileSnapshotRenderer {
             let movie = folder.appending(path: "\(file).mov")
             let still = folder.appending(path: "\(file).jpg")
             try await claim()
-            let filmed: (writer: PileMovieWriter, poster: CGImage)
+            let filmed: (writer: PileMovieWriter, poster: CGImage, hits: [ImpactRecord])
             do {
                 defer { release() }
                 filmed = try await film(
@@ -75,7 +75,8 @@ extension PileSnapshotRenderer {
                     model: model, to: movie, identifier: identifier, progress: progress,
                     preview: preview)
             }
-            try await filmed.writer.finish(before: .now + frameTimeout)
+            try await filmed.writer.finish(
+                hits: filmed.hits, before: .now + PileMovieWriter.finishTimeout)
             try await writeStill(filmed.poster, identifier: identifier, to: still)
             return PileMovie(movie: movie, still: still, poster: filmed.poster, name: name)
         } catch {
@@ -86,7 +87,7 @@ extension PileSnapshotRenderer {
 
     /// How long one frame may take to render and reach the encoder: far longer than a frame
     /// takes, even the first, which compiles shaders.
-    private static let frameTimeout = Duration.seconds(10)
+    static let frameTimeout = Duration.seconds(10)
 
     /// Whether this launch has deleted the clips that earlier ones left behind.
     private static var removedStaleClips = false
@@ -94,7 +95,7 @@ extension PileSnapshotRenderer {
     /// Deletes the clips that earlier launches left behind, once per launch. A clip outlives
     /// its sheet only when the app ends with the sheet open; a clip of this launch can still be
     /// playing, sharing, or saving.
-    private static func removeStaleClips() {
+    static func removeStaleClips() {
         guard !removedStaleClips else { return }
         removedStaleClips = true
         let files = FileManager.default
@@ -109,8 +110,8 @@ extension PileSnapshotRenderer {
 
     /// Encodes the still away from the main actor.
     @concurrent
-    nonisolated private static func writeStill(
-        _ image: CGImage, identifier: String, to url: URL
+    nonisolated static func writeStill(
+        _ image: CGImage, identifier: String?, to url: URL
     ) async throws {
         try PileMovieWriter.writeStill(image, identifier: identifier, to: url)
     }
@@ -122,7 +123,7 @@ extension PileSnapshotRenderer {
         _ books: [CloudBook], title: String, count: Int, layout: PileSnapshotLayout,
         seed: UInt64, model: AppModel, to url: URL, identifier: String,
         progress: (Double?) -> Void, preview: (CGImage) -> Void
-    ) async throws -> (writer: PileMovieWriter, poster: CGImage) {
+    ) async throws -> (writer: PileMovieWriter, poster: CGImage, hits: [ImpactRecord]) {
         let width = Int(layout.aspect.size.width)
         let height = Int(layout.aspect.size.height)
         let target = try FrameTarget(width: width, height: height)
@@ -210,7 +211,7 @@ extension PileSnapshotRenderer {
             url: url, width: width, height: height, identifier: identifier)
         let last = PileMovieTiming.frameCount - 1
         do {
-            try await writer.start(stillFrame: last, before: .now + frameTimeout)
+            try writer.start(stillFrame: last)
             var poster: CGImage?
             scene.feedback.startRecording()
             for frame in 0...last {
@@ -229,12 +230,6 @@ extension PileSnapshotRenderer {
                     actionsAfterRender: [.signal(target.event, value: signal)])
                 try await target.read(after: signal, before: deadline)
                 if frame == 0, target.isBlank { throw PileSnapshotError.drawingFailed }
-                let start = frame * PileMovieTiming.samplesPerFrame
-                writer.appendSound(
-                    ImpactMix.samples(
-                        scene.feedback.recorded,
-                        in: start..<start + PileMovieTiming.samplesPerFrame),
-                    at: start)
                 let snapshot = try await writer.appendFrame(
                     target.buffer.contents(), bytesPerRow: target.bytesPerRow, overlay: overlay,
                     at: frame, snapshot: frame == last ? 1 : frame % 6 == 0 ? 2 : nil,
@@ -243,13 +238,13 @@ extension PileSnapshotRenderer {
                 if frame == last { poster = snapshot }
                 progress(Double(frame + 1) / Double(PileMovieTiming.frameCount))
             }
-            _ = scene.feedback.finishRecording()
+            let hits = scene.feedback.finishRecording()
             #if DEBUG
                 scene.logCovers("video seed \(seed), \(books.count) books")
                 scene.logSpread("video seed \(seed)", in: layout.pileRect, of: layout.aspect.size)
             #endif
             guard let poster else { throw PileSnapshotError.drawingFailed }
-            return (writer, poster)
+            return (writer, poster, hits)
         } catch {
             writer.cancel()
             throw error
@@ -280,6 +275,8 @@ extension PileSnapshotRenderer {
 /// the event itself at its deadline.
 @MainActor
 struct FrameTarget {
+    nonisolated private static let log = Logger(
+        subsystem: "gay.ian.Bookworms.iOS", category: "video")
     let event: any MTLSharedEvent
     let output: RealityRenderer.CameraOutput
     let buffer: any MTLBuffer
@@ -339,6 +336,8 @@ struct FrameTarget {
         }
         watchdog.cancel()
         guard await !watchdog.value, commands.status == .completed else {
+            Self.log.error(
+                "A frame did not render by its deadline (copy status \(commands.status.rawValue))")
             throw PileSnapshotError.drawingFailed
         }
     }

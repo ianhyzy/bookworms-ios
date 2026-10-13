@@ -447,6 +447,12 @@ struct DominoCameraRig {
     /// `landTime` to land.
     var isRevealing: Bool { doneTime > Self.landTime }
 
+    /// Whether the reveal has ended, with the camera resting on `finale`.
+    var isRevealed: Bool { isRevealing && revealClock >= revealTime }
+
+    /// Whether the establishing move has ended, with the camera on the first book.
+    var isEstablished: Bool { established >= establishTime }
+
     /// Advances the camera by `deltaTime` seconds, following `input`, and returns its pose.
     @discardableResult
     mutating func step(_ input: Front, by deltaTime: Float) -> DominoCameraPose {
