@@ -566,7 +566,7 @@ final class BookPileScene {
     /// The books of a live drop that have not yet touched anything, with their damping before
     /// `PileLayout.airDrag`.
     private var falling: [Entity.ID: Float] = [:]
-    private var drag: Drag?
+    private var carry: Carry?
     /// Whether the books stand still in tidy stacks, as kinematic bodies. Picking up a book
     /// frees only that book and the books resting on it. Tall stacks of uneven books can slip
     /// as the simulation settles them, and Reduce Motion asks for no motion the reader did not
@@ -603,17 +603,38 @@ final class BookPileScene {
         let generation: Int
     }
 
-    /// A book held under a finger, steered toward `target` on a plane above where it was picked
-    /// up, keeping its offset from the finger. It is kinematic, so it pushes other books aside.
-    /// Among Reduce Motion's kinematic stacks it is dynamic instead: kinematic bodies pass
-    /// through one another, and only a dynamic book is stopped by a stack.
-    private struct Drag {
+    /// A book held under a finger and carried `PileCarry.lift` above what lies under it (see
+    /// `pickUp`).
+    ///
+    /// The book stays a dynamic body, so the books it meets stop or shove it and it never
+    /// passes through them, as a kinematic body would. Each frame steers its velocity toward
+    /// the point under the finger, which makes it trail the finger slightly, and turns it
+    /// toward lying level, leaned by its swing.
+    private struct Carry {
         let book: ModelEntity
-        let height: Float
+        /// The book's collision box, which the scene sweeps down to find what lies under it.
+        let shape: ShapeResource
+        /// The book's pose lying level, front or back cover up as it was nearer to.
+        let level: simd_quatf
+        /// From the point under the finger to the book's middle, across the table, so the book
+        /// keeps where the finger took hold of it.
         let offset: SIMD3<Float>
-        var target: SIMD3<Float>
+        /// The books that lay over the book when it was picked up. They ride on it until they
+        /// slide off, so the carry height ignores them; otherwise it would rise under them.
+        let riders: Set<Entity.ID>
+        /// Whether the book holds level and drops when let go, for Reduce Motion.
+        let gentle: Bool
+        /// The ray from the camera through the finger.
+        var ray: (origin: SIMD3<Float>, direction: SIMD3<Float>)
+        /// The height of the book's middle, which eases toward riding `PileCarry.lift` over what
+        /// lies under it.
+        var height: Float
         var velocity = SIMD3<Float>.zero
+        var swing = PileSwing()
     }
+
+    /// The collision group of a held book, which the sweep under it leaves out.
+    private static let heldGroup = CollisionGroup(rawValue: 1 << 2)
 
     /// Creates an empty pile. `textureScale` multiplies the texture sizes, for still images that
     /// frame a few books closely; their GPU memory grows with its square.
@@ -694,9 +715,6 @@ final class BookPileScene {
         else { return nil }
         return hit
     }
-
-    /// The book a finger holds, while one does.
-    var heldBook: ModelEntity? { drag?.book }
 
     /// Where `point` shows from left to right on screen, as a stereo position from -0.8 to 0.8,
     /// so no hit plays from one side alone.
@@ -926,7 +944,7 @@ final class BookPileScene {
         shelf.children.removeAll()
         bookIDs = [:]
         falling = [:]
-        drag = nil
+        carry = nil
         cameraMove = nil
         lifter.reset()
         spawned = 0
@@ -1012,15 +1030,7 @@ final class BookPileScene {
     private func update(_ deltaTime: TimeInterval) {
         feedback.advance(by: deltaTime)
         lifter.update(by: deltaTime, aim: aim)
-        if let drag {
-            // Steers the held book toward its target. Velocity, rather than a new position,
-            // lets the physics push other books out of the way.
-            var velocity = (drag.target - drag.book.position(relativeTo: root)) * 14
-            let speed = simd_length(velocity)
-            if speed > 50 { velocity *= 50 / speed }
-            drag.book.components.set(PhysicsMotionComponent(linearVelocity: velocity))
-            self.drag?.velocity = velocity
-        }
+        steerCarry(by: Float(deltaTime))
         if tilt == .box {
             updateBox()
             if !isFlying { squareView(by: Float(deltaTime)) }
@@ -1043,49 +1053,146 @@ final class BookPileScene {
         if let color = calendar.advance(by: Float(deltaTime)) { stage.setLampColor(color) }
     }
 
-    /// Picks up `entity` if it is a book, or moves the held book under the finger on `ray`.
-    func drag(_ entity: Entity, along ray: (origin: SIMD3<Float>, direction: SIMD3<Float>)?) {
-        guard let ray, let tray else { return }
-        if drag == nil {
-            guard let book = entity as? ModelEntity, bookIDs[book.id] != nil else { return }
-            let position = book.position(relativeTo: root)
-            guard let grabbed = PileCamera.intersect(ray, height: position.y) else { return }
-            if holdsStill {
-                // Lets the books resting on this one settle into its place. Stacks stand at
-                // least 2.3 units apart, so other stacks hold still.
-                for case let other as ModelEntity in shelf.children {
-                    let resting = other.position(relativeTo: root)
-                    if resting.y > position.y,
-                        simd_distance(SIMD2(resting.x, resting.z), SIMD2(position.x, position.z))
-                            < 0.5
-                    {
-                        setMode(.dynamic, of: other)
-                    }
-                }
-            }
-            setMode(holdsStill ? .dynamic : .kinematic, of: book)
-            let height = min(position.y + 1.2, PileLayout.ceiling - 2)
-            drag = Drag(
-                book: book, height: height, offset: (position - grabbed) * [1, 0, 1],
-                target: [position.x, height, position.z])
-        }
-        guard let drag, let point = PileCamera.intersect(ray, height: drag.height) else { return }
-        let target = tray.clamp(point + drag.offset, margin: 1)
-        // A held book is kinematic, which walls do not stop.
-        self.drag?.target =
-            boxWalls.parent != nil ? box?.clamp(target, margin: 1.2) ?? target : target
+    /// Picks up the book under `point`, in a view of `size`, and returns whether there was one
+    /// to pick up: not while the camera moves or a book flies to or from its details.
+    ///
+    /// The book lifts `PileCarry.lift` off what it rests on, carrying the books that lay over
+    /// it until they slide off, and follows the finger through `carry(to:in:)` until
+    /// `throwBook(velocity:at:in:)` or `endDrag` lets it go. `gentle`, for Reduce Motion, keeps
+    /// it from swinging and makes a throw a drop. Among Reduce Motion's still stacks, the books
+    /// that lay over it start moving too, so they settle into its place.
+    func pickUp(at point: CGPoint, in size: CGSize, gentle: Bool) -> Bool {
+        guard carry == nil, cameraMove == nil, let ray = ray(through: point, in: size),
+            let book = book(at: point, in: size), book !== lifter.book
+        else { return false }
+        return pickUp(book, along: ray, gentle: gentle)
     }
 
-    /// Lets go of the held book with the velocity it had, tumbling forward a little.
-    func endDrag() {
-        guard let drag else { return }
-        self.drag = nil
-        setMode(.dynamic, of: drag.book)
-        let speed = simd_length(drag.velocity)
-        let velocity = speed > 40 ? drag.velocity * 40 / speed : drag.velocity
-        drag.book.components.set(
+    private func pickUp(
+        _ book: ModelEntity, along ray: (origin: SIMD3<Float>, direction: SIMD3<Float>),
+        gentle: Bool
+    ) -> Bool {
+        let position = book.position(relativeTo: root)
+        guard let shape = book.components[CollisionComponent.self]?.shapes.first,
+            let grabbed = PileCamera.intersect(ray, height: position.y)
+        else { return false }
+        land(book)
+        let bounds = book.visualBounds(relativeTo: root)
+        var riders = Set<Entity.ID>()
+        for case let other as ModelEntity in shelf.children where other !== book {
+            let over = other.visualBounds(relativeTo: root)
+            guard over.min.y > bounds.center.y, over.max.x > bounds.min.x,
+                over.min.x < bounds.max.x, over.max.z > bounds.min.z, over.min.z < bounds.max.z
+            else { continue }
+            riders.insert(other.id)
+            if holdsStill { setMode(.dynamic, of: other) }
+        }
+        setMode(.dynamic, of: book)
+        book.components[CollisionComponent.self]?.filter = CollisionFilter(
+            group: Self.heldGroup, mask: .all)
+        carry = Carry(
+            book: book, shape: shape, level: PileCarry.level(book.orientation(relativeTo: root)),
+            offset: (position - grabbed) * [1, 0, 1], riders: riders, gentle: gentle, ray: ray,
+            height: position.y)
+        return true
+    }
+
+    /// Moves the held book toward the point under `point`, in a view of `size`.
+    func carry(to point: CGPoint, in size: CGSize) {
+        guard let ray = ray(through: point, in: size) else { return }
+        carry?.ray = ray
+    }
+
+    /// Lets go of the held book, thrown as the finger moves at `velocity`, in points a second,
+    /// at `point` in a view of `size` (see `PileCarry.throwVelocity`). A gentle carry drops the
+    /// book instead.
+    func throwBook(velocity: CGSize, at point: CGPoint, in size: CGSize) {
+        guard let carry else { return }
+        // The finger's velocity on the plane the book rides in, from where the finger is and
+        // where it would be a twentieth of a second later.
+        let step: CGFloat = 0.05
+        let later = CGPoint(x: point.x + velocity.width * step, y: point.y + velocity.height * step)
+        guard !carry.gentle,
+            let now = ray(through: point, in: size)
+                .flatMap({ PileCamera.intersect($0, height: carry.height) }),
+            let next = ray(through: later, in: size)
+                .flatMap({ PileCamera.intersect($0, height: carry.height) })
+        else { return release(throwing: .zero) }
+        release(throwing: PileCarry.throwVelocity((next - now) / Float(step)))
+    }
+
+    /// Drops the held book where it is, without a throw, such as when the touch is cancelled.
+    func endDrag() { release(throwing: .zero) }
+
+    /// Lets go of the held book at `velocity`, keeping its swing and tumbling it forward along
+    /// its flight.
+    private func release(throwing velocity: SIMD3<Float>) {
+        guard let carry else { return }
+        self.carry = nil
+        carry.book.components[CollisionComponent.self]?.filter = .default
+        let swing =
+            carry.gentle
+            ? .zero : carry.book.components[PhysicsMotionComponent.self]?.angularVelocity ?? .zero
+        carry.book.components.set(
             PhysicsMotionComponent(
-                linearVelocity: velocity, angularVelocity: simd_cross([0, 1, 0], velocity) * 0.15))
+                linearVelocity: velocity,
+                angularVelocity: swing + simd_cross([0, 1, 0], velocity) * 0.15))
+    }
+
+    /// Steers the held book for a frame of `deltaTime` seconds: toward the point under the
+    /// finger, inside the walls, riding `PileCarry.lift` over what lies there, and turned level
+    /// but for its swing.
+    private func steerCarry(by deltaTime: Float) {
+        guard var carry, let tray, deltaTime > 0,
+            let point = PileCamera.intersect(carry.ray, height: carry.height)
+        else { return }
+        var target = tray.clamp(point + carry.offset, margin: 1)
+        let rest = restingHeight(of: carry, under: target) ?? carry.height - PileCarry.lift
+        carry.height +=
+            (min(rest + PileCarry.lift, PileLayout.ceiling - 2) - carry.height)
+            * min(1, deltaTime * 10)
+        target.y = carry.height
+        // The box's walls and glass stop a dynamic book anyway; this keeps it from pressing on
+        // them.
+        if boxWalls.parent != nil, let box { target = box.clamp(target, margin: 1.2) }
+        // Velocity, rather than a new position, lets the physics stop the book at the books it
+        // meets. Each step's gravity is taken out in advance, so the book does not sag.
+        var velocity = (target - carry.book.position(relativeTo: root)) * 12 - gravity * deltaTime
+        let speed = simd_length(velocity)
+        if speed > 40 { velocity *= 40 / speed }
+        if !carry.gentle {
+            var acceleration = (velocity - carry.velocity) / deltaTime
+            // A frame's jolt, such as the first step of the lift, should not fling the swing.
+            let jolt = simd_length(acceleration)
+            if jolt > 300 { acceleration *= 300 / jolt }
+            carry.swing.advance(acceleration: [acceleration.x, acceleration.z], by: deltaTime)
+        }
+        carry.velocity = velocity
+        var turn = PileCarry.turn(
+            from: carry.book.orientation(relativeTo: root), to: carry.swing.tilt * carry.level)
+        turn *= 10
+        if simd_length(turn) > 15 { turn *= 15 / simd_length(turn) }
+        carry.book.components.set(
+            PhysicsMotionComponent(linearVelocity: velocity, angularVelocity: turn))
+        self.carry = carry
+    }
+
+    /// The height at which the held book's middle would rest, lying level, on what lies under
+    /// `point`: the table or the highest book there, leaving out its riders. The sweep starts
+    /// at most 3 units over the book, so it misses books still falling from high above, and a
+    /// book that starts inside a taller stack lifts the held book over it a step at a time.
+    /// Returns `nil` while the scene is not in a view.
+    private func restingHeight(of carry: Carry, under point: SIMD3<Float>) -> Float? {
+        guard let scene = root.scene else { return nil }
+        let top = min(carry.height + 3, PileLayout.ceiling - 1)
+        let hits = scene.convexCast(
+            convexShape: carry.shape, fromPosition: [point.x, top, point.z],
+            fromOrientation: carry.level, toPosition: [point.x, 0, point.z],
+            toOrientation: carry.level, query: .all,
+            mask: CollisionGroup.all.subtracting([Self.wallGroup, Self.heldGroup]),
+            relativeTo: root)
+        return hits.filter { !carry.riders.contains($0.entity.id) }.map(\.distance).min()
+            .map { top - $0 }
     }
 
     private func setMode(_ mode: PhysicsBodyMode, of book: ModelEntity) {
@@ -1094,8 +1201,9 @@ final class BookPileScene {
 
     /// Zooms toward the point under `focus` and turns the camera about the pile. In **Phone is
     /// the box**, the camera only zooms, since the box fits the unturned view.
+    /// Does nothing while a finger holds a book, which keeps the view it was picked up in.
     func moveCamera(magnification: CGFloat, rotation: Angle, focus: CGPoint?, in size: CGSize) {
-        guard let tray, size.width > 0, size.height > 0 else { return }
+        guard carry == nil, let tray, size.width > 0, size.height > 0 else { return }
         if cameraMove == nil {
             let point = focus ?? CGPoint(x: size.width / 2, y: size.height / 2)
             let ndc = SIMD2(
@@ -1225,7 +1333,7 @@ final class BookPileScene {
         shakeRest = PileLayout.shakeRest
         let speed = simd_length(kick)
         for case let book as ModelEntity in shelf.children
-        where book !== drag?.book && book !== lifter.book
+        where book !== carry?.book && book !== lifter.book
             && book.components[PhysicsBodyComponent.self]?.mode == .dynamic
         {
             let mass = book.components[PhysicsBodyComponent.self]?.massProperties.mass ?? 0.5
@@ -1255,7 +1363,7 @@ final class BookPileScene {
         }
         guard let box else { return }
         if boxWalls.children.isEmpty { boxWalls.addChild(box.makeWalls(group: Self.wallGroup)) }
-        for case let book as ModelEntity in shelf.children where book !== drag?.book {
+        for case let book as ModelEntity in shelf.children where book !== carry?.book {
             let position = book.position(relativeTo: root)
             guard !box.contains(position, margin: 0.3) else { continue }
             // ponytail: the book may land inside another and be pushed apart; check the
@@ -1272,7 +1380,7 @@ final class BookPileScene {
         guard simd_distance(gravity, self.gravity) > PileLayout.gravity * 0.03 else { return }
         self.gravity = gravity
         root.components[PhysicsSimulationComponent.self]?.gravity = gravity
-        for case let book as ModelEntity in shelf.children where book !== drag?.book {
+        for case let book as ModelEntity in shelf.children where book !== carry?.book {
             book.applyLinearImpulse(simd_normalize(gravity) * 1e-4, relativeTo: nil)
         }
     }
@@ -1297,8 +1405,8 @@ final class BookPileScene {
         /// all the way in on that book three seconds later, `-BookwormsPileTilt <x,y>` applies a
         /// device tilt (the change in device gravity, in g), `-BookwormsPileShake <x,y,z>`
         /// shakes the phone with that user acceleration (in g, in the device's axes), and
-        /// `-BookwormsPileThrow YES` throws the top book through the drag path. The last three
-        /// wait four seconds.
+        /// `-BookwormsPileThrow YES` picks up the top book, carries it up the screen and to the
+        /// right for a third of a second, and throws it on. The last three wait four seconds.
         private func runDebugActions() async {
             let defaults = UserDefaults.standard
             if let id = defaults.string(forKey: "BookwormsPileFocus").flatMap(Int.init),
@@ -1322,15 +1430,18 @@ final class BookPileScene {
                         device: [tilt[0], tilt[1] - 1, 0], reference: [0, -1, 0], yaw: view.yaw))
             }
             if let jolt { shake(jolt) }
-            guard throwsBook, let book = Array(shelf.children).last else { return }
+            guard throwsBook, let book = Array(shelf.children).last as? ModelEntity else { return }
             let start = book.position(relativeTo: root)
-            drag(book, along: (start + [0, 20, 0], [0, -1, 0]))
+            guard pickUp(book, along: (start + [0, 20, 0], [0, -1, 0]), gentle: false) else {
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(400))
             for step in 1...20 {
                 try? await Task.sleep(for: .milliseconds(16))
                 let point = start + [Float(step) * 0.25, 0, -Float(step) * 0.4]
-                drag(book, along: (point + [0, 20, 0], [0, -1, 0]))
+                carry?.ray = (point + [0, 20, 0], [0, -1, 0])
             }
-            endDrag()
+            release(throwing: PileCarry.throwVelocity([15, 0, -24]))
         }
 
         func mostBuriedID() -> Int? {
