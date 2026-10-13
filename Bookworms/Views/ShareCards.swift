@@ -22,7 +22,9 @@ struct YearStackCard: View {
 
     /// The input's books as spines, split into the card's pages.
     nonisolated static func pages(for input: ShareInput) -> StackPages {
-        StackPages(spines: StackSpine.spines(input.books), area: area(input.aspect))
+        StackPages(
+            spines: StackSpine.spines(input.books), area: area(input.aspect),
+            look: input.look(for:))
     }
 
     var body: some View {
@@ -99,13 +101,6 @@ struct StackSpine: Identifiable {
     /// book, which is about 4.5 times as long as it is thick.
     static let bundleRatio: CGFloat = 1 / 4.2
 
-    /// The thickness of the thinnest spine: a 100-page book, whatever its variety.
-    static let thinnest = shape(
-        of: CloudBook(
-            id: 0, title: "", author: "", coverURL: nil, detailCoverURL: nil, pages: 100)
-    )
-    .height
-
     /// Stack's arrangement at an arbitrary width. Its spines are proportional to its scale, so
     /// `shape(of:)` divides the scale out.
     private static let stack = StackArrangement(width: 400)
@@ -116,6 +111,10 @@ struct StackSpine: Identifiable {
     let slices: [(book: CloudBook, size: CGSize)]
     /// The length by the thickness of all the slices.
     let size: CGSize
+    /// The fewest pixels per decimeter at which the spine stays legible: thick enough for
+    /// `ShareSpine.minimumThickness(_:)`, and once `StackPages` has measured its lettering, long
+    /// enough to letter a title in full.
+    var minimumScale: CGFloat = 0
 
     var book: CloudBook { books[0] }
     var id: Int { book.id }
@@ -141,6 +140,7 @@ struct StackSpine: Identifiable {
         size = CGSize(
             width: slices.map(\.size.width).max() ?? 0,
             height: slices.reduce(0) { $0 + $1.size.height })
+        minimumScale = ShareSpine.minimumThickness(self) / size.height
     }
 
     /// Stack's spine for `book` lying flat, in decimeters: its length by its thickness.
@@ -184,10 +184,12 @@ struct StackSpine: Identifiable {
 
 /// The Year Stack's spines split across pages, in finish order.
 ///
-/// Spines that fit one stack at `StackLayout.minimumScale` stay on one page. Otherwise they fill
-/// as few pages as hold them, up to `maximumPages`, each a run of spines whose thicknesses come
-/// as near an equal share as the spines allow, so page 1 holds the earliest books. Only spines
-/// that 20 pages cannot hold are left out, lowest-ranked first.
+/// Spines fill as few pages as hold them, up to `maximumPages`, in order, so page 1 holds the
+/// earliest books. Each page's run of spines must fit the page at its own smallest legible scale
+/// (`StackLayout.fits(_:area:)`): the scale at which its thinnest spine letters at the minimum
+/// size and every spine whose title can fit has room to letter it in full. The pages share the spines as evenly as
+/// that allows, so each draws at a similar size. Only spines that 20 pages cannot hold are left out,
+/// lowest-ranked first.
 struct StackPages {
     /// Instagram's carousel limit.
     static let maximumPages = 20
@@ -197,51 +199,112 @@ struct StackPages {
     /// The books left out because 20 pages could not hold them.
     private(set) var hiddenCount = 0
 
-    init(spines: [StackSpine], area: CGSize) {
-        let capacity = StackLayout.capacity(area)
-        guard StackLayout.thickness(spines) > capacity else {
-            pages = [spines]
+    /// Splits `spines` into pages of `area`, measuring each spine's titles in `look`'s font.
+    init(
+        spines: [StackSpine], area: CGSize,
+        look: (CloudBook) -> SpineLook = { SpineLook(book: $0, design: nil, face: nil) }
+    ) {
+        // A title that has no room even at the spine's largest scale asks for none.
+        let spines = spines.map { spine in
+            var spine = spine
+            let limit = StackLayout.maximumScale([spine], area: area)
+            let lettering = ShareSpine.letteringScale(spine, look: look(spine.book), limit: limit)
+            spine.minimumScale = max(spine.minimumScale, lettering ?? 0)
+            return spine
+        }
+        if let pages = Self.paginate(spines, area: area) {
+            self.pages = pages
             return
         }
-        var shown = spines
-        let limit = CGFloat(Self.maximumPages) * capacity
-        if StackLayout.thickness(spines) > limit {
-            var kept = Set<Int>()
-            var sum: CGFloat = 0
-            for spine in spines.sorted(by: StackSpine.isRankedHigher) {
-                guard sum + spine.size.height <= limit else { break }
-                kept.insert(spine.id)
-                sum += spine.size.height
-            }
-            shown = spines.filter { kept.contains($0.id) }
-        }
-        while true {
-            let fewest = max(2, Int((StackLayout.thickness(shown) / capacity).rounded(.up)))
-            if let split = (fewest...max(fewest, Self.maximumPages)).lazy
-                .map({ StackLayout.split(shown, into: $0) })
-                .first(where: { $0.allSatisfy { StackLayout.thickness($0) <= capacity } })
-            {
-                pages = split
-                break
-            }
-            // Uneven spines can leave 20 even pages over capacity; the lowest-ranked spine goes.
-            if let lowest = shown.indices.max(by: {
-                StackSpine.isRankedHigher(shown[$0], shown[$1])
-            }) {
-                shown.remove(at: lowest)
+        // Keeps the most top-ranked spines that 20 pages hold. Fewer spines need no more pages,
+        // so bisection finds the count. Any one spine fits a page, so at least one is kept.
+        let ranked = spines.sorted(by: StackSpine.isRankedHigher)
+        var (fitting, failing) = (0, ranked.count)
+        var pages: [[StackSpine]] = [[]]
+        while failing - fitting > 1 {
+            let count = (fitting + failing) / 2
+            let kept = Set(ranked.prefix(count).map(\.id))
+            if let fitted = Self.paginate(spines.filter { kept.contains($0.id) }, area: area) {
+                (fitting, pages) = (count, fitted)
+            } else {
+                failing = count
             }
         }
+        self.pages = pages
         hiddenCount =
-            spines.reduce(0) { $0 + $1.books.count } - shown.reduce(0) { $0 + $1.books.count }
+            spines.reduce(0) { $0 + $1.books.count }
+            - pages.joined().reduce(0) { $0 + $1.books.count }
+    }
+
+    /// `spines` on the fewest pages, up to `maximumPages`, that each fit `area`, with the thickest
+    /// page as thin as that number of pages allows, or `nil` when 20 pages can't hold them.
+    private static func paginate(_ spines: [StackSpine], area: CGSize) -> [[StackSpine]]? {
+        guard !spines.isEmpty else { return [[]] }
+        // Any part of a run that fits also fits, so filling each page as full as it goes uses
+        // the fewest pages.
+        let fewest = fill(spines, area: area, limit: .infinity)
+        guard fewest.count <= maximumPages else { return nil }
+        // The thinnest limit on a page's thickness that still needs no more pages.
+        var pages = fewest
+        var (low, high) = (
+            StackLayout.thickness(spines) / CGFloat(fewest.count), StackLayout.thickness(spines)
+        )
+        for _ in 0..<30 {
+            let limit = (low + high) / 2
+            let filled = fill(spines, area: area, limit: limit)
+            if filled.count <= fewest.count {
+                (pages, high) = (filled, limit)
+            } else {
+                low = limit
+            }
+        }
+        // The limit can still leave the last page light. Moves a page's last spine to the next
+        // page while that brings their thicknesses closer and the next page still fits.
+        for _ in pages.indices {
+            var moved = false
+            for index in pages.indices.dropLast().reversed() {
+                while pages[index].count > 1, let last = pages[index].last {
+                    let difference =
+                        StackLayout.thickness(pages[index])
+                        - StackLayout.thickness(pages[index + 1])
+                    let next = [last] + pages[index + 1]
+                    guard abs(difference - 2 * last.size.height) < abs(difference),
+                        StackLayout.fits(next, area: area)
+                    else { break }
+                    pages[index].removeLast()
+                    pages[index + 1] = next
+                    moved = true
+                }
+            }
+            if !moved { break }
+        }
+        return pages
+    }
+
+    /// Fills pages in order, starting the next page when a spine would make the current one
+    /// thicker than `limit` decimeters or keep it from fitting `area`.
+    private static func fill(_ spines: [StackSpine], area: CGSize, limit: CGFloat) -> [[StackSpine]]
+    {
+        var pages: [[StackSpine]] = []
+        for spine in spines {
+            if let page = pages.last.map({ $0 + [spine] }),
+                StackLayout.thickness(page) <= limit, StackLayout.fits(page, area: area)
+            {
+                pages[pages.count - 1] = page
+            } else {
+                pages.append([spine])
+            }
+        }
+        return pages
     }
 }
 
 /// Places one page's spines in one stack, oldest at the bottom, each lying flat on the one
 /// below it.
 ///
-/// Every image size uses one column. Two columns of the stack area's width can't hold Stack's
-/// longest book (`BookShape.longest`) at `minimumScale` without squashing it, so a crowded frame
-/// takes more pages instead.
+/// Every image size uses one column. Two side by side would leave spines that keep their book
+/// proportions half as long, too short for most titles, so a crowded frame takes more pages
+/// instead.
 struct StackLayout {
     struct Slab: Identifiable {
         let spine: StackSpine
@@ -253,54 +316,40 @@ struct StackLayout {
         var id: Int { spine.id }
     }
 
-    /// The fewest pixels per decimeter: the scale at which the thinnest spine letters at
-    /// `ShareSpine.minimumLettering`.
-    static let minimumScale =
-        ShareSpine.minimumLettering / (ShareSpine.letteringRatio * StackSpine.thinnest)
-
     private(set) var slabs: [Slab] = []
     /// Pixels per decimeter of book.
     private(set) var scale: CGFloat = 0
     /// The stack's height.
     private(set) var height: CGFloat = 0
 
-    /// The most pixels per decimeter in `area`: the longest book lies across the area's width,
-    /// with room to shift to either side.
-    static func maximumScale(_ area: CGSize) -> CGFloat {
-        area.width * (1 - 2 * StackArrangement.maximumShift) / CGFloat(BookShape.longest)
+    /// The fewest pixels per decimeter that keep every one of `spines` legible
+    /// (`StackSpine.minimumScale`).
+    static func minimumScale(_ spines: [StackSpine]) -> CGFloat {
+        spines.map(\.minimumScale).max() ?? 0
     }
 
-    /// The thickest stack, in decimeters, that `area` holds at `minimumScale`.
-    static func capacity(_ area: CGSize) -> CGFloat { area.height / minimumScale }
+    /// The most pixels per decimeter for `spines` in `area`: the longest of them lies across the
+    /// area's width, with room to shift to either side.
+    static func maximumScale(_ spines: [StackSpine], area: CGSize) -> CGFloat {
+        let longest = spines.map(\.size.width).max() ?? CGFloat(BookShape.longest)
+        return area.width * (1 - 2 * StackArrangement.maximumShift) / longest
+    }
+
+    /// Whether `spines` fit one page of `area` at their own `minimumScale(_:)`.
+    static func fits(_ spines: [StackSpine], area: CGSize) -> Bool {
+        thickness(spines) * minimumScale(spines) <= area.height
+    }
 
     static func thickness(_ spines: [StackSpine]) -> CGFloat {
         spines.reduce(0) { $0 + $1.size.height }
     }
 
-    /// Splits `spines` into up to `count` runs in order, ending each run where the thickness so
-    /// far comes nearest its equal share of the whole.
-    static func split(_ spines: [StackSpine], into count: Int) -> [[StackSpine]] {
-        let share = thickness(spines) / CGFloat(count)
-        var runs: [[StackSpine]] = []
-        var sum: CGFloat = 0
-        for spine in spines {
-            let end = share * CGFloat(runs.count)
-            if runs.isEmpty
-                || (runs.count < count && abs(sum + spine.size.height - end) > abs(sum - end))
-            {
-                runs.append([])
-            }
-            runs[runs.count - 1].append(spine)
-            sum += spine.size.height
-        }
-        return runs
-    }
-
-    /// Stacks `spines` at the largest scale, up to `maximumScale(_:)`, that fits `area`'s height.
+    /// Stacks `spines` at the largest scale, up to `maximumScale(_:area:)`, that fits `area`'s
+    /// height, so a page fills its height unless its spines are few or short.
     init(spines: [StackSpine], area: CGSize, seed: UInt64) {
         let total = Self.thickness(spines)
         guard total > 0 else { return }
-        scale = min(Self.maximumScale(area), area.height / total)
+        scale = min(Self.maximumScale(spines, area: area), area.height / total)
         height = total * scale
         var bottom = height
         for spine in spines {
@@ -336,7 +385,7 @@ struct ShareSpine: View {
     nonisolated static let letteringRatio: CGFloat = 0.5
     /// The smallest size two-line lettering starts at. Only spines thick enough for it wrap a
     /// title, so a wrapped title stays about as large as one line on an ordinary spine.
-    static let wrappedLettering: CGFloat = 36
+    nonisolated static let wrappedLettering: CGFloat = 36
 
     let spine: StackSpine
     /// The looks of `spine.books`, in order.
@@ -375,6 +424,14 @@ struct ShareSpine: View {
         }
     }
 
+    /// The thinnest, in pixels, that `spine` can be drawn and stay legible: thick enough for one
+    /// line of lettering at `minimumLettering` and, for a bundle, for its tag's count at that size.
+    nonisolated static func minimumThickness(_ spine: StackSpine) -> CGFloat {
+        let lettering = minimumLettering / letteringRatio
+        guard spine.books.count > 1 else { return lettering }
+        return max(lettering, minimumLettering / (Tie.tagShare * SeriesTag.countShare))
+    }
+
     /// The slices' looks: each book's own, unless the first book's lettering, which runs across
     /// every slice, would lack contrast on one of them. Then every slice takes the first book's
     /// look, as a series in one edition would.
@@ -386,9 +443,48 @@ struct ShareSpine: View {
         return isReadable ? shown : shown.map { _ in shown[0] }
     }
 
+    /// The fewest pixels per decimeter, up to `limit`, at which `spine` letters one of its titles
+    /// in full at `minimumLettering`, on one line or, when thick enough, two, in `look`'s font; or
+    /// `nil` when none fits even at `limit`.
+    ///
+    /// The lettering measures 2 percent wider than `NSString` reports, in case SwiftUI sets it a
+    /// little wider.
+    nonisolated static func letteringScale(_ spine: StackSpine, look: SpineLook, limit: CGFloat)
+        -> CGFloat?
+    {
+        let font = look.uiFont(size: minimumLettering)
+        func width(_ text: String) -> CGFloat {
+            let lines = text.split(separator: "\n")
+                .map {
+                    (String($0) as NSString).size(withAttributes: [.font: font]).width
+                }
+            return (lines.max() ?? 0) * 1.02
+        }
+        let forms = spine.titles.map(look.text)
+        let oneLine = forms.map(width).min() ?? 0
+        let twoLines = forms.compactMap(balanced).map(width).min()
+        // `lettering(_:look:width:thickness:)` centers its lines in 84 percent of the thickness.
+        func fits(_ scale: CGFloat) -> Bool {
+            let box = letteringBox(spine, scale: scale).width
+            let height = spine.size.height * scale * 0.84
+            if oneLine <= box, font.lineHeight <= height { return true }
+            guard let twoLines, spine.size.height * scale * 0.32 >= wrappedLettering else {
+                return false
+            }
+            return twoLines <= box && 2 * font.lineHeight <= height
+        }
+        guard fits(limit) else { return nil }
+        var (low, high) = (CGFloat(0), limit)
+        for _ in 0..<20 {
+            let scale = (low + high) / 2
+            if fits(scale) { high = scale } else { low = scale }
+        }
+        return high
+    }
+
     /// Where the lettering starts, from the spine's head, and how wide it is, at `scale` pixels
     /// per decimeter: clear of `SpineView`'s accent bands and of a bundle's twine and tag.
-    static func letteringBox(_ spine: StackSpine, scale: CGFloat) -> (
+    nonisolated static func letteringBox(_ spine: StackSpine, scale: CGFloat) -> (
         leading: CGFloat, width: CGFloat
     ) {
         let length = spine.size.width * scale
@@ -434,7 +530,7 @@ struct ShareSpine: View {
     )] {
         let one = max(minimumLettering, thickness * letteringRatio)
         // Two lines, with their leading, fill the 84 percent of the thickness that one line
-        // centers in.
+        // centers in. `letteringScale(_:look:limit:)` assumes the same share.
         let two = thickness * 0.32
         var options: [(text: String, size: CGFloat, lines: Int)] = []
         var factor: CGFloat = 1
@@ -442,10 +538,11 @@ struct ShareSpine: View {
             let size = max(minimumLettering, one * factor)
             for form in forms {
                 options.append((form, size, 1))
-                if two >= wrappedLettering, two * factor >= minimumLettering,
+                // Two lines shrink to `minimumLettering` too, once.
+                if two >= wrappedLettering, two * factor > minimumLettering * 0.92,
                     let wrapped = balanced(form)
                 {
-                    options.append((wrapped, two * factor, 2))
+                    options.append((wrapped, max(minimumLettering, two * factor), 2))
                 }
             }
             if size == minimumLettering { return options }
@@ -454,7 +551,7 @@ struct ShareSpine: View {
     }
 
     /// `text` broken at the space nearest its middle, or `nil` when it has no space.
-    static func balanced(_ text: String) -> String? {
+    nonisolated static func balanced(_ text: String) -> String? {
         let characters = Array(text)
         guard
             let space = characters.indices.filter({ characters[$0] == " " })
@@ -476,27 +573,32 @@ private struct Tie: View {
     let thickness: CGFloat
     let count: Int
 
+    nonisolated init(length: CGFloat, thickness: CGFloat, count: Int) {
+        (self.length, self.thickness, self.count) = (length, thickness, count)
+    }
+
     private static let twine = Color(red: 0.8, green: 0.68, blue: 0.48)
     private static let twineDark = Color(red: 0.5, green: 0.38, blue: 0.23)
     private static let twineLight = Color(red: 0.93, green: 0.84, blue: 0.66)
 
     /// The twine's width.
-    var width: CGFloat { max(6, length * 0.011) }
+    nonisolated var width: CGFloat { max(6, length * 0.011) }
     /// The middle of the twine near the head, from the bundle's head.
-    var head: CGFloat { length * 0.08 }
+    nonisolated var head: CGFloat { length * 0.08 }
     /// The middle of the twine near the tail, which carries the bow and tag.
-    var tail: CGFloat { length * 0.82 }
+    nonisolated var tail: CGFloat { length * 0.82 }
     /// The bow's middle, from the bundle's top.
-    var knot: CGFloat { thickness * 0.15 }
-    /// The tag's height, inside the bundle's face. A bundle is at least 105 pixels thick at
-    /// `StackLayout.minimumScale`, so the count is lettered at 32 pixels or more.
-    var tagHeight: CGFloat { min(thickness * 0.74, 150) }
-    var tagTop: CGFloat { knot + thickness * 0.05 }
+    nonisolated var knot: CGFloat { thickness * 0.15 }
+    /// The tag's height as a share of the bundle's thickness, up to 150 pixels, which keeps the
+    /// tag inside the bundle's face.
+    nonisolated static let tagShare: CGFloat = 0.74
+    nonisolated var tagHeight: CGFloat { min(thickness * Self.tagShare, 150) }
+    nonisolated var tagTop: CGFloat { knot + thickness * 0.05 }
     /// The room between the lettering and the twine or tag.
-    private var gap: CGFloat { max(12, thickness * 0.06) }
+    private nonisolated var gap: CGFloat { max(12, thickness * 0.06) }
     /// Where lettering on the face can start and must end, from the head.
-    var letteringStart: CGFloat { head + width / 2 + gap }
-    var letteringEnd: CGFloat { tail - SeriesTag.width(height: tagHeight) / 2 - gap }
+    nonisolated var letteringStart: CGFloat { head + width / 2 + gap }
+    nonisolated var letteringEnd: CGFloat { tail - SeriesTag.width(height: tagHeight) / 2 - gap }
 
     var body: some View {
         let hole = tagTop + tagHeight * SeriesTag.hole
@@ -584,11 +686,13 @@ private struct Twist: Shape {
 private struct SeriesTag: View {
     /// The hole's center, as a share of the tag's height from its top.
     static let hole: CGFloat = 0.17
+    /// The count's size as a share of the tag's height.
+    nonisolated static let countShare: CGFloat = 0.42
 
     let count: Int
     let height: CGFloat
 
-    static func width(height: CGFloat) -> CGFloat { height * 0.64 }
+    nonisolated static func width(height: CGFloat) -> CGFloat { height * 0.64 }
 
     var body: some View {
         let width = Self.width(height: height)
@@ -607,7 +711,7 @@ private struct SeriesTag: View {
                 .frame(width: width * 0.3, height: width * 0.3)
                 .position(x: width / 2, y: height * Self.hole)
             Text(count.formatted())
-                .font(ShareStyle.serif(height * 0.42, .semibold))
+                .font(ShareStyle.serif(height * Self.countShare, .semibold))
                 .foregroundStyle(Color(red: 0.24, green: 0.16, blue: 0.09))
                 .lineLimit(1)
                 .minimumScaleFactor(0.5)
