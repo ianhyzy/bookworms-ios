@@ -246,9 +246,6 @@ enum PileLayout {
     /// Half the longest book's length (`BookShape.longest`) plus a little, which keeps a new
     /// book clear of the walls.
     static let reach: Float = 1.5
-    /// The share of a still image's or a video's books that start turned over (see
-    /// `settleGroups`): about as many as land face down in the live pile.
-    static let turnedOver = 0.05
     /// The most book volume a live drop takes, in liters, which an iPhone's tray holds between
     /// the bars. A typical library's 300 books take about 200 liters.
     static let maximumVolume: Float = 250
@@ -399,53 +396,6 @@ enum PileLayout {
         let turn = simd_float3x3(slot.transform.rotation)
         return abs(turn.columns.0) * half.x + abs(turn.columns.1) * half.y
             + abs(turn.columns.2) * half.z
-    }
-
-    /// Starting poses for a still image's pile, in groups that fall together, with heights
-    /// above the pile so far.
-    ///
-    /// Books start over the middle 70 percent of `tray`, tilted a little and without spin. A
-    /// fall that short turns no book over, so `turnedOver` of the books, rounded, start front
-    /// cover down, about as many as land face down in the live pile. The seed picks them from
-    /// the first half of `books`, which lands first and lower in the pile, so the top of the pile
-    /// keeps its covers up; a pile of fewer than 10 books turns none over. A group's books start
-    /// in up to three
-    /// layers, 1.2, 2.45, and 3.7 units up, so they land within the 0.4 seconds before the next
-    /// group; layers 1.25 apart clear two tilted books. A book takes the lowest layer that no
-    /// book of its group within 3.8 units uses, since two books farther apart cannot touch: each
-    /// reaches at most half its diagonal, 1.86 units, from its middle. A book with no free layer
-    /// starts the next group.
-    static func settleGroups(_ books: [CloudBook], in tray: PileTray, seed: UInt64)
-        -> [[PileSlot]]
-    {
-        let turned =
-            books.count < 10
-            ? []
-            : Set(
-                books.prefix(books.count / 2).map(\.id)
-                    .sorted { ShareStyle.unit(seed, $0, 12) < ShareStyle.unit(seed, $1, 12) }
-                    .prefix(Int((Double(books.count) * turnedOver).rounded())))
-        var groups: [[PileSlot]] = []
-        var layers: [(spot: SIMD2<Float>, layer: Int)] = []
-        for var slot in dropPlan(books, in: tray.scaled(by: 0.7), seed: seed, tumble: 0.25) {
-            let spot = SIMD2(slot.transform.translation.x, slot.transform.translation.z)
-            var taken = Set(layers.filter { simd_distance($0.spot, spot) < 3.8 }.map(\.layer))
-            if groups.isEmpty || taken.count == 3 {
-                groups.append([])
-                layers = []
-                taken = []
-            }
-            let layer = (0..<3).first { !taken.contains($0) } ?? 0
-            layers.append((spot, layer))
-            slot.transform.translation.y = 1.2 + Float(layer) * 1.25
-            slot.spin = .zero
-            if turned.contains(slot.book.id) {
-                // Over about the book's length, so its outline stays where it was.
-                slot.transform.rotation *= simd_quatf(angle: .pi, axis: [0, 1, 0])
-            }
-            groups[groups.count - 1].append(slot)
-        }
-        return groups
     }
 
     /// The books in `books` that `ids` lacks, when `books` keeps every book of `ids` in the
@@ -943,67 +893,10 @@ final class BookPileScene {
         planKey = nil
     }
 
-    /// Drops `books` onto `tray` for a still image seen through `camera`, without a view.
-    /// `step` advances the simulation by one 60 Hz frame, so the caller's renderer runs it.
-    ///
-    /// Unlike `fill`, every book is built before the first one falls, and covers get up to 10
-    /// seconds to load. Books start over the middle 70 percent of the tray, just above the pile
-    /// so far, tilted a little and without spin, so they land close to where they start and the
-    /// side up they start: front cover up, except the few that `PileLayout.settleGroups` turns
-    /// over. Each group falls for 0.4 seconds before the next one appears, and the pile settles
-    /// for 2.5 seconds inside the walls, which keep it compact. The walls stand at least 3.9
-    /// units apart, so even a tray framed closely around one book lets it lie flat at any turn.
-    /// The walls then go for a last half second, so no book stays propped against one. Every 10
-    /// steps the interface gets a turn, and a cancelled task stops with `CancellationError`.
-    func settle(
-        _ books: [CloudBook], on tray: PileTray, camera: PileCamera, seed: UInt64,
-        model: AppModel, step: () throws -> Void
-    ) async throws {
-        look(through: camera)
-        // Room for the largest book, 3.72 units corner to corner, tilted a little.
-        build(tray.scaled(toFit: 3.9))
-        await factory.prepare(books, prefetching: [], coverWait: .seconds(10), model: model)
-        await stage.lit()
-        func run(_ steps: Int) async throws {
-            for index in 0..<steps {
-                if index % 10 == 0 {
-                    try Task.checkCancellation()
-                    await Task.yield()
-                }
-                try step()
-            }
-        }
-        for group in PileLayout.settleGroups(books, in: tray, seed: seed) {
-            let top = max(0, shelf.visualBounds(relativeTo: root).max.y)
-            for var slot in group {
-                slot.transform.translation.y += top
-                spawn(slot, mode: .dynamic)
-            }
-            try await run(24)
-        }
-        try await run(150)
-        walls.removeFromParent()
-        try await run(30)
-    }
-
     /// Shows the pile through `camera`.
     func look(through camera: PileCamera) {
         view = camera
         self.camera.transform = camera.transform
-    }
-
-    /// The corners of each book's bounding box, in scene coordinates.
-    var bookCorners: [SIMD3<Float>] {
-        shelf.children.flatMap { book in
-            let bounds = book.visualBounds(relativeTo: root)
-            return (0..<8)
-                .map { corner -> SIMD3<Float> in
-                    SIMD3(
-                        corner & 1 == 0 ? bounds.min.x : bounds.max.x,
-                        corner & 2 == 0 ? bounds.min.y : bounds.max.y,
-                        corner & 4 == 0 ? bounds.min.z : bounds.max.z)
-                }
-        }
     }
 
     /// Puts a cover that arrived after its book was built onto the book in the pile.
@@ -1417,19 +1310,92 @@ final class BookPileScene {
                 .reduce(0, +)
             let top = shelf.visualBounds(relativeTo: root).max.y
                 .formatted(.number.precision(.fractionLength(1)))
-            let line =
+            Self.appendCoverLog(
                 "\(label): \(turns.count) books, \(up) up (\(share)%), \(down) down, "
-                + "\(turns.count - up - down) other, \(shapes) shapes, "
-                + "\(Int(liters.rounded())) L, top \(top)\n"
+                    + "\(turns.count - up - down) other, \(shapes) shapes, "
+                    + "\(Int(liters.rounded())) L, top \(top)")
+        }
+
+        /// Appends `line` and a line break to `Library/Caches/Bookworms/pile-cover-up.log`.
+        static func appendCoverLog(_ line: String) {
+            let data = Data((line + "\n").utf8)
             let url = URL.cachesDirectory.appending(path: "Bookworms/pile-cover-up.log")
             try? FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             if let file = try? FileHandle(forWritingTo: url) {
                 file.seekToEndOfFile()
-                file.write(Data(line.utf8))
+                file.write(data)
                 try? file.close()
             } else {
-                try? Data(line.utf8).write(to: url)
+                try? data.write(to: url)
+            }
+        }
+
+        /// The books as they lie in the scene, with their shapes, in the order they went down.
+        var lyingBooks: [(transform: Transform, shape: BookShape)] {
+            shelf.children.compactMap { book in
+                guard let id = bookIDs[book.id], let shape = factory.parts[id]?.shape else {
+                    return nil
+                }
+                return (Transform(matrix: book.transformMatrix(relativeTo: root)), shape)
+            }
+        }
+
+        /// Simulator hook: with `-BookwormsPileCoverLog YES`, appends to the cover log how much
+        /// of each front cover the camera shows inside `rect` of an image of `size`, measured
+        /// from the books as they lie (`PileSpread.visibility`): the least and the mean share;
+        /// the shares of `rect` that covers and books fill (`PileSpread.coverage`); and the
+        /// steepest tilt of a front cover from straight up.
+        func logSpread(_ label: String, in rect: CGRect, of size: CGSize) {
+            guard UserDefaults.standard.bool(forKey: "BookwormsPileCoverLog") else { return }
+            let books = lyingBooks
+            let shares = PileSpread.visibility(of: books, camera: view, in: rect, of: size)
+                .map(\.share)
+            let fill = PileSpread.coverage(of: books, camera: view, in: rect, of: size)
+            let tilt = books.map { acos(min(1, $0.transform.rotation.act([0, 0, 1]).y)) }.max()
+            func percent(_ value: Float) -> String {
+                (value * 100).formatted(.number.precision(.fractionLength(1))) + "%"
+            }
+            let mean = shares.reduce(0, +) / Float(max(shares.count, 1))
+            let degrees = ((tilt ?? 0) * 180 / .pi).formatted(.number.precision(.fractionLength(1)))
+            Self.appendCoverLog(
+                "\(label): covers shown least \(percent(shares.min() ?? 0)), mean \(percent(mean)); "
+                    + "rect \(percent(fill.covers)) covers, \(percent(fill.books)) books; "
+                    + "tilt up to \(degrees)°")
+        }
+
+        /// Draws the front covers of the books at `shown`, by the order they went down, unlit
+        /// white and every other surface unlit black, without the desk, the lamp, shadows, or
+        /// ribbons, so that a frame's white pixels are what the camera sees of those covers.
+        /// The scene stays this way. Returns each book's front cover's corners, in order.
+        func showCovers(_ shown: Set<Int>) -> [[SIMD3<Float>]] {
+            stage.root.isEnabled = false
+            let white = UnlitMaterial(color: .white)
+            let black = UnlitMaterial(color: .black)
+            // `RealityRenderer` keeps drawing the materials a model first rendered with after
+            // they change, so each call draws every book with a new entity in place of the last.
+            for (index, book) in shelf.children.enumerated() {
+                guard let model = book.children.first,
+                    let mesh = model.components[ModelComponent.self]?.mesh
+                else { continue }
+                model.isEnabled = false
+                book.findEntity(named: "cover check")?.removeFromParent()
+                let check = Entity()
+                check.name = "cover check"
+                check.components.set(
+                    ModelComponent(
+                        mesh: mesh,
+                        materials: [shown.contains(index) ? white : black, black, black, black]))
+                book.addChild(check)
+            }
+            return lyingBooks.map { transform, shape in
+                let half = shape.size / 2
+                let left = -half.x + shape.spineDepth
+                return [[left, -half.y], [half.x, -half.y], [half.x, half.y], [left, half.y]]
+                    .map { (corner: SIMD2<Float>) in
+                        transform.translation
+                            + transform.rotation.act(SIMD3(corner.x, corner.y, half.z))
+                    }
             }
         }
     #endif
@@ -1438,47 +1404,57 @@ final class BookPileScene {
 extension BookPileScene: LiftingScene {}
 
 extension BookPileScene {
-    /// Sets the scene up for a video of `books` dropping onto `tray`, seen through `camera` in
-    /// a frame of width-to-height `aspect`, as `settle` sets it up for a still image: it builds
-    /// every book, giving covers up to 10 seconds, and waits for the room's light.
-    func prepareFilm(
-        _ books: [CloudBook], on tray: PileTray, camera: PileCamera, aspect: Float,
-        model: AppModel
-    ) async {
-        look(through: camera)
-        self.aspect = aspect
-        build(tray.scaled(toFit: 3.9))
+    /// Builds every book of `books`, giving covers up to 10 seconds, waits for the room's light,
+    /// and lays the books out as a share image's spread (`PileSpread`), framed in `rect` of an
+    /// image of `size`. The scene then looks through the spread's camera, with the lamp's pool
+    /// over the spread; `place(_:mode:)` adds the books.
+    ///
+    /// The layout runs away from the main actor. A book that RealityKit cannot build is left out.
+    func prepareSpread(
+        _ books: [CloudBook], in rect: CGRect, of size: CGSize, seed: UInt64, model: AppModel
+    ) async -> PileSpread {
         await factory.prepare(books, prefetching: [], coverWait: .seconds(10), model: model)
         await stage.lit()
+        let shaped = books.compactMap { book in factory.parts[book.id].map { (book, $0.shape) } }
+        let spread = await Self.layOut(shaped, in: rect, of: size, seed: seed)
+        let reach = zip(spread.slots, spread.shapes)
+            .map { slot, shape in
+                let middle = slot.transform.translation
+                let half = simd_length(SIMD2(shape.size.x, shape.size.y)) / 2
+                return (z: middle.z - half...middle.z + half, x: abs(middle.x) + half)
+            }
+        let side = reach.map(\.x).max() ?? 1
+        build(
+            PileTray(
+                farZ: reach.map(\.z.lowerBound).min() ?? -1,
+                nearZ: reach.map(\.z.upperBound).max() ?? 1, farHalfWidth: side,
+                nearHalfWidth: side))
+        aspect = Float(size.width / size.height)
+        look(through: spread.camera)
+        return spread
     }
 
-    /// Drops `group`, from `PileLayout.settleGroups`, with heights counted from the top of the
-    /// pile or from `base`, whichever is higher, and returns the new books' entity IDs. A video
-    /// passes the base that starts its books out of view (see `PileMovieTiming.dropBase`).
-    ///
-    /// The pile's top leaves out `falling`, the IDs the previous call returned, since those
-    /// books can still be in the air; counting them would start each group higher than the last.
-    /// The books get `PileMovieTiming`'s drag, so a fall from behind the heading lands softly
-    /// enough that books land the side up they start, as an image's do.
-    func drop(_ group: [PileSlot], base: Float, above falling: Set<Entity.ID>) -> Set<Entity.ID> {
-        let landed = shelf.children.filter { !falling.contains($0.id) }
-        let top = landed.map { $0.visualBounds(relativeTo: root).max.y }.max() ?? 0
-        let count = shelf.children.count
-        for var slot in group {
-            slot.transform.translation.y += max(top, base, 0)
-            spawn(slot, mode: .dynamic)
-        }
-        let books = shelf.children.dropFirst(count)
-        for book in books {
-            book.components[PhysicsBodyComponent.self]?.linearDamping = PileMovieTiming.airDrag
-            book.components[PhysicsBodyComponent.self]?.angularDamping = PileMovieTiming.spinDrag
-        }
-        return Set(books.map(\.id))
+    @concurrent
+    nonisolated private static func layOut(
+        _ books: [(book: CloudBook, shape: BookShape)], in rect: CGRect, of size: CGSize,
+        seed: UInt64
+    ) async -> PileSpread {
+        PileSpread(books, in: rect, of: size, seed: seed)
     }
 
-    /// Plays a collision through `feedback`, panned to where it shows, for a renderer that
-    /// steps the scene without a view.
-    func collide(_ event: CollisionEvents.Began) { feedback.collide(event, pan: pan) }
+    /// Adds the books of `slots` at their poses, in order, and returns them.
+    @discardableResult
+    func place(_ slots: [PileSlot], mode: PhysicsBodyMode) -> [ModelEntity] {
+        slots.compactMap { spawn($0, mode: mode) }
+    }
+
+    /// Plays the knock of `book` landing at `speed` units a second, panned to where it shows,
+    /// for a video that moves its books itself, so that no collision reports the landing.
+    func land(_ book: ModelEntity, speed: Float) {
+        let mass = book.components[PhysicsBodyComponent.self]?.massProperties.mass ?? 0.5
+        feedback.impact(
+            impulse: mass * speed, mass: mass, position: book.position(relativeTo: root), pan: pan)
+    }
 }
 
 extension ClosedRange where Bound == Float {

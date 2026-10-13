@@ -260,7 +260,8 @@ struct ShareStudioView: View {
         } else if image == nil && failed && !isPending {
             ContentUnavailableView(
                 "Couldn't draw the image", systemImage: "exclamationmark.triangle",
-                // A pile's drop varies with the seed, so Shuffle can succeed where it failed.
+                // A pile's arrangement varies with the seed, so Shuffle can succeed where it
+                // failed.
                 description: Text(
                     template == .pile
                         ? "Try Shuffle or another size." : "Try another size or template.")
@@ -278,7 +279,7 @@ struct ShareStudioView: View {
                         .accessibilityLabel("\(image.name) preview")
                 }
                 if template == .pile && isPending {
-                    // A pile takes seconds to drop and settle.
+                    // A pile takes seconds to load its covers and lay its books out.
                     ProgressView("Dropping books")
                         .padding()
                         .background(.regularMaterial, in: .rect(cornerRadius: 12))
@@ -506,7 +507,7 @@ struct ShareStudioView: View {
     }
 
     /// Whether the seed changes the image. It varies spine stacks, the Top Five fan, a pile's
-    /// drop, and the angle of 3D books; flat single covers and Spine Spectrum ignore it.
+    /// arrangement, and the angle of 3D books; flat single covers and Spine Spectrum ignore it.
     private var showsShuffle: Bool {
         switch template {
         case .yearStack, .yearInBooks, .topFive, .pile: true
@@ -623,7 +624,7 @@ private struct RenderRequest: Equatable {
     var loadedFaces: Int
 
     /// The request without its designs. The render task restarts only when these change: a
-    /// pile takes seconds to drop, and a generation run saves a design every few seconds, so a
+    /// pile takes seconds to render, and a generation run saves a design every few seconds, so a
     /// new design waits for the image in progress and draws next.
     var options: RenderRequest {
         var options = self

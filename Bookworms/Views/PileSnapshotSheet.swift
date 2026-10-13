@@ -1,14 +1,14 @@
 import SwiftUI
 import UIKit
 
-/// Shares the pile as an image: the pile's books dropped into a new pile under the name of its
-/// time frame, in a share size the reader picks.
+/// Shares the pile as an image: the pile's books spread front cover up across the table
+/// (`PileSpread`) under the name of its time frame, in a share size the reader picks.
 ///
 /// Each size change or shuffle renders a new image and cancels one in progress. A change to the
 /// books, such as a design a generation run saves every few seconds under **Designed only**,
 /// draws again once the image in progress, if any, is ready. The previous image stays in view
 /// under a progress indicator until the new one is ready, and sharing waits for it. **Video**
-/// films the same books in the same size and drop (`PileVideoSheet`).
+/// films the same books falling into the same spread (`PileVideoSheet`).
 struct PileSnapshotSheet: View {
     let books: [CloudBook]
     let title: String

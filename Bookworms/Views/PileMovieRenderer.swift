@@ -19,19 +19,18 @@ struct PileMovie: Sendable {
 }
 
 extension PileSnapshotRenderer {
-    /// Films `books` falling into a pile under the heading `title`, as a six-second video at the
+    /// Films `books` falling into place under the heading `title`, as a six-second video at the
     /// pixel size of `aspect`, with the knocks of their landings.
     ///
-    /// The books, their order, the 150-book limit, the heading, the credit, and the lamp-lit
-    /// table are those of `render(books:title:aspect:seed:model:)`, and the render takes its
-    /// turn with images: one pile renders at a time, and the live pile steps out meanwhile. The
-    /// books drop in the image's groups, 0.4 seconds apart, seen through the framing the image's
-    /// drop starts with, but from behind the heading, so they fall into view. A clip shows at
-    /// most `PileMovieTiming.shownGroups` groups falling; earlier ones drop before it starts.
-    /// The camera then closes in on the settled pile as the image frames it (see
-    /// `PileMovieTiming`).
+    /// The books, the 150-book limit, the heading, the credit, the lamp-lit table, and the
+    /// camera are those of `render(books:title:aspect:seed:model:)`, and the render takes its
+    /// turn with images: one pile renders at a time, and the live pile steps out meanwhile. Each
+    /// book falls from behind the heading straight onto its place in the image's spread, in the
+    /// order the books go down, so the last frame is the image (see `PileMovieTiming`). The
+    /// books are kinematic: the video moves them along their falls, and plays each landing's
+    /// knock itself.
     ///
-    /// The simulation runs on the main actor, `PileMovieTiming.stepsPerFrame` steps per frame.
+    /// The scene steps on the main actor, `PileMovieTiming.stepsPerFrame` steps per frame.
     /// Each frame renders into a Metal texture, which a blit copies into memory (`FrameTarget`);
     /// `PileMovieWriter` copies it into a pixel buffer, draws the heading and credit over it
     /// there, and encodes it. Hits that `ImpactFeedback` would play are recorded, and each
@@ -56,10 +55,8 @@ extension PileSnapshotRenderer {
         progress: (Double?) -> Void, preview: (CGImage) -> Void
     ) async throws -> PileMovie {
         progress(nil)
-        let dropped = Array(books.prefix(maximumBooks).reversed())
-        guard let layout = PileSnapshotLayout(aspect: aspect, count: dropped.count) else {
-            throw PileSnapshotError.drawingFailed
-        }
+        let shown = Array(books.prefix(maximumBooks))
+        let layout = PileSnapshotLayout(aspect: aspect, count: shown.count)
         removeStaleClips()
         let folder = URL.temporaryDirectory.appending(path: "PileVideo-\(UUID().uuidString)")
         let name = "Pile \(title)"
@@ -74,7 +71,7 @@ extension PileSnapshotRenderer {
             do {
                 defer { release() }
                 filmed = try await film(
-                    dropped, title: title, count: books.count, layout: layout, seed: seed,
+                    shown, title: title, count: books.count, layout: layout, seed: seed,
                     model: model, to: movie, identifier: identifier, progress: progress,
                     preview: preview)
             }
@@ -118,8 +115,9 @@ extension PileSnapshotRenderer {
         try PileMovieWriter.writeStill(image, identifier: identifier, to: url)
     }
 
-    /// Drops the books in front of the camera, writes each frame and its sound to `url`, and
-    /// returns the writer, for the caller to finish the movie, and the last frame.
+    /// Drops the books into the image's spread in front of the camera, writes each frame and its
+    /// sound to `url`, and returns the writer, for the caller to finish the movie, and the last
+    /// frame.
     private static func film(
         _ books: [CloudBook], title: String, count: Int, layout: PileSnapshotLayout,
         seed: UInt64, model: AppModel, to url: URL, identifier: String,
@@ -139,52 +137,80 @@ extension PileSnapshotRenderer {
         renderer.activeCamera = scene.camera
         renderer.cameraSettings.antialiasing = .multisample4X
         renderer.cameraSettings.isToneMappingEnabled = true
-        // `RealityRenderer.update`, which runs on the main actor, delivers collisions as it
-        // steps, so each is recorded at its step's time. One delivered elsewhere goes unheard
-        // rather than stopping the app.
-        let collisions = renderer.subscribe(to: CollisionEvents.Began.self) { event in
-            guard Thread.isMainThread else { return }
-            MainActor.assumeIsolated { scene.collide(event) }
-        }
-        defer { collisions.cancel() }
-        await scene.prepareFilm(
-            books, on: layout.tray, camera: layout.camera, aspect: Float(width) / Float(height),
-            model: model)
+        let spread = await scene.prepareSpread(
+            books, in: layout.pileRect, of: layout.aspect.size, seed: seed, model: model)
         try Task.checkCancellation()
 
-        func step() throws {
-            scene.feedback.advance(by: PileMovieTiming.stepDuration)
-            try renderer.update(PileMovieTiming.stepDuration)
-        }
-        let groups = PileLayout.settleGroups(books, in: layout.tray, seed: seed)
-        let schedule = PileMovieTiming.schedule(groups: groups.count)
-        // Out of view, the earlier groups drop as for an image, from just above every book so
-        // far, so none starts inside a stack that has just landed. The walls stay up through
-        // the clip: without them, a big pile slumps across the table.
-        if schedule.preroll > 0 {
-            let steps = PileMovieTiming.groupFrames * PileMovieTiming.stepsPerFrame
-            for group in groups.prefix(schedule.preroll) {
-                _ = scene.drop(group, base: 0, above: [])
-                for _ in 0..<steps { try step() }
-                try Task.checkCancellation()
-                await Task.yield()
-            }
-            for _ in 0..<PileMovieTiming.prerollSettleSteps { try step() }
-        }
-
+        // Each book's fall: from straight above its place, high enough that the heading hides
+        // it, turned a little about the vertical and tipped about a level axis.
         let headingY = 1 - 2 * Float(layout.pileTop / layout.aspect.size.height)
-        let nearestZ = groups[schedule.preroll...].joined().map(\.transform.translation.z).max()
-        let base = PileMovieTiming.dropBase(
-            camera: layout.camera, headingY: headingY, nearestZ: nearestZ ?? 0)
-        let lastDrop = schedule.frames.last ?? 0
+        let aspect = Float(width) / Float(height)
+        let falls = zip(spread.slots, spread.shapes)
+            .map { slot, shape in
+                let half = shape.size / 2
+                let corners = (0..<8)
+                    .map { corner in
+                        slot.transform.translation
+                            + slot.transform.rotation.act(
+                                SIMD3(
+                                    corner & 1 == 0 ? -half.x : half.x,
+                                    corner & 2 == 0 ? -half.y : half.y,
+                                    corner & 4 == 0 ? -half.z : half.z))
+                    }
+                func random(_ salt: UInt64) -> Float {
+                    Float(ShareStyle.unit(seed, slot.book.id, salt)) * 2 - 1
+                }
+                let axis = random(51) * .pi
+                let height =
+                    PileMovieTiming.startHeight(
+                        of: corners, camera: spread.camera, headingY: headingY, aspect: aspect)
+                    + 0.3
+                let (duration, speed) = PileMovieTiming.fall(height: height)
+                return (
+                    rest: slot.transform, height: height, duration: duration, speed: speed,
+                    turn: simd_quatf(angle: random(52) * 0.4, axis: [0, 1, 0])
+                        * simd_quatf(angle: random(53) * 0.25, axis: [cos(axis), 0, sin(axis)])
+                )
+            }
+        let landings = PileMovieTiming.landings(falls.map(\.duration))
+        func pose(_ index: Int, at time: Float) -> Transform {
+            let fall = falls[index]
+            return PileMovieTiming.pose(
+                rest: fall.rest, height: fall.height, duration: fall.duration, turn: fall.turn,
+                landing: landings[index], at: time)
+        }
+        let placed = scene.place(
+            spread.slots.indices.map { index in
+                var start = spread.slots[index]
+                start.transform = pose(index, at: 0)
+                return start
+            }, mode: .kinematic)
+        guard placed.count == falls.count else { throw PileSnapshotError.drawingFailed }
+
+        // Moves the falling books to where they are one step later, and plays the knocks of the
+        // books that land in that step. A book shows only once its fall begins, so books waiting
+        // behind the heading cast no shadows on the table.
+        var steps = 0
+        var landed = 0
+        func step() {
+            steps += 1
+            let time = Float(Double(steps) * PileMovieTiming.stepDuration)
+            scene.feedback.advance(by: PileMovieTiming.stepDuration)
+            for index in landed..<placed.count {
+                placed[index].transform = pose(index, at: time)
+                placed[index].isEnabled = time >= landings[index] - falls[index].duration
+            }
+            while landed < placed.count, landings[landed] <= time {
+                scene.land(placed[landed], speed: falls[landed].speed)
+                landed += 1
+            }
+        }
 
         let writer = try PileMovieWriter(
             url: url, width: width, height: height, identifier: identifier)
         let last = PileMovieTiming.frameCount - 1
         do {
             try await writer.start(stillFrame: last, before: .now + frameTimeout)
-            var next = schedule.preroll
-            var falling: Set<Entity.ID> = []
             var poster: CGImage?
             scene.feedback.startRecording()
             for frame in 0...last {
@@ -192,20 +218,11 @@ extension PileSnapshotRenderer {
                 // Every wait of the frame ends by this deadline, so a frame that never renders
                 // or an encoder that stops taking frames cannot hold the render's turn.
                 let deadline = ContinuousClock.now + frameTimeout
-                while next < groups.count, schedule.frames[next - schedule.preroll] <= frame {
-                    falling = scene.drop(groups[next], base: base, above: falling)
-                    next += 1
+                for _ in 1..<PileMovieTiming.stepsPerFrame {
+                    step()
+                    try renderer.update(PileMovieTiming.stepDuration)
                 }
-                let push = PileMovieTiming.push(atFrame: frame, lastDrop: lastDrop)
-                if push > 0 {
-                    // Framed afresh each frame, so the camera follows books that still slide.
-                    let framed = layout.camera.framing(
-                        scene.bookCorners, in: layout.pileRect, of: layout.aspect.size,
-                        zoomRange: 0.25...layout.camera.zoom * 1.25)
-                    scene.look(through: layout.camera.mixed(with: framed, push))
-                }
-                for _ in 1..<PileMovieTiming.stepsPerFrame { try step() }
-                scene.feedback.advance(by: PileMovieTiming.stepDuration)
+                step()
                 let signal = UInt64(frame + 1)
                 try renderer.updateAndRender(
                     deltaTime: PileMovieTiming.stepDuration, cameraOutput: target.output,
@@ -229,6 +246,7 @@ extension PileSnapshotRenderer {
             _ = scene.feedback.finishRecording()
             #if DEBUG
                 scene.logCovers("video seed \(seed), \(books.count) books")
+                scene.logSpread("video seed \(seed)", in: layout.pileRect, of: layout.aspect.size)
             #endif
             guard let poster else { throw PileSnapshotError.drawingFailed }
             return (writer, poster)
@@ -251,17 +269,17 @@ extension PileSnapshotRenderer {
     }
 }
 
-/// Where `RealityRenderer` draws a video's frames, and where the CPU reads them.
+/// Where `RealityRenderer` draws a pile image's or video's frames, and where the CPU reads them.
 ///
-/// RealityKit renders into a private `bgra8Unorm_srgb` texture, as for still images, and a blit
-/// copies each frame into a shared buffer once the render signals `event`. The frames have
+/// RealityKit renders into a private `bgra8Unorm_srgb` texture, and a blit copies each frame
+/// into a shared buffer once the render signals `event`. The frames have
 /// Display P3 primaries with the sRGB transfer curve.
 ///
 /// If the render never signals, the copy would wait forever, and with it the render's turn
 /// that the live pile and every share image wait on. `read(after:before:)` therefore signals
 /// the event itself at its deadline.
 @MainActor
-private struct FrameTarget {
+struct FrameTarget {
     let event: any MTLSharedEvent
     let output: RealityRenderer.CameraOutput
     let buffer: any MTLBuffer

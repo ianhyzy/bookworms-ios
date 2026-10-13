@@ -67,37 +67,30 @@ final class PileSnapshotTests: XCTestCase {
         }
     }
 
-    func testLayoutFramesFewerBooksCloserWithinTheTextureBudget() throws {
+    func testLayoutSharpensFewerBooksWithinTheTextureBudget() {
         for aspect in ShareAspect.allCases {
-            var previousZoom = Float.infinity
+            var previous = CGFloat.infinity
             for count in [1, 2, 3, 6, 12, 40, 150] {
-                let layout = try XCTUnwrap(PileSnapshotLayout(aspect: aspect, count: count))
-                XCTAssertTrue(PileSnapshotLayout.zoomRange.contains(layout.camera.zoom))
-                XCTAssertLessThanOrEqual(layout.camera.zoom, previousZoom)
-                previousZoom = layout.camera.zoom
+                let layout = PileSnapshotLayout(aspect: aspect, count: count)
+                let scale = layout.textureScale
+                XCTAssertTrue((1...5).contains(scale), "\(aspect) \(count)")
+                XCTAssertLessThanOrEqual(scale, previous)
+                previous = scale
                 // Closer framing draws sharper textures, but never more texture memory than the
-                // largest pile at the view's size.
-                let scale = Float(layout.textureScale)
+                // largest pile at a scale of 1.
                 XCTAssertLessThanOrEqual(
-                    Float(count) * scale * scale, Float(PileSnapshotRenderer.maximumBooks))
-                // The tray lies below the heading and above the bottom margin.
-                let size = aspect.size
-                for corner in layout.tray.corners {
-                    let point = pixel(layout.camera, corner, size)
-                    XCTAssertGreaterThan(point.y, layout.pileTop - 1, "\(aspect) \(count)")
-                    XCTAssertLessThan(point.y, size.height - aspect.insets.bottom + 1)
-                    XCTAssertTrue((-1...size.width + 1).contains(point.x))
-                }
+                    CGFloat(count) * scale * scale, CGFloat(PileSnapshotRenderer.maximumBooks))
+                // The pile rect lies below the heading and above the bottom margin.
+                XCTAssertGreaterThan(layout.pileRect.minY, layout.pileTop)
+                XCTAssertEqual(layout.pileRect.maxY, aspect.size.height - aspect.insets.bottom)
             }
         }
-        // The camera zooms out until the tray holds about `areaPerBook` per book.
-        let crowded = try XCTUnwrap(PileSnapshotLayout(aspect: .story, count: 40))
-        XCTAssertLessThanOrEqual(crowded.tray.area, 40 * PileSnapshotLayout.areaPerBook + 5)
+        XCTAssertEqual(PileSnapshotLayout(aspect: .story, count: 150).textureScale, 1)
     }
 
-    func testFramingFitsSettledBooksInsideThePileRect() throws {
-        let layout = try XCTUnwrap(PileSnapshotLayout(aspect: .story, count: 12))
-        let zoomRange: ClosedRange<Float> = 0.25...layout.camera.zoom * 1.25
+    func testFramingFitsSettledBooksInsideThePileRect() {
+        let layout = PileSnapshotLayout(aspect: .story, count: 12)
+        let zoomRange: ClosedRange<Float> = 0.25...5
         let rect = layout.pileRect
         // Book-sized boxes: a heap off to one side, a pile spread past the tray, and one book.
         func boxes(_ centers: [SIMD3<Float>]) -> [SIMD3<Float>] {
@@ -115,8 +108,9 @@ final class PileSnapshotTests: XCTestCase {
         let spread = (0..<12)
             .map { SIMD3<Float>(Float($0 % 4) * 4 - 6, 0.2, Float($0 / 4) * 4 - 6) }
         for points in [boxes(heap), boxes(spread), boxes([[2, 0.2, -1]])] {
-            let camera = layout.camera.framing(
-                points, in: rect, of: layout.aspect.size, zoomRange: zoomRange)
+            let camera = PileCamera()
+                .framing(
+                    points, in: rect, of: layout.aspect.size, zoomRange: zoomRange)
             XCTAssertTrue(zoomRange.contains(camera.zoom))
             let pixels = points.map { pixel(camera, $0, layout.aspect.size) }
             let low = CGPoint(x: pixels.map(\.x).min()!, y: pixels.map(\.y).min()!)
