@@ -7,10 +7,11 @@ import SwiftUI
 /// ready, a spinner shows over the table (`SceneLoading`); then the books drop into their places
 /// from above the top of the screen (see `DominoScene`).
 ///
-/// A tap on the first book, which a glow marks, topples the whole chain, tearing the cobwebs
-/// as it goes. Should the chain stop, such as where a book leans on the next without knocking
-/// it over, the glow marks the book to tap to nudge it on. A tap on any book the chain has not
-/// reached also pushes it on. Tapping a book the chain has passed, or touching and holding any
+/// A pointing hand floats before the first book, as a finger about to poke it; a tap on the
+/// hand or the book topples the whole chain, tearing the cobwebs as it goes. Should the chain
+/// stop, such as where a book leans on the next without knocking it over, the hand points at
+/// the book to tap to nudge it on. A tap on any book the chain has not reached also pushes it
+/// on. Tapping a book the chain has passed, or touching and holding any
 /// book, lifts it out of the chain to its details over the darkened scene, as the Pile does
 /// (`LiftedDetails`), and **Back** returns it (see `DominoScene`). With Reduce Motion on, or when
 /// the scene cannot lift the book, `open` pushes the details instead, and the chain is as the
@@ -101,7 +102,6 @@ struct DominoesView: View {
             }
             Button("Set up again") { generation += 1 }
         }
-        .overlay(alignment: .bottom) { hint }
         .settingUp(scene.loading.isLoading)
         .modifier(
             LiftedDetailsOverlay(details: details, scene: scene, canvas: canvas) {
@@ -196,32 +196,6 @@ struct DominoesView: View {
             if details.lift == nil {
                 FrameChip(title: title, shown: chainLength, total: books.count)
             }
-        }
-    }
-
-    /// What to do next, over the bottom of the scene while the chain waits for a push and no
-    /// details show.
-    @ViewBuilder private var hint: some View {
-        let text: String? =
-            switch scene.status.phase {
-            case .standing:
-                "Tap the glowing book to start the chain. Touch and hold any book for its details."
-            case .stalled:
-                "The chain stopped. Tap the glowing book to nudge it on."
-            default: nil
-            }
-        if let text, details.lift == nil {
-            Text(text)
-                .font(.footnote.weight(.medium))
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .glassEffect(.regular, in: .rect(cornerRadius: 16))
-                .padding(.horizontal, 24)
-                .padding(.bottom, 12)
-                .allowsHitTesting(false)
-                // VoiceOver reads the same status as the scene's value.
-                .accessibilityHidden(true)
         }
     }
 
