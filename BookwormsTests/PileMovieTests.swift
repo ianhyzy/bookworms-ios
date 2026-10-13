@@ -13,7 +13,7 @@ final class PileMovieTests: XCTestCase {
             accuracy: 1e-12)
         XCTAssertEqual(PileMovieTiming.time(ofFrame: 0), .zero)
         XCTAssertEqual(PileMovieTiming.time(ofFrame: 45).seconds, 1.5, accuracy: 1e-12)
-        XCTAssertEqual(PileMovieTiming.samplesPerFrame, 1_470)
+        XCTAssertEqual(PileMovieTiming.samplesPerFrame, 1_600)
         XCTAssertEqual(
             PileMovieTiming.samplesPerFrame * PileMovieTiming.frameCount,
             Int(ImpactSound.sampleRate) * 6)

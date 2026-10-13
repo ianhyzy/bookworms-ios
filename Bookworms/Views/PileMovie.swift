@@ -1,7 +1,9 @@
 import AVFoundation
 import CoreGraphics
+import CoreImage
 import CoreVideo
 import ImageIO
+import Metal
 import RealityKit
 import UniformTypeIdentifiers
 import os
@@ -34,7 +36,7 @@ enum PileMovieTiming {
     static let firstLanding: Float = 1
     /// The latest a book lands, in seconds, which leaves the last 1.5 seconds still.
     static let lastLanding: Float = 4.5
-    /// Audio sample frames per video frame: 1,470 at 44.1 kHz.
+    /// Audio sample frames per video frame: 1,600 at 48 kHz.
     static let samplesPerFrame = Int(ImpactSound.sampleRate) / Int(framesPerSecond)
 
     /// How far a book falls in `seconds` from rest, under `PileLayout.gravity` and `airDrag`.
@@ -181,64 +183,69 @@ enum ImpactMix {
     }
 }
 
-/// Writes a pile or dominoes video to a QuickTime movie: HEVC frames, an AAC soundtrack, and,
-/// for a pile, the metadata that pairs the movie with a still as a Live Photo.
+/// Writes a video as an MP4 that Photos and social apps take as it is: H.264 High profile,
+/// 8-bit 4:2:0 frames at 30 per second in Rec. 709 colors, an AAC-LC soundtrack at 48 kHz in
+/// stereo, and the movie's index at the front of the file, with no other tracks or metadata. A
+/// pile video can also get a QuickTime copy with the metadata that pairs it with a still as a
+/// Live Photo.
 ///
-/// The frames are encoded as they render, into a file of their own with one input, which
-/// takes each frame as soon as the encoder has room for it. The sound and the metadata join
-/// them in a second pass (`finish(hits:before:)`), which copies the frames without decoding
-/// them, encodes the soundtrack mixed from the recorded hits (`ImpactMix`), and, for a Live
-/// Photo's movie, names its content identifier and marks a frame as the still's time; the
-/// still carries the same identifier (see `writeStill`). A writer with several inputs pairs
-/// their samples as it writes, and stops taking frames while it waits for sound it has not
-/// been given: fed one frame's sound at a time, it did so partway through long clips. In the
-/// second pass each track feeds the writer from a task of its own, so every track always has
-/// its next sample ready.
+/// The frames are encoded as they come, into a file of their own with one input, which takes
+/// each frame as soon as the encoder has room for it. The sound joins them in a second pass
+/// (`finish(hits:livePhoto:before:)`), which copies the frames without decoding them and
+/// encodes the soundtrack mixed from the recorded hits (`ImpactMix`). A writer with several
+/// inputs pairs their samples as it writes, and stops taking frames while it waits for sound
+/// it has not been given: fed one frame's sound at a time, it did so partway through long
+/// clips. The second pass offers each track its next sample in turn, so no track waits on
+/// another.
 ///
-/// Each frame is offered with `appendImmediately` until the encoder takes it, 4 milliseconds
-/// apart (see `offer`), which bounds the frames waiting for the encoder and the pixel buffers
-/// they hold. The inputs' own `append` waits do not return when their task or the writer is
-/// cancelled, while a render holds the turn that the live pile and every share image wait on,
-/// so every wait ends at a deadline, which fails the movie without waiting any further.
+/// Frames come from the encoder's pool (`framePool()`), whose buffers Metal can draw into
+/// (`FrameComposer`). An offline render offers each frame with `appendImmediately` until the
+/// encoder takes it, 4 milliseconds apart (`append(_:at:before:)`), which bounds the frames
+/// waiting for the encoder and the pixel buffers they hold; a live recording offers its frames
+/// without waiting (`appendIfReady(_:at:)`) and keeps the few the encoder has no room for
+/// until it does (see `DominoRecorder`). The inputs' own `append` waits do not
+/// return when their task or the writer is cancelled, so every wait ends at a deadline, which
+/// fails the movie without waiting any further.
 @MainActor
 final class PileMovieWriter {
     /// How long the frames may take to finish, and the movie to be written from them.
     static let finishTimeout = Duration.seconds(30)
 
-    private let url: URL
-    /// The frames alone, which `finish(hits:before:)` replaces with the movie.
+    /// The MP4 that `finish(hits:livePhoto:before:)` writes.
+    let url: URL
+    /// The frames alone, which `finish(hits:livePhoto:before:)` replaces with the movie.
     private let framesURL: URL
-    private let identifier: String?
     private let writer: AVAssetWriter
     private let frames: AVAssetWriterInput.PixelBufferReceiver
-    private var frameCount = 0
-    private var stillFrame = 0
+    /// One more than the number of the last frame the encoder took.
+    private(set) var frameCount = 0
 
     private static let stillImageTimeIdentifier = "mdta/com.apple.quicktime.still-image-time"
     nonisolated private static let log = Logger(
         subsystem: "gay.ian.Bookworms.iOS", category: "video")
 
-    /// Prepares a movie of `width` by `height` pixels at `url`, which must not exist yet, for
-    /// the Live Photo content identifier `identifier`, or a plain movie without one.
-    init(url: URL, width: Int, height: Int, identifier: String?) throws {
+    /// Prepares a movie of `width` by `height` pixels at `url`, an `.mp4` file that must not
+    /// exist yet.
+    init(url: URL, width: Int, height: Int) throws {
         self.url = url
-        self.identifier = identifier
         framesURL = url.deletingPathExtension().appendingPathExtension("frames.mov")
         writer = try AVAssetWriter(outputURL: framesURL, fileType: .mov)
-        // Display P3 primaries, as `RealityRenderer` draws its frames.
         let video = AVAssetWriterInput(
             mediaType: .video,
             outputSettings: [
-                AVVideoCodecKey: AVVideoCodecType.hevc,
+                AVVideoCodecKey: AVVideoCodecType.h264,
                 AVVideoWidthKey: width,
                 AVVideoHeightKey: height,
+                // Rec. 709, as `FrameComposer` draws the frames.
                 AVVideoColorPropertiesKey: [
-                    AVVideoColorPrimariesKey: AVVideoColorPrimaries_P3_D65,
+                    AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
                     AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
                     AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
                 ],
                 AVVideoCompressionPropertiesKey: [
-                    AVVideoAverageBitRateKey: 12_000_000,
+                    AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+                    AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC,
+                    AVVideoAverageBitRateKey: 10_000_000,
                     AVVideoExpectedSourceFrameRateKey: Int(PileMovieTiming.framesPerSecond),
                     AVVideoMaxKeyFrameIntervalKey: 2 * Int(PileMovieTiming.framesPerSecond),
                     AVVideoAllowFrameReorderingKey: false,
@@ -249,58 +256,54 @@ final class PileMovieWriter {
             for: video,
             pixelBufferAttributes: CVPixelBufferCreationAttributes(
                 pixelFormatType: CVPixelFormatType(rawValue: kCVPixelFormatType_32BGRA),
-                size: CVImageSize(width: width, height: height), compatibility: .cgBitmapContext))
+                size: CVImageSize(width: width, height: height), compatibility: .metalTexture))
     }
 
-    /// Starts the frames at time zero and, for a Live Photo's movie, notes frame `stillFrame`
-    /// as its still.
+    /// Starts the frames at time zero.
     ///
     /// - Throws: `PileSnapshotError` when the writer fails to start.
-    func start(stillFrame: Int) throws {
-        self.stillFrame = stillFrame
+    func start() throws {
         try writer.start()
         writer.startSession(atSourceTime: .zero)
     }
 
-    /// Adds a frame of 32-bit BGRA `pixels`, with rows `bytesPerRow` apart and the top row
-    /// first, as frame `frame`, with `overlay` drawn over it at `opacity` (see
-    /// `PileMovieOverlay`), and waits until the encoder takes it.
+    /// The encoder's pool of frames, for `FrameComposer` to draw into, from any thread, once
+    /// the writer has started.
     ///
-    /// Copies the pixels at once, so the caller can reuse their memory when this returns.
-    ///
-    /// - Returns: The finished frame, `snapshot` times smaller in each dimension, when
-    ///   `snapshot` is set.
-    /// - Throws: `PileSnapshotError` when the writer fails or does not take the frame by
-    ///   `deadline`.
-    func appendFrame(
-        _ pixels: UnsafeRawPointer, bytesPerRow: Int, overlay: CGImage, opacity: CGFloat = 1,
-        at frame: Int, snapshot: Int?, before deadline: ContinuousClock.Instant
-    ) async throws -> CGImage? {
+    /// - Throws: The writer's error, or `PileSnapshotError`, when it has no pool.
+    func framePool() throws -> CVMutablePixelBuffer.Pool {
         guard let pool = frames.pixelBufferPool else {
             Self.log.error(
-                "No pixel buffer pool at frame \(frame): writer status \(self.writer.status.rawValue), \(String(describing: self.writer.error))"
+                "No pixel buffer pool: writer status \(self.writer.status.rawValue), \(String(describing: self.writer.error))"
             )
             throw writer.error ?? PileSnapshotError.drawingFailed
         }
-        var buffer = try pool.makeMutablePixelBuffer()
-        let image = buffer.accessUnsafeMutableRawPlaneBytes { planes -> CGImage? in
-            guard let plane = planes.first, let base = plane.bytes.baseAddress else { return nil }
-            let size = plane.properties.size
-            for row in 0..<size.height {
-                (base + row * plane.properties.bytesPerRow)
-                    .copyMemory(from: pixels + row * bytesPerRow, byteCount: size.width * 4)
-            }
-            return PileMovieOverlay.draw(
-                overlay, over: base, width: size.width, height: size.height,
-                bytesPerRow: plane.properties.bytesPerRow, opacity: opacity, snapshot: snapshot)
-        }
-        let finished = CVReadOnlyPixelBuffer(buffer)
+        return pool
+    }
+
+    /// Adds `picture` as frame `frame`, and waits until the encoder takes it.
+    ///
+    /// - Throws: `PileSnapshotError` when the writer fails or does not take the frame by
+    ///   `deadline`.
+    func append(
+        _ picture: CVReadOnlyPixelBuffer, at frame: Int, before deadline: ContinuousClock.Instant
+    ) async throws {
         let time = PileMovieTiming.time(ofFrame: frame)
         try await Self.offer("frame \(frame)", to: writer, until: deadline) {
-            try frames.appendImmediately(finished, with: time)
+            try frames.appendImmediately(picture, with: time)
         }
         frameCount = max(frameCount, frame + 1)
-        return image
+    }
+
+    /// Adds `picture` as frame `frame` if the encoder has room for it, without waiting, as a
+    /// live recording needs. Returns whether the encoder took it.
+    ///
+    /// - Throws: The writer's error when it has failed.
+    func appendIfReady(_ picture: CVReadOnlyPixelBuffer, at frame: Int) throws -> Bool {
+        let time = PileMovieTiming.time(ofFrame: frame)
+        guard try frames.appendImmediately(picture, with: time) else { return false }
+        frameCount = max(frameCount, frame + 1)
+        return true
     }
 
     /// Offers `what` to one of `writer`'s inputs with `append` until the input takes it, 4
@@ -322,13 +325,17 @@ final class PileMovieWriter {
         }
     }
 
-    /// Finishes the frames, then writes the movie: the frames, the soundtrack mixed from
-    /// `hits`, and a Live Photo's metadata. Cancels the movie when that fails, leaving
-    /// incomplete files for the caller to delete.
+    /// Finishes the frames, then writes the MP4 at `url` with the soundtrack mixed from `hits`
+    /// and, for a Live Photo's content identifier `livePhoto`, a QuickTime copy that names it
+    /// and marks the last frame as the still's (see `livePhotoURL(for:)`). Cancels the movie
+    /// when that fails, leaving incomplete files for the caller to delete.
     ///
     /// - Throws: `PileSnapshotError` when a writer fails or the movie is not done by
     ///   `deadline`.
-    func finish(hits: [ImpactRecord], before deadline: ContinuousClock.Instant) async throws {
+    func finish(
+        hits: [ImpactRecord], livePhoto identifier: String? = nil,
+        before deadline: ContinuousClock.Instant
+    ) async throws {
         do {
             frames.finish()
             let writer = writer
@@ -339,9 +346,17 @@ final class PileMovieWriter {
             let sound = ImpactMix.samples(
                 hits, in: 0..<frameCount * PileMovieTiming.samplesPerFrame)
             let began = ContinuousClock.now
-            try await wait(for: "the movie", until: deadline) { try await self.mux(sound) }
+            try await wait(for: "the movie", until: deadline) {
+                try await self.mux(sound, to: self.url, identifier: nil)
+            }
+            if let identifier {
+                try await wait(for: "the Live Photo", until: deadline) {
+                    try await self.mux(
+                        sound, to: Self.livePhotoURL(for: self.url), identifier: identifier)
+                }
+            }
             Self.log.notice(
-                "Wrote the movie in \((ContinuousClock.now - began) / .seconds(1), format: .fixed(precision: 1)) s"
+                "Wrote \(self.frameCount) frames into the movie in \((ContinuousClock.now - began) / .seconds(1), format: .fixed(precision: 2)) s"
             )
             try? FileManager.default.removeItem(at: framesURL)
         } catch {
@@ -350,9 +365,17 @@ final class PileMovieWriter {
         }
     }
 
-    /// Writes the movie at `url` from the finished frames and `sound`, the whole interleaved
-    /// stereo soundtrack at `ImpactSound.sampleRate`.
-    private func mux(_ sound: [Float]) async throws {
+    /// Where `finish(hits:livePhoto:before:)` writes the Live Photo's copy of the movie at
+    /// `url`.
+    nonisolated static func livePhotoURL(for url: URL) -> URL {
+        url.deletingPathExtension().appendingPathExtension("mov")
+    }
+
+    /// Writes a movie at `target` from the finished frames and `sound`, the whole interleaved
+    /// stereo soundtrack at `ImpactSound.sampleRate`: an MP4, or, for the Live Photo content
+    /// identifier `identifier`, a QuickTime movie with the metadata that names it and a timed
+    /// metadata track whose one sample marks the last frame as the still's.
+    private func mux(_ sound: [Float], to target: URL, identifier: String?) async throws {
         let asset = AVURLAsset(url: framesURL)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             throw PileSnapshotError.drawingFailed
@@ -361,7 +384,9 @@ final class PileMovieWriter {
         let pictures = reader.outputProvider(
             for: AVAssetReaderTrackOutput(track: track, outputSettings: nil))
 
-        let movie = try AVAssetWriter(outputURL: url, fileType: .mov)
+        let movie = try AVAssetWriter(outputURL: target, fileType: identifier == nil ? .mp4 : .mov)
+        // Puts the index before the media, so apps can play and upload the file as it arrives.
+        movie.shouldOptimizeForNetworkUse = true
         let video = AVAssetWriterInput(
             mediaType: .video, outputSettings: nil,
             sourceFormatHint: try await track.load(.formatDescriptions).first)
@@ -381,7 +406,6 @@ final class PileMovieWriter {
             content.value = identifier as NSString
             content.dataType = kCMMetadataBaseDataType_UTF8 as String
             movie.metadata = [content]
-            // A timed metadata track whose one sample marks the Live Photo's still.
             var description: CMFormatDescription?
             CMMetadataFormatDescriptionCreateWithMetadataSpecifications(
                 allocator: kCFAllocatorDefault, metadataType: kCMMetadataFormatType_Boxed,
@@ -409,7 +433,6 @@ final class PileMovieWriter {
                 mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
                 mBytesPerPacket: 8, mFramesPerPacket: 1, mBytesPerFrame: 8, mChannelsPerFrame: 2,
                 mBitsPerChannel: 32, mReserved: 0))
-        let stillTime = PileMovieTiming.time(ofFrame: stillFrame)
 
         // A second of sound at a time, as one sample buffer.
         let count = sound.count / 2
@@ -432,8 +455,9 @@ final class PileMovieWriter {
             item.dataType = kCMMetadataBaseDataType_SInt8 as String
             mark = AVTimedMetadataGroup(
                 items: [item],
-                timeRange: CMTimeRange(start: stillTime, duration: PileMovieTiming.time(ofFrame: 1))
-            )
+                timeRange: CMTimeRange(
+                    start: PileMovieTiming.time(ofFrame: max(frameCount - 1, 0)),
+                    duration: PileMovieTiming.time(ofFrame: 1)))
         }
 
         try movie.start()
@@ -519,14 +543,16 @@ final class PileMovieWriter {
         }
     }
 
-    /// Writes `image` to `url` as a JPEG that names `identifier`, if any, as its Live Photo
-    /// content identifier, in the Apple maker note's key 17, which pairs it with the movie.
+    /// Writes `image` to `url` as a PNG, or as a JPEG for a `.jpg` URL that names
+    /// `identifier`, if any, as its Live Photo content identifier, in the Apple maker note's
+    /// key 17, which pairs it with the movie.
     nonisolated static func writeStill(_ image: CGImage, identifier: String?, to url: URL)
         throws
     {
+        let type: UTType = url.pathExtension == "jpg" ? .jpeg : .png
         guard
             let destination = CGImageDestinationCreateWithURL(
-                url as CFURL, UTType.jpeg.identifier as CFString, 1, nil)
+                url as CFURL, type.identifier as CFString, 1, nil)
         else { throw PileSnapshotError.drawingFailed }
         var properties: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: 0.92]
         if let identifier { properties[kCGImagePropertyMakerAppleDictionary] = ["17": identifier] }
@@ -537,55 +563,124 @@ final class PileMovieWriter {
     }
 }
 
-/// Draws a video frame's heading and credit over the frame and copies the result.
-enum PileMovieOverlay {
-    /// `image` redrawn in Display P3, the space of the frames, so that drawing it over each one
-    /// converts no colors.
-    static func displayP3(_ image: CGImage) -> CGImage? {
-        guard let context = context(width: image.width, height: image.height, alpha: true)
-        else { return nil }
-        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
-        return context.makeImage()
+/// Draws video frames on the GPU with Core Image: part of a 3D render, scaled to fill the
+/// frame, over a background, under overlays such as a heading and the credit, and converted
+/// from the render's Display P3 primaries to the Rec. 709 primaries, with the sRGB curve, that
+/// `PileMovieWriter` tags its frames with. The few colors of the lamp-lit scene outside Rec. 709
+/// clip to it.
+///
+/// It keeps no state between frames, so any thread can use it, such as RealityKit's render
+/// thread, which records a run (`DominoRecorder`).
+final class FrameComposer: Sendable {
+    let device: any MTLDevice
+    private let context: CIContext
+    private let renderSpace: CGColorSpace
+    private let linearRenderSpace: CGColorSpace
+    private let frameSpace: CGColorSpace
+
+    /// - Throws: `PileSnapshotError` when Metal is unavailable.
+    init() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+            let renderSpace = CGColorSpace(name: CGColorSpace.displayP3),
+            let linearRenderSpace = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3),
+            let frameSpace = CGColorSpace(name: CGColorSpace.sRGB)
+        else { throw PileSnapshotError.drawingFailed }
+        self.device = device
+        self.renderSpace = renderSpace
+        self.linearRenderSpace = linearRenderSpace
+        self.frameSpace = frameSpace
+        context = CIContext(mtlDevice: device, options: [.cacheIntermediates: false])
     }
 
-    /// Draws `overlay` at `opacity` over a frame of 32-bit BGRA `pixels` in Display P3,
-    /// `width` by `height` with rows `bytesPerRow` apart and the top row first, ignoring their
-    /// alpha byte. Returns a copy of the result, `snapshot` times smaller in each dimension,
-    /// when `snapshot` is set.
-    static func draw(
-        _ overlay: CGImage, over pixels: UnsafeMutableRawPointer, width: Int, height: Int,
-        bytesPerRow: Int, opacity: CGFloat = 1, snapshot: Int?
-    ) -> CGImage? {
-        guard
-            let context = context(
-                width: width, height: height, alpha: false, data: pixels, bytesPerRow: bytesPerRow)
-        else { return nil }
-        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
-        if opacity > 0 {
-            context.setAlpha(opacity)
-            context.draw(overlay, in: bounds)
-            context.setAlpha(1)
+    /// `texture`, a render with Display P3 primaries, as an image the right way up.
+    func image(of texture: any MTLTexture) -> CIImage? {
+        // Metal decodes an sRGB texture's values to linear ones as Core Image reads them.
+        let decoded: Set<MTLPixelFormat> = [
+            .bgra8Unorm_srgb, .rgba8Unorm_srgb, .bgr10_xr_srgb, .bgra10_xr_srgb,
+        ]
+        let space = decoded.contains(texture.pixelFormat) ? linearRenderSpace : renderSpace
+        return CIImage(mtlTexture: texture, options: [.colorSpace: space])?
+            .oriented(.downMirrored)
+    }
+
+    /// The frame of `size` pixels that shows the part `crop` of `render`, in the render's
+    /// pixels from its top left, scaled to fill the frame, over `background`, stretched under
+    /// the whole render, and under `overlays`, each the frame's size, at their opacities.
+    func frame(
+        of render: CIImage, crop: CGRect, size: CGSize, background: CIImage? = nil,
+        overlays: [(image: CIImage, opacity: CGFloat)]
+    ) -> CIImage {
+        // Core Image counts y up from the bottom.
+        let extent = render.extent
+        let part = CGRect(
+            x: crop.minX, y: extent.maxY - crop.maxY, width: crop.width, height: crop.height)
+        let scene =
+            background.map { background in
+                render.composited(
+                    over: background.transformed(
+                        by: CGAffineTransform(
+                            scaleX: extent.width / background.extent.width,
+                            y: extent.height / background.extent.height)))
+            } ?? render
+        var frame = scene.cropped(to: part)
+            // Repeats the edge pixels, so scaling blends nothing from outside the part.
+            .clampedToExtent()
+            .transformed(
+                by: CGAffineTransform(translationX: -part.minX, y: -part.minY)
+                    .concatenating(
+                        CGAffineTransform(
+                            scaleX: size.width / part.width, y: size.height / part.height)))
+        for overlay in overlays where overlay.opacity > 0 {
+            let image =
+                overlay.opacity >= 1
+                ? overlay.image
+                : overlay.image.applyingFilter(
+                    "CIColorMatrix",
+                    parameters: ["inputAVector": CIVector(x: 0, y: 0, z: 0, w: overlay.opacity)])
+            frame = image.composited(over: frame)
         }
-        guard let snapshot, let frame = context.makeImage() else { return nil }
-        guard snapshot > 1,
-            let small = self.context(
-                width: width / snapshot, height: height / snapshot, alpha: false)
-        else { return frame }
-        small.interpolationQuality = .medium
-        small.draw(frame, in: CGRect(x: 0, y: 0, width: small.width, height: small.height))
-        return small.makeImage()
+        return frame.cropped(to: CGRect(origin: .zero, size: size))
     }
 
-    /// A 32-bit BGRA Display P3 context, over `data` when it is set.
-    private static func context(
-        width: Int, height: Int, alpha: Bool, data: UnsafeMutableRawPointer? = nil,
-        bytesPerRow: Int = 0
-    ) -> CGContext? {
-        guard let space = CGColorSpace(name: CGColorSpace.displayP3) else { return nil }
-        let order = alpha ? CGImageAlphaInfo.premultipliedFirst : .noneSkipFirst
-        return CGContext(
-            data: data, width: width, height: height, bitsPerComponent: 8,
-            bytesPerRow: bytesPerRow, space: space,
-            bitmapInfo: order.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+    /// Encodes drawing `image` into `picture`, a frame from `PileMovieWriter.framePool()`, on
+    /// `commands`, which must commit before the frame is used.
+    ///
+    /// - Throws: `PileSnapshotError` when the frame has no Metal texture, and Core Image's
+    ///   errors.
+    func render(
+        _ image: CIImage, into picture: CVReadOnlyPixelBuffer, on commands: any MTLCommandBuffer
+    ) throws {
+        try picture.withUnsafeBuffer { buffer in
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .bgra8Unorm, width: CVPixelBufferGetWidth(buffer),
+                height: CVPixelBufferGetHeight(buffer), mipmapped: false)
+            descriptor.usage = [.shaderWrite, .renderTarget]
+            descriptor.storageMode = .shared
+            guard let surface = CVPixelBufferGetIOSurface(buffer)?.takeUnretainedValue(),
+                let texture = device.makeTexture(
+                    descriptor: descriptor, iosurface: surface, plane: 0)
+            else { throw PileSnapshotError.drawingFailed }
+            let destination = CIRenderDestination(mtlTexture: texture, commandBuffer: commands)
+            destination.colorSpace = frameSpace
+            destination.isFlipped = true
+            destination.alphaMode = .none
+            try context.startTask(toRender: image, to: destination)
+        }
+    }
+
+    /// `picture`, `scale` times its size, as an image to show or save.
+    func cgImage(of picture: CVReadOnlyPixelBuffer, scale: CGFloat = 1) -> CGImage? {
+        let space = frameSpace
+        let image = picture.withUnsafeBuffer {
+            CIImage(cvPixelBuffer: $0, options: [.colorSpace: space])
+        }
+        return cgImage(
+            scale == 1 ? image : image.transformed(by: CGAffineTransform(scaleX: scale, y: scale)))
+    }
+
+    /// `image` as an image to show or save, in sRGB.
+    func cgImage(_ image: CIImage) -> CGImage? {
+        context.createCGImage(
+            image, from: image.extent.integral, format: .BGRA8, colorSpace: frameSpace)
     }
 }

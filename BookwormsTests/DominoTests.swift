@@ -1,5 +1,6 @@
 import Foundation
 import RealityKit
+import SwiftUI
 import XCTest
 import simd
 
@@ -599,17 +600,84 @@ final class DominoTests: XCTestCase {
         XCTAssertGreaterThan(simd_dot(SIMD3(head.x, 0, head.z), SIMD3(away.x, 0, away.z)), 0.9)
     }
 
-    func testAVideoFitsThirtySeconds() {
-        // A year's chain runs at live speed; a long one speeds up to fit, within its limit.
-        XCTAssertEqual(DominoMovieTiming.speed(run: 4, fixed: 18), 1)
-        XCTAssertEqual(DominoMovieTiming.speed(run: 28, fixed: 18), 28 / 12, accuracy: 1e-5)
-        XCTAssertEqual(DominoMovieTiming.speed(run: 60, fixed: 28), 4)
-        for (run, fixed): (Float, Float) in [(4, 18), (28, 18), (43, 16)] {
-            let speed = DominoMovieTiming.speed(run: run, fixed: fixed)
-            XCTAssertLessThanOrEqual(fixed + run / speed, DominoMovieTiming.longest + 1e-4)
+    /// Records a run that falls evenly over `run` live seconds at 60 frames per second, then
+    /// the finale and the hold, and returns the frames kept for each part.
+    private func record(run: Double, length: Float) -> (run: Int, finale: Int, last: Int) {
+        var timing = DominoMovieTiming(length: length)
+        var frames = (run: 0, finale: 0, last: -1)
+        let step = 1.0 / 60
+        let finale = Double(DominoFinale.duration(count: 2)) + DominoMovieTiming.hold
+        while timing.live < run + finale, !timing.isFull {
+            let progress = timing.live + step < run ? (timing.live + step) / run : nil
+            guard let kept = timing.advance(by: step, progress: progress) else { continue }
+            XCTAssertEqual(kept.lowerBound, frames.last + 1, "frames follow on")
+            frames.last = kept.upperBound
+            if progress == nil { frames.finale += kept.count } else { frames.run += kept.count }
         }
+        return frames
+    }
+
+    func testARecordingKeepsLiveSpeedUnlessItWouldRunLong() {
+        // A year's chain plays at live speed: 30 frames a second throughout.
+        let year = record(run: 5, length: 5 * DominoCameraRig.typicalPace)
+        XCTAssertEqual(Double(year.run), 5 * 30, accuracy: 2)
+        XCTAssertEqual(Double(year.finale), 8.2 * 30, accuracy: 2)
+        // A lifetime's chain speeds up to fit 30 seconds, and the finale keeps live speed.
+        for (run, length): (Double, Float) in [(40, 380), (90, 900), (90, 300)] {
+            let lifetime = record(run: run, length: length)
+            XCTAssertLessThan(lifetime.last, DominoMovieTiming.frameLimit, "\(run) s")
+            XCTAssertLessThanOrEqual(
+                Double(lifetime.run), DominoMovieTiming.runBudget * 30 + 30, "\(run) s")
+            XCTAssertEqual(Double(lifetime.finale), 8.2 * 30, accuracy: 2, "\(run) s")
+        }
+    }
+
+    func testHitsSoundWithTheFramesThatShowThem() {
+        func hit(_ time: Double, _ volume: Float = 0.5) -> ImpactRecord {
+            ImpactRecord(
+                time: time, impulse: 1, mass: 0.4, position: .zero, variant: 0, volume: volume,
+                pan: 0)
+        }
+        // Frames that show the view at live times 0.1, 0.2, and 0.3, as a run sped up 3 times.
+        let times = [0.1, 0.2, 0.3]
+        let moved = DominoMovieTiming.hits(
+            [hit(0), hit(0.15), hit(0.16), hit(0.16, 1), hit(0.3), hit(0.31)], shownAt: times)
+        // The push's hit sounds with the first frame, the hits within one frame's 30 ms
+        // collapse to the first unless one is much stronger, and a hit after the last frame
+        // is left out.
+        XCTAssertEqual(moved.map(\.volume), [0.5, 0.5, 1, 0.5])
         XCTAssertEqual(
-            DominoMovieTiming.runEstimate(length: 95), 95 / DominoCameraRig.typicalPace)
+            moved.map { PileMovieTiming.frame(showing: $0.time) }, [0, 1, 1, 2])
+    }
+
+    func testARecordingFramesTheHeadingAtTheStoryMargin() {
+        // An iPhone's view, with the bars and time frame button above and the tab bar below.
+        let phone = PileViewport(
+            size: CGSize(width: 402, height: 874),
+            insets: EdgeInsets(top: 176, leading: 0, bottom: 83, trailing: 0))
+        let crop = DominoRecorder.crop(in: phone)
+        XCTAssertEqual(crop.width, 402)
+        XCTAssertEqual(crop.height, 402 * 16 / 9, accuracy: 1e-9)
+        let heading = (176 + DominoFinaleCard.liveTop - crop.minY) * 1080 / 402
+        XCTAssertEqual(heading, ShareAspect.story.insets.top, accuracy: 1e-9)
+        XCTAssertGreaterThanOrEqual(crop.maxY, 874 - 83)
+        // With less room above the scene, the frame drops to keep the scene above the tab bar.
+        let low = DominoRecorder.crop(
+            in: PileViewport(
+                size: CGSize(width: 375, height: 800),
+                insets: EdgeInsets(top: 120, leading: 0, bottom: 50, trailing: 0)))
+        XCTAssertEqual(low.maxY, 750, accuracy: 1e-9)
+        // A view barely taller than 9:16 is framed whole, within its bounds.
+        let short = DominoRecorder.crop(
+            in: PileViewport(
+                size: CGSize(width: 375, height: 700),
+                insets: EdgeInsets(top: 150, leading: 0, bottom: 50, trailing: 0)))
+        XCTAssertEqual(short.maxY, 700, accuracy: 1e-9)
+        XCTAssertGreaterThan(short.minY, 0)
+        // A view wider than 9:16 shows its full height.
+        let wide = DominoRecorder.crop(
+            in: PileViewport(size: CGSize(width: 900, height: 900), insets: EdgeInsets()))
+        XCTAssertEqual(wide, CGRect(x: 196.875, y: 0, width: 506.25, height: 900))
     }
 
     /// Whether two standing books' footprints overlap, taking each as wide as its height allows,

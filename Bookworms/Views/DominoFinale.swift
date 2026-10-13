@@ -15,7 +15,7 @@ import simd
 /// before the camera comes to rest. The last book waits where it fell; as the camera settles,
 /// it springs up out of the spread toward the viewer, hangs there a beat, and slams down into
 /// its place, landing `snapLanding` after the camera stops (`snapPose(from:to:top:time:)`).
-/// The poses are pure functions of time, so tests and the offline renderer replay them.
+/// The poses are pure functions of time, so tests replay them.
 enum DominoFinale {
     /// How long the camera's move to the spread's view takes, in seconds.
     static let moveTime: Float = 6
@@ -180,34 +180,83 @@ enum DominoFinale {
     }
 }
 
-/// The timeline of a dominoes video, which `PileSnapshotRenderer.renderDominoMovie` films:
-/// the standing chain and the Follow camera's move down to the first book, the push, the run,
-/// the landing and the reveal, the gathering, and the heading over the spread, within
-/// `longest` seconds.
+/// How a recording of a dominoes run (`DominoRecorder`) fits in `longest` seconds: which of the
+/// live view's frames it keeps, and when the hits sound in it.
 ///
-/// The frames come at `PileMovieTiming`'s rate. The chain's time runs faster than the frames
-/// where the video would otherwise run long: the standing chain and the landing and reveal at
-/// `hurry` times live speed, and the run at `speed(run:fixed:)`, so a long chain's fall plays
-/// as a time lapse; the gathering and the hold play at live speed.
-enum DominoMovieTiming {
-    /// The longest a video gets, in seconds.
-    static let longest: Float = 30
-    /// How long the gathered books and the heading hold at the end, in seconds.
-    static let hold: Float = 2.5
-    /// How many times faster than live the standing chain and the landing and reveal play.
-    static let hurry: Float = 2
-    /// The most a run speeds up, so a very long chain still reads as books falling.
-    static let fastest: Float = 4
-    /// The most seconds of frames a render makes, whatever the chain does.
-    static let cap: Float = 40
+/// The recording starts at the push and ends `hold` seconds after the heading starts to show.
+/// The finale, from the last book's fall, keeps live speed, so the run before it gets what is
+/// left (`runBudget`). While the books fall, the recording keeps fewer frames than the view
+/// shows when the run would otherwise run long: it estimates the run's live length from how far
+/// the chain has fallen, or, before a twentieth of the way, from the path's length at the
+/// camera's typical pace, and plays the rest of the run as fast as it must to end within the
+/// budget, easing between speeds over about half a second. The recording's frames come at
+/// `PileMovieTiming.framesPerSecond`, each showing the view as it was at its start.
+struct DominoMovieTiming {
+    /// The longest a recording gets, in seconds.
+    static let longest: Double = 30
+    /// How long the recording runs on once the heading starts to fade in, in seconds.
+    static let hold: Double = 2
+    /// The seconds of video the run before the finale may take: what `longest` leaves after
+    /// the finale and the hold, less a second for a finale that starts a little late.
+    static let runBudget = longest - Double(DominoFinale.duration(count: 2)) - hold - 1
+    /// The most frames a recording keeps.
+    static let frameLimit = Int(longest) * Int(PileMovieTiming.framesPerSecond)
 
-    /// How many times faster than live the run plays, so that it fits in `longest` less the
-    /// `fixed` seconds the rest takes, at least 5 seconds, and within `fastest`.
-    static func speed(run: Float, fixed: Float) -> Float {
-        min(fastest, max(1, run / max(longest - fixed, 5)))
+    /// The live seconds the run is estimated to take before it has a pace of its own.
+    let estimate: Double
+    /// Seconds of the live view since the push.
+    private(set) var live: Double = 0
+    /// Seconds of video since the push.
+    private(set) var video: Double = 0
+    /// How many times faster than live the video plays.
+    private(set) var speed: Double = 1
+    private var next = 0
+
+    /// The timing of a run along a path `length` units long.
+    init(length: Float) {
+        estimate = Double(length / DominoCameraRig.typicalPace)
     }
 
-    /// The seconds a chain `length` units long takes to fall live, at the Follow camera's
-    /// typical pace.
-    static func runEstimate(length: Float) -> Float { length / DominoCameraRig.typicalPace }
+    /// Whether the recording has its most frames.
+    var isFull: Bool { next >= Self.frameLimit }
+
+    /// Moves on by `deltaTime` seconds of the live view, after which the run has come
+    /// `progress` of its way, from 0 at the push to 1 as the last book falls, or `nil` once the
+    /// finale has started. Returns the numbers of the frames that start within the step, if
+    /// any, which show the view as it is after the step.
+    mutating func advance(by deltaTime: Double, progress: Double?) -> ClosedRange<Int>? {
+        live += deltaTime
+        if let progress {
+            let total = progress < 0.05 ? max(estimate, live) : live / progress
+            let wanted = max(1, (total - live) / max(Self.runBudget - video, 0.25))
+            speed += (wanted - speed) * min(1, deltaTime / 0.5)
+        } else {
+            speed = 1
+        }
+        video += deltaTime / speed
+        let due = min(Int(video * Double(PileMovieTiming.framesPerSecond)), Self.frameLimit - 1)
+        guard due >= next else { return nil }
+        defer { next = due + 1 }
+        return next...due
+    }
+
+    /// `records`, hits timed in live seconds since the push, timed instead by a recording
+    /// whose frames show the live view at `times`, in order: each sounds with the first frame
+    /// that shows it, after the live throttle's 30 milliseconds in the video's time, so a run
+    /// that plays faster than live does not pile up its knocks. Hits after the last frame are
+    /// left out.
+    static func hits(_ records: [ImpactRecord], shownAt times: [Double]) -> [ImpactRecord] {
+        var throttle = ImpactThrottle(interval: 0.03)
+        var frame = 0
+        var kept: [ImpactRecord] = []
+        for record in records {
+            while frame < times.count, times[frame] < record.time { frame += 1 }
+            guard frame < times.count else { break }
+            var moved = record
+            // `PileMovieTiming.frame(showing:)` takes this time to frame `frame`.
+            moved.time = Double(frame + 1) / Double(PileMovieTiming.framesPerSecond)
+            if throttle.admit(record.volume, at: moved.time) { kept.append(moved) }
+        }
+        return kept
+    }
 }

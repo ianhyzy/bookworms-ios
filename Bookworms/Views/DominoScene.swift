@@ -527,6 +527,8 @@ final class DominoScene {
     let status = DominoStatus()
     /// Set from a new chain's plan until its first books start to drop in (see `planSetUp`).
     let loading = SceneLoading()
+    /// Records each run, from the push through the finale, for **Share**.
+    private(set) lazy var recorder = DominoRecorder(feedback: feedback)
     /// The flight of a book lifted to its details.
     let lifter: BookLifter
 
@@ -580,8 +582,8 @@ final class DominoScene {
     private static let haloOpacity: Float = 0.2
     private static let haloPulse: Float = 0.04
 
-    /// The camera that shows, which a renderer without a view films through.
-    let camera = PerspectiveCamera()
+    /// The camera that shows the chain.
+    private let camera = PerspectiveCamera()
     /// The current view's anchor that holds `root` (see `attach`).
     private var holder: AnchorEntity?
     private let factory = BookFactory()
@@ -625,7 +627,13 @@ final class DominoScene {
     private var indices: [Entity.ID: Int] = [:]
     /// The index of the next book to fall.
     private var next = 0
-    private var started = false
+    /// Whether the chain has started, with a push or a book that fell first; the recording
+    /// starts with it.
+    private var started = false {
+        didSet {
+            if started, !oldValue { recorder.start(length: slots.last?.distance ?? 0) }
+        }
+    }
     /// Seconds of simulation since the books stood up, when the front last moved on, and the
     /// farthest it has come (`frontDistance`).
     private var clock: TimeInterval = 0
@@ -744,15 +752,14 @@ final class DominoScene {
         case live(DominoCameraMode)
     }
 
-    /// Creates an empty chain. An `offline` scene, for a video, keeps the simulation on the
-    /// renderer's steps instead of a slow-motion clock, so the renderer scales its steps.
-    init(offline: Bool = false) {
+    /// Creates an empty chain.
+    init() {
         var simulation = PhysicsSimulationComponent()
         simulation.gravity = [0, -PileLayout.gravity, 0]
         simulation.solverIterations = .init(positionIterations: 12, velocityIterations: 2)
         // A new timebase stands still until it has a rate, so without one the simulation keeps
         // its default clock.
-        let clock = offline ? nil : try? CMTimebase(sourceClock: .hostTimeClock)
+        let clock = try? CMTimebase(sourceClock: .hostTimeClock)
         if let clock, (try? clock.setRate(Self.slowMotion)) != nil { simulation.clock = clock }
         simulationClock = clock
         root.components.set(simulation)
@@ -786,8 +793,10 @@ final class DominoScene {
     /// Shows the scene in `view`, and calls `update` every frame and plays collisions through
     /// `feedback` while `root` is active there. Each view gets an anchor of its own, under
     /// which the root hangs; a view that goes leaves the root under its orphaned anchor, and
-    /// the next view's anchor takes it (see `DeskSceneView`).
+    /// the next view's anchor takes it (see `DeskSceneView`). The recorder records from the
+    /// view.
     func attach(to view: ARView) {
+        recorder.attach(to: view)
         let holder = AnchorEntity(world: .zero)
         holder.addChild(root)
         view.scene.addAnchor(holder)
@@ -806,40 +815,18 @@ final class DominoScene {
         }
     }
 
-    /// Takes the root out of the view's scene, so nothing draws while a pile image renders.
-    func detach() { root.removeFromParent() }
+    /// Takes the root out of the view's scene, so nothing draws while a pile image renders,
+    /// and ends a recording.
+    func detach() {
+        recorder.interrupt()
+        root.removeFromParent()
+    }
 
     /// Puts the root back under the current view's anchor after `detach`.
     func reattach() {
         guard root.parent == nil, let holder else { return }
         holder.addChild(root)
     }
-
-    /// Plays collisions through `feedback` in a renderer's `scene`, which holds the root,
-    /// for a video. The renderer steps the scene itself with `advance(by:)`.
-    func listen(to scene: RealityKit.Scene) {
-        collisions = scene.subscribe(to: CollisionEvents.Began.self) { [weak self] event in
-            guard let self, event.entityA != hitBox, event.entityB != hitBox,
-                !lifter.handle(event)
-            else { return }
-            feedback.collide(event, pan: pan)
-        }
-    }
-
-    /// Moves the chain's clocks, cameras, and books on by `deltaTime` of a video's time, as a
-    /// frame's update does, for a renderer without a view, with the chain's own time running
-    /// `tempo` times as fast. The hits keep the video's time, so their sounds fall on the
-    /// frames that show them.
-    func advance(by deltaTime: TimeInterval, tempo: Float) {
-        feedback.advance(by: deltaTime)
-        update(deltaTime * Double(tempo), timesHits: false)
-    }
-
-    /// Whether the Follow camera has landed on the first book, so a push can come.
-    var isEstablished: Bool { rig?.isEstablished ?? false }
-
-    /// How long the Follow camera's establishing move takes, in seconds, once the books stand.
-    var establishTime: Float { rig?.establishTime ?? 0 }
 
     /// Hides the dust, holds the pointing hand still, and stops the camera from following the
     /// chain while `reduces`, leaving it where it is. Turning it on with the Follow camera cuts
@@ -946,27 +933,6 @@ final class DominoScene {
             coverWait: Self.coverWait, model: model)
     }
 
-    /// Stands every book of `books` at once, as a renderer without a view needs: the plan for
-    /// `viewport`, every cover given up to 10 seconds, the cobwebs, and the Follow camera,
-    /// with no drop in. Returns the chain's length along the path, up to the last book.
-    func setUpOffline(_ books: [CloudBook], viewport: PileViewport, model: AppModel) async
-        -> Float
-    {
-        planSetUp(books, generation: 0, viewport: viewport)
-        await factory.prepare(
-            plan.map(\.book), prefetching: [], coverWait: .seconds(10), model: model)
-        await stage.lit()
-        let cobwebs = await makeCobwebs(before: plan[...])
-        let enters = reducesMotion
-        reducesMotion = true
-        for slot in plan { spawn(slot, cobweb: cobwebs[slot.book.id], step: 0) }
-        reducesMotion = enters
-        spawned = plan.count
-        loading.isLoading = false
-        rig = makeRig()
-        return slots.last?.distance ?? 0
-    }
-
     /// Plans the chain of `books` as `setUp` does, without standing any book. Call it before
     /// `setUp` to learn at once whether a new chain removed the lifted book. Returns `false`
     /// when `viewport` leaves no room for the chain.
@@ -1009,6 +975,7 @@ final class DominoScene {
     }
 
     private func reset(keeping ids: Set<Int>) {
+        recorder.reset()
         shelf.children.removeAll()
         books = []
         slots = []
@@ -1412,10 +1379,9 @@ final class DominoScene {
 
     // MARK: Following the chain
 
-    /// Moves the scene on by `deltaTime`, and the hits' clock too unless the caller `timesHits`
-    /// itself.
-    private func update(_ deltaTime: TimeInterval, timesHits: Bool = true) {
-        if timesHits { feedback.advance(by: deltaTime) }
+    /// Moves the scene, the hits' clock, and a recording on by `deltaTime`.
+    private func update(_ deltaTime: TimeInterval) {
+        feedback.advance(by: deltaTime)
         defer {
             updateCamera(Float(deltaTime))
             updateFlight(deltaTime)
@@ -1451,6 +1417,13 @@ final class DominoScene {
         }
         updateHand(by: deltaTime)
         updateFinale(by: deltaTime)
+        recorder.advance(by: deltaTime, phase: status.phase, progress: runProgress)
+    }
+
+    /// How far the chain has fallen along the path, from 0 at the first book to 1 at the last.
+    private var runProgress: Float {
+        guard let length = slots.last?.distance, length > 0 else { return 1 }
+        return min(1, frontDistance / length)
     }
 
     /// How far along the path the chain's front has come: the next book's place, and as much
@@ -1699,6 +1672,7 @@ final class DominoScene {
             let landing = lifter.lift(
                 books[index], id: id, among: books, aspect: aspect, margin: Self.riseMargin)
         else { return nil }
+        recorder.interrupt()
         endCameraMove()
         flying = index
         for web in cobwebs.indices.reversed()
@@ -1855,10 +1829,6 @@ final class DominoScene {
             self.spread = spread
         }
     }
-
-    /// Waits for the spread's layout, so that a renderer without a view can take the
-    /// finale's first frame as soon as it is ready.
-    func waitForSpread() async { await spreadTask?.value }
 
     @concurrent
     nonisolated private static func layOut(

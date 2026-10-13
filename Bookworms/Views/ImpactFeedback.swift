@@ -4,9 +4,10 @@ import RealityKit
 import os
 
 /// A collision whose sound `ImpactFeedback` played, or would have played with **Sounds** on:
-/// what an offline mix needs to play the same sound at the same time.
+/// what a video's mix needs to play the same sound at the same time.
 struct ImpactRecord: Equatable, Sendable {
-    /// Seconds of simulation since the recording started.
+    /// Seconds of the scene's clock (`ImpactFeedback.advance(by:)`) since the recording
+    /// started.
     var time: TimeInterval
     /// The collision's impulse, in kilogram-units per second.
     var impulse: Float
@@ -22,14 +23,14 @@ struct ImpactRecord: Equatable, Sendable {
     var pan: Float
 }
 
-/// How hard collisions land, and the knock they make, computed without audio hardware so an
-/// offline renderer can mix the same sounds into a video.
+/// How hard collisions land, and the knock they make, computed without audio hardware so a
+/// video can mix the same sounds into its soundtrack.
 ///
 /// Every hit plays one low knock, in `variants` versions a little apart in pitch and length,
 /// so a long chain does not repeat one sound, and the finale's last landing plays the `deep`
 /// one.
 enum ImpactSound {
-    static let sampleRate: Double = 44_100
+    static let sampleRate: Double = 48_000
     /// The gain of every voice. Eight full-strength knocks 30 ms apart, the most that overlap,
     /// sum to about 1.5, and panning a voice 0.8 to one side plays it at 0.99 there, so this
     /// keeps the mix below 0.9 without a limiter.
@@ -147,7 +148,7 @@ struct ImpactThrottle {
 /// the silent switch.
 ///
 /// `startRecording` keeps every hit whose sound passes the throttle, with its simulation time,
-/// until `finishRecording`, so an offline renderer can mix the same `ImpactSound` samples.
+/// until `finishRecording`, so a video can mix the same `ImpactSound` samples.
 @MainActor
 final class ImpactFeedback {
     /// Whether hits play sounds. **Sounds** in the desk's options menu sets it.
@@ -320,9 +321,6 @@ final class ImpactFeedback {
     /// Starts keeping every hit whose sound passes the throttle, replacing a recording in
     /// progress.
     func startRecording() { recording = (clock, []) }
-
-    /// The hits recorded so far, in the order they happened, while a recording runs.
-    var recorded: [ImpactRecord] { recording?.records ?? [] }
 
     /// Stops recording and returns the hits in the order they happened.
     func finishRecording() -> [ImpactRecord] {
