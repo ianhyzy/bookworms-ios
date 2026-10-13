@@ -161,10 +161,8 @@ enum ImpactMix {
     static func samples(_ records: [ImpactRecord], in range: Range<Int>) -> [Float] {
         var mix = [Float](repeating: 0, count: range.count * 2)
         for record in records {
-            guard let variants = ImpactSound.bank[record.kind],
-                variants.indices.contains(record.variant)
-            else { continue }
-            let sound = variants[record.variant]
+            guard ImpactSound.bank.indices.contains(record.variant) else { continue }
+            let sound = ImpactSound.bank[record.variant]
             let start =
                 PileMovieTiming.frame(showing: record.time) * PileMovieTiming.samplesPerFrame
             let lower = max(start, range.lowerBound)

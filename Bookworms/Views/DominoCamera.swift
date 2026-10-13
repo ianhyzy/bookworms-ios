@@ -3,8 +3,7 @@ import simd
 
 /// The cameras that **Camera** in the desk's options menu offers for the dominoes.
 enum DominoCameraMode: String, CaseIterable, Identifiable {
-    /// Frames the whole path, eases across the rows after the falling books, and eases back
-    /// once all have fallen.
+    /// Frames the whole path, and eases across the rows after the falling books.
     case overview
     /// Films the chain as a camera operator would (`DominoCameraRig`).
     case follow
@@ -59,11 +58,10 @@ struct DominoCameraPose: Equatable {
 /// the chain slows or stops. The pushes do not add up: the strongest sets how close the camera
 /// comes.
 ///
-/// Before the push, the camera holds `finale`, then cranes down and swings round to the first
-/// book. It follows the front to the last book, eases to a stop there, and holds for
-/// `landTime` while that book lands, centered on where it lands and looking down on the fallen
-/// books from at least `landingElevation`. Then it cranes up, swings round, and pulls back to
-/// `finale` again, so a clip of the run opens and ends on the same frame.
+/// Before the push, the camera holds `opening`, then cranes down and swings round to the first
+/// book. It follows the front to the last book, eases to a stop there, and holds while that
+/// book lands, settling over `landTime` on where it lands and looking down on the fallen books
+/// from at least `landingElevation`. `DominoScene`'s finale takes the camera from there.
 ///
 /// The rig is a deterministic value type: the same path, fronts, and time steps give the same
 /// poses, so tests and an offscreen renderer can drive it as `DominoScene` does. Each `step`:
@@ -71,7 +69,7 @@ struct DominoCameraPose: Equatable {
 /// 1. Smooths the front, so the camera follows a continuous wave instead of the books one at
 ///    a time, and never runs back or far past a chain that stops (`estimate`), and measures
 ///    the chain's pace with a critically damped spring.
-/// 2. Sets a goal: the establishing move, the run, or the reveal. The run's distance from the
+/// 2. Sets a goal: the establishing move or the run. The run's distance from the
 ///    eye to the front changes within `maximumZoomRate`.
 /// 3. Moves the eye and the point it looks at toward the goal with critically damped springs,
 ///    which also follow the goal's own velocity, so they track a moving goal without lag.
@@ -140,8 +138,8 @@ struct DominoCameraRig {
     /// the goal's own velocity as well, so stiffness sets only how fast they correct an error.
     static let eyeStiffness: Float = 5
     static let targetStiffness: Float = 8
-    /// Both springs for the establishing move and the reveal, whose goals ease in and out on
-    /// their own: stiff, so the camera tracks them closely.
+    /// Both springs for the establishing move, whose goal eases in and out on its own: stiff,
+    /// so the camera tracks it closely.
     static let scriptedStiffness: Float = 6
     /// The roll's spring, in radians per second.
     static let rollStiffness: Float = 3.5
@@ -221,18 +219,15 @@ struct DominoCameraRig {
     static let typicalHeight: Float = 0.8
     /// The pace under which the camera pushes in on the front, in units per second.
     static let cruise: Float = 7
-    /// The fastest the establishing move and the reveal turn the view, in radians per second,
-    /// and change its scale, as the logarithm of the distance from the eye to the point it looks
-    /// at, per second. A move that would turn or zoom faster takes longer, up to its longest.
-    /// The reveal moves faster, so it stays in proportion to a short run.
-    static let turnRates: (establish: Float, reveal: Float) = (9 * .pi / 180, 18 * .pi / 180)
-    static let zoomRates: (establish: Float, reveal: Float) = (0.28, 0.45)
-    /// How long the establishing move and the reveal take, in seconds, at the least and most.
+    /// The fastest the establishing move turns the view, in radians per second, and changes its
+    /// scale, as the logarithm of the distance from the eye to the point it looks at, per
+    /// second. A move that would turn or zoom faster takes longer, up to its longest.
+    static let establishTurnRate: Float = 9 * .pi / 180
+    static let establishZoomRate: Float = 0.28
+    /// How long the establishing move takes, in seconds, at the least and most.
     static let establishTimes: ClosedRange<Float> = 4...9
-    static let revealTimes: ClosedRange<Float> = 6...11
-    /// How long the camera holds on the last book after it starts to fall, so the reveal
-    /// starts only once the book has landed: it lies flat about a quarter of a second after,
-    /// in the scene's slow motion.
+    /// How long the camera takes to settle on the last book after it starts to fall, as it
+    /// lands: it lies flat about a quarter of a second after, in the scene's slow motion.
     static let landTime: Float = 1
     /// The least distance from the eye to the front.
     static let nearest: Float = 6
@@ -240,13 +235,13 @@ struct DominoCameraRig {
     /// the table elsewhere, where only fallen books lie.
     static let clearance: Float = 1.2
     static let lowest: Float = 1.2
-    /// The finale's bearing and pitch: a high view of the whole path from the side the camera
-    /// films from, which `DominoScene` frames. The establishing move and the reveal then mostly
-    /// crane down and up, with little swing.
-    static let finaleBearing: Float = 18 * .pi / 180
-    static let finalePitch: Float = 60 * .pi / 180
-    /// The finale's yaw as `PileCamera` measures it, from looking along -z.
-    static var finaleYaw: Float { -(.pi / 2 + finaleBearing) }
+    /// The opening view's bearing and pitch: a high view of the whole path from the side the
+    /// camera films from, which `DominoScene` frames. The establishing move then mostly cranes
+    /// down, with little swing.
+    static let openingBearing: Float = 18 * .pi / 180
+    static let openingPitch: Float = 60 * .pi / 180
+    /// The opening view's yaw as `PileCamera` measures it, from looking along -z.
+    static var openingYaw: Float { -(.pi / 2 + openingBearing) }
     /// Where the front shows in `area`, as shares of its width and height: below the middle, so
     /// the standing books ahead fill the view above it, but high enough that the view looks
     /// down past the table's far edge. While the last book lands, the camera raises it to
@@ -304,17 +299,14 @@ struct DominoCameraRig {
     /// The cobwebs the camera pushes in on, in path order, less any that a lifted book tore
     /// (see `forgetCobweb(at:)`).
     private(set) var cobwebs: [Cobweb]
-    /// The composed view the establishing move starts from and the reveal ends in.
-    let finale: DominoCameraPose
+    /// The composed view the establishing move starts from.
+    let opening: DominoCameraPose
     let fieldOfView: Float
     let aspect: Float
     let area: Area
     /// How long the establishing move takes, in seconds: longer for a longer chain, and long
-    /// enough to keep within `turnRates` and `zoomRates`.
+    /// enough to keep within `establishTurnRate` and `establishZoomRate`.
     private(set) var establishTime: Float = 0
-    /// How long the reveal takes, in seconds, timed as `establishTime` is from the view as it
-    /// starts. Until then, it is the longest the reveal can take.
-    private(set) var revealTime = revealTimes.upperBound
     /// Each row's shot, and the swing round each turn from one row's shot to the next.
     let shots: [Shot]
     let swings: [Swing]
@@ -380,14 +372,14 @@ struct DominoCameraRig {
 
     init(
         path: DominoPath, offset: SIMD2<Float>, length: Float, tallest: Float, cobwebs: [Cobweb],
-        finale: DominoCameraPose, fieldOfView: Float, aspect: Float, area: Area
+        opening: DominoCameraPose, fieldOfView: Float, aspect: Float, area: Area
     ) {
         let length = max(0, length)
         self.path = path
         self.offset = offset
         self.length = length
         self.tallest = tallest
-        self.finale = finale
+        self.opening = opening
         self.fieldOfView = fieldOfView
         self.aspect = aspect
         self.area = area
@@ -402,21 +394,21 @@ struct DominoCameraRig {
         }
         self.cobwebs = heroes.sorted { $0.distance < $1.distance }
         (shots, swings) = Self.choreograph(path: path, length: length, cobwebs: self.cobwebs)
-        pose = finale
-        eye = finale.eye
-        target = finale.target
-        view = simd_normalize(finale.target - finale.eye)
+        pose = opening
+        eye = opening.eye
+        target = opening.target
+        view = simd_normalize(opening.target - opening.eye)
         // The establishing move ends on the shot of the first book. Smootherstep moves at most
         // 1.875 times its mean rate, and the move turns over its first 85 percent and zooms over
         // all of it.
-        let opening = following(at: 0).orbit
-        zoom = log(opening.distance)
+        let first = following(at: 0).orbit
+        zoom = log(first.distance)
         establishTime = min(
             max(
                 0.25 * length / Self.typicalPace,
-                1.875 / 0.85 * opening.turn(to: Orbit(finale)) / Self.turnRates.establish,
-                1.875 * abs(log(Orbit(finale).distance / opening.distance))
-                    / Self.zoomRates.establish, Self.establishTimes.lowerBound),
+                1.875 / 0.85 * first.turn(to: Orbit(opening)) / Self.establishTurnRate,
+                1.875 * abs(log(Orbit(opening).distance / first.distance))
+                    / Self.establishZoomRate, Self.establishTimes.lowerBound),
             Self.establishTimes.upperBound)
     }
 
@@ -442,13 +434,6 @@ struct DominoCameraRig {
         established = max(established, establishTime + 1)
         sinceReset = 0
     }
-
-    /// Whether the reveal has started: every book has fallen, and the last has had
-    /// `landTime` to land.
-    var isRevealing: Bool { doneTime > Self.landTime }
-
-    /// Whether the reveal has ended, with the camera resting on `finale`.
-    var isRevealed: Bool { isRevealing && revealClock >= revealTime }
 
     /// Whether the establishing move has ended, with the camera on the first book.
     var isEstablished: Bool { established >= establishTime }
@@ -480,14 +465,11 @@ struct DominoCameraRig {
         let left = max(length + Self.endEase - led, 0)
         estimate = max(
             led < length - Self.endEase ? led : length - left * left / (4 * Self.endEase), 0)
-        let wasRevealing = isRevealing
         clock += deltaTime
         established += deltaTime
         sinceReset += deltaTime
         sinceStart = input.started ? sinceStart + deltaTime : 0
         doneTime = input.done ? doneTime + deltaTime : 0
-        // The reveal is timed from the view as it starts.
-        if isRevealing, !wasRevealing { revealTime = revealDuration() }
         let running = input.started && !input.done
         // A chain that slows at its last book has ended rather than stalled.
         let ending = min(max(length - led, 0) / 2, 1)
@@ -513,13 +495,10 @@ struct DominoCameraRig {
         let goal = self.goal(following: follow)
         let start = previousGoal ?? goal
         previousGoal = goal
-        // The goal's own velocity, so the springs track a moving goal without lag. It fades out
-        // over the reveal's last 20 percent, so the camera settles onto `finale` from behind
-        // rather than overshooting it and creeping back.
-        let fade = 1 - Self.ease(Self.unit((revealClock / revealTime - 0.8) / 0.2))
+        // The goal's own velocity, so the springs track a moving goal without lag.
         let limit = Self.maximumSpeed * Self.limitScale(pose)
-        let eyeDrift = Self.clamped((goal.eye - start.eye) / deltaTime, to: limit) * fade
-        let targetDrift = Self.clamped((goal.target - start.target) / deltaTime, to: limit) * fade
+        let eyeDrift = Self.clamped((goal.eye - start.eye) / deltaTime, to: limit)
+        let targetDrift = Self.clamped((goal.target - start.target) / deltaTime, to: limit)
         let scripted = self.scripted
         let returning = 0.3 + 0.7 * Self.ease(min(sinceReset / Self.returnTime, 1))
         let eyeStiffness =
@@ -550,33 +529,17 @@ struct DominoCameraRig {
                 eye: eye, target: eye + view * max(simd_distance(eye, target), 1),
                 roll: min(max(roll, -Self.maximumRoll), Self.maximumRoll))
         }
-        // Once the reveal has ended, the camera rests on `finale` exactly, from close enough
-        // that the step does not show at the finale's distance.
-        if revealClock >= revealTime, simd_distance(pose.eye, finale.eye) < 0.02,
-            simd_distance(pose.target, finale.target) < 0.02, abs(roll) < 1e-3
-        {
-            reset(to: finale)
-        }
         return pose
     }
 
     // MARK: Goals
 
-    /// Seconds since the reveal started, or 0 before then.
-    private var revealClock: Float { max(doneTime - Self.landTime, 0) }
-
-    /// How much the scripted moves drive the springs, from 0 to 1: fully through the
-    /// establishing move, easing off over the second after it, and easing in over the reveal's
-    /// first second.
-    private var scripted: Float {
-        if isRevealing { return Self.ease(min(revealClock, 1)) }
-        return 1 - Self.ease(Self.unit(established - establishTime))
-    }
+    /// How much the establishing move drives the springs, from 0 to 1: fully through the
+    /// move, easing off over the second after it.
+    private var scripted: Float { 1 - Self.ease(Self.unit(established - establishTime)) }
 
     /// The goal for this step, given the shot that films the front.
     private func goal(following follow: Filming) -> DominoCameraPose {
-        if revealClock >= revealTime { return finale }
-        if isRevealing { return reveal(from: follow, progress: revealClock / revealTime) }
         guard established < establishTime else { return compose(follow) }
         return establishing(to: follow, progress: established / establishTime)
     }
@@ -712,7 +675,7 @@ struct DominoCameraRig {
     /// eye about the path averaged more widely, so it rounds off the turns.
     private func following(at front: Float) -> Filming {
         // The drift fades in over two seconds once the establishing move lands, so the camera
-        // holds on the first book. The reveal blends it away with the rest of the shot.
+        // holds on the first book.
         let wander = Self.drift(at: clock) * Self.ease(Self.unit((established - establishTime) / 2))
         let (shot, turning) = plan(at: front)
         let typical = tallest * Self.typicalHeight
@@ -749,11 +712,11 @@ struct DominoCameraRig {
             roll: Self.bank * turning * pace)
     }
 
-    /// The move from `finale` down to the first book, `progress` of the way: the camera cranes
+    /// The move from `opening` down to the first book, `progress` of the way: the camera cranes
     /// down and turns toward the first row ahead of its push in, so the first row is in place
     /// before the camera comes close.
     private func establishing(to follow: Filming, progress: Float) -> DominoCameraPose {
-        let orbit = Orbit(finale)
+        let orbit = Orbit(opening)
             .blended(
                 to: follow.orbit, target: Self.ease(min(progress / 0.6, 1)),
                 angles: Self.ease(min(progress / 0.85, 1)), distance: Self.ease(progress))
@@ -762,36 +725,6 @@ struct DominoCameraRig {
             Filming(
                 orbit: orbit, lean: follow.lean * share, third: follow.third * share,
                 composition: follow.composition, roll: 0))
-    }
-
-    /// The crane up and pull back from `follow` to `finale`, `progress` of the way: the camera
-    /// rises and swings round over most of the move, and pulls back to the path's middle from a
-    /// fifth of the way, so it lingers over the fallen books before the whole path unrolls
-    /// below it.
-    private func reveal(from follow: Filming, progress: Float) -> DominoCameraPose {
-        let pullBack = Self.ease(Self.unit((progress - 0.2) / 0.8))
-        let orbit = follow.orbit.blended(
-            to: Orbit(finale), target: pullBack, angles: Self.ease(min(progress / 0.7, 1)),
-            distance: pullBack)
-        let fade = 1 - Self.ease(progress)
-        return compose(
-            Filming(
-                orbit: orbit, lean: follow.lean * fade, third: follow.third * fade,
-                composition: follow.composition, roll: follow.roll * fade))
-    }
-
-    /// How long the reveal takes from the view as it starts: longer for a longer chain, and
-    /// long enough to keep within `turnRates` over the 70 percent of it that turns and
-    /// `zoomRates` over the 80 percent that pulls back.
-    private func revealDuration() -> Float {
-        let from = Orbit(pose)
-        let to = Orbit(finale)
-        return min(
-            max(
-                0.25 * length / Self.typicalPace + 5,
-                1.875 / 0.7 * from.turn(to: to) / Self.turnRates.reveal,
-                1.875 / 0.8 * abs(log(to.distance / from.distance)) / Self.zoomRates.reveal,
-                Self.revealTimes.lowerBound), Self.revealTimes.upperBound)
     }
 
     /// The pose of `filming`: its view turned so the orbit's target shows at its composition,
@@ -1070,10 +1003,8 @@ struct DominoOverviewSpring: Equatable {
     /// The springs' stiffness, in radians per second. Zoom and the angles move slowly, so
     /// zooming in from the whole path takes a couple of seconds.
     static let stiffness: SIMD8<Float> = [5, 5, 1, 1.5, 1.5, 0, 0, 0]
-    /// The rates at which the goal trails the true one while the camera follows the front,
-    /// and once every book has fallen, when the target eases back as gently as the zoom.
-    static let followingLag: SIMD8<Float> = [15, 15, 1.2, 1.5, 1.5, 0, 0, 0]
-    static let settlingLag: SIMD8<Float> = [2.5, 2.5, 1.2, 1.5, 1.5, 0, 0, 0]
+    /// The rates at which the goal trails the true one while the camera follows the front.
+    static let lag: SIMD8<Float> = [15, 15, 1.2, 1.5, 1.5, 0, 0, 0]
     static let substep: Float = 1.0 / 120
 
     private(set) var value: SIMD8<Float>
