@@ -561,7 +561,7 @@ final class DominoScene {
     /// The cosine of the tilt past which a book tears its cobwebs, about 3 degrees, as soon as
     /// its back cover starts to sweep into the web.
     private static let tearTilt: Float = 0.9986
-    /// The hand's size in units, how far its fingertip floats from the first book's cover,
+    /// The hand's size in units, how far its plane's edge floats from the first book's cover,
     /// how far it pokes forward at a push and how long that takes, how long it then takes to
     /// fade, and how far it hovers for each point the details' book drifts.
     private static let handSize: Float = 1.25
@@ -570,6 +570,13 @@ final class DominoScene {
     private static let pokeTime: TimeInterval = 0.22
     private static let handFade: TimeInterval = 0.35
     private static let handDriftScale: Float = 0.008
+    /// The glow's size as a share of the hand's, how far behind the hand's middle, toward the
+    /// wrist, it centers, so it never reaches the book, even at a poke, and its opacity, which
+    /// pulses `haloPulse` either way.
+    private static let haloSize: Float = 1.1
+    private static let haloBack: Float = 0.15
+    private static let haloOpacity: Float = 0.2
+    private static let haloPulse: Float = 0.04
 
     /// The camera that shows, which a renderer without a view films through.
     let camera = PerspectiveCamera()
@@ -1474,7 +1481,8 @@ final class DominoScene {
         updateHand(by: 0)
     }
 
-    /// Places the hand before the marked book, pointing at it, and its halo behind the hand.
+    /// Places the hand before the marked book, pointing at it, and its faint halo behind the
+    /// hand, centered toward the wrist so it stays clear of the book.
     ///
     /// Before the first book, the hand floats at the height of a pushing finger, a little off
     /// the front cover, pointing straight at it. At a stalled chain's book, whose front cover
@@ -1527,11 +1535,12 @@ final class DominoScene {
         hand.transform = Transform(
             scale: SIMD3(repeating: Self.handSize), rotation: rotation, translation: position)
         hand.components.set(OpacityComponent(opacity: opacity))
-        let pulse: Float =
-            reducesMotion ? 0.55 : 0.45 + 0.2 * sin(Float(handClock) * 2 * .pi / 1.8)
+        let pulse =
+            Self.haloOpacity
+            + (reducesMotion ? 0 : Self.haloPulse * sin(Float(handClock) * 2 * .pi / 1.8))
         halo.transform = Transform(
-            scale: SIMD3(repeating: Self.handSize * 1.7), rotation: rotation,
-            translation: position - normal * 0.03)
+            scale: SIMD3(repeating: Self.handSize * Self.haloSize), rotation: rotation,
+            translation: position - finger * Self.handSize * Self.haloBack - normal * 0.03)
         halo.components.set(OpacityComponent(opacity: pulse * opacity))
     }
 
@@ -1585,21 +1594,29 @@ final class DominoScene {
         return hand
     }
 
-    /// A warm glow that fades from its middle to its edges, on a plane one unit square, drawn
-    /// on both sides, which hangs behind the hand.
+    /// A soft, warm glow on a plane one unit square, drawn on both sides, which hangs behind the
+    /// hand. It falls off from its middle as a Gaussian, half gone about a third of the way to
+    /// its edge and nearly gone by two thirds, with no ring or rim.
     private static func makeHalo() -> ModelEntity {
         var material = UnlitMaterial(applyPostProcessToneMap: false)
-        let size = CGSize(width: 64, height: 64)
+        let size = CGSize(width: 128, height: 128)
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         let image = UIGraphicsImageRenderer(size: size, format: format)
             .image { context in
-                // A bright middle that falls off quickly, then a faint halo.
-                let colors = [1, 0.5, 0].map { UIColor.white.withAlphaComponent($0).cgColor }
+                let locations = (0...16).map { CGFloat($0) / 16 }
+                // Tapered to nothing at the edge.
+                let colors = locations.map { radius in
+                    UIColor.white
+                        .withAlphaComponent(
+                            exp(-radius * radius / 0.18) * (1 - radius * radius)
+                        )
+                        .cgColor
+                }
                 guard
                     let gradient = CGGradient(
                         colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors as CFArray,
-                        locations: [0, 0.4, 1])
+                        locations: locations)
                 else { return }
                 let middle = CGPoint(x: size.width / 2, y: size.height / 2)
                 context.cgContext.drawRadialGradient(
@@ -1611,7 +1628,7 @@ final class DominoScene {
             let texture = try? TextureResource(image: cgImage, options: .init(semantic: .color))
         {
             material.color = .init(
-                tint: UIColor(red: 1, green: 0.8, blue: 0.42, alpha: 1), texture: .init(texture))
+                tint: UIColor(red: 1, green: 0.86, blue: 0.6, alpha: 1), texture: .init(texture))
             material.blending = .transparent(opacity: .init(scale: 1, texture: .init(texture)))
         }
         material.faceCulling = .none
