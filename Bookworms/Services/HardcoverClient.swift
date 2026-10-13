@@ -406,7 +406,7 @@ actor HardcoverClient {
             last_read_date rating status_id review
             book { id title pages release_year cached_contributors cached_tags rating ratings_count
               image { url width height }
-              book_series { featured position series { id } }
+              book_series { featured position series { id name } }
               editions(where: {image_id: {_is_null: false},
                   _or: [{language_id: {_is_null: true}}, {language: {code2: {_eq: $language}}}]},
                 order_by: {users_count: desc}, limit: 5) {
@@ -467,6 +467,7 @@ actor HardcoverClient {
                     } ?? true)
             let membership = source.bookSeries?
                 .sorted { ($0.featured ?? false) && !($1.featured ?? false) }.first
+            let seriesName = membership?.series?.name?.trimmingCharacters(in: .whitespaces)
             let isReading = row.statusID == currentlyReadingStatus
             let current = row.currentReads?.first
             let book = CloudBook(
@@ -480,6 +481,7 @@ actor HardcoverClient {
                     .sorted { ($0.count ?? 0) > ($1.count ?? 0) }.map(\.tag),
                 publicationYear: source.releaseYear, format: edition?.readingFormat?.format,
                 seriesID: membership?.series?.id, seriesPosition: membership?.position,
+                seriesName: seriesName?.isEmpty == false ? seriesName : nil,
                 pages: edition?.pages ?? source.pages,
                 finished: read?.finishedAt ?? row.lastReadDate,
                 rating: row.rating, isReading: isReading ? true : nil,
@@ -693,7 +695,10 @@ private struct LibraryPage: Decodable {
         let featured: Bool?
         let position: Double?
         let series: Series?
-        struct Series: Decodable { let id: Int }
+        struct Series: Decodable {
+            let id: Int
+            let name: String?
+        }
     }
 
     struct EditionImage: Decodable { let image: Image? }

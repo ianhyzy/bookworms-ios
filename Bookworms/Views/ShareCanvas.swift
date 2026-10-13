@@ -203,6 +203,8 @@ struct ShareInput {
     var showsRatings = true
     /// Varies tilts, offsets, and lengths.
     var seed: UInt64 = 0
+    /// The page to draw, from 0, when the card spans several images (`pageCount`).
+    var page = 0
 
     func look(for book: CloudBook) -> SpineLook {
         looks[book.id] ?? SpineLook(book: book, design: nil, face: nil)
@@ -220,8 +222,13 @@ struct ShareInput {
         return first == last ? String(first) : "\(first)–\(last)"
     }
 
-    /// Draws the card at exactly `aspect.size` pixels. Piles need `PileSnapshotRenderer`
-    /// instead; here they draw only the credit.
+    /// The number of images the card spans: a Year Stack's pages, else one.
+    var pageCount: Int {
+        template == .yearStack ? YearStackCard.pages(for: self).pages.count : 1
+    }
+
+    /// Draws `page` at exactly `aspect.size` pixels. Piles need `PileSnapshotRenderer` instead;
+    /// here they draw only the credit.
     @MainActor
     func render() -> UIImage? {
         let renderer = ImageRenderer(content: ShareCanvas(input: self))
@@ -314,6 +321,40 @@ enum ShareStyle {
         z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
         z ^= z >> 31
         return Double(z >> 11) / Double(UInt64(1) << 53)
+    }
+
+    /// The forms a share image letters `book`'s title in, longest first. Cards letter the first
+    /// form that fits (`ShareFittingText`).
+    ///
+    /// The first form leaves out a trailing series tag: a parenthetical that holds a "#", ends
+    /// in a number, or starts with the series name, such as "(Dungeon Crawler Carl, #4)" or
+    /// "(The Expanse 3)". Each later form drops a subtitle, the text after the first ": " or
+    /// " — ". When the text before it is the series name, the form drops that prefix instead,
+    /// so "Star Wars: Thrawn" in the series "Star Wars" becomes "Thrawn".
+    static func titles(_ book: CloudBook) -> [String] {
+        let series = book.seriesName?.lowercased()
+        var title = book.title.trimmingCharacters(in: .whitespaces)
+        if let tag = title.firstMatch(of: /\s*\(([^()]*)\)$/),
+            tag.range.lowerBound > title.startIndex
+        {
+            let inside = tag.1.trimmingCharacters(in: .whitespaces).lowercased()
+            if inside.contains("#") || inside.last?.isNumber == true
+                || series.map(inside.hasPrefix) == true
+            {
+                title = String(title[..<tag.range.lowerBound])
+            }
+        }
+        var forms = [title]
+        while let form = forms.last,
+            let separator = [": ", " — "].compactMap({ form.range(of: $0) })
+                .min(by: { $0.lowerBound < $1.lowerBound })
+        {
+            let head = form[..<separator.lowerBound].trimmingCharacters(in: .whitespaces)
+            let rest = form[separator.upperBound...].trimmingCharacters(in: .whitespaces)
+            guard !head.isEmpty, !rest.isEmpty else { break }
+            forms.append(head.lowercased() == series ? rest : head)
+        }
+        return forms
     }
 
     /// Small tracked capitals that name what a card shows, such as "FINISHED".
@@ -560,7 +601,8 @@ struct ShareCover: View {
         switch style {
         case .threeD:
             Book3DView(
-                book: book, look: look, cover: cover, height: height, yaw: yaw, pitch: pitch)
+                book: Self.lettered(book), look: look, cover: cover, height: height, yaw: yaw,
+                pitch: pitch)
         case .flat:
             let width = height * Self.aspect(of: cover, style: .flat)
             let shape = RoundedRectangle(cornerRadius: max(4, height * 0.025))
@@ -570,12 +612,15 @@ struct ShareCover: View {
                 } else {
                     ZStack {
                         look.background.color
-                        Text(book.spineTitle)
-                            .font(ShareStyle.serif(width * 0.13, .semibold))
-                            .multilineTextAlignment(.center)
-                            .minimumScaleFactor(0.4)
-                            .foregroundStyle(look.foreground.color)
-                            .padding(width * 0.12)
+                        ShareFittingText(
+                            forms: ShareStyle.titles(book), size: width * 0.13, minimumScale: 0.4,
+                            lines: nil
+                        ) {
+                            ShareStyle.serif($0, .semibold)
+                        }
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(look.foreground.color)
+                        .padding(width * 0.12)
                     }
                 }
             }
@@ -586,5 +631,73 @@ struct ShareCover: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(book.title), by \(book.author)")
         }
+    }
+
+    /// `book` with its shortest title form. A 3D book's spine and coverless front have little
+    /// room, so they letter it, as the Shelf's spines letter the title without its subtitle.
+    private static func lettered(_ book: CloudBook) -> CloudBook {
+        var book = book
+        book.title = ShareStyle.titles(book).last ?? book.title
+        return book
+    }
+}
+
+/// Letters the first of several text forms that fits, at the largest size that fits.
+///
+/// `ViewThatFits` tries each form from `size` down to `size * minimumScale`, in steps of about
+/// 10 percent, before it tries the next form, so a longer form at a smaller size wins over a
+/// shorter one. One line must fit the proposed width. With more `lines`, the wrapped text must
+/// fit the height of that many lines at `size`, so a smaller size can wrap to an extra line;
+/// with `nil`, it must fit the proposed height. When nothing fits, the last form at the
+/// smallest size truncates.
+struct ShareFittingText: View {
+    let forms: [String]
+    let size: CGFloat
+    let minimumScale: CGFloat
+    var lines: Int? = 1
+    let font: (CGFloat) -> Font
+
+    var body: some View {
+        let smallest = size * minimumScale
+        var sizes = [size]
+        while let last = sizes.last, last * 0.9 > smallest { sizes.append(last * 0.9) }
+        if smallest < size { sizes.append(smallest) }
+        let options = forms.flatMap { form in sizes.map { (form: form, size: $0) } }
+        let texts = ForEach(options.indices, id: \.self) { index in
+            Text(options[index].form).font(font(options[index].size))
+        }
+        return Group {
+            switch lines {
+            case 1:
+                ViewThatFits(in: .horizontal) { texts }.lineLimit(1)
+            case let lines?:
+                // A line is about 1.2 times the size; half a line more allows for the leading.
+                HeightLimit(height: (CGFloat(lines) + 0.5) * size * 1.2) {
+                    ViewThatFits(in: .vertical) { texts }.lineLimit(nil)
+                }
+            case nil:
+                ViewThatFits(in: .vertical) { texts }.lineLimit(nil)
+            }
+        }
+    }
+}
+
+/// Proposes at most `height` to its content and takes the content's own size. A frame with a
+/// maximum height would instead grow to that height whenever its parent offers more.
+private struct HeightLimit: Layout {
+    let height: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        subviews.first?.sizeThatFits(limited(proposal)) ?? .zero
+    }
+
+    func placeSubviews(
+        in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+    ) {
+        subviews.first?.place(at: bounds.origin, proposal: limited(proposal))
+    }
+
+    private func limited(_ proposal: ProposedViewSize) -> ProposedViewSize {
+        ProposedViewSize(width: proposal.width, height: min(proposal.height ?? height, height))
     }
 }

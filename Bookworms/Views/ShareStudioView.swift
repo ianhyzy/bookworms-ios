@@ -26,9 +26,11 @@ struct ShareStudioView: View {
     /// The years and months with finished books, kept with the library so the body need not
     /// recompute them.
     @State private var periods: (years: [Int], months: [TimeFrame]) = ([], [])
-    @State private var image: ShareImage?
-    /// The request that drew `image`. While it differs from the current request, a newer image
-    /// is on its way, so the preview shows progress and sharing waits.
+    /// The rendered pages in order: one image, or a Year Stack's pages. Empty before the first
+    /// render, without books, or after a failed render.
+    @State private var images: [ShareImage] = []
+    /// The request that drew `images`. While it differs from the current request, newer images
+    /// are on their way, so the preview shows progress and sharing waits.
     @State private var renderedRequest: RenderRequest?
     /// Whether the last render failed, so no image is shown or shared.
     @State private var failed = false
@@ -198,12 +200,13 @@ struct ShareStudioView: View {
         }
         .navigationTitle("Share")
         .toolbar {
-            if let image {
+            if !images.isEmpty {
                 ToolbarItem(placement: .topBarTrailing) {
-                    ShareLink(
-                        item: image,
-                        preview: SharePreview(image.name, image: Image(uiImage: image.image))
-                    )
+                    // Every page goes in one share, in order, so Instagram can post them as a
+                    // carousel or a run of stories, and Photos saves them all.
+                    ShareLink(items: images) { image in
+                        SharePreview(image.name, image: Image(uiImage: image.image))
+                    }
                     .disabled(isPending)
                 }
             }
@@ -213,7 +216,8 @@ struct ShareStudioView: View {
     #if DEBUG
         /// Renders each entry of `-BookwormsShareBatch`, such as
         /// `yearInBooks,story,month:2025-08,flat`, separated by spaces, and saves it as
-        /// `share-debug-<entry>.png`, so one launch checks many options.
+        /// `share-debug-<entry>.png`, with later pages as `share-debug-<entry>-2.png` and so on,
+        /// so one launch checks many options.
         private func renderBatch() async {
             guard
                 let batch = UserDefaults.standard.string(forKey: "BookwormsShareBatch"),
@@ -231,9 +235,7 @@ struct ShareStudioView: View {
                     try? await Task.sleep(for: .milliseconds(200))
                     settled = renderedRequest == request ? settled + 1 : 0
                 }
-                if let image {
-                    ShareDebug.write(image.image, name: "-" + entry.replacing(":", with: "_"))
-                }
+                ShareDebug.write(images, name: "-" + entry.replacing(":", with: "_"))
             }
         }
     #endif
@@ -242,7 +244,7 @@ struct ShareStudioView: View {
     private func preview(isPending: Bool, hasNoBooks: Bool) -> some View {
         let size = aspect.size
         // Messages sit outside the image's box, which would clip them at large text sizes.
-        if image == nil && hasNoBooks && !model.isLoading {
+        if images.isEmpty && hasNoBooks && !model.isLoading {
             let empty = emptyState
             ContentUnavailableView {
                 Label(empty.title, systemImage: template.systemImage)
@@ -257,7 +259,7 @@ struct ShareStudioView: View {
             }
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
-        } else if image == nil && failed && !isPending {
+        } else if images.isEmpty && failed && !isPending {
             ContentUnavailableView(
                 "Couldn't draw the image", systemImage: "exclamationmark.triangle",
                 // A pile's arrangement varies with the seed, so Shuffle can succeed where it
@@ -272,18 +274,27 @@ struct ShareStudioView: View {
             ZStack {
                 // Sizes the box as the image does, before there is one.
                 Color.clear.frame(idealWidth: size.width, idealHeight: size.height)
-                if let image {
-                    Image(uiImage: image.image)
-                        .resizable()
-                        .scaledToFit()
-                        .accessibilityLabel("\(image.name) preview")
+                if images.count > 1 {
+                    // Swipes through the pages, with the system's page dots over their dark
+                    // backdrops.
+                    TabView {
+                        ForEach(images.indices, id: \.self) { index in
+                            page(images[index])
+                        }
+                    }
+                    .tabViewStyle(.page(indexDisplayMode: .always))
+                    // A new page count starts again at page 1, so the selection never points
+                    // past the last page.
+                    .id(images.count)
+                } else if let image = images.first {
+                    page(image)
                 }
                 if template == .pile && isPending {
                     // A pile takes seconds to load its covers and lay its books out.
                     ProgressView("Dropping books")
                         .padding()
                         .background(.regularMaterial, in: .rect(cornerRadius: 12))
-                } else if image == nil {
+                } else if images.isEmpty {
                     ProgressView()
                 } else if isPending {
                     ProgressView()
@@ -299,6 +310,13 @@ struct ShareStudioView: View {
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
         }
+    }
+
+    private func page(_ image: ShareImage) -> some View {
+        Image(uiImage: image.image)
+            .resizable()
+            .scaledToFit()
+            .accessibilityLabel("\(image.name) preview")
     }
 
     /// Whether this iPhone's Hardcover sign-in provides the library, which preview mode ignores.
@@ -541,9 +559,10 @@ struct ShareStudioView: View {
             template: template, aspect: request.aspect, books: books, frame: request.frame,
             coverStyle: request.coverStyle, direction: request.direction,
             showsRatings: request.showsRatings, seed: request.seed)
-        let rendered: UIImage?
+        // The pages in order. Empty when there are no books or a page could not be drawn.
+        var rendered: [UIImage] = []
         if books.isEmpty {
-            rendered = nil
+            // Nothing to draw; the preview says why.
         } else if template == .pile {
             do {
                 let pile = try await PileSnapshotRenderer.render(
@@ -551,12 +570,10 @@ struct ShareStudioView: View {
                     seed: request.seed, model: model)
                 // A render cancelled after its last check still returns; a newer one is coming.
                 try Task.checkCancellation()
-                rendered = pile
+                rendered = [pile]
             } catch is CancellationError {
                 return
-            } catch {
-                rendered = nil
-            }
+            } catch {}
         } else {
             // The books drawn with covers. Year in Books draws covers only for its records.
             let covered: [CloudBook] =
@@ -576,18 +593,32 @@ struct ShareStudioView: View {
             input.looks = Dictionary(books.map { ($0.id, model.look(for: $0)) }) { first, _ in
                 first
             }
-            rendered = input.render()
+            let count = input.pageCount
+            for page in 0..<count {
+                // Each page draws synchronously, so the app stays responsive between pages.
+                if page > 0 { await Task.yield() }
+                guard !Task.isCancelled else { return }
+                input.page = page
+                guard let image = input.render() else {
+                    rendered = []
+                    break
+                }
+                rendered.append(image)
+            }
         }
-        // Without a new image, the old one must not stay to be shared.
-        image = rendered.map { rendered in
-            var name = template.title
-            if !template.isSingleBook { name += " " + input.period }
-            return ShareImage(image: rendered, name: name)
-        }
-        failed = !books.isEmpty && rendered == nil
+        // Without new images, the old ones must not stay to be shared.
+        var name = template.title
+        if !template.isSingleBook { name += " " + input.period }
+        images = rendered.enumerated()
+            .map { page, image in
+                ShareImage(
+                    image: image,
+                    name: rendered.count > 1 ? "\(name) (\(page + 1) of \(rendered.count))" : name)
+            }
+        failed = !books.isEmpty && rendered.isEmpty
         renderedRequest = request
         #if DEBUG
-            if let rendered { ShareDebug.write(rendered) }
+            ShareDebug.write(images)
         #endif
     }
 
@@ -701,16 +732,23 @@ private struct ShareBookPicker: View {
     /// and `-BookwormsShareSeed <n>` set its options, and `-BookwormsShareSamples <n>` adds
     /// fictional reviews and current reads (`samples(_:)`). Each render is then written to
     /// `Library/Caches/Bookworms/share-debug.png`; `-BookwormsShareBatch` renders a list of
-    /// option sets in one launch (`ShareStudioView.renderBatch()`).
+    /// option sets in one launch (`ShareStudioView.renderBatch()`). A Year Stack's later pages go
+    /// to `share-debug-2.png` and so on.
     enum ShareDebug {
-        static func write(_ image: UIImage, name: String = "") {
+        /// Writes the first page as `share-debug<name>.png` and later pages as
+        /// `share-debug<name>-2.png` and so on.
+        static func write(_ images: [ShareImage], name: String = "") {
             guard UserDefaults.standard.string(forKey: "BookwormsShareTemplate") != nil else {
                 return
             }
-            let url = URL.cachesDirectory.appending(path: "Bookworms/share-debug\(name).png")
-            try? FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? image.pngData()?.write(to: url, options: .atomic)
+            for (index, image) in images.enumerated() {
+                let page = index == 0 ? "" : "-\(index + 1)"
+                let url = URL.cachesDirectory.appending(
+                    path: "Bookworms/share-debug\(name)\(page).png")
+                try? FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? image.image.pngData()?.write(to: url, options: .atomic)
+            }
         }
 
         @MainActor private static var switchesTabs = false

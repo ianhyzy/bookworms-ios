@@ -377,11 +377,14 @@ struct YearInBooksCard: View {
                 }
                 GridRow(alignment: .top) {
                     ForEach(entries, id: \.book.id) { entry in
-                        Text(entry.book.spineTitle)
-                            .font(ShareStyle.serif(34, .semibold))
-                            .lineLimit(2)
-                            .minimumScaleFactor(30 / 34)
-                            .multilineTextAlignment(.center)
+                        ShareFittingText(
+                            forms: ShareStyle.titles(entry.book), size: 34,
+                            minimumScale: 30 / 34, lines: 2
+                        ) {
+                            ShareStyle.serif($0, .semibold)
+                        }
+                        .multilineTextAlignment(.center)
+                        .frame(width: width)
                     }
                 }
                 GridRow {

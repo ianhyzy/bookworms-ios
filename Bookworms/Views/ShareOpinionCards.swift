@@ -43,10 +43,12 @@ struct ReviewCard: View {
                     .shadow(color: .black.opacity(0.5), radius: 28, y: 20)
                     VStack(alignment: .leading, spacing: 14) {
                         ShareStyle.label("My review").foregroundStyle(ShareStyle.gold)
-                        Text(book.spineTitle)
-                            .font(ShareStyle.serif(aspect == .square ? 52 : 60, .semibold))
-                            .lineLimit(3)
-                            .minimumScaleFactor(0.6)
+                        ShareFittingText(
+                            forms: ShareStyle.titles(book), size: aspect == .square ? 52 : 60,
+                            minimumScale: 0.6, lines: 3
+                        ) {
+                            ShareStyle.serif($0, .semibold)
+                        }
                         Text(SpineView.shortAuthor(book.author))
                             .font(ShareStyle.serif(36))
                             .opacity(0.85)
@@ -167,10 +169,12 @@ struct HotTakesCard: View {
         )
         .shadow(color: .black.opacity(0.5), radius: 32, y: 24)
         let details = VStack(alignment: isSquare ? .leading : .center, spacing: 12) {
-            Text(book.spineTitle)
-                .font(ShareStyle.serif(isSquare ? 52 : 60, .semibold))
-                .lineLimit(2)
-                .minimumScaleFactor(0.6)
+            ShareFittingText(
+                forms: ShareStyle.titles(book), size: isSquare ? 52 : 60, minimumScale: 0.6,
+                lines: 2
+            ) {
+                ShareStyle.serif($0, .semibold)
+            }
             Text(SpineView.shortAuthor(book.author))
                 .font(ShareStyle.serif(36))
                 .opacity(0.8)
@@ -217,10 +221,12 @@ struct HotTakesCard: View {
             .shadow(color: .black.opacity(0.45), radius: 16, y: 12)
             .frame(width: coverHeight * coverAspect)
             VStack(alignment: .leading, spacing: 10) {
-                Text(book.spineTitle)
-                    .font(ShareStyle.serif(isSquare ? 38 : 42, .semibold))
-                    .lineLimit(isSquare ? 1 : 2)
-                    .minimumScaleFactor(0.8)
+                ShareFittingText(
+                    forms: ShareStyle.titles(book), size: isSquare ? 38 : 42, minimumScale: 0.8,
+                    lines: isSquare ? 1 : 2
+                ) {
+                    ShareStyle.serif($0, .semibold)
+                }
                 Text(SpineView.shortAuthor(book.author))
                     .font(.system(size: 30))
                     .opacity(0.75)

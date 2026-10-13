@@ -220,6 +220,7 @@ final class HardcoverTests: XCTestCase {
             XCTAssertTrue(body.contains(#""user":4242"#))
             // The Apple TV reads `review` with the same scopes; `review_raw` is unproven.
             XCTAssertTrue(body.contains("status_id review"))
+            XCTAssertTrue(body.contains("series { id name }"))
             XCTAssertFalse(body.contains("review_raw"))
             return Self.respond(200, Self.libraryPage, to: request)
         }
@@ -234,7 +235,8 @@ final class HardcoverTests: XCTestCase {
                     coverURL: URL(string: "https://covers.example.com/book-101.jpg"),
                     detailCoverURL: URL(string: "https://covers.example.com/reader-101.jpg"),
                     genres: ["Fantasy", "Mystery"], publicationYear: 2021, format: "Ebook",
-                    seriesID: 9, seriesPosition: 1, pages: 336, finished: "2025-03-01",
+                    seriesID: 9, seriesPosition: 1, seriesName: "The Lantern Cycle", pages: 336,
+                    finished: "2025-03-01",
                     rating: 4.5, isRead: true, communityRating: 4.12, ratingsCount: 250,
                     review: "A quiet triumph & a joy.\n\nWould reread."),
                 CloudBook(
@@ -385,8 +387,8 @@ final class HardcoverTests: XCTestCase {
                "Mood":[{"tag":"Cozy","count":12,"spoilerRatio":0}]},
              "rating":4.12,"ratings_count":250,
              "image":{"url":"https://covers.example.com/book-101.jpg","width":400,"height":600},
-             "book_series":[{"featured":false,"position":2,"series":{"id":7}},
-               {"featured":true,"position":1,"series":{"id":9}}],
+             "book_series":[{"featured":false,"position":2,"series":{"id":7,"name":"Lantern Tales"}},
+               {"featured":true,"position":1,"series":{"id":9,"name":" The Lantern Cycle "}}],
              "editions":[{"image":{"url":"https://covers.example.com/edition-101.jpg","width":900,"height":1350}}]},
            "edition":null,
            "user_book_reads":[{"finished_at":"2025-03-01","edition":{"pages":336,"audio_seconds":null,
