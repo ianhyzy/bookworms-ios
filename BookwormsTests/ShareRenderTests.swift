@@ -453,7 +453,7 @@ final class ShareRenderTests: XCTestCase {
         XCTAssertEqual(titles(": Colon First"), [": Colon First"])
     }
 
-    func testStackSpinesGroupNamedSeriesAtTheirFirstBook() {
+    func testStackSpinesBundleNamedSeriesAtTheirFirstBook() {
         func book(_ id: Int, series: Int? = nil, name: String? = nil, rating: Double? = nil)
             -> CloudBook
         {
@@ -471,14 +471,83 @@ final class ShareRenderTests: XCTestCase {
         ]
         let spines = StackSpine.spines(books)
         XCTAssertEqual(spines.map { $0.books.map(\.id) }, [[1], [2, 4, 7], [3], [5], [6]])
-        XCTAssertEqual(spines[1].titles, ["Tide Saga ×3"])
+        XCTAssertEqual(spines[1].titles, ["Tide Saga"], "The tag carries the count")
         XCTAssertEqual(spines[0].titles, ["Book 1"])
-        XCTAssertEqual(spines[1].weight, 1.75)
-        XCTAssertGreaterThan(spines[1].weight, spines[0].weight)
-        let long = StackSpine.spines((1...9).map { book($0, series: 7, name: "Tide Saga") })
-        XCTAssertEqual(long.map(\.weight), [2], "The thickness is capped")
+        XCTAssertEqual(spines[1].slices.map(\.book.id), [2, 4, 7])
+        XCTAssertGreaterThan(spines[1].size.height, spines[0].size.height)
         // A group ranks as its best-rated book.
         XCTAssertTrue(StackSpine.isRankedHigher(spines[1], spines[0]))
+
+        // A big series draws a capped number of thin slices in a book-shaped bundle.
+        let long = StackSpine.spines((1...9).map { book($0, series: 7, name: "Tide Saga") })
+        XCTAssertEqual(long.count, 1)
+        XCTAssertEqual(long[0].books.count, 9)
+        XCTAssertEqual(long[0].slices.count, StackSpine.maximumSlices)
+        let thickest =
+            (1...200)
+            .map { id in
+                StackSpine.shape(
+                    of: CloudBook(
+                        id: id, title: "Book", author: "Author", coverURL: nil,
+                        detailCoverURL: nil, pages: 1400)
+                )
+                .height
+            }
+            .max() ?? 0
+        for bundle in [spines[1], long[0]] {
+            let slices = bundle.slices
+            XCTAssertEqual(
+                slices.reduce(0) { $0 + $1.size.height }, bundle.size.height, accuracy: 1e-9,
+                "Slices touch, with no gaps")
+            XCTAssertTrue(slices.allSatisfy { $0.size.width == bundle.size.width })
+            XCTAssertLessThanOrEqual(
+                bundle.size.height, bundle.size.width * StackSpine.bundleRatio + 1e-9)
+            XCTAssertLessThanOrEqual(
+                bundle.size.height, thickest * 1.1, "No thicker than a thick book, plus a little")
+        }
+        XCTAssertLessThan(long[0].slices[1].size.height, spines[1].slices[1].size.height)
+    }
+
+    /// Spines keep the Library's Stack proportions at every scale, in one column.
+    func testStackSpinesKeepStackProportionsInOneColumn() {
+        let books = [100, 180, 320, 480, 760, 1200].enumerated()
+            .map { index, pages in
+                CloudBook(
+                    id: index + 1, title: "Fictional Book", author: "Author", coverURL: nil,
+                    detailCoverURL: nil, pages: pages)
+            }
+        let stack = StackArrangement(width: 402)
+        for book in books {
+            let shape = StackSpine(books: [book]).size
+            let spine = stack.spine(of: book)
+            XCTAssertEqual(shape.width / shape.height, spine.width / spine.height, accuracy: 1e-9)
+            XCTAssertGreaterThanOrEqual(
+                shape.width / shape.height, 4, "Book-shaped, never box-shaped: \(shape)")
+        }
+
+        let spines = StackSpine.spines(books)
+        for aspect in ShareAspect.allCases {
+            let area = YearStackCard.area(aspect)
+            XCTAssertTrue(StackLayout.fits(spines, area: area), "\(aspect)")
+            let layout = StackLayout(spines: spines, area: area, seed: 4)
+            XCTAssertGreaterThanOrEqual(
+                layout.scale, StackLayout.minimumScale(spines), "\(aspect)")
+            XCTAssertLessThanOrEqual(
+                layout.scale, StackLayout.maximumScale(spines, area: area), "\(aspect)")
+            XCTAssertLessThanOrEqual(layout.height, area.height + 0.5, "\(aspect)")
+            var bottom = layout.height
+            for slab in layout.slabs {
+                XCTAssertEqual(
+                    slab.size.width / slab.size.height,
+                    slab.spine.size.width / slab.spine.size.height, accuracy: 1e-9)
+                XCTAssertLessThanOrEqual(
+                    abs(slab.center.x - area.width / 2),
+                    StackArrangement.maximumShift * area.width + 1e-9, "One column")
+                // Each spine lies flat on the one below it, with no gap.
+                XCTAssertEqual(slab.center.y + slab.size.height / 2, bottom, accuracy: 1e-6)
+                bottom -= slab.size.height
+            }
+        }
     }
 
     func testStackPagesSplitEvenlyInFinishOrderUpToTwentyPages() {
@@ -493,7 +562,7 @@ final class ShareRenderTests: XCTestCase {
                     })
         }
         let area = CGSize(width: 952, height: 700)
-        let few = spines(10)
+        let few = spines(6)
         XCTAssertEqual(
             StackPages(spines: few, area: area).pages.map { $0.map(\.id) }, [few.map(\.id)])
 
@@ -503,13 +572,15 @@ final class ShareRenderTests: XCTestCase {
         XCTAssertGreaterThan(pages.pages.count, 1)
         XCTAssertEqual(pages.hiddenCount, 0)
         XCTAssertEqual(pages.pages.flatMap { $0 }.map(\.id), crowded.map(\.id))
-        let weights = pages.pages.map(StackLayout.weight)
-        XCTAssertLessThanOrEqual(weights.max() ?? 0, StackLayout.capacity(area))
-        XCTAssertLessThanOrEqual((weights.max() ?? 0) - (weights.min() ?? 0), 2)
+        XCTAssertTrue(pages.pages.allSatisfy { StackLayout.fits($0, area: area) })
+        let thicknesses = pages.pages.map(StackLayout.thickness)
+        // Within about two books of each other.
+        XCTAssertLessThanOrEqual((thicknesses.max() ?? 0) - (thicknesses.min() ?? 0), 0.7)
         for page in pages.pages {
             let layout = StackLayout(spines: page, area: area, seed: 1)
             XCTAssertEqual(layout.slabs.count, page.count)
-            XCTAssertLessThanOrEqual(layout.height, area.height + 0.5)
+            XCTAssertEqual(layout.height, area.height, accuracy: 0.5, "Each page fills its height")
+            XCTAssertGreaterThanOrEqual(layout.scale, StackLayout.minimumScale(page))
         }
 
         // Past 20 pages, the lowest-ranked books are left out.
@@ -523,6 +594,115 @@ final class ShareRenderTests: XCTestCase {
         let hiddenRatings = many.filter { !shownIDs.contains($0.id) }.compactMap(\.book.rating)
         XCTAssertGreaterThanOrEqual(
             shown.compactMap(\.book.rating).min() ?? 0, hiddenRatings.max() ?? 0)
+    }
+
+    /// Each page's smallest scale comes from its own spines, not the thinnest book any frame
+    /// could hold, so a frame that fits one page stays on one page and fills it.
+    func testStackPagesUseEachRunsOwnSmallestScale() {
+        func book(_ id: Int, pages: Int, title: String? = nil) -> CloudBook {
+            CloudBook(
+                id: id, title: title ?? "Book \(id)", author: "Author", coverURL: nil,
+                detailCoverURL: nil, pages: pages, finished: "2026-01-01")
+        }
+        let thin = StackSpine(books: [book(1, pages: 100)])
+        let ordinary = StackSpine(books: [book(2, pages: 400)])
+        XCTAssertEqual(
+            StackLayout.minimumScale([thin]),
+            ShareSpine.minimumThickness(thin) / thin.size.height, accuracy: 1e-9)
+        XCTAssertGreaterThan(
+            StackLayout.minimumScale([thin, ordinary]), StackLayout.minimumScale([ordinary]))
+
+        // Fourteen 400-page books need more than a story's height at the scale a 100-page book
+        // needs, but fit at their own.
+        let area = YearStackCard.area(.story)
+        let fourteen = StackSpine.spines((1...14).map { book($0, pages: 400) })
+        XCTAssertGreaterThan(
+            StackLayout.thickness(fourteen) * StackLayout.minimumScale([thin]), area.height)
+        let one = StackPages(spines: fourteen, area: area)
+        XCTAssertEqual(one.pages.count, 1)
+        // Twice as many need a second page.
+        let two = StackPages(
+            spines: StackSpine.spines((1...28).map { book($0, pages: 400) }), area: area)
+        XCTAssertEqual(two.pages.count, 2)
+        for page in one.pages + two.pages {
+            let layout = StackLayout(spines: page, area: area, seed: 1)
+            XCTAssertEqual(layout.height, area.height, accuracy: 0.5, "The page fills its height")
+        }
+
+        // A long title asks for room to letter it in full; a short one asks for none.
+        let short = StackPages(spines: [StackSpine(books: [book(30, pages: 300)])], area: area)
+        let long = StackPages(
+            spines: [
+                StackSpine(
+                    books: [book(30, pages: 300, title: "An Unusually Long Fictional Title")])
+            ], area: area)
+        let shortScale = short.pages[0][0].minimumScale
+        XCTAssertEqual(
+            shortScale,
+            ShareSpine.minimumThickness(short.pages[0][0])
+                / short.pages[0][0].size.height, accuracy: 1e-9)
+        XCTAssertGreaterThan(long.pages[0][0].minimumScale, shortScale)
+    }
+
+    /// Titles and series names as long and as wide as those the owner reviewed in a 2026 story
+    /// image, in the same capitalization, ask for a scale that letters them in full, on one line
+    /// or two, and have room for it, in wide system faces.
+    @MainActor
+    func testStackLettersLongTitlesWithoutTruncating() throws {
+        func books(_ title: String, _ ids: ClosedRange<Int>, pages: Int) -> [CloudBook] {
+            ids.map { id in
+                CloudBook(
+                    id: id, title: title, author: "Author", coverURL: nil, detailCoverURL: nil,
+                    seriesID: ids.count > 1 ? ids.lowerBound : nil,
+                    seriesName: ids.count > 1 ? title : nil, pages: pages,
+                    finished: "2026-02-01")
+            }
+        }
+        let library =
+            books("THE LAST GATE OF NORTHWIND", 1...1, pages: 300)
+            + books("We Who Have Never Seen Rain", 2...2, pages: 200)
+            + books("THE MOONWELL TRILOGY", 3...5, pages: 400)
+            + books("Mona and Daisy Mysteries", 6...8, pages: 300)
+            + books("MOUNTAIN WANDERER NED", 9...16, pages: 450)
+        let spines = StackSpine.spines(library)
+        XCTAssertEqual(spines.count, 5)
+        let area = YearStackCard.area(.story)
+        for typeface in ["sans", "serif"] {
+            for weight in [600, 700] {
+                func look(_ book: CloudBook) -> SpineLook {
+                    var look = SpineLook(book: book, design: nil, face: nil)
+                    (look.typeface, look.weight) = (typeface, weight)
+                    (look.isCondensed, look.uppercase) = (false, false)
+                    return look
+                }
+                let pages = StackPages(spines: spines, area: area, look: look)
+                for spine in pages.pages.joined() {
+                    let title = try XCTUnwrap(spine.titles.first)
+                    let label = "\(title) in \(typeface) \(weight)"
+                    let scale = spine.minimumScale
+                    XCTAssertLessThan(
+                        scale, StackLayout.maximumScale([spine], area: area), "\(label) has room")
+                    // At that scale, the first option that fits, as `ViewThatFits` takes it,
+                    // letters the title in full.
+                    let thickness = spine.size.height * scale
+                    let box = ShareSpine.letteringBox(spine, scale: scale)
+                    let fits = ShareSpine.options([title], thickness: thickness)
+                        .contains { option in
+                            let font = look(spine.book).uiFont(size: option.size)
+                            let width =
+                                option.text.split(separator: "\n")
+                                .map {
+                                    (String($0) as NSString).size(withAttributes: [.font: font])
+                                        .width
+                                }
+                                .max() ?? 0
+                            return width <= box.width
+                                && CGFloat(option.lines) * font.lineHeight <= thickness * 0.84
+                        }
+                    XCTAssertTrue(fits, "\(label) truncates")
+                }
+            }
+        }
     }
 
     /// A crowded Year Stack spans several pages, each a full image.

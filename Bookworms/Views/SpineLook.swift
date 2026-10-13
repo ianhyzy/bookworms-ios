@@ -1,6 +1,7 @@
 import CoreText
 import Observation
 import SwiftUI
+import UIKit
 
 extension ColorValue {
     var color: Color {
@@ -174,6 +175,31 @@ struct SpineLook: Equatable, Sendable {
             }
         return .system(size: size, weight: weight, design: design)
             .width(isCondensed ? .condensed : .standard)
+    }
+
+    /// The font `font(size:)` draws with, for measuring text outside a view. Keep the two in step.
+    func uiFont(size: CGFloat) -> UIFont {
+        if let face { return CTFontCreateWithFontDescriptor(face.descriptor, size, nil) as UIFont }
+        let weight: UIFont.Weight =
+            switch self.weight {
+            case 700: .bold
+            case 600: .semibold
+            case 500: .medium
+            default: .regular
+            }
+        let design: UIFontDescriptor.SystemDesign? =
+            switch typeface {
+            case "serif": .serif
+            case "rounded": .rounded
+            case "monospaced": .monospaced
+            default: nil
+            }
+        let font = UIFont.systemFont(
+            ofSize: size, weight: weight, width: isCondensed ? .condensed : .standard)
+        guard let design, let descriptor = font.fontDescriptor.withDesign(design) else {
+            return font
+        }
+        return UIFont(descriptor: descriptor, size: size)
     }
 
     func text(_ value: String) -> String { uppercase ? value.uppercased() : value }
