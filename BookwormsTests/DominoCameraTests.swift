@@ -4,8 +4,9 @@ import simd
 @testable import Bookworms
 
 /// The Follow camera's math: the smoothed front, the springs' limits, the low chase, framed
-/// with room around the front, and its slow swings round the turns, clearance from the books, following to the last book, the
-/// establishing move, cobweb push in, and reveal; and the overview camera's spring.
+/// with room around the front, and its slow swings round the turns, clearance from the books,
+/// following to the last book, the establishing move, and cobweb push in; and the overview
+/// camera's spring.
 final class DominoCameraTests: XCTestCase {
     private static let fieldOfView: Float = 38 * .pi / 180
     /// An iPhone in portrait, composing between its bars.
@@ -15,8 +16,8 @@ final class DominoCameraTests: XCTestCase {
     /// A typical book's height, which the camera plans its distance for.
     private static let typical = tallest * DominoCameraRig.typicalHeight
     /// A high view of the whole table from the side the camera films from, as the scene frames
-    /// the finale.
-    private static let finale = DominoCameraPose(eye: [-90, 110, -20], target: .zero)
+    /// the opening view.
+    private static let opening = DominoCameraPose(eye: [-90, 110, -20], target: .zero)
 
     /// One frame of a simulated run.
     private struct Frame {
@@ -27,7 +28,6 @@ final class DominoCameraTests: XCTestCase {
         var started: Bool
         /// Whether the last book has started to fall.
         var done: Bool
-        var revealing: Bool
         var pose: DominoCameraPose
 
         var running: Bool { started && !done }
@@ -46,7 +46,7 @@ final class DominoCameraTests: XCTestCase {
         let offset = (low + high) / 2
         let rig = DominoCameraRig(
             path: path, offset: offset, length: length, tallest: Self.tallest, cobwebs: cobwebs,
-            finale: Self.finale, fieldOfView: Self.fieldOfView, aspect: Self.aspect,
+            opening: Self.opening, fieldOfView: Self.fieldOfView, aspect: Self.aspect,
             area: Self.area)
         return (rig, places.map { $0 - offset })
     }
@@ -78,7 +78,7 @@ final class DominoCameraTests: XCTestCase {
         var frames: [Frame] = []
         var clock: Float = 0
         var index = 0
-        while clock < done + DominoCameraRig.landTime + rig.revealTime + 4 {
+        while clock < done + DominoCameraRig.landTime + 2 {
             let step: Float = !even && index % 7 == 3 ? 1.0 / 40 : 1.0 / 60
             clock += step
             index += 1
@@ -88,7 +88,7 @@ final class DominoCameraTests: XCTestCase {
             frames.append(
                 Frame(
                     time: clock, step: step, raw: front, started: clock >= wait,
-                    done: clock >= done, revealing: rig.isRevealing, pose: pose))
+                    done: clock >= done, pose: pose))
         }
         return frames
     }
@@ -159,7 +159,7 @@ final class DominoCameraTests: XCTestCase {
         var frames = run(&rig, count: 276, speed: 20, even: true)
         frames.insert(
             Frame(
-                time: 0, step: 1.0 / 60, raw: 0, started: false, done: false, revealing: false,
+                time: 0, step: 1.0 / 60, raw: 0, started: false, done: false,
                 pose: DominoCameraPose(eye: [80, 5, -80], target: [60, 0, -90])), at: 0)
         var lastVelocity: SIMD3<Float>?
         for (before, after) in zip(frames, frames.dropFirst()) {
@@ -393,15 +393,13 @@ final class DominoCameraTests: XCTestCase {
             let travel = zip(running, running.dropFirst())
                 .map { simd_distance($0.pose.eye, $1.pose.eye) }.reduce(0, +)
             XCTAssertGreaterThan(travel, rig.length * 0.6, "\(count)")
-            // The reveal waits while the last book falls and lands, which takes it about a
-            // book's height along the path, and the camera keeps it in view until then.
+            // It holds on the last book while it falls and lands, which takes it about a
+            // book's height along the path, and keeps it in view.
             let fell = frames.firstIndex(where: \.done)!
-            let reveal = frames.firstIndex(where: \.revealing)!
-            XCTAssertGreaterThan(frames[reveal].time - frames[fell].time, 0.5, "\(count)")
             let end = rig.point(at: rig.length)
             let heading = rig.path.point(at: rig.length).heading
             let landed = end + heading * Self.typical / 2
-            for frame in frames[fell...reveal] {
+            for frame in frames[fell...] {
                 let point = frame.pose.project(
                     [landed.x, 0.3, landed.y], fieldOfView: Self.fieldOfView, aspect: Self.aspect)
                 XCTAssertGreaterThan(point.x, Self.area.low.x, "\(count) at \(frame.time)")
@@ -410,10 +408,10 @@ final class DominoCameraTests: XCTestCase {
                 XCTAssertLessThan(point.y, Self.area.high.y, "\(count) at \(frame.time)")
                 XCTAssertLessThan(range(of: frame.pose), 20, "\(count) at \(frame.time)")
             }
-            // By then, it looks down on the fallen books from at least about
+            // Once the book has landed, it looks down on the fallen books from at least about
             // `landingElevation`, with where the last book lands in the middle third of the
             // view's height rather than under a band of far table.
-            let held = frames[reveal - 1].pose
+            let held = frames.last!.pose
             XCTAssertGreaterThan(
                 elevation(of: held.eye, above: [landed.x, 0.3, landed.y]),
                 DominoCameraRig.landingElevation - 3 * .pi / 180, "\(count)")
@@ -445,8 +443,7 @@ final class DominoCameraTests: XCTestCase {
     func testEstablishingMoveSettlesOnTheFirstBook() {
         for count in [39, 276] {
             var (rig, books) = chain(count)
-            // It starts on the finale, so a clip opens and ends on the same frame.
-            XCTAssertEqual(rig.pose, Self.finale)
+            XCTAssertEqual(rig.pose, Self.opening)
             XCTAssertLessThanOrEqual(rig.establishTime, DominoCameraRig.establishTimes.upperBound)
             let start = rig.pose
             var time: Float = 0
@@ -477,14 +474,14 @@ final class DominoCameraTests: XCTestCase {
         }
     }
 
-    func testTheEstablishingMoveAndTheRevealTurnSlowly() {
+    func testTheEstablishingMoveTurnsSlowly() {
         for count in [39, 276] {
             var (rig, _) = chain(count)
             let establishTime = rig.establishTime
             let frames = run(&rig, count: count)
-            // Both moves turn the view at most 22 degrees a second, easing in and out.
-            for (before, frame) in zip(frames, frames.dropFirst())
-            where frame.time < establishTime || frame.revealing {
+            // It turns the view at most 22 degrees a second, easing in and out.
+            for (before, frame) in zip(frames, frames.dropFirst()) where frame.time < establishTime
+            {
                 XCTAssertLessThan(
                     turn(from: before.pose, to: frame.pose) / frame.step, 22 * .pi / 180,
                     "\(count) at \(frame.time)")
@@ -504,8 +501,7 @@ final class DominoCameraTests: XCTestCase {
                 .init(distance: 1, density: 1),
             ])
         XCTAssertEqual(webbed.cobwebs, [web])
-        // At about the chain's pace in the scene's slow motion. The runs match frame for frame
-        // until the reveal, whose length depends on the view.
+        // At about the chain's pace in the scene's slow motion.
         let without = run(&plain, count: 160, speed: 10).filter(\.running)
         let with = run(&webbed, count: 160, speed: 10).filter(\.running)
         func ratio(_ index: Int) -> Float {
@@ -594,37 +590,6 @@ final class DominoCameraTests: XCTestCase {
         XCTAssertEqual(run(&plain, count: 120).map(\.pose), run(&webbed, count: 120).map(\.pose))
     }
 
-    func testTheRevealEndsOnTheFinale() {
-        for count in [39, 120] {
-            var (rig, _) = chain(count)
-            let frames = run(&rig, count: count)
-            XCTAssertEqual(rig.pose, Self.finale, "\(count)")
-            // It rises before it pulls back: by half way, most of the climb is done, and less
-            // than half of the pull back.
-            let start = frames.firstIndex(where: \.revealing)! - 1
-            let half = frames[start...]
-                .first { $0.time > frames[start].time + rig.revealTime / 2 }!
-            let climb =
-                (elevation(of: half.pose) - elevation(of: frames[start].pose))
-                / (elevation(of: Self.finale) - elevation(of: frames[start].pose))
-            XCTAssertGreaterThan(climb, 0.6, "\(count)")
-            func scale(_ pose: DominoCameraPose) -> Float { log(range(of: pose)) }
-            let pulled =
-                (scale(half.pose) - scale(frames[start].pose))
-                / (scale(Self.finale) - scale(frames[start].pose))
-            XCTAssertLessThan(pulled, 0.45, "\(count)")
-            // It settles onto the finale without passing it and creeping back.
-            let near = frames[start...]
-                .firstIndex { simd_distance($0.pose.eye, Self.finale.eye) < 1 }!
-            for (before, after) in zip(frames[near...], frames[(near + 1)...]) {
-                XCTAssertLessThanOrEqual(
-                    simd_distance(after.pose.eye, Self.finale.eye),
-                    simd_distance(before.pose.eye, Self.finale.eye) + 1e-4,
-                    "\(count) at \(after.time)")
-            }
-        }
-    }
-
     func testPosesLookAtTheirTargets() {
         let pose = DominoCameraPose(eye: [-20, 12, -6], target: [1, 1, 2])
         let shown = pose.project(pose.target, fieldOfView: Self.fieldOfView, aspect: Self.aspect)
@@ -646,7 +611,7 @@ final class DominoCameraTests: XCTestCase {
         let aim = SIMD8<Float>(10, -4, 0.5, 0.3, -0.2, 0, 0, 0)
         for _ in 0..<40 {
             // Half-second frames, as after a hitch, neither diverge nor pass the goal.
-            spring.step(toward: aim, lag: DominoOverviewSpring.followingLag, by: 0.5)
+            spring.step(toward: aim, lag: DominoOverviewSpring.lag, by: 0.5)
             for lane in 0..<5 {
                 XCTAssertLessThanOrEqual(abs(spring.value[lane]), abs(aim[lane]) * 1.001)
             }
