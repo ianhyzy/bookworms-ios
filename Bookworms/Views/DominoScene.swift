@@ -168,16 +168,18 @@ enum DominoLayout {
         min(0.05, entrySpread / Double(max(count - 1, 1)))
     }
 
-    /// The seconds from one drop to the next in a batch of `batch` books of a chain of `count`,
-    /// built `interval` seconds after the batch before it: `entryStep(count:)`, or the interval
-    /// shared among the batch's books when that is longer, up to 0.05. A slowly built batch
-    /// thus drops one book after another over about the time it took, instead of all at once
-    /// and then a pause, while a chain built at once still drops within `entrySpread`. The
-    /// first batch's `interval` runs from when setting up began, so a new chain's first batch,
-    /// which also waits for its covers and the room's light, usually drops 0.05 seconds apart,
-    /// and the next batch builds while it drops.
-    static func entryStep(count: Int, batch: Int, interval: TimeInterval) -> TimeInterval {
-        max(entryStep(count: count), min(0.05, interval / Double(max(batch, 1))))
+    /// How much longer than a book takes to build the drops wait from one to the next, so the
+    /// books waiting to drop build up while later books build, and the longest they wait.
+    static let buildMargin: Double = 1.15
+    static let slowestStep: TimeInterval = 0.08
+
+    /// The seconds from one drop to the next down a chain of `count` books that have taken
+    /// `perBook` seconds each to build on average: `entryStep(count:)`, or `buildMargin` times
+    /// the build time when that is longer, up to `slowestStep`. The drops then run on steadily,
+    /// a little slower than the books build, instead of a batch at once and then a pause while
+    /// the next builds, and a chain built at once still drops within `entrySpread`.
+    static func entryStep(count: Int, perBook: TimeInterval) -> TimeInterval {
+        max(entryStep(count: count), min(slowestStep, perBook * buildMargin))
     }
 
     /// The gap from the back cover of a book of `height` to the next book's front cover on a
@@ -860,35 +862,39 @@ final class DominoScene {
     /// The chain is `DominoLayout.chain(_:)`, so the order of `books`, the desk's sort
     /// order, does not matter. A new chain or generation removes every book, frames the whole
     /// path between the bars of `viewport`, and lays the lamp's pool over it. Books stand up
-    /// `batchSize` at a time, each batch waiting at most `coverWait` for its covers and then
-    /// for its cobwebs' meshes, and the first batch also for the room's light. Each book then
-    /// drops into its place from above the view (see `spawn`). `loading` is set until the first
-    /// batch starts to drop. Returns when every book is built or the task is cancelled; the
-    /// chain waits for a push once the last book has landed.
+    /// `batchSize` at a time. Each batch waits at most `coverWait` for its covers, and the next
+    /// batch builds while its cobwebs' meshes generate, so it stands up only once the next
+    /// batch is built; the first batch also waits for the room's light. Each book then drops
+    /// into its place from above the view (see `spawn`), as far behind the one before as the
+    /// books have taken to build on average (`DominoLayout.entryStep(count:perBook:)`), so
+    /// the drops run on without a pause while later books build. `loading` is set until the
+    /// first batch starts to drop. Returns when every book is built or the task is cancelled;
+    /// the chain waits for a push once the last book has landed.
     func setUp(_ books: [CloudBook], generation: Int, viewport: PileViewport, model: AppModel)
         async
     {
         guard planSetUp(books, generation: generation, viewport: viewport), let key else {
             return
         }
-        // When the batch before was built, or this call began, on `entryClock`, which paces
-        // the drops.
-        var built = entryClock
+        // When this call began, on `entryClock`, and the books built since, which pace the
+        // drops.
+        let began = entryClock
+        let first = spawned
+        await prepare(from: spawned, model: model)
         while spawned < plan.count {
+            guard !Task.isCancelled, self.key == key else { return }
             let end = min(spawned + Self.batchSize, plan.count)
             let batch = plan[spawned..<end]
-            await factory.prepare(
-                batch.map(\.book),
-                prefetching: plan[end..<min(end + Self.batchSize, plan.count)].map(\.book),
-                coverWait: Self.coverWait, model: model)
-            guard !Task.isCancelled, self.key == key else { return }
+            async let next: Void = prepare(from: end, model: model)
             let cobwebs = await makeCobwebs(before: batch)
+            await next
             // Keeps the first books until the room's light is ready, so they enter lit.
             if spawned == 0 { await stage.lit() }
             guard !Task.isCancelled, self.key == key else { return }
-            let step = DominoLayout.entryStep(
-                count: plan.count, batch: batch.count, interval: entryClock - built)
-            built = entryClock
+            // A chain built in one batch waits for no later build.
+            let built = min(end + Self.batchSize, plan.count) - first
+            let perBook = end - first == plan.count ? 0 : (entryClock - began) / Double(built)
+            let step = DominoLayout.entryStep(count: plan.count, perBook: perBook)
             for slot in batch { spawn(slot, cobweb: cobwebs[slot.book.id], step: step) }
             spawned = end
             if loading.isLoading { loading.isLoading = false }
@@ -901,8 +907,20 @@ final class DominoScene {
             }
             guard !Task.isCancelled, self.key == key else { return }
             showDebugCobweb()
-            await runDebugPushes()
+            // Apart from the setting up, so the details hook times from the standing chain.
+            Task { await runDebugPushes(key: key) }
         #endif
+    }
+
+    /// Builds the batch of books from `start`, if any, and starts the covers of the two
+    /// batches after it downloading.
+    private func prepare(from start: Int, model: AppModel) async {
+        guard start < plan.count else { return }
+        let end = min(start + Self.batchSize, plan.count)
+        await factory.prepare(
+            plan[start..<end].map(\.book),
+            prefetching: plan[end..<min(end + 2 * Self.batchSize, plan.count)].map(\.book),
+            coverWait: Self.coverWait, model: model)
     }
 
     /// Stands every book of `books` at once, as a renderer without a view needs: the plan for
@@ -2034,13 +2052,14 @@ final class DominoScene {
         }
 
         /// Simulator hook: `-BookwormsDominoPush <seconds>` pushes the next book whenever the
-        /// chain has stood or stalled that long, until every book has fallen.
-        private func runDebugPushes() async {
+        /// chain has stood or stalled that long, until every book has fallen or the chain
+        /// changes.
+        private func runDebugPushes(key: Key) async {
             guard
                 let delay = UserDefaults.standard.string(forKey: "BookwormsDominoPush")
                     .flatMap(Double.init)
             else { return }
-            while !Task.isCancelled, status.phase != .done {
+            while self.key == key, next < books.count {
                 try? await Task.sleep(for: .seconds(delay))
                 pushNext()
             }

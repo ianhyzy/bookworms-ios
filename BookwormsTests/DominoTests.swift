@@ -369,18 +369,17 @@ final class DominoTests: XCTestCase {
             DominoLayout.entrySpread + DominoLayout.entryFall + DominoLayout.webFade, 2)
     }
 
-    func testASlowBatchSpreadsItsDropsOverItsBuild() {
-        // Built at once, a batch keeps the chain's step.
+    func testDropsKeepALittleBehindTheBuild() {
+        // Built at once, the chain keeps its step, so every drop starts within the spread.
         XCTAssertEqual(
-            DominoLayout.entryStep(count: 276, batch: 16, interval: 0),
-            DominoLayout.entryStep(count: 276))
-        XCTAssertEqual(DominoLayout.entryStep(count: 39, batch: 16, interval: 0.1), 1.2 / 38)
-        // Built in 0.48 seconds, its 16 drops share that time.
+            DominoLayout.entryStep(count: 276, perBook: 0), DominoLayout.entryStep(count: 276))
+        XCTAssertEqual(DominoLayout.entryStep(count: 39, perBook: 0.01), 1.2 / 38)
+        // Books that take 50 milliseconds each to build drop a little more slowly, so the books
+        // waiting to drop build up while later ones build.
+        XCTAssertEqual(DominoLayout.entryStep(count: 276, perBook: 0.05), 0.0575, accuracy: 1e-9)
+        // However slowly they build, they drop at most 80 milliseconds apart.
         XCTAssertEqual(
-            DominoLayout.entryStep(count: 276, batch: 16, interval: 0.48), 0.03, accuracy: 1e-9)
-        // A slower build spreads them at most 50 milliseconds apart.
-        XCTAssertEqual(DominoLayout.entryStep(count: 276, batch: 16, interval: 1.1), 0.05)
-        XCTAssertEqual(DominoLayout.entryStep(count: 276, batch: 0, interval: 1), 0.05)
+            DominoLayout.entryStep(count: 276, perBook: 0.5), DominoLayout.slowestStep)
     }
 
     func testThreeDOffersDominoes() {
