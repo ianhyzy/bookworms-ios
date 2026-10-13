@@ -241,7 +241,7 @@ final class BookPileTests: XCTestCase {
                         insets: .init(top: top, leading: 0, bottom: bottom, trailing: 0))))
             let plan = (0..<3 as Range<UInt64>)
                 .flatMap { PileLayout.dropPlan(Self.books, in: tray, seed: $0) }
-            let points = plan.flatMap { corners(of: $0) }
+            let points = plan.flatMap(corners)
             XCTAssertLessThan(
                 plan.map(\.transform.translation.y).max()! + 1.86, PileLayout.ceiling, "\(size)")
             var shown = 0
@@ -292,7 +292,7 @@ final class BookPileTests: XCTestCase {
             XCTAssertLessThan(delay, 0.6)
             // No corner shows before then.
             let drop = SIMD3(0, fallen(after: delay - 0.02), 0)
-            let shown = wave.flatMap { corners(of: $0) }
+            let shown = wave.flatMap(corners)
                 .contains { corner in
                     let local = camera.rotation.inverse.act(corner - drop - eye)
                     return local.y <= -local.z * slope
@@ -326,33 +326,7 @@ final class BookPileTests: XCTestCase {
         XCTAssertLessThan(starts.max()! - fallen(after: time) + reach, starts.min()! - reach)
     }
 
-    func testStillImageGroupsStartApartInsideTheWalls() throws {
-        for aspect in ShareAspect.allCases {
-            for count in [1, 2, 12, 40] {
-                let books = Array(Self.books.prefix(count))
-                let tray = try XCTUnwrap(PileSnapshotLayout(aspect: aspect, count: count)).tray
-                let walls = tray.scaled(toFit: 3.9)
-                let groups = PileLayout.settleGroups(books, in: tray, seed: 5)
-                XCTAssertEqual(groups.flatMap { $0 }.map(\.book.id), books.map(\.id))
-                for group in groups {
-                    for (index, slot) in group.enumerated() {
-                        // Low enough to land within the group's 0.4 seconds, without spin.
-                        XCTAssertLessThanOrEqual(slot.transform.translation.y, 3.7 + 0.0001)
-                        XCTAssertEqual(slot.spin, .zero)
-                        for corner in corners(of: slot) {
-                            XCTAssertEqual(
-                                walls.clamp(corner, margin: 0), corner, "\(aspect) \(count)")
-                        }
-                        for other in group.dropFirst(index + 1) {
-                            XCTAssertFalse(overlap(slot, other), "\(aspect) \(count)")
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    func testDropsStartCoverUpAndTurnFewOver() {
+    func testLiveDropsStartCoverUp() {
         // A live drop starts every book front cover up, tumbled at most 0.8 radians, spinning
         // more about the vertical than about the level axes.
         for slot in PileLayout.dropPlan(Self.books, in: Self.tray, seed: 7) {
@@ -362,29 +336,201 @@ final class BookPileTests: XCTestCase {
             XCTAssertLessThanOrEqual(abs(slot.spin.z), 2)
             XCTAssertLessThanOrEqual(abs(slot.spin.y), 3)
         }
-        // A still image turns over a twentieth of its books, from the half that lands under the
-        // rest, whatever the seed, and starts the rest cover up. A small pile turns none over.
-        for count in [9, 10, 39, 40] {
-            let books = Array(Self.books.prefix(count))
-            var picks = Set<Int>()
-            for seed in 0..<20 as Range<UInt64> {
-                let turned = PileLayout.settleGroups(books, in: Self.tray, seed: seed).joined()
-                    .filter { slot in
-                        let rotation = slot.transform.rotation
-                        let flipped = rotation * simd_quatf(angle: .pi, axis: [1, 0, 0])
-                        XCTAssertTrue(
-                            PileLayout.isCoverUp(rotation) || PileLayout.isCoverUp(flipped))
-                        return PileLayout.isCoverUp(flipped)
-                    }
-                    .map(\.book.id)
-                XCTAssertEqual(turned.count, count < 10 ? 0 : (count + 10) / 20, "\(count)")
-                let lower = Set(books.prefix(count / 2).map(\.id))
-                XCTAssertTrue(Set(turned).isSubset(of: lower))
-                picks.formUnion(turned)
+    }
+
+    /// Up to 150 fictional books, as `testShelfBooks` sizes them, at a 2:3 cover.
+    private func spreadBooks(_ count: Int) -> [(book: CloudBook, shape: BookShape)] {
+        (1...count)
+            .map { index in
+                let book = CloudBook(
+                    id: 3_000 + index, title: "Fictional Book \(index)", author: "Author",
+                    coverURL: nil, detailCoverURL: nil, pages: 90 + (index * 263) % 1_110)
+                return (book, BookShape(of: book, coverAspect: 2 / 3))
             }
-            // The seed decides which books turn over.
-            XCTAssertTrue(count < 10 || picks.count > 2)
+    }
+
+    /// The share images' frames and counts the spread tests cover, from one book to the most.
+    private static let spreadCases: [(ShareAspect, Int)] = [
+        (.story, 1), (.story, 3), (.story, 12), (.story, 40), (.story, 150), (.portrait, 2),
+        (.portrait, 8), (.portrait, 40), (.square, 5), (.square, 25), (.square, 150),
+    ]
+
+    func testSpreadShowsEveryCoverFaceUpInsideTheFrame() {
+        for (aspect, count) in Self.spreadCases {
+            let layout = PileSnapshotLayout(aspect: aspect, count: count)
+            let books = spreadBooks(count)
+            for seed: UInt64 in [0, 1] {
+                let spread = PileSpread(
+                    books, in: layout.pileRect, of: aspect.size, seed: seed)
+                let label = "\(aspect) \(count) seed \(seed)"
+                XCTAssertEqual(Set(spread.slots.map(\.book.id)), Set(books.map(\.book.id)), label)
+                let boxes = zip(spread.slots, spread.shapes).map { ($0.transform, $1) }
+                // Every front cover faces up, tilted at most 20 degrees, as books lying on
+                // the edges of others do.
+                for slot in spread.slots {
+                    XCTAssertTrue(PileLayout.isCoverUp(slot.transform.rotation), label)
+                    XCTAssertGreaterThan(
+                        slot.transform.rotation.act([0, 0, 1]).y, cos(20 * .pi / 180), label)
+                }
+                // At least four fifths of each cover shows, measured more finely than the
+                // layout measures it.
+                let shares = PileSpread.visibility(
+                    of: boxes, camera: spread.camera, in: layout.pileRect, of: aspect.size,
+                    samples: [24, 32])
+                XCTAssertGreaterThanOrEqual(shares.map(\.share).min() ?? 0, 0.8, label)
+                // No book reaches past the pile rect, under the heading or the credit.
+                for corner in boxes.flatMap({ corners(of: $0) }) {
+                    let point = pixel(spread.camera, corner, aspect.size)
+                    XCTAssertTrue(layout.pileRect.insetBy(dx: -1, dy: -1).contains(point), label)
+                }
+            }
         }
+    }
+
+    func testSpreadFillsTheFrame() {
+        for (aspect, count) in Self.spreadCases {
+            let layout = PileSnapshotLayout(aspect: aspect, count: count)
+            let rect = layout.pileRect
+            let spread = PileSpread(spreadBooks(count), in: rect, of: aspect.size, seed: 3)
+            let boxes = zip(spread.slots, spread.shapes).map { ($0.transform, $1) }
+            let points = boxes.flatMap { corners(of: $0) }
+                .map { pixel(spread.camera, $0, aspect.size) }
+            let low = CGPoint(x: points.map(\.x).min()!, y: points.map(\.y).min()!)
+            let high = CGPoint(x: points.map(\.x).max()!, y: points.map(\.y).max()!)
+            // The books reach across the rect or down it, centered, whatever their number.
+            let fill = max((high.x - low.x) / rect.width, (high.y - low.y) / rect.height)
+            XCTAssertGreaterThan(fill, 0.95, "\(aspect) \(count)")
+            XCTAssertEqual((low.x + high.x) / 2, rect.midX, accuracy: 10)
+            XCTAssertEqual((low.y + high.y) / 2, rect.midY, accuracy: 10)
+            // Books cover most of the rect, short of the gaps that a few books leave in a frame
+            // of another shape.
+            let coverage = PileSpread.coverage(
+                of: boxes, camera: spread.camera, in: rect, of: aspect.size, step: 12)
+            XCTAssertGreaterThan(coverage.books, count < 12 ? 0.35 : 0.5, "\(aspect) \(count)")
+        }
+    }
+
+    func testSpreadIsRepeatableAndShuffleVariesIt() {
+        let layout = PileSnapshotLayout(aspect: .portrait, count: 30)
+        let books = spreadBooks(30)
+        func spread(_ seed: UInt64) -> PileSpread {
+            PileSpread(books, in: layout.pileRect, of: layout.aspect.size, seed: seed)
+        }
+        XCTAssertEqual(spread(4).slots.map(\.transform), spread(4).slots.map(\.transform))
+        XCTAssertEqual(spread(4).camera, spread(4).camera)
+        // Another seed moves most books.
+        let first = Dictionary(uniqueKeysWithValues: spread(4).slots.map { ($0.book.id, $0) })
+        let moved = spread(5).slots
+            .filter { slot in
+                simd_distance(
+                    slot.transform.translation, first[slot.book.id]!.transform.translation)
+                    > 0.5
+            }
+        XCTAssertGreaterThan(moved.count, 20)
+    }
+
+    func testSpreadBooksRestOnWhatIsUnderThem() {
+        for (aspect, count) in [(ShareAspect.story, 40), (.square, 150)] {
+            let layout = PileSnapshotLayout(aspect: aspect, count: count)
+            let spread = PileSpread(
+                spreadBooks(count), in: layout.pileRect, of: aspect.size, seed: 2)
+            let boxes = zip(spread.slots, spread.shapes).map { ($0.transform, $1) }
+            for (index, box) in boxes.enumerated() {
+                // No book sinks into the table or into a book before it, give or take half a
+                // millimeter.
+                let bottom = corners(of: box).map(\.y).min()!
+                XCTAssertGreaterThanOrEqual(bottom, -0.005)
+                for earlier in boxes.prefix(index) {
+                    XCTAssertFalse(intersect(box, earlier, margin: 0.005), "\(aspect) \(index)")
+                }
+                // A book that does not lie on the table touches a book under it.
+                guard bottom > 0.005 else { continue }
+                XCTAssertTrue(
+                    boxes.prefix(index).contains { intersect(box, $0, margin: -0.01) },
+                    "\(aspect) \(index)")
+            }
+        }
+    }
+
+    func testABookOnTheEdgeOfAnotherTiltsOntoIt() {
+        let lower = BookShape(size: [1.4, 2.0, 0.3], binding: .paperback)
+        let upper = BookShape(size: [1.4, 2.0, 0.2], binding: .paperback)
+        func piece(_ id: Int, _ shape: BookShape, at spot: SIMD2<Float>) -> PileSpread.Piece {
+            PileSpread.Piece(
+                book: CloudBook(
+                    id: id, title: "Book \(id)", author: "Author", coverURL: nil,
+                    detailCoverURL: nil),
+                shape: shape, spot: spot, turn: 0)
+        }
+        // The upper book's tail lies 0.2 units over the lower book's head.
+        let slots = PileSpread.rest([
+            piece(1, lower, at: [0, 0]), piece(2, upper, at: [0, -1.8]),
+        ])
+        XCTAssertEqual(slots[0].transform.translation.y, 0.15, accuracy: 1e-4)
+        XCTAssertEqual(slots[0].transform.rotation.act([0, 0, 1]).y, 1, accuracy: 1e-5)
+        // Its head lies on the table, and its underside rests on the lower book's edge, so it
+        // slopes away from the camera by the lower book's thickness over 1.8 units.
+        let box = (slots[1].transform, upper)
+        let bottom = corners(of: box).sorted { $0.y < $1.y }
+        XCTAssertEqual(bottom[0].y, 0, accuracy: 5e-3)
+        XCTAssertEqual(bottom[0].z, -2.8, accuracy: 0.03)
+        let normal = slots[1].transform.rotation.act([0, 0, 1])
+        XCTAssertEqual(atan2(-normal.z, normal.y), atan(0.3 / 1.8), accuracy: 2e-3)
+        // A book across two books of one thickness lies flat on them.
+        let bridge = PileSpread.rest([
+            piece(1, lower, at: [0, 0]), piece(3, lower, at: [0, -3.6]),
+            piece(2, upper, at: [0, -1.8]),
+        ])
+        XCTAssertEqual(bridge[2].transform.rotation.act([0, 0, 1]).y, 1, accuracy: 1e-4)
+        XCTAssertEqual(bridge[2].transform.translation.y, 0.3 + 0.1, accuracy: 1e-3)
+    }
+
+    /// The corners of a book's box in scene coordinates.
+    private func corners(of box: (transform: Transform, shape: BookShape)) -> [SIMD3<Float>] {
+        let half = box.shape.size / 2
+        return (0..<8)
+            .map { corner in
+                box.transform.translation
+                    + box.transform.rotation.act(
+                        SIMD3(
+                            corner & 1 == 0 ? -half.x : half.x, corner & 2 == 0 ? -half.y : half.y,
+                            corner & 4 == 0 ? -half.z : half.z))
+            }
+    }
+
+    /// Whether two books' boxes, each shrunk by `margin` on every side, intersect: the
+    /// separating axis test over both boxes' axes and their edges' cross products.
+    private func intersect(
+        _ a: (transform: Transform, shape: BookShape),
+        _ b: (transform: Transform, shape: BookShape),
+        margin: Float
+    ) -> Bool {
+        func axes(_ box: (transform: Transform, shape: BookShape)) -> [SIMD3<Float>] {
+            [[1, 0, 0], [0, 1, 0], [0, 0, 1]].map { box.transform.rotation.act($0) }
+        }
+        func radius(_ box: (transform: Transform, shape: BookShape), _ axis: SIMD3<Float>)
+            -> Float
+        {
+            let half = box.shape.size / 2 - margin
+            return zip(axes(box), [half.x, half.y, half.z])
+                .map { abs(simd_dot($0, axis)) * $1 }
+                .reduce(0, +)
+        }
+        let edges = axes(a).flatMap { u in axes(b).map { simd_cross(u, $0) } }
+        let candidates = axes(a) + axes(b) + edges.filter { simd_length($0) > 0.0001 }
+        let offset = b.transform.translation - a.transform.translation
+        return !candidates.contains { axis in
+            let axis = simd_normalize(axis)
+            return abs(simd_dot(offset, axis)) > radius(a, axis) + radius(b, axis)
+        }
+    }
+
+    /// Where `camera` shows a scene point in an image of `size`, in pixels with y growing
+    /// downward.
+    private func pixel(_ camera: PileCamera, _ point: SIMD3<Float>, _ size: CGSize) -> CGPoint {
+        let ndc = camera.project(point, aspect: Float(size.width / size.height))
+        return CGPoint(
+            x: CGFloat(ndc.x + 1) / 2 * size.width, y: CGFloat(1 - ndc.y) / 2 * size.height)
     }
 
     func testLiveDropsStopAtTheVolumeBudget() {

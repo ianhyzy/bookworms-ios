@@ -1,4 +1,5 @@
 import CoreMedia
+import RealityKit
 import XCTest
 
 @testable import Bookworms
@@ -30,75 +31,79 @@ final class PileMovieTests: XCTestCase {
         XCTAssertEqual(PileMovieTiming.frame(showing: 0.05), 1)
     }
 
-    func testTheClipShowsTheLastGroupsAndLeavesTimeToCloseIn() {
-        XCTAssertEqual(PileMovieTiming.shownGroups, 8)
-        let few = PileMovieTiming.schedule(groups: 3)
-        XCTAssertEqual(few.preroll, 0)
-        XCTAssertEqual(few.frames, [0, 12, 24])
-        let many = PileMovieTiming.schedule(groups: 14)
-        XCTAssertEqual(many.preroll, 6)
-        XCTAssertEqual(many.frames.count, 8)
-        XCTAssertEqual(many.frames.last, PileMovieTiming.lastDrop)
-        XCTAssertEqual(PileMovieTiming.schedule(groups: 0).frames, [])
-        // The camera has at least 1.2 seconds to close in.
-        XCTAssertGreaterThanOrEqual(
-            PileMovieTiming.frameCount - 1 - PileMovieTiming.holdFrames - PileMovieTiming.lastDrop
-                - PileMovieTiming.pushDelay, 36)
-    }
-
-    func testTheHighestStartLandsBeforeTheCameraMoves() {
-        XCTAssertLessThanOrEqual(PileMovieTiming.highestBase + 3.7 + 0.8, PileLayout.ceiling)
-        // Steps a fall from the highest start under gravity and air drag.
-        let step = Float(PileMovieTiming.stepDuration)
-        var height = PileMovieTiming.highestBase + 3.7
-        var speed: Float = 0
-        var steps = 0
-        while height > 0 {
-            speed = (speed + PileLayout.gravity * step) / (1 + PileMovieTiming.airDrag * step)
-            height -= speed * step
-            steps += 1
+    func testFallsLandAtTheirHeightsAndSpeeds() {
+        for height: Float in [0.5, 3, 15, 45] {
+            let (duration, speed) = PileMovieTiming.fall(height: height)
+            XCTAssertEqual(PileMovieTiming.fallen(after: duration), height, accuracy: 1e-3)
+            // Air drag holds a long fall well under its speed without drag.
+            XCTAssertLessThan(speed, (2 * PileLayout.gravity * height).squareRoot())
+            XCTAssertLessThan(speed, PileLayout.gravity / PileMovieTiming.airDrag)
         }
-        XCTAssertLessThan(steps, PileMovieTiming.pushDelay * PileMovieTiming.stepsPerFrame)
+        // From 15 units up, a book lands about as fast as a 7-unit drop without drag.
+        XCTAssertEqual(
+            PileMovieTiming.fall(height: 15).speed, (2 * PileLayout.gravity * 7).squareRoot(),
+            accuracy: 3)
     }
 
-    func testTheCameraEasesInOnThePileAndHoldsForTheStill() {
-        let last = PileMovieTiming.frameCount - 1
-        for lastDrop in [0, 48, PileMovieTiming.lastDrop] {
-            let start = lastDrop + PileMovieTiming.pushDelay
-            let pushes = (0...last).map { PileMovieTiming.push(atFrame: $0, lastDrop: lastDrop) }
-            XCTAssertTrue(pushes[...start].allSatisfy { $0 == 0 })
-            XCTAssertTrue(pushes[(last - PileMovieTiming.holdFrames)...].allSatisfy { $0 == 1 })
-            XCTAssertEqual(pushes, pushes.sorted())
-            // Eases in and out: the first and last steps are the smallest.
-            let steps = zip(pushes.dropFirst(), pushes).map { $0 - $1 }.filter { $0 > 0 }
-            XCTAssertLessThan(steps.first!, steps[steps.count / 2])
-            XCTAssertLessThan(steps.last!, steps[steps.count / 2])
-        }
-    }
-
-    func testBooksStartHiddenBehindTheHeading() throws {
-        for aspect in ShareAspect.allCases {
-            for count in [1, 12, 40, 150] {
-                let layout = try XCTUnwrap(PileSnapshotLayout(aspect: aspect, count: count))
-                let size = aspect.size
-                let headingY = 1 - 2 * Float(layout.pileTop / size.height)
-                let nearestZ = layout.tray.scaled(by: 0.7).nearZ - PileLayout.reach
-                let base = PileMovieTiming.dropBase(
-                    camera: layout.camera, headingY: headingY, nearestZ: nearestZ)
-                XCTAssertTrue((0...PileMovieTiming.highestBase).contains(base))
-                guard base < PileMovieTiming.highestBase else { continue }
-                // The nearest book's near edge, in the lowest layer, starts on the heading's
-                // edge, and farther or higher points start above it, out of view.
-                let aspectRatio = Float(size.width / size.height)
-                let edge = SIMD3(0, base + 1.2, nearestZ + PileLayout.reach)
-                XCTAssertEqual(
-                    layout.camera.project(edge, aspect: aspectRatio).y, headingY, accuracy: 1e-3,
-                    "\(aspect) \(count)")
-                for point in [edge + [2, 0, -3], edge + [0, 2.5, 0], edge + [-1.5, 1, -1]] {
-                    XCTAssertGreaterThan(
-                        layout.camera.project(point, aspect: aspectRatio).y, headingY)
-                }
+    func testLandingsKeepTheOrderAndLeaveTimeForTheStill() {
+        let clip = Float(PileMovieTiming.frameCount) / Float(PileMovieTiming.framesPerSecond)
+        for count in [1, 3, 12, 40, 150] {
+            // Falls of 0.5 to 2 seconds, longer for books nearer the camera, which go down later.
+            let durations = (0..<count).map { 0.5 + 1.5 * Float($0 % 7) / 6 }
+            let landings = PileMovieTiming.landings(durations)
+            XCTAssertEqual(landings.count, count)
+            XCTAssertGreaterThanOrEqual(landings[0], PileMovieTiming.firstLanding)
+            for (index, landing) in landings.enumerated() {
+                XCTAssertGreaterThanOrEqual(landing, durations[index])
+                if index > 0 { XCTAssertGreaterThan(landing, landings[index - 1]) }
             }
+            XCTAssertLessThanOrEqual(landings.last!, clip - 1.5, "\(count)")
+        }
+        XCTAssertEqual(PileMovieTiming.landings([1, 1]), [1, 1.4])
+    }
+
+    func testBooksStartHiddenBehindTheHeading() {
+        let camera = PileCamera(target: [0, 0, 1], zoom: 1.5)
+        let aspect: Float = 1080.0 / 1350
+        let headingY: Float = 0.5
+        let corners: [SIMD3<Float>] = [[-1, 0, 4], [1, 0.3, 4], [-1, 0, 2], [1, 0.3, 2]]
+        let height = PileMovieTiming.startHeight(
+            of: corners, camera: camera, headingY: headingY, aspect: aspect)
+        XCTAssertGreaterThan(height, 0)
+        // Every corner starts above the heading's edge, and the lowest just reaches it.
+        let raised = corners.map { camera.project($0 + [0, height, 0], aspect: aspect).y }
+        XCTAssertGreaterThanOrEqual(raised.min()!, headingY - 1e-3)
+        XCTAssertEqual(raised.min()!, headingY, accuracy: 1e-2)
+        // A camera too close to hide a book starts it just under the camera's height.
+        let close = PileCamera(target: [0, 0, 1], zoom: 20)
+        XCTAssertEqual(
+            PileMovieTiming.startHeight(
+                of: [[0, 0, 6]], camera: close, headingY: 0.99, aspect: aspect),
+            close.transform.translation.y - 1, accuracy: 1e-3)
+    }
+
+    func testABookFallsStraightDownIntoItsPlace() {
+        let rest = Transform(
+            rotation: simd_quatf(angle: 0.2, axis: [0, 1, 0]), translation: [1, 0.1, 2])
+        let turn = simd_quatf(angle: 0.3, axis: [1, 0, 0])
+        let (duration, _) = PileMovieTiming.fall(height: 10)
+        func pose(_ time: Float) -> Transform {
+            PileMovieTiming.pose(
+                rest: rest, height: 10, duration: duration, turn: turn, landing: 2, at: time)
+        }
+        // Still and turned until the fall begins.
+        XCTAssertEqual(pose(0).translation, rest.translation + [0, 10, 0])
+        XCTAssertEqual(pose(2 - duration).translation.y, 10.1, accuracy: 1e-4)
+        XCTAssertEqual(pose(0).rotation.angle, (turn * rest.rotation).angle, accuracy: 1e-4)
+        // Falling straight down, faster as it goes, then at rest from the landing on.
+        let heights = stride(from: 2 - duration, through: 2, by: 0.05).map { pose($0).translation }
+        XCTAssertTrue(heights.allSatisfy { $0.x == 1 && $0.z == 2 })
+        let drops = zip(heights, heights.dropFirst()).map { $0.y - $1.y }
+        XCTAssertEqual(drops, drops.sorted())
+        for time: Float in [2, 3] {
+            XCTAssertEqual(pose(time).translation.y, 0.1, accuracy: 1e-3)
+            XCTAssertEqual(
+                abs(simd_dot(pose(time).rotation.vector, rest.rotation.vector)), 1, accuracy: 1e-4)
         }
     }
 

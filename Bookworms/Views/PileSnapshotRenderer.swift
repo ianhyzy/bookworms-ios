@@ -32,21 +32,21 @@ enum PileSnapshotRenderer {
     /// whichever tab starts the render.
     static var isRendering: Bool { activity.isRendering }
 
-    /// Renders `books` as a pile under the heading `title`, at the pixel size of `aspect`.
+    /// Renders `books` spread front cover up across the table under the heading `title`, at the
+    /// pixel size of `aspect`.
     ///
-    /// The books drop in reverse order, so the first books land on top; past `maximumBooks`,
-    /// only the first ones drop, and the heading still counts every book. Fewer books are
-    /// framed closer, with sharper textures, and the camera then fits the settled pile between
-    /// the heading and the bottom margin. `seed` picks their starting poses. Spine fonts load
+    /// Past `maximumBooks`, only the first books show, and the heading still counts every book.
+    /// The books lie as `PileSpread` lays them out, so that at least four fifths of each front
+    /// cover shows, and the camera fits them between the heading and the bottom margin, closer
+    /// for fewer books, with sharper textures. `seed` picks the arrangement. Spine fonts load
     /// first, for as long as their downloads take (see `SpineFonts.load(_:)`), then covers, for
-    /// up to 10 seconds, and the simulation then runs on the main actor between short pauses.
-    /// A cancelled render stops waiting for fonts and covers at once. The renderer, the scene,
-    /// and their textures are released when this returns.
+    /// up to 10 seconds. A cancelled render stops waiting for fonts and covers at once. The
+    /// renderer, the scene, and their textures are released when this returns.
     ///
     /// One image renders at a time: a call waits for the renders that asked first, including
     /// one that is still finishing its frame after its task was cancelled. `isRendering` stays
-    /// set from the start of the render until the image is ready, and the simulation starts a
-    /// few frames after it is set, so views have time to react.
+    /// set from the start of the render until the image is ready, and the renderer starts
+    /// stepping the scene a few frames after it is set, so views have time to react.
     ///
     /// - Throws: `CancellationError` when the task is cancelled, and `PileSnapshotError` when
     ///   Metal fails or the rendered frame is one flat color.
@@ -55,11 +55,9 @@ enum PileSnapshotRenderer {
     ) async throws -> UIImage {
         try await claim()
         defer { release() }
-        let dropped = Array(books.prefix(maximumBooks).reversed())
-        guard let layout = PileSnapshotLayout(aspect: aspect, count: dropped.count) else {
-            throw PileSnapshotError.drawingFailed
-        }
-        let pile = try await renderPile(dropped, layout: layout, seed: seed, model: model)
+        let shown = Array(books.prefix(maximumBooks))
+        let layout = PileSnapshotLayout(aspect: aspect, count: shown.count)
+        let pile = try await renderPile(shown, layout: layout, seed: seed, model: model)
         let renderer = ImageRenderer(
             content: PileSnapshotCard(pile: pile, title: title, count: books.count, layout: layout))
         renderer.scale = 1
@@ -111,28 +109,18 @@ enum PileSnapshotRenderer {
         }
     }
 
-    /// Drops and settles the books, then renders one frame and copies it into a `CGImage`.
+    /// Lays the books out, then renders one frame and copies it into a `CGImage`.
     ///
-    /// RealityKit renders into a private texture, which a blit copies into a shared buffer once
-    /// the render signals its event. The texture is `bgra8Unorm_srgb`, and `RealityRenderer`
-    /// writes Display P3 primaries with the sRGB transfer curve, so the image is tagged P3.
+    /// RealityKit renders into a private texture, which a blit copies into memory once the
+    /// render signals its event (`FrameTarget`). The texture is `bgra8Unorm_srgb`, and
+    /// `RealityRenderer` writes Display P3 primaries with the sRGB transfer curve, so the image is
+    /// tagged P3. The books are static bodies, so the few steps before the frame move nothing.
     private static func renderPile(
         _ books: [CloudBook], layout: PileSnapshotLayout, seed: UInt64, model: AppModel
     ) async throws -> CGImage {
         let width = Int(layout.aspect.size.width)
         let height = Int(layout.aspect.size.height)
-        let bytesPerRow = (width * 4 + 255) / 256 * 256
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .bgra8Unorm_srgb, width: width, height: height, mipmapped: false)
-        descriptor.usage = [.renderTarget, .shaderRead]
-        descriptor.storageMode = .private
-        guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue(),
-            let event = device.makeSharedEvent(),
-            let texture = device.makeTexture(descriptor: descriptor),
-            let buffer = device.makeBuffer(
-                length: bytesPerRow * height, options: .storageModeShared)
-        else { throw PileSnapshotError.drawingFailed }
-
+        let target = try FrameTarget(width: width, height: height)
         let scene = BookPileScene(textureScale: layout.textureScale)
         let renderer = try RealityRenderer()
         renderer.entities.append(scene.root)
@@ -140,53 +128,125 @@ enum PileSnapshotRenderer {
         renderer.activeCamera = scene.camera
         renderer.cameraSettings.antialiasing = .multisample4X
         renderer.cameraSettings.isToneMappingEnabled = true
-        try await scene.settle(
-            books, on: layout.tray, camera: layout.camera, seed: seed, model: model
-        ) { try renderer.update(1.0 / 60) }
+        let spread = await scene.prepareSpread(
+            books, in: layout.pileRect, of: layout.aspect.size, seed: seed, model: model)
+        try Task.checkCancellation()
+        scene.place(spread.slots, mode: .static)
+        for _ in 0..<3 { try renderer.update(1.0 / 60) }
         #if DEBUG
             scene.logCovers("image seed \(seed), \(books.count) books")
+            scene.logSpread("image seed \(seed)", in: layout.pileRect, of: layout.aspect.size)
         #endif
-        scene.look(
-            through: layout.camera.framing(
-                scene.bookCorners, in: layout.pileRect, of: layout.aspect.size,
-                zoomRange: 0.25...layout.camera.zoom * 1.25))
         try renderer.updateAndRender(
-            deltaTime: 1.0 / 60,
-            cameraOutput: RealityRenderer.CameraOutput(.singleProjection(colorTexture: texture)),
-            actionsAfterRender: [.signal(event, value: 1)])
-
-        guard let commands = queue.makeCommandBuffer() else {
-            throw PileSnapshotError.drawingFailed
-        }
-        commands.encodeWaitForEvent(event, value: 1)
-        guard let blit = commands.makeBlitCommandEncoder() else {
-            throw PileSnapshotError.drawingFailed
-        }
-        blit.copy(
-            from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
-            sourceSize: MTLSize(width: width, height: height, depth: 1), to: buffer,
-            destinationOffset: 0, destinationBytesPerRow: bytesPerRow,
-            destinationBytesPerImage: bytesPerRow * height)
-        blit.endEncoding()
-        await withCheckedContinuation { continuation in
-            commands.addCompletedHandler { _ in continuation.resume() }
-            commands.commit()
-        }
-        let pixels = Data(bytes: buffer.contents(), count: bytesPerRow * height)
-        guard commands.status == .completed,
-            !isBlank(pixels, width: width, height: height, bytesPerRow: bytesPerRow),
+            deltaTime: 1.0 / 60, cameraOutput: target.output,
+            actionsAfterRender: [.signal(target.event, value: 1)])
+        try await target.read(after: 1, before: .now + .seconds(10))
+        let pixels = Data(bytes: target.buffer.contents(), count: target.bytesPerRow * height)
+        guard !target.isBlank,
             let space = CGColorSpace(name: CGColorSpace.displayP3),
             let provider = CGDataProvider(data: pixels as CFData),
             let image = CGImage(
                 width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
-                bytesPerRow: bytesPerRow, space: space,
+                bytesPerRow: target.bytesPerRow, space: space,
                 bitmapInfo: CGBitmapInfo(
                     rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue
                         | CGBitmapInfo.byteOrder32Little.rawValue),
                 provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
         else { throw PileSnapshotError.drawingFailed }
+        #if DEBUG
+            if UserDefaults.standard.bool(forKey: "BookwormsPileCoverLog") {
+                try await checkCovers(
+                    scene, renderer: renderer, target: target, camera: spread.camera,
+                    layout: layout, label: "pixels seed \(seed), \(books.count) books")
+            }
+        #endif
         return image
     }
+
+    #if DEBUG
+        /// Simulator hook: with `-BookwormsPileCoverLog YES`, measures in rendered frames how
+        /// much of each front cover an image shows, and appends the least and the mean share to
+        /// the cover log (see `BookPileScene.logCovers`).
+        ///
+        /// It draws the covers white on black (`BookPileScene.showCovers`), without
+        /// antialiasing or tone mapping, a few covers per frame: covers whose bounds in the image
+        /// are apart, so that each white pixel belongs to one of them. A cover's share is its
+        /// white pixels inside the pile rect over the area its corners span in the image. The
+        /// cover's corners are the front board's, as `PileSpread` measures it, so bevels and
+        /// rounded corners count as hidden.
+        private static func checkCovers(
+            _ scene: BookPileScene, renderer: RealityRenderer, target: FrameTarget,
+            camera: PileCamera, layout: PileSnapshotLayout, label: String
+        ) async throws {
+            let size = layout.aspect.size
+            let rect = layout.pileRect
+            let covers = scene.showCovers([])
+                .map { corners in
+                    corners.map { point in
+                        let ndc = camera.project(point, aspect: Float(size.width / size.height))
+                        return CGPoint(
+                            x: CGFloat(ndc.x + 1) / 2 * size.width,
+                            y: CGFloat(1 - ndc.y) / 2 * size.height)
+                    }
+                }
+            let bounds = covers.map { corners in
+                let xs = corners.map(\.x)
+                let ys = corners.map(\.y)
+                return CGRect(
+                    x: xs.min()!, y: ys.min()!, width: xs.max()! - xs.min()!,
+                    height: ys.max()! - ys.min()!)
+            }
+            var groups: [[Int]] = []
+            for index in covers.indices {
+                let reach = bounds[index].insetBy(dx: -2, dy: -2)
+                if let group = groups.firstIndex(where: {
+                    $0.allSatisfy { !bounds[$0].intersects(reach) }
+                }) {
+                    groups[group].append(index)
+                } else {
+                    groups.append([index])
+                }
+            }
+            renderer.cameraSettings.antialiasing = .none
+            renderer.cameraSettings.isToneMappingEnabled = false
+            renderer.cameraSettings.colorBackground = .color(CGColor(gray: 0, alpha: 1))
+            var shares = [Float](repeating: 0, count: covers.count)
+            for (number, group) in groups.enumerated() {
+                _ = scene.showCovers(Set(group))
+                let signal = UInt64(number + 2)
+                try renderer.updateAndRender(
+                    deltaTime: 1.0 / 60, cameraOutput: target.output,
+                    actionsAfterRender: [.signal(target.event, value: signal)])
+                try await target.read(after: signal, before: .now + .seconds(10))
+                let pixels = target.buffer.contents().assumingMemoryBound(to: UInt8.self)
+                for index in group {
+                    let box = bounds[index].intersection(rect).integral
+                    var white = 0
+                    for y in Int(box.minY)..<Int(box.maxY) {
+                        for x in Int(box.minX)..<Int(box.maxX)
+                        where pixels[y * target.bytesPerRow + x * 4 + 1] > 127 {
+                            white += 1
+                        }
+                    }
+                    let corners = covers[index]
+                    let area =
+                        abs(
+                            corners.indices.reduce(CGFloat(0)) { sum, corner in
+                                let next = corners[(corner + 1) % corners.count]
+                                return sum + corners[corner].x * next.y - next.x * corners[corner].y
+                            }) / 2
+                    shares[index] = Float(CGFloat(white) / max(area, 1))
+                }
+            }
+            func percent(_ value: Float) -> String {
+                (value * 100).formatted(.number.precision(.fractionLength(1))) + "%"
+            }
+            let mean = shares.reduce(0, +) / Float(max(shares.count, 1))
+            BookPileScene.appendCoverLog(
+                "\(label): covers shown least \(percent(shares.min() ?? 0)), mean \(percent(mean)) "
+                    + "in \(groups.count) frames")
+        }
+    #endif
 
     /// Whether a BGRA frame is one flat color, as a renderer that drew nothing leaves it. Reads
     /// the green channel of a 32 × 32 grid of pixels.
@@ -212,34 +272,31 @@ enum PileSnapshotError: LocalizedError {
     var errorDescription: String? { "The pile could not be drawn." }
 }
 
-/// Where a pile share image puts its heading and its pile, and how closely it frames the books.
+/// Where a pile share image puts its heading and its books, and how sharp their textures are.
 struct PileSnapshotLayout: Equatable {
     let aspect: ShareAspect
     let titleSize: CGFloat
-    /// The bottom of the heading. The tray lies below it and above the bottom margin, which the
+    /// The bottom of the heading. The books lie below it and above the bottom margin, which the
     /// platforms' bars and the credit use.
     let pileTop: CGFloat
-    /// The default camera, zoomed within `zoomRange` until the tray gives each book about
-    /// `areaPerBook`.
-    let camera: PileCamera
-    let tray: PileTray
+    /// How many books the image shows.
+    let count: Int
 
-    /// Table area per book, in square units: a little more than a cover, so few books spread
-    /// out and many books overlap only once they pile up.
-    static let areaPerBook: Float = 4.5
-    /// The pile height the walls make room for. A share image's pile is lower than the view's,
-    /// and its walls go before it settles, so the tray can reach closer to the heading.
-    static let pileHeight: Float = 2
-    /// The camera's zoom for the drop. It reaches closer than the view's, so a month of one
-    /// or two books still fills the image.
-    static let zoomRange: ClosedRange<Float> = 1...4
+    /// The scale of each book's textures (see `BookFactory`): closer books need more pixels.
+    ///
+    /// A cover's long side, at most the pile rect's height, spans about the square root of the
+    /// rect's area per book, and a scale of 1 draws it 224 pixels long. The scale stays between
+    /// 1 and 5, so the count times its square, which texture memory follows, never passes what
+    /// the largest pile needs at a scale of 1.
+    var textureScale: CGFloat {
+        let rect = pileRect
+        let side = min(
+            rect.height, (rect.width * rect.height / CGFloat(max(count, 1))).squareRoot())
+        return min(5, max(1, side / 224))
+    }
 
-    /// The scale of each book's textures: closer books need more pixels. Memory stays bounded,
-    /// because the zoom that doubles the scale fits about a quarter as many books.
-    var textureScale: CGFloat { CGFloat(camera.zoom) }
-
-    /// The part of the image the settled books are framed in: below the heading and the
-    /// steepest part of its fade, above the bottom margin, and within half the side margins.
+    /// The part of the image the books are framed in: below the heading and the steepest part
+    /// of its fade, above the bottom margin, and within half the side margins.
     var pileRect: CGRect {
         let size = aspect.size
         let side = aspect.insets.leading / 2
@@ -249,27 +306,13 @@ struct PileSnapshotLayout: Equatable {
             height: size.height - aspect.insets.bottom - top)
     }
 
-    /// Fits `count` books into an image of `aspect`, or returns `nil` if the camera cannot see
-    /// a tray between the heading and the bottom margin.
-    init?(aspect: ShareAspect, count: Int) {
+    /// Lays out an image of `aspect` that shows `count` books.
+    init(aspect: ShareAspect, count: Int) {
         self.aspect = aspect
+        self.count = count
         titleSize = aspect == .story ? 132 : 100
         // The title's line and the count's line, with room for their shadow.
         pileTop = aspect.insets.top + titleSize * 1.25 + 72
-        let viewport = PileViewport(
-            size: aspect.size,
-            insets: EdgeInsets(top: pileTop, leading: 0, bottom: aspect.insets.bottom, trailing: 0))
-        let wanted = Float(max(1, count)) * Self.areaPerBook
-        var camera = PileCamera()
-        func tray() -> PileTray? {
-            PileTray(viewport: viewport, pileHeight: Self.pileHeight, camera: camera)
-        }
-        while camera.zoom < Self.zoomRange.upperBound, let tray = tray(), tray.area > wanted {
-            camera.zoom = min(camera.zoom + 0.05, Self.zoomRange.upperBound)
-        }
-        guard let tray = tray() else { return nil }
-        self.camera = camera
-        self.tray = tray
     }
 }
 

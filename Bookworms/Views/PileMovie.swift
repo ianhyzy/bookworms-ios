@@ -2,84 +2,128 @@ import AVFoundation
 import CoreGraphics
 import CoreVideo
 import ImageIO
+import RealityKit
 import UniformTypeIdentifiers
 
-/// The timeline of a pile video: its frames, the physics steps behind each, when each group of
-/// books drops and from how high, how the camera closes in, and where each hit's sound starts.
+/// The timeline of a pile video: its frames, the physics steps behind each, and when and how
+/// each book falls into place.
 ///
-/// Each 1/30-second frame advances the simulation by two 1/60-second steps, the step still
-/// images settle with, and then shows it. Frame `f` therefore shows the simulation at
-/// `(f + 1) / 30` seconds, and a hit during its steps first shows in it.
+/// Each 1/30-second frame advances the scene by two 1/60-second steps, then shows it. Frame `f`
+/// therefore shows the scene at `(f + 1) / 30` seconds, and a landing during its steps first
+/// shows in it.
 ///
-/// Groups drop from the first frame, 0.4 seconds apart, from behind the heading (see
-/// `dropBase`), so each book falls into view rather than appearing in the air. Once the last
-/// group has landed, the camera eases from the drop's framing to the settled pile's, as a still
-/// image frames it, and keeps it for the last frames, which the Live Photo's still shows.
+/// The books fall onto the places of the image's spread (`PileSpread`), in the order they go
+/// down, so a book lands only after the books it rests on (see `landings(_:)`). Each starts
+/// hidden behind the heading (`startHeight(of:camera:headingY:aspect:)`) and falls straight
+/// down under gravity and air drag (`fallen(after:)`), turning a little as it falls, and stops in
+/// its place. The camera holds the image's framing throughout, and the last frame, which the
+/// Live Photo's still shows, matches the image.
 enum PileMovieTiming {
     static let framesPerSecond: Int32 = 30
     /// Six seconds of frames.
     static let frameCount = 180
     static let stepsPerFrame = 2
     static let stepDuration: TimeInterval = 1.0 / 60
-    /// Frames from one group of books to the next: 0.4 seconds, as still images drop them.
-    static let groupFrames = 12
-    /// The latest frame a group drops at, which leaves time for it to land and for the camera
-    /// to close in.
-    static let lastDrop = 84
-    /// Frames from the last group's drop to the camera's move: longer than the longest fall (see
-    /// `highestBase` and `airDrag`).
-    static let pushDelay = 36
-    /// The final frames, in which the camera keeps the settled pile's framing.
-    static let holdFrames = 9
-    /// The highest base a group starts from, in scene units. A group's highest layer starts 3.7
-    /// units above its base, so a tilted book there stays well under `PileLayout.ceiling`, and
-    /// a book from there lands within `pushDelay`.
-    static let highestBase: Float = 17.5
-    /// The linear damping of a video's books, as air drag. From 15 units up, a book lands at about
-    /// the speed of a 7-unit drop without drag, rather than 50 percent faster, which flips many
-    /// books face down.
+    /// The linear damping of a falling book, as air drag: from 15 units up, a book lands at
+    /// about the speed of a 7-unit drop without drag.
     static let airDrag: Float = 1.5
-    /// The angular damping of a video's books, which keeps a hard landing from tumbling them.
-    static let spinDrag: Float = 2
-    /// Steps in which the groups that drop before the clip settle: one second.
-    static let prerollSettleSteps = 60
+    /// The most time between two books' landings.
+    static let landingInterval: Float = 0.4
+    /// The earliest the first book lands, in seconds, so a clip opens on the empty table.
+    static let firstLanding: Float = 1
+    /// The latest a book lands, in seconds, which leaves the last 1.5 seconds still.
+    static let lastLanding: Float = 4.5
     /// Audio sample frames per video frame: 1,470 at 44.1 kHz.
     static let samplesPerFrame = Int(ImpactSound.sampleRate) / Int(framesPerSecond)
 
-    /// The most groups a clip shows falling. Earlier groups drop before it starts.
-    static var shownGroups: Int { lastDrop / groupFrames + 1 }
-
-    /// How many of `groups` drop before the clip starts, so that the rest land in view, and the
-    /// frame each of the rest drops at.
-    static func schedule(groups: Int) -> (preroll: Int, frames: [Int]) {
-        let preroll = max(0, groups - shownGroups)
-        return (preroll, (0..<(groups - preroll)).map { $0 * groupFrames })
+    /// How far a book falls in `seconds` from rest, under `PileLayout.gravity` and `airDrag`.
+    static func fallen(after seconds: Float) -> Float {
+        let (gravity, drag) = (PileLayout.gravity, airDrag)
+        return gravity / drag * (seconds - (1 - exp(-drag * seconds)) / drag)
     }
 
-    /// The height a clip's groups start from, at least, so its books start hidden behind the
-    /// heading, whose bottom edge is `headingY` in normalized device coordinates.
+    /// How long a book takes to fall `height` from rest, and how fast it lands.
+    static func fall(height: Float) -> (duration: Float, speed: Float) {
+        // A fall under drag has no closed-form time for a distance, so this halves its way to it.
+        var (low, high): (Float, Float) = (0, 10)
+        for _ in 0..<40 {
+            let middle = (low + high) / 2
+            if fallen(after: middle) < height { low = middle } else { high = middle }
+        }
+        return (high, PileLayout.gravity / airDrag * (1 - exp(-airDrag * high)))
+    }
+
+    /// When each book lands, in seconds from the clip's start, for books in the order they go
+    /// down that take `durations` to fall.
     ///
-    /// The base puts the nearest book's near edge, `nearestZ` plus `PileLayout.reach`, on that
-    /// edge when the book starts in its group's lowest layer, 1.2 units above the base (see
-    /// `PileLayout.settleGroups`). Higher or farther points show higher on screen, behind the
-    /// heading, while they stay below the camera; above it, they are out of view. `camera` must
-    /// not turn. The base stays within 0...`highestBase`.
-    static func dropBase(camera: PileCamera, headingY: Float, nearestZ: Float) -> Float {
-        let (origin, direction) = camera.ray(ndc: [0, headingY], aspect: 1)
-        let edge = nearestZ + PileLayout.reach
-        let hidden = origin.y + direction.y * (edge - origin.z) / direction.z
-        return min(max(hidden - 1.2, 0), highestBase)
+    /// The books land one after another at an even interval, so a book never lands before the
+    /// books under it: `landingInterval` apart, or closer for a pile that would otherwise land
+    /// after `lastLanding`. The first lands at `firstLanding`, or later when a book's fall would
+    /// otherwise start before the clip does.
+    static func landings(_ durations: [Float]) -> [Float] {
+        func first(_ interval: Float) -> Float {
+            max(firstLanding, durations.enumerated().map { $1 - Float($0) * interval }.max() ?? 0)
+        }
+        func last(_ interval: Float) -> Float {
+            first(interval) + Float(max(durations.count - 1, 0)) * interval
+        }
+        var interval = landingInterval
+        if last(interval) > lastLanding {
+            var low: Float = 0
+            for _ in 0..<30 {
+                let middle = (low + interval) / 2
+                if last(middle) <= lastLanding { low = middle } else { interval = middle }
+            }
+            interval = low
+        }
+        let start = first(interval)
+        return durations.indices.map { start + Float($0) * interval }
     }
 
-    /// How far the camera has moved from the drop's framing to the settled pile's at frame
-    /// `frame`, from 0 to 1, when the last group drops at frame `lastDrop`. The move starts
-    /// `pushDelay` frames after that drop, eases in and out, and arrives `holdFrames` before the
-    /// end, so a clip with fewer groups closes in more slowly.
-    static func push(atFrame frame: Int, lastDrop: Int) -> Float {
-        let start = lastDrop + pushDelay
-        let end = frameCount - 1 - holdFrames
-        let progress = min(1, max(0, Float(frame - start) / Float(end - start)))
-        return progress * progress * (3 - 2 * progress)
+    /// How high above its place in the spread a book whose corners lie at `corners` starts, so
+    /// that `camera`, in a frame of width-to-height `aspect`, shows it wholly above `headingY`,
+    /// the heading's bottom edge in normalized device coordinates, where the heading hides it.
+    ///
+    /// A camera too close to raise the book that far, short of its own height, starts it as high
+    /// as it can, so the book falls in from the top of the frame instead.
+    static func startHeight(
+        of corners: [SIMD3<Float>], camera: PileCamera, headingY: Float, aspect: Float
+    ) -> Float {
+        let ceiling = camera.transform.translation.y - 1
+        return
+            corners.map { corner in
+                var (low, high) = (Float(0), max(0, ceiling - corner.y))
+                guard camera.project(corner + [0, high, 0], aspect: aspect).y > headingY else {
+                    return high
+                }
+                for _ in 0..<30 {
+                    let middle = (low + high) / 2
+                    if camera.project(corner + [0, middle, 0], aspect: aspect).y > headingY {
+                        high = middle
+                    } else {
+                        low = middle
+                    }
+                }
+                return high
+            }
+            .max() ?? 0
+    }
+
+    /// Where a book lies at `time` that lands at `landing` from `height` straight above `rest`,
+    /// its pose in the spread, after a fall of `duration` (see `fall(height:)`), turned by `turn`
+    /// as it starts: still until its fall begins, then falling and turning into `rest`, where it
+    /// stays.
+    static func pose(
+        rest: Transform, height: Float, duration: Float, turn: simd_quatf, landing: Float,
+        at time: Float
+    ) -> Transform {
+        let elapsed = min(max(time - landing + duration, 0), duration)
+        let progress = duration > 0 ? elapsed / duration : 1
+        var pose = rest
+        pose.translation.y += height - fallen(after: elapsed)
+        pose.rotation = simd_slerp(
+            turn * rest.rotation, rest.rotation, progress * progress * (3 - 2 * progress))
+        return pose
     }
 
     /// When frame `frame` shows.
@@ -87,9 +131,9 @@ enum PileMovieTiming {
         CMTime(value: CMTimeValue(frame), timescale: framesPerSecond)
     }
 
-    /// The first frame that shows the simulation at `time`, in seconds since the clip's first
-    /// step. Times add up from 1/60-second steps, so a time a rounding error past a frame's end
-    /// still counts as that frame.
+    /// The first frame that shows the scene at `time`, in seconds since the clip's first step.
+    /// Times add up from 1/60-second steps, so a time a rounding error past a frame's end still
+    /// counts as that frame.
     static func frame(showing time: TimeInterval) -> Int {
         max(0, Int((time * Double(framesPerSecond) - 1e-6).rounded(.up)) - 1)
     }
