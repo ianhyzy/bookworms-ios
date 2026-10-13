@@ -616,12 +616,18 @@ final class BookPileScene {
         let shape: ShapeResource
         /// The book's pose lying level, front or back cover up as it was nearer to.
         let level: simd_quatf
+        /// The pose the book turns toward, but for its swing: the pose it was picked up in,
+        /// easing to `level`. A tilted book that turned level at once would swing its edges
+        /// through the books beside it and flip them over.
+        var pose: simd_quatf
         /// From the point under the finger to the book's middle, across the table, so the book
         /// keeps where the finger took hold of it.
         let offset: SIMD3<Float>
         /// The books that lay over the book when it was picked up. They ride on it until they
         /// slide off, so the carry height ignores them; otherwise it would rise under them.
         let riders: Set<Entity.ID>
+        /// Half the book's thickness, the height of its middle over its lower cover while level.
+        let halfThickness: Float
         /// Whether the book holds level and drops when let go, for Reduce Motion.
         let gentle: Bool
         /// The ray from the camera through the finger.
@@ -1076,6 +1082,7 @@ final class BookPileScene {
     ) -> Bool {
         let position = book.position(relativeTo: root)
         guard let shape = book.components[CollisionComponent.self]?.shapes.first,
+            let size = bookIDs[book.id].flatMap({ factory.parts[$0] })?.shape.size,
             let grabbed = PileCamera.intersect(ray, height: position.y)
         else { return false }
         land(book)
@@ -1092,10 +1099,11 @@ final class BookPileScene {
         setMode(.dynamic, of: book)
         book.components[CollisionComponent.self]?.filter = CollisionFilter(
             group: Self.heldGroup, mask: .all)
+        let orientation = book.orientation(relativeTo: root)
         carry = Carry(
-            book: book, shape: shape, level: PileCarry.level(book.orientation(relativeTo: root)),
-            offset: (position - grabbed) * [1, 0, 1], riders: riders, gentle: gentle, ray: ray,
-            height: position.y)
+            book: book, shape: shape, level: PileCarry.level(orientation), pose: orientation,
+            offset: (position - grabbed) * [1, 0, 1], riders: riders, halfThickness: size.z / 2,
+            gentle: gentle, ray: ray, height: position.y)
         return true
     }
 
@@ -1149,10 +1157,10 @@ final class BookPileScene {
             let point = PileCamera.intersect(carry.ray, height: carry.height)
         else { return }
         var target = tray.clamp(point + carry.offset, margin: 1)
-        let rest = restingHeight(of: carry, under: target) ?? carry.height - PileCarry.lift
+        let rest = carry.halfThickness + PileCarry.lift
+        let surface = surfaceHeight(of: carry, under: target) ?? carry.height - rest
         carry.height +=
-            (min(rest + PileCarry.lift, PileLayout.ceiling - 2) - carry.height)
-            * min(1, deltaTime * 10)
+            (min(surface + rest, PileLayout.ceiling - 2) - carry.height) * min(1, deltaTime * 10)
         target.y = carry.height
         // The box's walls and glass stop a dynamic book anyway; this keeps it from pressing on
         // them.
@@ -1170,8 +1178,9 @@ final class BookPileScene {
             carry.swing.advance(acceleration: [acceleration.x, acceleration.z], by: deltaTime)
         }
         carry.velocity = velocity
+        carry.pose = simd_slerp(carry.pose, carry.level, min(1, deltaTime * 3))
         var turn = PileCarry.turn(
-            from: carry.book.orientation(relativeTo: root), to: carry.swing.tilt * carry.level)
+            from: carry.book.orientation(relativeTo: root), to: carry.swing.tilt * carry.pose)
         turn *= 10
         if simd_length(turn) > 15 { turn *= 15 / simd_length(turn) }
         carry.book.components.set(
@@ -1179,12 +1188,14 @@ final class BookPileScene {
         self.carry = carry
     }
 
-    /// The height at which the held book's middle would rest, lying level, on what lies under
-    /// `point`: the table or the highest book there, leaving out its riders. The sweep starts
-    /// at most 3 units over the book, so it misses books still falling from high above, and a
-    /// book that starts inside a taller stack lifts the held book over it a step at a time.
+    /// The height of the top of what lies under `point`, where the held book, lying level,
+    /// would first touch it: the table or the highest book there, leaving out its riders.
     /// Returns `nil` while the scene is not in a view.
-    private func restingHeight(of carry: Carry, under point: SIMD3<Float>) -> Float? {
+    ///
+    /// It sweeps the book's box down from 3 units over the book, so it misses books still
+    /// falling from high above. Each hit's position is the point of first touch; its distance
+    /// runs from the sweep's start to that point, not along the sweep, so it is not used.
+    private func surfaceHeight(of carry: Carry, under point: SIMD3<Float>) -> Float? {
         guard let scene = root.scene else { return nil }
         let top = min(carry.height + 3, PileLayout.ceiling - 1)
         let hits = scene.convexCast(
@@ -1193,8 +1204,7 @@ final class BookPileScene {
             toOrientation: carry.level, query: .all,
             mask: CollisionGroup.all.subtracting([Self.wallGroup, Self.heldGroup]),
             relativeTo: root)
-        return hits.filter { !carry.riders.contains($0.entity.id) }.map(\.distance).min()
-            .map { top - $0 }
+        return hits.filter { !carry.riders.contains($0.entity.id) }.map(\.position.y).max()
     }
 
     private func setMode(_ mode: PhysicsBodyMode, of book: ModelEntity) {
