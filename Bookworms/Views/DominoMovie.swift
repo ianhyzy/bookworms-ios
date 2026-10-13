@@ -2,16 +2,18 @@ import RealityKit
 import SwiftUI
 import os
 
-/// The heading over a dominoes finale, in the share images' style: the time frame, the books
-/// and their pages, such as "39 books · 18,683 pages", and the credit in the bottom margin.
-/// `scale` sizes it from the 1080-pixel-wide share image, at 1, down to the live view, and
-/// `insets` keep the heading and the credit clear of the bars.
+/// The heading over a dominoes finale, in the share images' style: the time frame, and the
+/// books and their pages, such as "39 books · 18,683 pages". `scale` sizes it from the
+/// 1080-pixel-wide share image, at 1, down to the live view, and `insets.top` keeps the heading
+/// clear of the bars. An exported image or video `showsCredit`, as the share images do, at the
+/// very bottom of the frame; the live view does not.
 struct DominoFinaleCard: View {
     let title: String
     let count: Int
     let pages: Int
     let scale: CGFloat
     let insets: EdgeInsets
+    var showsCredit = false
 
     var body: some View {
         VStack(spacing: 8 * scale) {
@@ -29,11 +31,13 @@ struct DominoFinaleCard: View {
         .padding(.top, insets.top)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .overlay(alignment: .bottom) {
-            Text("Created with Bookworms for iPhone")
-                .font(.system(size: 28 * scale, weight: .medium))
-                .foregroundStyle(ShareStyle.cream.color.opacity(0.45))
-                .shadow(color: .black.opacity(0.35), radius: 3 * scale)
-                .padding(.bottom, insets.bottom + 18 * scale)
+            if showsCredit {
+                Text("Created with Bookworms for iPhone")
+                    .font(.system(size: 24 * scale, weight: .medium))
+                    .foregroundStyle(ShareStyle.cream.color.opacity(0.45))
+                    .shadow(color: .black.opacity(0.35), radius: 3 * scale)
+                    .padding(.bottom, 18 * scale)
+            }
         }
         .environment(\.colorScheme, .dark)
     }
@@ -113,7 +117,7 @@ extension PileSnapshotRenderer {
         let target = try FrameTarget(width: width, height: height)
         let card = DominoFinaleCard(
             title: title, count: books.count, pages: DominoFinaleCard.pages(of: books), scale: 1,
-            insets: aspect.insets)
+            insets: aspect.insets, showsCredit: true)
         let heading = ImageRenderer(
             content: card.frame(width: aspect.size.width, height: aspect.size.height))
         heading.scale = 1
