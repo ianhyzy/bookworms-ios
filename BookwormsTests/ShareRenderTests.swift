@@ -648,9 +648,9 @@ final class ShareRenderTests: XCTestCase {
         XCTAssertGreaterThan(
             StackLayout.minimumScale([thin, ordinary]), StackLayout.minimumScale([ordinary]))
 
-        // Fourteen 400-page books need more than a story's height at the scale a 100-page book
+        // Fourteen 400-page books need more than this area's height at the scale a 100-page book
         // needs, but fit at their own.
-        let area = YearStackCard.area(.story)
+        let area = CGSize(width: 952, height: 1046)
         let fourteen = StackSpine.spines((1...14).map { book($0, pages: 400) })
         XCTAssertGreaterThan(
             StackLayout.thickness(fourteen) * StackLayout.minimumScale([thin]), area.height)
@@ -760,6 +760,50 @@ final class ShareRenderTests: XCTestCase {
             XCTAssertEqual(image.width, 1080)
             XCTAssertEqual(image.height, 1080)
         }
+    }
+
+    /// The Year Stack's shelf runs along the image's bottom edge, from side to side, in every
+    /// size.
+    @MainActor
+    func testYearStackShelfMeetsTheBottomEdge() throws {
+        let books = ShareTemplate.yearStack.books(from: Self.books, in: .year(2025))
+        // The bottom of the board's front edge.
+        let wood = (red: 61, green: 38, blue: 23)
+        for aspect in ShareAspect.allCases {
+            let input = ShareInput(
+                template: .yearStack, aspect: aspect, books: books, looks: Self.looks,
+                frame: .year(2025), seed: 3)
+            let image = try XCTUnwrap(input.render()?.cgImage, "\(aspect)")
+            for x in [2, image.width / 2, image.width - 3] {
+                let pixel = try color(of: image, x: x, y: image.height - 1)
+                XCTAssertEqual(pixel.red, wood.red, accuracy: 6, "\(aspect) at \(x)")
+                XCTAssertEqual(pixel.green, wood.green, accuracy: 6, "\(aspect) at \(x)")
+                XCTAssertEqual(pixel.blue, wood.blue, accuracy: 6, "\(aspect) at \(x)")
+            }
+        }
+    }
+
+    /// The sRGB color of one pixel, counting `y` from the top.
+    private func color(of image: CGImage, x: Int, y: Int) throws -> (
+        red: Int, green: Int, blue: Int
+    ) {
+        var pixel = [UInt8](repeating: 0, count: 4)
+        let drawn = pixel.withUnsafeMutableBytes { buffer -> Bool in
+            guard
+                let context = CGContext(
+                    data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                    bytesPerRow: 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return false }
+            // Moves the pixel to the context's origin, which is at its bottom left.
+            context.draw(
+                image,
+                in: CGRect(
+                    x: -x, y: y - image.height + 1, width: image.width, height: image.height))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return (Int(pixel[0]), Int(pixel[1]), Int(pixel[2]))
     }
 
     /// The largest difference in any color channel between two renders of the same size.

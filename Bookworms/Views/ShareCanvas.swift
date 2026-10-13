@@ -273,7 +273,7 @@ struct ShareCanvas: View {
 struct ShareCredit: View {
     /// The strip at the bottom of an export that the credit and its shadow take, in pixels,
     /// which an in-app preview of a video leaves out.
-    static let height: CGFloat = 40
+    nonisolated static let height: CGFloat = 40
 
     var body: some View {
         Text("Created with Bookworms for iPhone")

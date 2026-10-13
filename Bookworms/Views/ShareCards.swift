@@ -2,22 +2,35 @@ import SwiftUI
 
 /// The time frame's books as spines stacked on a shelf, with the frame and its totals.
 ///
-/// Two or more books of a series with a known name share one place in the stack as a tied
-/// bundle (`StackSpine`). When the spines don't fit one image at a legible size, the card spans
-/// several pages (`StackPages`), and `ShareInput.page` chooses the one to draw.
+/// The header sits a little below the image's top edge, and the shelf runs across the bottom
+/// edge, so the stack takes all the height between them. Two or more books of a series with a
+/// known name share one place in the stack as a tied bundle (`StackSpine`). When the spines
+/// don't fit one image at a legible size, the card spans several pages (`StackPages`), and
+/// `ShareInput.page` chooses the one to draw.
 struct YearStackCard: View {
     let input: ShareInput
 
-    private nonisolated static let plankHeight: CGFloat = 60
+    /// The least room between the header and the top of the stack.
     private nonisolated static let spacing: CGFloat = 32
+
+    /// The margin above the header's text. Feed posts need only a little. A story's keeps the
+    /// heading below the progress bars and profile row that Instagram draws over a story's top
+    /// 140 or so pixels.
+    private nonisolated static func top(_ aspect: ShareAspect) -> CGFloat {
+        aspect == .story ? 136 : 32
+    }
+
+    /// The header's height: the heading's and the totals' lines and the space between them.
+    private nonisolated static func headerHeight(_ aspect: ShareAspect) -> CGFloat {
+        aspect == .square ? 178 : 230
+    }
 
     /// The space the spines stack in, between the header and the shelf.
     nonisolated static func area(_ aspect: ShareAspect) -> CGSize {
-        let headerHeight: CGFloat = aspect == .square ? 170 : 250
-        return CGSize(
+        CGSize(
             width: aspect.size.width - aspect.insets.leading - aspect.insets.trailing,
-            height: aspect.size.height - aspect.insets.top - aspect.insets.bottom - headerHeight
-                - plankHeight - 2 * spacing)
+            height: aspect.size.height - top(aspect) - headerHeight(aspect) - spacing
+                - ShelfPlank.base)
     }
 
     /// The input's books as spines, split into the card's pages.
@@ -35,13 +48,22 @@ struct YearStackCard: View {
         let page = min(max(0, input.page), count - 1)
         let layout = StackLayout(spines: pages.pages[page], area: area, seed: input.seed)
         let theme = input.theme
-        ZStack {
+        ZStack(alignment: .bottom) {
             RadialGradient(
                 colors: [theme.backdropLight.color, theme.backdropDark.color],
                 center: UnitPoint(x: 0.5, y: 0.3), startRadius: 0,
                 endRadius: aspect.size.height * 0.8)
-            VStack(spacing: Self.spacing) {
+            ShelfPlank(
+                page: count > 1 ? "\(page + 1) of \(count)" : nil,
+                note: page == count - 1 && pages.hiddenCount > 0
+                    ? "+\(pages.hiddenCount) more" : nil,
+                inset: aspect.insets.leading)
+            // The stack comes after the shelf so its bottom spine covers the back of the board's
+            // top, where it rests.
+            VStack(spacing: 0) {
                 header(isSquare: aspect == .square)
+                    .frame(height: Self.headerHeight(aspect), alignment: .top)
+                Spacer(minLength: Self.spacing)
                 ZStack(alignment: .topLeading) {
                     ForEach(layout.slabs) { slab in
                         ShareSpine(
@@ -59,14 +81,9 @@ struct YearStackCard: View {
                     }
                 }
                 .frame(width: area.width, height: layout.height)
-                ShelfPlank(
-                    page: count > 1 ? "\(page + 1) of \(count)" : nil,
-                    note: page == count - 1 && pages.hiddenCount > 0
-                        ? "+\(pages.hiddenCount) more" : nil
-                )
-                .frame(height: Self.plankHeight)
             }
-            .padding(aspect.insets)
+            .padding(.top, Self.top(aspect))
+            .padding(.bottom, ShelfPlank.base)
         }
     }
 
@@ -787,11 +804,24 @@ private struct TagShape: Shape {
     }
 }
 
-/// A wooden shelf board seen from the front, with optional notes on its edge: the page, such as
-/// "1 of 3", at the left, and a note, such as "+12 more", at the right.
+/// A wooden shelf board seen from a little above, across the bottom of a Year Stack image, with
+/// optional notes on its front edge: the page, such as "1 of 3", at the left, and a note, such as
+/// "+12 more", at the right.
+///
+/// The front edge holds the credit that sharing adds at the image's bottom edge (`ShareCredit`),
+/// centered between the notes.
 struct ShelfPlank: View {
+    /// The board's top, as it shows from a little above.
+    nonisolated static let surface: CGFloat = 12
+    /// The board's front edge: the credit's strip, with room to spare.
+    nonisolated static let front: CGFloat = ShareCredit.height + 8
+    /// How far above the board's bottom the books rest: halfway back on its top.
+    nonisolated static let base: CGFloat = front + surface / 2
+
     var page: String? = nil
     var note: String? = nil
+    /// The notes' distance from the board's ends.
+    let inset: CGFloat
 
     var body: some View {
         VStack(spacing: 0) {
@@ -802,7 +832,7 @@ struct ShelfPlank: View {
                 ],
                 startPoint: .top, endPoint: .bottom
             )
-            .frame(height: 12)
+            .frame(height: Self.surface)
             LinearGradient(
                 colors: [
                     Color(red: 0.37, green: 0.24, blue: 0.15),
@@ -810,6 +840,7 @@ struct ShelfPlank: View {
                 ],
                 startPoint: .top, endPoint: .bottom
             )
+            .frame(height: Self.front)
             .overlay {
                 HStack {
                     if let page { Text(page) }
@@ -818,11 +849,9 @@ struct ShelfPlank: View {
                 }
                 .font(ShareStyle.serif(32, .semibold))
                 .foregroundStyle(ShareStyle.cream.color.opacity(0.9))
-                .padding(.horizontal, 28)
+                .padding(.horizontal, inset)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .shadow(color: .black.opacity(0.5), radius: 20, y: 16)
     }
 }
 
