@@ -473,6 +473,17 @@ enum ShelfLabels {
         }
     }
 
+    /// The SF Symbol for a `format(_:)` label, as the Apple TV shows it, such as "headphones" for
+    /// "Audiobook".
+    static func formatSymbol(_ label: String) -> String {
+        switch label {
+        case "Audiobook": "headphones"
+        case "Ebook": "ipad"
+        case "Physical & audiobook": "books.vertical"
+        default: "book.closed"
+        }
+    }
+
     /// How long the reader took, counting both the start and finish days, such as "12 days".
     /// Returns `nil` without both dates or when they are out of order.
     static func readingTime(from started: Date?, to finished: Date?) -> String? {
@@ -495,6 +506,12 @@ enum ShelfLabels {
             return Duration.seconds(seconds)
                 .formatted(.units(allowed: [.hours, .minutes], width: width))
         }
+        return pages(of: book)
+    }
+
+    /// The book's page count, such as "352 pages", whatever format the reader chose. Returns `nil`
+    /// without one.
+    static func pages(of book: CloudBook) -> String? {
         // Hardcover records 0 pages for some audiobooks; the Apple TV omits those too.
         guard let pages = book.pages, pages > 0 else { return nil }
         return "\(pages.formatted()) pages"

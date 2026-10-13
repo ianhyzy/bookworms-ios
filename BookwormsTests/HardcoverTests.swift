@@ -221,6 +221,8 @@ final class HardcoverTests: XCTestCase {
             // The Apple TV reads `review` with the same scopes; `review_raw` is unproven.
             XCTAssertTrue(body.contains("status_id review"))
             XCTAssertTrue(body.contains("series { id name }"))
+            XCTAssertTrue(body.contains("description"))
+            XCTAssertTrue(body.contains("ratings_distribution"))
             XCTAssertFalse(body.contains("review_raw"))
             return Self.respond(200, Self.libraryPage, to: request)
         }
@@ -238,6 +240,11 @@ final class HardcoverTests: XCTestCase {
                     seriesID: 9, seriesPosition: 1, seriesName: "The Lantern Cycle", pages: 336,
                     finished: "2025-03-01",
                     rating: 4.5, isRead: true, communityRating: 4.12, ratingsCount: 250,
+                    ratingDistribution: [
+                        RatingBucket(rating: 4, count: 120), RatingBucket(rating: 5, count: 130),
+                    ],
+                    // Stored as Hardcover sends it; the details clean it for display.
+                    description: "<p>A keeper tends the <em>last</em> lantern.</p>",
                     review: "A quiet triumph & a joy.\n\nWould reread."),
                 CloudBook(
                     id: 303, title: "Someday Soon", author: "Lena Marsh", coverURL: nil,
@@ -253,7 +260,7 @@ final class HardcoverTests: XCTestCase {
     }
 
     func testReviewTextBecomesPlainText() {
-        let plain = HardcoverClient.plainText(fromReview:)
+        let plain = HardcoverClient.plainText(from:)
         XCTAssertNil(plain(nil))
         XCTAssertNil(plain(" \n<p></p> "))
         XCTAssertEqual(
@@ -386,6 +393,8 @@ final class HardcoverTests: XCTestCase {
                {"tag":"Twist Ending","count":80,"spoilerRatio":0.5}],
                "Mood":[{"tag":"Cozy","count":12,"spoilerRatio":0}]},
              "rating":4.12,"ratings_count":250,
+             "ratings_distribution":[{"rating":4,"count":120},{"rating":5,"count":130}],
+             "description":"<p>A keeper tends the <em>last</em> lantern.</p>",
              "image":{"url":"https://covers.example.com/book-101.jpg","width":400,"height":600},
              "book_series":[{"featured":false,"position":2,"series":{"id":7,"name":"Lantern Tales"}},
                {"featured":true,"position":1,"series":{"id":9,"name":" The Lantern Cycle "}}],

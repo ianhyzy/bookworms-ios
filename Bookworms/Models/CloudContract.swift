@@ -137,6 +137,10 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
     /// Hardcover's average rating from all readers, and how many ratings it averages.
     var communityRating: Double? = nil
     var ratingsCount: Int? = nil
+    /// How many readers gave each rating, in half-star steps.
+    var ratingDistribution: [RatingBucket]? = nil
+    /// The book's description as its source stores it, which can carry HTML or Markdown.
+    var description: String? = nil
     /// The reader's own review as plain text. The Apple TV archive does not carry reviews; the
     /// iPhone fills this in from its own Hardcover sign-in.
     var review: String? = nil
@@ -166,6 +170,12 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
         guard let finished, finished.count >= 10 else { return nil }
         return try? Date(String(finished.prefix(10)) + "T12:00:00Z", strategy: .iso8601)
     }
+}
+
+/// The number of Hardcover readers who gave a book one rating, such as 4.5.
+struct RatingBucket: Codable, Sendable, Hashable {
+    let rating: Double
+    let count: Int
 }
 
 struct SpineDesignV1: Codable, Sendable, Hashable {
