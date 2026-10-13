@@ -99,6 +99,7 @@ struct RootView: View {
         // Hardcover is the library's own source, so the first launch offers it once, over
         // whichever tab opens. Outside the tint, so the sheet follows the system appearance.
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
+        .background(ToastWindow(toasts: model.toasts))
         .task {
             guard !offeredHardcover, !model.isPreview else { return }
             offeredHardcover = true

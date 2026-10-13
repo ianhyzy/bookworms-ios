@@ -42,7 +42,7 @@ targets:
         BGTaskSchedulerPermittedIdentifiers:
           - gay.ian.Bookworms.iOS.spines
           - gay.ian.Bookworms.iOS.generate.*
-        NSPhotoLibraryAddUsageDescription: Bookworms saves the share images you create to your photo library.
+        NSPhotoLibraryAddUsageDescription: Bookworms saves the share images and videos you create to your photo library.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: gay.ian.Bookworms.iOS
