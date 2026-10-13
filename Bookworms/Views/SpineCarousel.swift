@@ -668,9 +668,11 @@ struct StackArrangement {
         scale = min(170, max(1, room / CGFloat(BookShape.longest)))
     }
 
-    /// The spine lying on its side: its length by its thickness.
+    /// The spine lying on its side: its length by its thickness. Stack's spines are thicker
+    /// than Shelf's, about a third thicker for a thin book, so long titles on thin books stay
+    /// legible lying down; thick books get comically chunky instead.
     func spine(of book: CloudBook) -> CGSize {
-        let upright = book.shelfSpineSize(scale: scale)
+        let upright = book.shelfSpineSize(scale: scale, floor: 0.16, growth: 0.9)
         return CGSize(width: upright.height, height: upright.width)
     }
 
@@ -728,13 +730,14 @@ extension CloudBook {
     /// its thickness and `height` its height, from its `BookShape` at `scale` points per
     /// decimeter.
     ///
-    /// Heights keep the shape's proportions. Thickness grows from a floor, so a 120-page book's
-    /// spine still fits legible lettering, and a 900-page book's is a little over twice as
-    /// thick, where in life it is about five times.
-    func shelfSpineSize(scale: CGFloat) -> CGSize {
+    /// Heights keep the shape's proportions. Thickness grows from `floor` decimeters by `growth`
+    /// times the book's own thickness, so a 120-page book's spine still fits legible lettering,
+    /// and a 900-page book's is a little over twice as thick, where in life it is about five
+    /// times.
+    func shelfSpineSize(scale: CGFloat, floor: CGFloat = 0.12, growth: CGFloat = 0.7) -> CGSize {
         let size = BookShape(of: self, coverAspect: 2 / 3).size
         return CGSize(
-            width: scale * (0.12 + 0.7 * CGFloat(size.z)), height: scale * CGFloat(size.y))
+            width: scale * (floor + growth * CGFloat(size.z)), height: scale * CGFloat(size.y))
     }
 }
 

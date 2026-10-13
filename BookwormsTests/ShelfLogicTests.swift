@@ -114,7 +114,9 @@ final class ShelfLogicTests: XCTestCase {
         for book in books {
             let spine = layout.spine(of: book)
             let shelved = book.shelfSpineSize(scale: layout.scale)
-            XCTAssertEqual(spine, CGSize(width: shelved.height, height: shelved.width))
+            // As long as on the shelf, and thicker, so lettering lying down stays legible.
+            XCTAssertEqual(spine.width, shelved.height)
+            XCTAssertGreaterThan(spine.height, shelved.width)
             XCTAssertLessThanOrEqual(
                 abs(layout.shift(of: book)), 402 * StackArrangement.maximumShift)
             XCTAssertLessThanOrEqual(
