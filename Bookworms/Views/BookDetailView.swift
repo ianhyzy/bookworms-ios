@@ -245,8 +245,12 @@ enum DetailCard: Hashable {
     /// The **Details** cards: facts about the book itself, whichever way anyone reads it. A fact
     /// that is missing has no card. `about` is the description as plain text.
     static func details(of book: CloudBook, about: String?) -> [DetailCard] {
-        let genres = (book.genres ?? []).filter(YearInBooks.isEnglishTag).prefix(3)
-            .map(YearInBooks.displayGenre)
+        // Readers tag in British and American spelling, so "Humour" repeats "Humor".
+        var spellings = Set<String>()
+        let genres = Array(
+            (book.genres ?? []).filter(YearInBooks.isEnglishTag).map(YearInBooks.displayGenre)
+                .filter { spellings.insert($0.lowercased().replacing("our", with: "or")).inserted }
+                .prefix(3))
         var rating: DetailCard?
         if let average = book.communityRating, average > 0, let count = book.ratingsCount,
             count > 0
