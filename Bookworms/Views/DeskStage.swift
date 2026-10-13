@@ -20,6 +20,8 @@ final class DeskStage {
     /// Holds the image-based light, which lit entities receive through `light(_:)`.
     let lighting = Entity()
     private let lamp = SpotLight()
+    /// Holds the brighter copy of the room's light that `light(_:boost:)` gives.
+    private let boosted = Entity()
     private let dust = Entity()
     private var isBuilt = false
     private var environment: Task<Void, Never>?
@@ -29,8 +31,10 @@ final class DeskStage {
     /// Where the lamp hangs from the pool's middle, in pool radii: toward the camera (+z), a
     /// little to its right (+x), and high above.
     nonisolated static let lampOffset = SIMD3<Float>(1.2, 4.6, 2.2)
-    /// The room's light, built once and shared by every stage, including share images.
+    /// The room's light, built once and shared by every stage, including share images, and
+    /// its intensity, as a power of 2.
     private static var room: Task<EnvironmentResource?, Never>?
+    private static let roomIntensity: Float = 2.2
 
     init() {
         root.addChild(lighting)
@@ -45,7 +49,8 @@ final class DeskStage {
         environment = Task { [lighting] in
             guard let resource = await Self.roomLight() else { return }
             lighting.components.set(
-                ImageBasedLightComponent(source: .single(resource), intensityExponent: 2.2))
+                ImageBasedLightComponent(
+                    source: .single(resource), intensityExponent: Self.roomIntensity))
         }
         root.addChild(makeTable())
         root.addChild(lamp)
@@ -83,6 +88,28 @@ final class DeskStage {
     /// Lets `entity` reflect the room and be lit by it.
     func light(_ entity: Entity) {
         entity.components.set(ImageBasedLightReceiverComponent(imageBasedLight: lighting))
+    }
+
+    /// Lights the parts of `entity` that the room lights, such as a book's model, with the
+    /// room's light `boost` stops brighter, as a book held out of the lamp's beam needs to show
+    /// as brightly as the books in it, or with the room's own light for no boost. One entity
+    /// at a time can have a boost: a later call sets it for every entity it lights.
+    func light(_ entity: Entity, boost: Float) {
+        var source = lighting
+        if boost > 0, var light = lighting.components[ImageBasedLightComponent.self] {
+            light.intensityExponent = Self.roomIntensity + boost
+            boosted.components.set(light)
+            if boosted.parent == nil { root.addChild(boosted) }
+            source = boosted
+        }
+        let receiver = ImageBasedLightReceiverComponent(imageBasedLight: source)
+        func relight(_ entity: Entity) {
+            if entity.components.has(ImageBasedLightReceiverComponent.self) {
+                entity.components.set(receiver)
+            }
+            entity.children.forEach(relight)
+        }
+        relight(entity)
     }
 
     /// Gives the lamp `color`, such as a season's tint, or its usual `lampColor` for `nil`.

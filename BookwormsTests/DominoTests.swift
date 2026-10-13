@@ -555,6 +555,58 @@ final class DominoTests: XCTestCase {
         XCTAssertGreaterThan(DominoFinale.glide(0.5), 0.6)
     }
 
+    func testTheRoomLightsTheLastBookMoreOnlyOutOfTheLampsBeam() {
+        let place = SIMD3<Float>(1, 0.1, -1)
+        func boost(_ point: SIMD3<Float>) -> Float {
+            DominoFinale.boost(at: point, over: place, radius: 8)
+        }
+        // In the beam, such as on the way to a camera on the lamp's side, it gets no boost.
+        XCTAssertEqual(boost(place), 0)
+        let lamp = DeskStage.lampPlacement(pool: .zero, radius: 8).position
+        XCTAssertEqual(boost(place + (lamp - place) * 0.3), 0)
+        // Out of the beam, such as toward a camera across the table from the lamp, it gets
+        // more, up to the limit.
+        let away = place + SIMD3(-lamp.x, lamp.y, -lamp.z) * 0.45
+        XCTAssertGreaterThan(boost(away), 0)
+        XCTAssertLessThanOrEqual(boost(away), DominoFinale.boostLimit)
+        XCTAssertEqual(boost(place + [-60, 20, -60]), DominoFinale.boostLimit)
+    }
+
+    func testTheMoveCarriesTheCamerasMotionOnAndTurnsIntoTheGlide() {
+        // A Follow view descending on the last book as it falls.
+        let pose = DominoCameraPose(eye: [-5.6, 12, -14.5], target: [0, 0, 1])
+        let from = Transform(rotation: pose.rotation, translation: pose.eye)
+        let velocity = SIMD3<Float>(4, -3.4, 0.1)
+        let spin = SIMD3<Float>(0.2, -0.1, 0)
+        let to = PileCamera(target: [0, 0, 1], yaw: 0.3, zoom: 0.8)
+        func shown(_ time: Float) -> Transform {
+            DominoFinale.view(
+                from: DominoFinale.coast(from, velocity: velocity, spin: spin, time: time),
+                to: to, progress: time / DominoFinale.moveTime)
+        }
+        // The camera leaves at the speed and heading it had, with no stop or jump.
+        let step: Float = 1.0 / 120
+        XCTAssertEqual(simd_distance(shown(0).translation, from.translation), 0, accuracy: 1e-3)
+        let leaving = (shown(step).translation - shown(0).translation) / step
+        XCTAssertLessThan(simd_distance(leaving, velocity), 0.05 * simd_length(velocity))
+        // The motion dies away within a second, and the move still ends at rest on the spread.
+        let carried = DominoFinale.coast(from, velocity: velocity, spin: spin, time: 2)
+        let coasted = velocity * DominoFinale.coastTime
+        XCTAssertEqual(
+            simd_distance(carried.translation, from.translation + coasted), 0,
+            accuracy: 0.02 * simd_length(coasted))
+        let end = to.transform
+        XCTAssertEqual(
+            simd_distance(shown(DominoFinale.moveTime).translation, end.translation), 0,
+            accuracy: 1e-3)
+        XCTAssertEqual(
+            abs(simd_dot(shown(DominoFinale.moveTime).rotation.vector, end.rotation.vector)), 1,
+            accuracy: 1e-5)
+        // The descent it carries has turned into the climb a second in.
+        let climb = (shown(1 + step).translation.y - shown(1).translation.y) / step
+        XCTAssertGreaterThan(climb, 0)
+    }
+
     func testAFlightLiftsTurnsAndSettlesAtRest() {
         let from = Transform(
             rotation: simd_quatf(angle: 1.2, axis: simd_normalize([0.3, 1, 0.2])),
@@ -648,6 +700,40 @@ final class DominoTests: XCTestCase {
         XCTAssertEqual(moved.map(\.volume), [0.5, 0.5, 1, 0.5])
         XCTAssertEqual(
             moved.map { PileMovieTiming.frame(showing: $0.time) }, [0, 1, 1, 2])
+        // Hits in the live time the recording leaves out, such as a book's details, are left
+        // out.
+        let skipped = DominoMovieTiming.hits(
+            [hit(0), hit(0.15), hit(0.3)], shownAt: times, skipping: [0.12..<0.2])
+        XCTAssertEqual(skipped.map(\.time), [moved[0].time, moved[3].time])
+    }
+
+    func testARecordingLeavesOutTheTimeItSkips() {
+        var timing = DominoMovieTiming(length: 5 * DominoCameraRig.typicalPace)
+        let step = 1.0 / 60
+        var last = -1
+        for _ in 0..<60 {
+            if let kept = timing.advance(by: step, progress: timing.live / 5) {
+                last = kept.upperBound
+            }
+        }
+        let video = timing.video
+        // A book out at its details for three seconds adds no frames or video time.
+        for _ in 0..<180 { timing.skip(step) }
+        XCTAssertEqual(timing.video, video)
+        XCTAssertEqual(timing.gaps.count, 1)
+        XCTAssertEqual(timing.gaps[0].lowerBound, 1, accuracy: 1e-9)
+        XCTAssertEqual(timing.gaps[0].upperBound, 4, accuracy: 1e-9)
+        // Frames go on from the next number once the book is back.
+        var next: ClosedRange<Int>?
+        while next == nil { next = timing.advance(by: step, progress: timing.live / 8) }
+        XCTAssertEqual(next?.lowerBound, last + 1)
+        XCTAssertLessThan(timing.video, video + 0.1)
+    }
+
+    func testABackedUpEncoderKeepsFramesSpreadAcrossTheStall() {
+        XCTAssertEqual(DominoRecorder.thinned(Array(0..<7)), [0, 2, 4, 6])
+        XCTAssertEqual(DominoRecorder.thinned(Array(0..<8)), [1, 3, 5, 7])
+        XCTAssertEqual(DominoRecorder.thinned([3]), [3])
     }
 
     func testARecordingFramesTheHeadingAtTheStoryMargin() {

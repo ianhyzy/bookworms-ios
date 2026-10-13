@@ -7,14 +7,18 @@ import simd
 /// book falls.
 ///
 /// At once, the camera starts one slow move from wherever it films to the spread's view, where
-/// it comes to rest `moveTime` seconds later (`view(from:to:progress:)`). `gatherDelay` seconds
-/// in, while the camera still moves, the books start to gather into a face-up spread
+/// it comes to rest `moveTime` seconds later (`view(from:to:progress:)`). The move starts from
+/// the view as it shows, carried on by the camera's own motion for a moment (`coast`), so the
+/// camera neither stops dead nor drifts on with the camera mode. `gatherDelay` seconds in,
+/// while the camera still moves, the books start to gather into a face-up spread
 /// (`PileSpread`): each lifts off the desk, flies in an arc to its place, turning face up on
 /// the way, and settles flat, one after another in the spread's order, so a book lands only
 /// after the books it rests on. Every book but the spread's last has landed `settleMargin`
 /// before the camera comes to rest. The last book waits where it fell; as the camera settles,
 /// it springs up out of the spread toward the viewer, hangs there a beat, and slams down into
 /// its place, landing `snapLanding` after the camera stops (`snapPose(from:to:top:time:)`).
+/// Out of the lamp's beam, the room lights it more (`DeskStage.light(_:boost:)`), so it shows
+/// as brightly as the books under it (`boost(at:over:radius:)`).
 /// The poses are pure functions of time, so tests replay them.
 enum DominoFinale {
     /// How long the camera's move to the spread's view takes, in seconds.
@@ -41,6 +45,11 @@ enum DominoFinale {
     /// How far the last book springs from its place toward the spread's camera, as a share of
     /// the way: it rises toward the viewer, showing larger, where its place shows on screen.
     static let snapReach: Float = 0.45
+    /// The most the room's light on the last book brightens out of the lamp's beam, in stops.
+    static let boostLimit: Float = 2.5
+    /// The time constant, in seconds, with which the camera's motion as the last book falls
+    /// dies away in the move (`coast`): the camera carries on that many seconds' worth of it.
+    static let coastTime: Float = 0.25
     /// With Reduce Motion on, how long after the last book falls the camera cuts to the
     /// spread's view and the books appear in their places, in seconds.
     static let stillWait: Float = 1
@@ -72,6 +81,48 @@ enum DominoFinale {
     /// Where the last book hangs over its `place` before it slams into it, seen by `camera`.
     static func snapTop(over place: SIMD3<Float>, seenBy camera: PileCamera) -> SIMD3<Float> {
         place + (camera.transform.translation - place) * snapReach
+    }
+
+    /// How many stops brighter the room lights the last book at `point`, over its `place`,
+    /// under the lamp whose pool covers a circle of `radius` around the table's middle: the
+    /// stops of the lamp's light it has lost by leaving the beam that lights its place, up to
+    /// `boostLimit`, and none while it is as far inside the beam as its place. The room's light
+    /// is weaker than the lamp's, so this keeps a book that springs out of the beam from going
+    /// dark without making it outshine the books under it.
+    static func boost(at point: SIMD3<Float>, over place: SIMD3<Float>, radius: Float) -> Float {
+        let lamp = DeskStage.lampPlacement(pool: .zero, radius: radius)
+        let axis = simd_normalize(lamp.aim - lamp.position)
+        // The share of full light at a point: all of it inside the inner cone, fading out to
+        // none at the outer cone's edge.
+        func beam(_ point: SIMD3<Float>) -> Float {
+            let cosine = simd_dot(simd_normalize(point - lamp.position), axis)
+            let (inner, outer) = (
+                cos(lamp.innerAngle / 2 * .pi / 180), cos(lamp.outerAngle / 2 * .pi / 180)
+            )
+            let share = min(max((cosine - outer) / (inner - outer), 0), 1)
+            return share * share * (3 - 2 * share)
+        }
+        let lost = log2(max(beam(place), 1e-3) / max(beam(point), 1e-3))
+        return min(max(lost, 0), boostLimit)
+    }
+
+    /// `from` carried on for `time` seconds by the camera's motion as the move starts,
+    /// `velocity` in units a second and `spin` in radians a second about its own axis, slowing
+    /// to a stop with the time constant `coastTime`. The move starts from this view, so the
+    /// camera keeps its speed and heading as the finale starts and turns smoothly into the
+    /// move, which takes over as the coast dies away.
+    static func coast(
+        _ from: Transform, velocity: SIMD3<Float>, spin: SIMD3<Float>, time: Float
+    ) -> Transform {
+        let carried = coastTime * (1 - exp(-max(time, 0) / coastTime))
+        let angle = simd_length(spin) * carried
+        let turn =
+            angle > 1e-6
+            ? simd_quatf(angle: angle, axis: simd_normalize(spin))
+            : simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+        return Transform(
+            scale: from.scale, rotation: turn * from.rotation,
+            translation: from.translation + velocity * carried)
     }
 
     /// The pose `progress` of the way, from 0 to 1, from `from` to `to`: along the line between
@@ -190,7 +241,9 @@ enum DominoFinale {
 /// the chain has fallen, or, before a twentieth of the way, from the path's length at the
 /// camera's typical pace, and plays the rest of the run as fast as it must to end within the
 /// budget, easing between speeds over about half a second. The recording's frames come at
-/// `PileMovieTiming.framesPerSecond`, each showing the view as it was at its start.
+/// `PileMovieTiming.framesPerSecond`, each showing the view as it was at its start. Live time
+/// the recording leaves out, such as while a book is out at its details, passes with no frames
+/// (`skip(_:)`), and its hits are left out too.
 struct DominoMovieTiming {
     /// The longest a recording gets, in seconds.
     static let longest: Double = 30
@@ -210,6 +263,8 @@ struct DominoMovieTiming {
     private(set) var video: Double = 0
     /// How many times faster than live the video plays.
     private(set) var speed: Double = 1
+    /// The stretches of live seconds since the push that the recording leaves out.
+    private(set) var gaps: [Range<Double>] = []
     private var next = 0
 
     /// The timing of a run along a path `length` units long.
@@ -240,16 +295,29 @@ struct DominoMovieTiming {
         return next...due
     }
 
+    /// Moves on by `deltaTime` seconds of the live view that the recording leaves out: no
+    /// frames show them, and `hits(_:shownAt:skipping:)` leaves out their hits.
+    mutating func skip(_ deltaTime: Double) {
+        if let last = gaps.last, last.upperBound == live {
+            gaps[gaps.count - 1] = last.lowerBound..<live + deltaTime
+        } else {
+            gaps.append(live..<live + deltaTime)
+        }
+        live += deltaTime
+    }
+
     /// `records`, hits timed in live seconds since the push, timed instead by a recording
     /// whose frames show the live view at `times`, in order: each sounds with the first frame
     /// that shows it, after the live throttle's 30 milliseconds in the video's time, so a run
-    /// that plays faster than live does not pile up its knocks. Hits after the last frame are
-    /// left out.
-    static func hits(_ records: [ImpactRecord], shownAt times: [Double]) -> [ImpactRecord] {
+    /// that plays faster than live does not pile up its knocks. Hits after the last frame, or
+    /// within `gaps`, are left out.
+    static func hits(
+        _ records: [ImpactRecord], shownAt times: [Double], skipping gaps: [Range<Double>] = []
+    ) -> [ImpactRecord] {
         var throttle = ImpactThrottle(interval: 0.03)
         var frame = 0
         var kept: [ImpactRecord] = []
-        for record in records {
+        for record in records where !gaps.contains(where: { $0.contains(record.time) }) {
             while frame < times.count, times[frame] < record.time { frame += 1 }
             guard frame < times.count else { break }
             var moved = record

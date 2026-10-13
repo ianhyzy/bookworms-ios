@@ -217,16 +217,22 @@ final class PileMovieWriter {
     private let framesURL: URL
     private let writer: AVAssetWriter
     private let frames: AVAssetWriterInput.PixelBufferReceiver
-    /// One more than the number of the last frame the encoder took.
+    /// One more than the number of the last frame the encoder took, which sets the movie's
+    /// length.
     private(set) var frameCount = 0
+    /// How many frames the encoder took. A live recording that drops frames takes fewer than
+    /// `frameCount`; each frame shows until the next one it took.
+    private(set) var encodedCount = 0
 
     private static let stillImageTimeIdentifier = "mdta/com.apple.quicktime.still-image-time"
     nonisolated private static let log = Logger(
         subsystem: "gay.ian.Bookworms.iOS", category: "video")
 
     /// Prepares a movie of `width` by `height` pixels at `url`, an `.mp4` file that must not
-    /// exist yet.
-    init(url: URL, width: Int, height: Int) throws {
+    /// exist yet. For a `live` recording, the input expects its frames in real time
+    /// (`expectsMediaDataInRealTime`), so it takes them as they come rather than pacing them as
+    /// for an offline render.
+    init(url: URL, width: Int, height: Int, live: Bool = false) throws {
         self.url = url
         framesURL = url.deletingPathExtension().appendingPathExtension("frames.mov")
         writer = try AVAssetWriter(outputURL: framesURL, fileType: .mov)
@@ -251,6 +257,7 @@ final class PileMovieWriter {
                     AVVideoAllowFrameReorderingKey: false,
                 ],
             ])
+        video.expectsMediaDataInRealTime = live
         guard writer.canAdd(video) else { throw PileSnapshotError.drawingFailed }
         frames = writer.inputPixelBufferReceiver(
             for: video,
@@ -293,6 +300,7 @@ final class PileMovieWriter {
             try frames.appendImmediately(picture, with: time)
         }
         frameCount = max(frameCount, frame + 1)
+        encodedCount += 1
     }
 
     /// Adds `picture` as frame `frame` if the encoder has room for it, without waiting, as a
@@ -303,6 +311,7 @@ final class PileMovieWriter {
         let time = PileMovieTiming.time(ofFrame: frame)
         guard try frames.appendImmediately(picture, with: time) else { return false }
         frameCount = max(frameCount, frame + 1)
+        encodedCount += 1
         return true
     }
 
@@ -356,7 +365,7 @@ final class PileMovieWriter {
                 }
             }
             Self.log.notice(
-                "Wrote \(self.frameCount) frames into the movie in \((ContinuousClock.now - began) / .seconds(1), format: .fixed(precision: 2)) s"
+                "Wrote \(self.encodedCount) of \(self.frameCount) frames into the movie in \((ContinuousClock.now - began) / .seconds(1), format: .fixed(precision: 2)) s"
             )
             try? FileManager.default.removeItem(at: framesURL)
         } catch {

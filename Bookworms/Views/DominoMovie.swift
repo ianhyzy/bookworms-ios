@@ -55,7 +55,8 @@ struct DominoFinaleCard: View {
 /// Records a dominoes run as the reader watches it, for **Share**: from the push through the
 /// finale until the heading has shown, as a story-size MP4 with the hits' knocks
 /// (`PileMovieWriter`), and a PNG of its last frame, both with the credit at the bottom edge.
-/// The video is ready a second or two after the recording ends, since nothing renders again.
+/// Nothing renders again: once the recording ends, the encoder finishes, the soundtrack is
+/// mixed into the movie, and the PNG is written alongside.
 ///
 /// The recorder takes the frames that the Desk scene's `ARView` draws. RealityKit calls its
 /// `postProcess` render callback on its render thread as it encodes each frame (`Tap`). The
@@ -63,18 +64,20 @@ struct DominoFinaleCard: View {
 /// keeps, `FrameComposer` draws on the GPU the part of the view that a 9:16 frame shows
 /// (`crop(in:)`) over the wall's gradient, which shows around the scene, with the heading and
 /// the credit, into a pixel buffer from the encoder's pool. Once the GPU is done, the frame
-/// goes to the hardware encoder on the main actor; frames the encoder has no room for wait for
-/// it in order, up to `backlogLimit`, so the video keeps every frame. The heading is `DominoFinaleCard`, where
-/// the live view shows it, and it fades in as the live one does. `DominoMovieTiming` picks the
-/// frames on each scene update, so a long run plays faster than live and the video stays
-/// within 30 seconds, and times the hits that `ImpactFeedback` recorded, which are mixed into
-/// the soundtrack once the recording ends (`ImpactMix`).
+/// goes to the hardware encoder on the main actor, which expects frames in real time; frames
+/// the encoder has no room for wait for it in order, up to `backlogLimit`, past which every
+/// other one is dropped. The heading is `DominoFinaleCard`, where the live view shows it, and
+/// it fades in as the live one does. `DominoMovieTiming` picks the frames on each scene update,
+/// so a long run plays faster than live and the video stays within 30 seconds, and times the
+/// hits that `ImpactFeedback` recorded, which are mixed into the soundtrack once the recording
+/// ends (`ImpactMix`).
 ///
 /// The callback goes on, and the writer starts, once the chain stands, so their costs fall
 /// before the push; the first frame drawn then compiles Core Image's kernels. The callback
-/// comes off when the recording ends. Leaving the scene or lifting a book before the books
-/// have gathered discards the recording; once they have gathered, either ends it early and
-/// keeps it. A new chain deletes the clip.
+/// comes off when the recording ends. While a book is out at its details, the recording
+/// pauses (`advance(by:phase:progress:paused:)`), so the video cuts from the lift to the
+/// book's return. Leaving the scene before the books have gathered discards the recording;
+/// once they have gathered, leaving ends it early and keeps it. A new chain deletes the clip.
 @MainActor
 @Observable
 final class DominoRecorder {
@@ -250,15 +253,17 @@ final class DominoRecorder {
     }
 
     /// Moves a recording on by `deltaTime` live seconds, in which the chain reached `phase`,
-    /// with `progress` of the run done (see `DominoMovieTiming.advance(by:progress:)`). Arms a
-    /// recording once the chain stands.
-    func advance(by deltaTime: TimeInterval, phase: DominoPhase, progress: Float) {
+    /// with `progress` of the run done (see `DominoMovieTiming.advance(by:progress:)`), or
+    /// leaves them out while `paused`, as while a book is out at its details. Arms a recording
+    /// once the chain stands.
+    func advance(by deltaTime: TimeInterval, phase: DominoPhase, progress: Float, paused: Bool) {
         guard let run else {
             if phase == .standing, !cannotRecord { arm() }
             return
         }
         guard var timing = run.timing, !run.isEnding else { return }
         defer { run.timing = timing }
+        guard !paused else { return timing.skip(deltaTime) }
         let ended = phase == .done || phase.hasEnded
         let due = timing.advance(by: deltaTime, progress: ended ? nil : Double(progress))
         if phase == .finished, run.finishedAt == nil { run.finishedAt = timing.live }
@@ -347,7 +352,7 @@ final class DominoRecorder {
             let name = "Dominoes \(layout.title)"
             let writer = try PileMovieWriter(
                 url: folder.appending(path: Self.fileName(name) + ".mp4"),
-                width: Int(size.width), height: Int(size.height))
+                width: Int(size.width), height: Int(size.height), live: true)
             try writer.start()
             let tap = Tap(
                 composer: composer, pool: try writer.framePool(), size: size, crop: crop,
@@ -404,8 +409,18 @@ final class DominoRecorder {
     }
 
     /// The most drawn frames that wait for the encoder, about a sixth of a second of video;
-    /// beyond it, the oldest is dropped, so a slow encoder never holds up the view.
+    /// beyond it, every other one is dropped (`thinned(_:)`), so a slow encoder never holds up
+    /// the view.
     private static let backlogLimit = 6
+
+    /// `backlog` with every other frame dropped, counting back from the newest, which it
+    /// keeps. A stalled encoder then leaves the video a few frames spread across the stall,
+    /// rather than one frame frozen through it, as dropping the oldest would.
+    nonisolated static func thinned<Frame>(_ backlog: [Frame]) -> [Frame] {
+        backlog.enumerated()
+            .filter { (backlog.count - 1 - $0.offset).isMultiple(of: 2) }
+            .map(\.element)
+    }
 
     /// Hands a frame that the GPU has drawn to the encoder, as each of `frames`, and ends the
     /// recording after its last frame.
@@ -414,9 +429,10 @@ final class DominoRecorder {
         run.tap.state.withLock { $0.drawing -= 1 }
         run.backlog += frames.map { (picture, $0) }
         if run.backlog.count > Self.backlogLimit {
-            let dropped = run.backlog.prefix(run.backlog.count - Self.backlogLimit)
-            Self.log.notice("The encoder fell behind; dropped \(dropped.count) frames")
-            run.backlog.removeFirst(dropped.count)
+            let waiting = run.backlog.count
+            run.backlog = Self.thinned(run.backlog)
+            Self.log.notice(
+                "The encoder fell behind; dropped \(waiting - run.backlog.count) frames")
         }
         feed(run)
     }
@@ -458,22 +474,26 @@ final class DominoRecorder {
         else { return }
         guard let last = run.last, let composer else { return discard(run) }
         close(run)
-        let hits = DominoMovieTiming.hits(feedback.finishRecording(), shownAt: run.times)
+        let hits = DominoMovieTiming.hits(
+            feedback.finishRecording(), shownAt: run.times, skipping: run.timing?.gaps ?? [])
         let began = ContinuousClock.now
         let generation = generation
         Task {
             do {
-                try await run.writer.finish(
-                    hits: hits, before: .now + PileMovieWriter.finishTimeout)
                 guard let poster = composer.cgImage(of: last) else {
                     throw PileSnapshotError.drawingFailed
                 }
                 let still = run.writer.url.deletingPathExtension().appendingPathExtension("png")
-                try await PileSnapshotRenderer.writeStill(poster, identifier: nil, to: still)
+                // The still encodes away from the main actor while the movie finishes.
+                async let written: Void = PileSnapshotRenderer.writeStill(
+                    poster, identifier: nil, to: still)
+                try await run.writer.finish(
+                    hits: hits, before: .now + PileMovieWriter.finishTimeout)
+                try await written
                 let clip = PileMovie(
                     movie: run.writer.url, still: still, poster: poster, name: run.name)
                 Self.log.notice(
-                    "Recorded \(run.writer.frameCount) frames and \(hits.count) hits; the movie took \((ContinuousClock.now - began) / .seconds(1), format: .fixed(precision: 2)) s to write"
+                    "Recorded \(run.writer.encodedCount) of \(run.writer.frameCount) frames and \(hits.count) hits; the movie took \((ContinuousClock.now - began) / .seconds(1), format: .fixed(precision: 2)) s to write"
                 )
                 // A new chain while the movie was written leaves no place for it.
                 guard generation == self.generation else { return clip.remove() }

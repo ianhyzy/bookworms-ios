@@ -703,9 +703,10 @@ final class DominoScene {
     private struct Ending {
         /// Seconds since the last book fell.
         var clock: Float = 0
-        /// The view the camera moves from: the camera mode's as it moves on, or the view as it
-        /// showed when the camera mode did not film.
-        let source: Shot
+        /// The view the camera moves from, as it showed when the last book fell, and the
+        /// camera's motion then, which carries into the move (`DominoFinale.coast`).
+        let start: Transform
+        let motion: Motion
         /// The spread's places and view, turned to the camera's yaw.
         let slots: [PileSlot]
         let camera: PileCamera
@@ -745,6 +746,16 @@ final class DominoScene {
         var height: Float?
         var landed = false
     }
+
+    /// The camera's velocity, in units a second, and spin, in radians a second about its axis.
+    private struct Motion {
+        var velocity = SIMD3<Float>.zero
+        var spin = SIMD3<Float>.zero
+    }
+    /// The camera's motion over the last frame, none while a book's flight moves the camera,
+    /// which the finale carries on when it starts while a camera mode films (see
+    /// `startEnding`).
+    private var motion = Motion()
 
     /// A view to blend from: one that holds still, or a camera mode's, which moves on.
     private enum Shot {
@@ -1417,7 +1428,8 @@ final class DominoScene {
         }
         updateHand(by: deltaTime)
         updateFinale(by: deltaTime)
-        recorder.advance(by: deltaTime, phase: status.phase, progress: runProgress)
+        recorder.advance(
+            by: deltaTime, phase: status.phase, progress: runProgress, paused: flying != nil)
     }
 
     /// How far the chain has fallen along the path, from 0 at the first book to 1 at the last.
@@ -1665,14 +1677,14 @@ final class DominoScene {
     /// holds. The camera rises to look down at the overview's pitch on the table under the
     /// view's middle, with the view's turn, from the pile's default distance, so the book in
     /// front of it clears the chain, the veil dims the whole view, and a throw back comes from
-    /// no farther than in the pile (see `BookLifter`).
+    /// no farther than in the pile (see `BookLifter`). A recording of the run pauses until the
+    /// book is back, so the video leaves out the flight and the details.
     func lift(_ id: Int) -> Double? {
         guard root.scene != nil, isReady, ending == nil,
             let index = slots.firstIndex(where: { $0.book.id == id }),
             let landing = lifter.lift(
                 books[index], id: id, among: books, aspect: aspect, margin: Self.riseMargin)
         else { return nil }
-        recorder.interrupt()
         endCameraMove()
         flying = index
         for web in cobwebs.indices.reversed()
@@ -1785,17 +1797,18 @@ final class DominoScene {
     }
 
     /// Starts the finale once every book has fallen, no book flies, and the spread is laid out,
-    /// from the view as it shows: the camera mode's while it films, so its motion carries on
-    /// into the move, and otherwise the view held still.
+    /// from the view as it shows, with the camera's motion while a camera mode films, so the
+    /// move carries it on, and held still after a pinch or drag.
     private func startEnding() {
         guard !slots.isEmpty, next >= books.count, flying == nil, let spread else { return }
         let yaw = overviewCamera(matching: camera.transform).yaw
         let placed = DominoFinale.turned(spread.slots, camera: spread.camera, by: yaw)
-        let source: Shot =
-            follows && cameraMove == nil && handoff == nil ? .live(mode) : .still(camera.transform)
+        let moves = follows && cameraMove == nil
         handoff = nil
         cameraMove = nil
-        ending = Ending(source: source, slots: placed.slots, camera: placed.camera)
+        ending = Ending(
+            start: camera.transform, motion: moves ? motion : Motion(), slots: placed.slots,
+            camera: placed.camera)
     }
 
     /// Leaves the camera on `view`, where pinches and drags take over.
@@ -1872,18 +1885,25 @@ final class DominoScene {
             let book = books[flight.book]
             let snaps = order == last
             guard time >= (snaps ? DominoFinale.snapTime : DominoFinale.flightTime) else {
-                book.transform =
-                    snaps
-                    ? DominoFinale.snapPose(
-                        from: flight.from, to: flight.to,
-                        top: DominoFinale.snapTop(
-                            over: flight.to.translation, seenBy: ending.camera), time: time)
-                    : DominoFinale.pose(
+                guard snaps else {
+                    book.transform = DominoFinale.pose(
                         from: flight.from, to: flight.to, peak: flight.peak,
                         progress: time / DominoFinale.flightTime)
+                    continue
+                }
+                book.transform = DominoFinale.snapPose(
+                    from: flight.from, to: flight.to,
+                    top: DominoFinale.snapTop(over: flight.to.translation, seenBy: ending.camera),
+                    time: time)
+                stage.light(
+                    book,
+                    boost: DominoFinale.boost(
+                        at: book.transform.translation, over: flight.to.translation,
+                        radius: poolRadius ?? 6))
                 continue
             }
             book.transform = flight.to
+            if snaps { stage.light(book, boost: 0) }
             // Flights land in order, the flourish last, so the landed books are a prefix.
             if order == ending.landed {
                 ending.landed += 1
@@ -1996,12 +2016,17 @@ final class DominoScene {
         // it would be.
         if follows, isReady, cameraMove == nil { steer(deltaTime) }
         // The flight moves the camera while a book flies (see `aim`).
-        guard flightViews == nil else { return }
+        guard flightViews == nil else {
+            motion = Motion()
+            return
+        }
         var shown = current
         if let ending, ending.movesCamera, !reducesMotion {
             shown = DominoFinale.view(
-                from: transform(of: ending.source), to: ending.camera,
-                progress: ending.clock / DominoFinale.moveTime)
+                from: DominoFinale.coast(
+                    ending.start, velocity: ending.motion.velocity, spin: ending.motion.spin,
+                    time: ending.clock),
+                to: ending.camera, progress: ending.clock / DominoFinale.moveTime)
         } else if let blend = handoff {
             let time = blend.time + deltaTime
             let share = DominoCameraRig.ease(min(time / blend.duration, 1))
@@ -2016,10 +2041,28 @@ final class DominoScene {
                 shown.translation != camera.transform.translation
                 || shown.rotation != camera.transform.rotation
         #endif
+        if deltaTime > 0 { motion = Self.motion(from: camera.transform, to: shown, in: deltaTime) }
         camera.transform = shown
         #if DEBUG
             logCamera(deltaTime, moved: moved)
         #endif
+    }
+
+    /// The motion from `from` to `to` in `deltaTime` seconds, at most the speed of a blend
+    /// between cameras (`handoffSpeed`) and the Follow camera's fastest turn, so that a cut,
+    /// such as to the overview as Reduce Motion turns on, carries no leap into the finale.
+    private static func motion(from: Transform, to: Transform, in deltaTime: Float) -> Motion {
+        var turn = to.rotation * from.rotation.inverse
+        if turn.real < 0 { turn = simd_quatf(vector: -turn.vector) }
+        let velocity = (to.translation - from.translation) / deltaTime
+        let spin = turn.angle > 1e-6 ? turn.axis * turn.angle / deltaTime : .zero
+        func bounded(_ value: SIMD3<Float>, _ limit: Float) -> SIMD3<Float> {
+            let length = simd_length(value)
+            return length > limit ? value * limit / length : value
+        }
+        return Motion(
+            velocity: bounded(velocity, handoffSpeed),
+            spin: bounded(spin, DominoCameraRig.maximumTurnRate))
     }
 
     /// Moves the overview camera toward `overviewGoal` (`DominoOverviewSpring`).
