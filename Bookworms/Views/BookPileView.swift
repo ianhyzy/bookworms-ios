@@ -7,20 +7,23 @@ struct PileViewport: Equatable {
     var insets: EdgeInsets
 }
 
-/// The library as a physics toy: the first books, up to `maximumBooks` of them and
-/// `PileLayout.maximumVolume` liters, drop onto a table and pile up. While a new pile's first
-/// books get ready, a spinner shows over the table (`SceneLoading`), and every book falls in
-/// from above the top of the screen.
+/// The Desk scene: the library as a physics toy. The first books, up to `maximumBooks` of them
+/// and `PileLayout.maximumVolume` liters, drop onto a table and pile up. While a new pile's
+/// first books get ready, a spinner shows over the table (`SceneLoading`), and every book falls
+/// in from above the top of the screen.
 ///
-/// Drag a book to pick it up and throw it, tap one for its details, pinch to zoom, and turn two
-/// fingers to look around the pile. When the phone reports motion, the desk's **Tilt** tips the
-/// table or makes the phone the pile's box (`PileTilt`), and in either a hard shake throws the
-/// books. With the desk's drop by period on, the books drop a month, week, or year at a time
-/// (see `PileLayout.periods`). Collisions play haptic taps and, while the desk's **Sounds** is
-/// on, knocks (`ImpactFeedback`), only while the pile shows in the active app. With Reduce
-/// Motion on, books appear in tidy stacks instead of falling, tilt and shaking are off, and no
-/// dust drifts in the lamp's beam. The table fills the screen, but walls keep the books between
-/// the bars.
+/// Touch and hold a book to pick it up, with a light haptic tap, drag to carry it, and let go
+/// to throw it (`PileCarry`); tap one for its details, pinch to zoom, and turn two fingers to
+/// look around the pile. One finger's touch decides between a tap and a hold, and the first of
+/// a held book and a camera move to start keeps the fingers until they lift. When the phone
+/// reports motion, the desk's **Tilt** tips the table or makes the phone the pile's box
+/// (`PileTilt`), and in either a hard shake throws the books. With the desk's drop by period
+/// on, the books drop a month, week, or year at a time (see `PileLayout.periods`). Collisions
+/// play haptic taps and, while the desk's **Sounds** is on, knocks (`ImpactFeedback`), only
+/// while the pile shows in the active app. With Reduce Motion on, books appear in tidy stacks
+/// instead of falling, a held book neither swings nor flies but drops where it is let go, tilt
+/// and shaking are off, and no dust drifts in the lamp's beam. The table fills the screen, but
+/// walls keep the books between the bars.
 ///
 /// A tapped book rises out of the pile and flies to where `BookDetailView` draws its book, and
 /// the details fade in over the darkened pile once it lands (`LiftedDetails`). While they show,
@@ -62,7 +65,7 @@ struct BookPileView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     /// Set by **Tilt** in the desk's options menu.
-    @AppStorage("BookwormsPileTiltMode") private var tilt = PileTilt.table
+    @AppStorage("BookwormsPileTiltMode") private var tilt = PileTilt.off
     /// Set by the drop by period toggle in the desk's options menu.
     @AppStorage("BookwormsPileByPeriod") private var dropsByPeriod = false
     /// Set by **Sounds** in the desk's options menu.
@@ -80,12 +83,28 @@ struct BookPileView: View {
     /// book or in a tab that is not selected, where tilt must stay off.
     @State private var isShown = false
     @State private var sharesPile = false
-    /// Set while a finger holds a book. SwiftUI resets it when the drag ends or is cancelled,
-    /// so the book is let go either way.
-    @GestureState private var holdsBook = false
-    /// Set while fingers zoom or turn the camera, and reset like `holdsBook`, so the next
+    /// One finger's touch on the desk, from touching down until it lifts.
+    @State private var touch: Touch?
+    /// Counts books picked up, each of which plays a light haptic tap.
+    @State private var pickups = 0
+    /// Set while a finger touches the desk. SwiftUI resets it when the touch ends or is
+    /// cancelled, so a held book is let go either way.
+    @GestureState private var touches = false
+    /// Set while fingers zoom or turn the camera, and reset like `touches`, so the next
     /// gesture starts from the camera as it is.
     @GestureState private var movesCamera = false
+
+    /// What a finger on the desk is doing.
+    private enum Touch {
+        /// Resting until `PileCarry.holdDelay` passes, when `hold` picks up the book under it.
+        /// Lifting sooner taps.
+        case pressing(hold: Task<Void, Never>)
+        /// Carrying a book it picked up.
+        case holding
+        /// Moved before the hold, or held where no book could be picked up: it does nothing
+        /// more until it lifts.
+        case idle
+    }
 
     private struct DropRequest: Equatable {
         let ids: [Int]
@@ -109,8 +128,7 @@ struct BookPileView: View {
                 .overlay {
                     Color.clear
                         .contentShape(.rect)
-                        .gesture(throwBook)
-                        .gesture(openBook)
+                        .gesture(touchBook)
                         .simultaneousGesture(moveCamera)
                 }
                 .allowsHitTesting(details.lift == nil)
@@ -123,10 +141,10 @@ struct BookPileView: View {
         }
         .ignoresSafeArea()
         .accessibilityElement()
-        .accessibilityLabel("Pile of \(count)")
+        .accessibilityLabel("Desk with \(count)")
         .accessibilityValue(title)
         .accessibilityHint(
-            "Drag a book to throw it, or tap one for its details. To go through books one at a time, open Library."
+            "Touch and hold a book, then drag and let go to throw it, or tap one for its details. To go through books one at a time, open Library."
         )
         .accessibilityAction(named: dropTitle) { generation += 1 }
         .settingUp(scene.loading.isLoading)
@@ -217,7 +235,8 @@ struct BookPileView: View {
             if playsFeedback { scene.feedback.start() } else { scene.feedback.stop() }
         }
         .onChange(of: reduceMotion, initial: true) { scene.setDust(!reduceMotion) }
-        .onChange(of: holdsBook) { if !holdsBook { scene.endDrag() } }
+        .onChange(of: touches) { if !touches { endTouch() } }
+        .sensoryFeedback(.impact(weight: .light), trigger: pickups)
         .onChange(of: movesCamera) { if !movesCamera { scene.endCameraMove() } }
         .toolbar {
             if details.lift == nil {
@@ -258,28 +277,68 @@ struct BookPileView: View {
 
     private var dropTitle: String { reduceMotion ? "Stack again" : "Drop again" }
 
-    /// A drag that starts on a book picks it up and steers it under the finger; the scene's
-    /// own ray finds the book, since the view takes no entity-targeted gestures.
-    private var throwBook: some Gesture {
-        DragGesture(minimumDistance: 6)
-            .updating($holdsBook) { _, holds, _ in holds = true }
+    /// One finger on the desk, which taps, or holds a book to pick it up, carry it, and throw
+    /// it. The scene's own ray finds the book, since the view takes no entity-targeted
+    /// gestures. A zero-distance drag reports the touch from the moment it lands, which a long
+    /// press does not, so the hold's timer runs here.
+    private var touchBook: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .updating($touches) { _, touches, _ in touches = true }
             .onChanged { value in
                 let size = viewport?.size ?? .zero
-                guard let book = scene.heldBook ?? scene.book(at: value.startLocation, in: size)
-                else { return }
-                scene.drag(book, along: scene.ray(through: value.location, in: size))
+                switch touch {
+                case nil:
+                    let start = value.startLocation
+                    touch = .pressing(
+                        hold: Task {
+                            try? await Task.sleep(for: PileCarry.holdDelay)
+                            guard !Task.isCancelled else { return }
+                            if scene.pickUp(at: start, in: size, gentle: reduceMotion) {
+                                touch = .holding
+                                pickups += 1
+                            } else {
+                                touch = .idle
+                            }
+                        })
+                case .pressing(let hold) where Self.wandered(value):
+                    hold.cancel()
+                    touch = .idle
+                case .holding: scene.carry(to: value.location, in: size)
+                default: break
+                }
+            }
+            .onEnded { value in
+                let size = viewport?.size ?? .zero
+                switch touch {
+                case .pressing(let hold):
+                    hold.cancel()
+                    if !Self.wandered(value) { openBook(at: value.startLocation, in: size) }
+                case .holding:
+                    scene.throwBook(velocity: value.velocity, at: value.location, in: size)
+                default: break
+                }
+                touch = nil
             }
     }
 
-    private var openBook: some Gesture {
-        SpatialTapGesture()
-            .onEnded { value in
-                guard let entity = scene.book(at: value.location, in: viewport?.size ?? .zero),
-                    let id = scene.bookID(for: entity),
-                    let book = books.first(where: { $0.id == id })
-                else { return }
-                show(book)
-            }
+    /// Whether a touch moved too far to be a tap or a hold.
+    private static func wandered(_ value: DragGesture.Value) -> Bool {
+        hypot(value.translation.width, value.translation.height) > PileCarry.slop
+    }
+
+    /// Ends a touch that SwiftUI cancelled, dropping a held book where it is. After `onEnded`,
+    /// this finds nothing left to do.
+    private func endTouch() {
+        if case .pressing(let hold) = touch { hold.cancel() }
+        touch = nil
+        scene.endDrag()
+    }
+
+    private func openBook(at point: CGPoint, in size: CGSize) {
+        guard let entity = scene.book(at: point, in: size), let id = scene.bookID(for: entity),
+            let book = books.first(where: { $0.id == id })
+        else { return }
+        show(book)
     }
 
     /// Lifts `book` out of the pile to its details, or pushes them with Reduce Motion on or

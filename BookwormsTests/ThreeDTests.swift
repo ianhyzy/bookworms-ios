@@ -236,37 +236,68 @@ final class ThreeDTests: XCTestCase {
             ImpactSound.strength(impulse: 0.5 * 6, mass: 0.5),
             ImpactSound.strength(impulse: 0.5 * 12, mass: 0.5))
         XCTAssertEqual(ImpactSound.strength(impulse: 100, mass: 1), 1)
-        XCTAssertEqual(ImpactSound.kind(mass: 0.9), .thud)
-        XCTAssertEqual(ImpactSound.kind(mass: 0.2), .slap)
     }
 
     func testImpactSoundsAreRepeatableShortAndNormalized() {
-        for kind in ImpactSound.Kind.allCases {
-            let samples = ImpactSound.samples(kind, variant: 1)
-            XCTAssertEqual(samples, ImpactSound.samples(kind, variant: 1))
-            XCTAssertNotEqual(samples, ImpactSound.samples(kind, variant: 2))
-            XCTAssertLessThanOrEqual(Double(samples.count) / ImpactSound.sampleRate, 0.25)
+        XCTAssertEqual(ImpactSound.bank.count, ImpactSound.variants + 1)
+        for variant in ImpactSound.bank.indices {
+            let samples = ImpactSound.samples(variant: variant)
+            XCTAssertEqual(samples, ImpactSound.bank[variant])
+            XCTAssertLessThanOrEqual(
+                Double(samples.count) / ImpactSound.sampleRate,
+                variant == ImpactSound.deep ? 0.35 : 0.27)
             XCTAssertEqual(samples.map(abs).max() ?? 0, 0.9, accuracy: 0.0001)
             // It fades out rather than ending in a click.
             XCTAssertLessThan(samples.suffix(100).map(abs).max() ?? 1, 0.05)
         }
+        // The versions differ a little in pitch and length, and the deep knock is lower and
+        // longer than any of them.
+        let shapes = (0..<ImpactSound.variants).map(ImpactSound.shape(of:))
+        XCTAssertEqual(Set(shapes.map(\.pitch)).count, ImpactSound.variants)
+        let deep = ImpactSound.shape(of: ImpactSound.deep)
+        for shape in shapes {
+            XCTAssertEqual(shape.pitch, 1, accuracy: 0.04 + 1e-5)
+            XCTAssertEqual(shape.length, 1, accuracy: 0.12 + 1e-5)
+            XCTAssertLessThan(deep.pitch, shape.pitch)
+            XCTAssertGreaterThan(deep.length, shape.length)
+        }
     }
 
     func testABurstOfImpactsLeavesHeadroom() {
-        // Eight full-strength sounds 30 to 60 ms apart, the most that overlap, each taking the
-        // next variant, panned 0.8 to one side, where the mixer plays a sound at 0.99.
-        for kinds in [[ImpactSound.Kind.thud], [.slap], [.thud, .slap]] {
-            for spacing in [0.03, 0.04, 0.06] {
+        // Eight full-strength knocks 30 to 60 ms apart, the most that overlap, each a different
+        // version, panned 0.8 to one side, where the mixer plays a sound at 0.99.
+        for spacing in [0.03, 0.04, 0.06] {
+            for first in 0..<ImpactSound.variants {
                 let gap = Int(spacing * ImpactSound.sampleRate)
-                var mix = [Float](repeating: 0, count: gap * 8 + 12_000)
+                var mix = [Float](repeating: 0, count: gap * 8 + 16_000)
                 for hit in 0..<8 {
-                    let samples = ImpactSound.bank[kinds[hit % kinds.count]]![hit % 4]
+                    let samples = ImpactSound.bank[(first + hit) % ImpactSound.variants]
                     for (index, sample) in samples.enumerated() { mix[hit * gap + index] += sample }
                 }
                 let peak = (mix.map(abs).max() ?? 0) * ImpactSound.level * 0.99
-                XCTAssertLessThan(peak, 0.92, "\(kinds) \(spacing)")
+                XCTAssertLessThan(peak, 0.92, "\(first) \(spacing)")
             }
         }
+    }
+
+    @MainActor
+    func testKnocksNeverRepeatTwiceInARow() {
+        let feedback = ImpactFeedback()
+        feedback.startRecording()
+        for _ in 0..<100 {
+            feedback.advance(by: 0.1)
+            feedback.impact(impulse: 10, mass: 0.5, position: .zero, pan: { _ in 0 })
+        }
+        feedback.advance(by: 0.1)
+        feedback.slam(at: .zero, pan: { _ in 0 })
+        let records = feedback.finishRecording()
+        let variants = records.dropLast().map(\.variant)
+        XCTAssertEqual(variants.count, 100)
+        XCTAssertTrue(zip(variants, variants.dropFirst()).allSatisfy { $0 != $1 })
+        XCTAssertEqual(Set(variants), Set(0..<ImpactSound.variants))
+        // A slam plays the deep knock at full strength.
+        XCTAssertEqual(records.last?.variant, ImpactSound.deep)
+        XCTAssertEqual(records.last?.volume, 1)
     }
 
     @MainActor
@@ -284,8 +315,8 @@ final class ThreeDTests: XCTestCase {
         hit(0.01, mass: 0.4, after: 0.1)
         hit(0.8 * 20, mass: 0.8, after: 0.1)
         let records = feedback.finishRecording()
-        XCTAssertEqual(records.map(\.kind), [.slap, .thud])
-        XCTAssertEqual(records.map(\.variant), [0, 1])
+        XCTAssertEqual(records.count, 2)
+        XCTAssertNotEqual(records[0].variant, records[1].variant)
         XCTAssertEqual(records[0].time, 0.1, accuracy: 0.0001)
         XCTAssertEqual(records[1].time, 0.31, accuracy: 0.0001)
         XCTAssertEqual(records.map(\.pan), [0.5, 0.5])
@@ -320,8 +351,8 @@ final class ThreeDTests: XCTestCase {
         XCTAssertTrue(throttle.admit(0.2, at: 0.08))
     }
 
-    func testThreeDViewsAreTitledByName() {
-        XCTAssertEqual(ThreeDView.pile.title, "Pile")
+    func testTheDeskSceneKeepsItsSavedName() {
+        XCTAssertEqual(ThreeDView.pile.title, "Desk")
         XCTAssertEqual(ThreeDView(rawValue: "pile"), .pile)
     }
 }

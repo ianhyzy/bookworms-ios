@@ -4,9 +4,10 @@ import RealityKit
 import os
 
 /// A collision whose sound `ImpactFeedback` played, or would have played with **Sounds** on:
-/// what an offline mix needs to play the same sound at the same time.
+/// what a video's mix needs to play the same sound at the same time.
 struct ImpactRecord: Equatable, Sendable {
-    /// Seconds of simulation since the recording started.
+    /// Seconds of the scene's clock (`ImpactFeedback.advance(by:)`) since the recording
+    /// started.
     var time: TimeInterval
     /// The collision's impulse, in kilogram-units per second.
     var impulse: Float
@@ -14,8 +15,7 @@ struct ImpactRecord: Equatable, Sendable {
     var mass: Float
     /// Where the bodies touched, in scene coordinates.
     var position: SIMD3<Float>
-    /// The sound, one of `ImpactSound.bank`'s samples.
-    var kind: ImpactSound.Kind
+    /// The sound, an index into `ImpactSound.bank`.
     var variant: Int
     /// How loud the sound plays, from 0 to 1, before `ImpactSound.level`.
     var volume: Float
@@ -23,28 +23,23 @@ struct ImpactRecord: Equatable, Sendable {
     var pan: Float
 }
 
-/// How hard collisions land, and the sounds they make, computed without audio hardware so an
-/// offline renderer can mix the same sounds into a video.
+/// How hard collisions land, and the knock they make, computed without audio hardware so a
+/// video can mix the same sounds into its soundtrack.
+///
+/// Every hit plays one low knock, in `variants` versions a little apart in pitch and length,
+/// so a long chain does not repeat one sound, and the finale's last landing plays the `deep`
+/// one.
 enum ImpactSound {
-    enum Kind: CaseIterable, Sendable {
-        /// A heavy book's dull knock.
-        case thud
-        /// A light book's papery slap.
-        case slap
-    }
-
-    static let sampleRate: Double = 44_100
-    /// The gain of every voice. Eight full-strength thuds 30 ms apart, the most that overlap,
+    static let sampleRate: Double = 48_000
+    /// The gain of every voice. Eight full-strength knocks 30 ms apart, the most that overlap,
     /// sum to about 1.5, and panning a voice 0.8 to one side plays it at 0.99 there, so this
     /// keeps the mix below 0.9 without a limiter.
     static let level: Float = 0.6
-    /// The variations of each kind, which differ in pitch and noise.
-    static let variants = 4
-    /// Books at least this heavy, in kilograms, thud; lighter books slap. In the pile, a
-    /// 320-page book of average size weighs about 0.33 kg, and one of about 480 pages 0.5 kg,
-    /// so about a third of a typical library thuds. A domino weighs 0.34 to 0.56 kg by its
-    /// height (`DominoLayout.mass(height:)`).
-    static let heavyMass: Float = 0.5
+    /// The knock's versions, and the index of the deep one that follows them in `bank`.
+    static let variants = 8
+    static let deep = variants
+    /// The knock's lowest pitch, in hertz, before it drops as it decays.
+    static let pitch: Float = 76
     /// Hits weaker than this are neither heard nor felt, so a settling pile stays quiet.
     static let threshold: Float = 0.04
 
@@ -71,61 +66,52 @@ enum ImpactSound {
         return min(1, hardness * weight)
     }
 
-    static func kind(mass: Float) -> Kind { mass >= heavyMass ? .thud : .slap }
+    /// The pitch and length of the knock `variant`, as factors: the versions spread evenly over
+    /// 4 percent either way in pitch and 12 percent in length, in an order where neighbors
+    /// differ in both, and the deep knock is 18 percent lower and 40 percent longer.
+    static func shape(of variant: Int) -> (pitch: Float, length: Float) {
+        guard variant < variants else { return (0.82, 1.4) }
+        func spread(_ salt: Float) -> Float {
+            (Float(variant) * 0.618_034 + salt).truncatingRemainder(dividingBy: 1) - 0.5
+        }
+        return (1 + 0.08 * spread(0.1), 1 + 0.24 * spread(0.6))
+    }
 
-    /// The mono samples of a sound at `sampleRate`, peaking at 0.9. The same kind and variant
-    /// always give the same samples.
+    /// The mono samples of the knock `variant` at `sampleRate`, peaking at 0.9. The same
+    /// variant always gives the same samples.
     ///
-    /// A thud is a low knock: a sine near 90 Hz that drops in pitch as it decays over about
-    /// 0.2 seconds, an overtone, and a short burst of low noise for the contact. A slap is
-    /// about 0.1 seconds of bright noise, like paper meeting paper, over a faint low body.
-    static func samples(_ kind: Kind, variant: Int) -> [Float] {
-        let pitch = 1 + (Float(variant) - Float(variants - 1) / 2) * 0.09
+    /// A knock is a sine near `pitch` that drops as it decays over about 0.2 seconds, an
+    /// overtone, and a short burst of low noise for the contact, all scaled by its shape.
+    static func samples(variant: Int) -> [Float] {
+        let shape = shape(of: variant)
         var seed = UInt32(truncatingIfNeeded: 0x1234_5678 &+ variant &* 7919)
         func noise() -> Float {
             seed = seed &* 1_664_525 &+ 1_013_904_223
             return Float(seed >> 8) / Float(1 << 23) - 1
         }
-        let duration = kind == .thud ? 0.24 : 0.12
-        let count = Int(duration * sampleRate)
+        let count = Int(Double(0.24 * shape.length) * sampleRate)
         var samples = [Float](repeating: 0, count: count)
         var low: Float = 0
-        var high: Float = 0
         var phase: Float = 0
         let step = Float(1 / sampleRate)
         for index in 0..<count {
             let time = Float(index) * step
             let attack = min(1, time / 0.0015)
-            let white = noise()
-            switch kind {
-            case .thud:
-                let frequency = 88 * pitch * (1 + 0.35 * exp(-time / 0.02))
-                phase += 2 * .pi * frequency * step
-                // A one-pole low-pass keeps the contact's noise dull.
-                low += (white - low) * 0.08
-                samples[index] =
-                    attack
-                    * (sin(phase) * exp(-time / 0.055) + 0.35 * sin(2.6 * phase)
-                        * exp(-time / 0.025) + 0.9 * low * exp(-time / 0.012))
-            case .slap:
-                // High-passed noise for the paper, over a quiet 170 Hz body.
-                low += (white - low) * 0.25 * pitch
-                high = white - low
-                phase += 2 * .pi * 170 * pitch * step
-                samples[index] =
-                    attack
-                    * (high * exp(-time / 0.016) + 0.25 * sin(phase) * exp(-time / 0.03))
-            }
+            let frequency = pitch * shape.pitch * (1 + 0.35 * exp(-time / 0.02))
+            phase += 2 * .pi * frequency * step
+            // A one-pole low-pass keeps the contact's noise dull.
+            low += (noise() - low) * 0.08
+            samples[index] =
+                attack
+                * (sin(phase) * exp(-time / (0.055 * shape.length)) + 0.35 * sin(2.6 * phase)
+                    * exp(-time / (0.025 * shape.length)) + 0.9 * low * exp(-time / 0.012))
         }
         let peak = samples.map(abs).max() ?? 1
         return peak > 0 ? samples.map { $0 / peak * 0.9 } : samples
     }
 
-    /// Every kind's variants, synthesized once.
-    static let bank: [Kind: [[Float]]] = Dictionary(
-        uniqueKeysWithValues: Kind.allCases.map { kind in
-            (kind, (0..<variants).map { samples(kind, variant: $0) })
-        })
+    /// Every version of the knock, then the deep one, synthesized once.
+    static let bank: [[Float]] = (0...deep).map { samples(variant: $0) }
 }
 
 /// Lets a burst of collisions through at a bounded rate: a hit passes if `interval` has gone by
@@ -150,10 +136,10 @@ struct ImpactThrottle {
 /// The scene passes each `CollisionEvents.Began` to `collide(_:pan:)`. A hit plays a Core
 /// Haptics tap whose intensity follows its strength (`ImpactSound.strength`, over the scene's
 /// `speeds`), from a floor every admitted hit can be felt at, sharper for a light book, and,
-/// while `playsSounds`, a short synthesized sound: a thud for a heavy book, a slap for a light
-/// one, panned to where the hit shows on screen. Taps come at most every 60 ms and sounds every
-/// 30 ms, unless a hit is much stronger (`ImpactThrottle`). Sounds take the variants in turn,
-/// so a recording names the samples that played.
+/// while `playsSounds`, a low synthesized knock panned to where the hit shows on screen. Taps
+/// come at most every 60 ms and sounds every 30 ms, unless a hit is much stronger
+/// (`ImpactThrottle`). Each knock is one of the knock's versions, picked in a fixed shuffled
+/// order that never plays one twice in a row, so a recording names the samples that played.
 ///
 /// `ImpactAudio` plays the sounds away from the main actor. Devices without haptics, such as
 /// the Simulator, only play sounds. `start` and `stop` bound both engines' lifetimes. The
@@ -162,7 +148,7 @@ struct ImpactThrottle {
 /// the silent switch.
 ///
 /// `startRecording` keeps every hit whose sound passes the throttle, with its simulation time,
-/// until `finishRecording`, so an offline renderer can mix the same `ImpactSound` samples.
+/// until `finishRecording`, so a video can mix the same `ImpactSound` samples.
 @MainActor
 final class ImpactFeedback {
     /// Whether hits play sounds. **Sounds** in the desk's options menu sets it.
@@ -178,6 +164,10 @@ final class ImpactFeedback {
 
     /// The least intensity a haptic tap plays at: lighter taps go unfelt in the hand.
     static let tapFloor: Float = 0.35
+    /// Books at least this heavy, in kilograms, play a duller tap. In the pile, a 320-page book
+    /// of average size weighs about 0.33 kg, and one of about 480 pages 0.5 kg; a domino weighs
+    /// 0.34 to 0.56 kg by its height (`DominoLayout.mass(height:)`).
+    static let heavyMass: Float = 0.5
 
     nonisolated private static let log = Logger(
         subsystem: "gay.ian.Bookworms.iOS", category: "impacts")
@@ -191,8 +181,9 @@ final class ImpactFeedback {
     private var hapticsRunning = false
     private var hapticThrottle = ImpactThrottle(interval: 0.06)
     private var soundThrottle = ImpactThrottle(interval: 0.03)
-    /// Counts the sounds, which take the variants in turn.
-    private var sounds = 0
+    /// The last knock's version, and the state of the generator that picks the next.
+    private var variant = 0
+    private var shuffle: UInt32 = 0x9E37_79B9
     /// Seconds of simulation, which `advance` counts.
     private var clock: TimeInterval = 0
     private var recording: (start: TimeInterval, records: [ImpactRecord])?
@@ -241,7 +232,28 @@ final class ImpactFeedback {
     ) {
         let strength = max(
             minimum, ImpactSound.strength(impulse: impulse, mass: mass, speeds: speeds))
-        var played = (tap: false, sound: false)
+        play(
+            strength, impulse: impulse, mass: mass, position: position, pan: pan,
+            sharpness: mass < Self.heavyMass ? 0.6 : 0.25)
+    }
+
+    /// Plays a firm landing at `position`, such as the finale's last book: the deep knock at
+    /// full strength and the strongest tap.
+    func slam(at position: SIMD3<Float>, pan: (SIMD3<Float>) -> Float) {
+        play(
+            1, impulse: 0, mass: 0, position: position, pan: pan, sharpness: 0.45,
+            variant: ImpactSound.deep)
+    }
+
+    /// Plays a hit of `strength` with a tap of `sharpness` and the knock `variant`, or the next
+    /// version of the knock, through the throttles. `impulse` and `mass` are the hit's, for the
+    /// recording.
+    private func play(
+        _ strength: Float, impulse: Float, mass: Float, position: SIMD3<Float>,
+        pan: (SIMD3<Float>) -> Float, sharpness: Float, variant: Int? = nil
+    ) {
+        // Whether the hit played a tap, and the knock it played, if any.
+        var played: (tap: Bool, knock: Int?) = (false, nil)
         #if DEBUG
             defer { logHit(impulse: impulse, mass: mass, strength: strength, played: played) }
         #endif
@@ -249,26 +261,30 @@ final class ImpactFeedback {
         // The throttle admits taps whether or not the hardware plays them, so a device plays
         // the same taps as the log counts.
         played.tap = hapticThrottle.admit(strength, at: clock)
-        if played.tap, haptics != nil {
-            tap(strength: strength, sharpness: mass < ImpactSound.heavyMass ? 0.6 : 0.25)
-        }
+        if played.tap, haptics != nil { tap(strength: strength, sharpness: sharpness) }
         guard soundThrottle.admit(strength, at: clock) else { return }
-        played.sound = true
-        let kind = ImpactSound.kind(mass: mass)
-        let variant = sounds % ImpactSound.variants
+        let variant = variant ?? nextVariant()
+        played.knock = variant
         let stereo = pan(position)
-        sounds += 1
         if let start = recording?.start {
             recording?.records
                 .append(
                     ImpactRecord(
                         time: clock - start, impulse: impulse, mass: mass, position: position,
-                        kind: kind, variant: variant, volume: strength, pan: stereo))
+                        variant: variant, volume: strength, pan: stereo))
         }
         guard isActive, playsSounds else { return }
-        Task { [audio] in
-            await audio.play(kind, variant: variant, volume: strength, pan: stereo)
-        }
+        Task { [audio] in await audio.play(variant, volume: strength, pan: stereo) }
+    }
+
+    /// The next version of the knock: one of the others than the last, picked by a linear
+    /// congruential generator, so the order seems random but repeats from launch to launch.
+    private func nextVariant() -> Int {
+        shuffle = shuffle &* 1_664_525 &+ 1_013_904_223
+        variant =
+            (variant + 1 + Int(shuffle >> 16) % (ImpactSound.variants - 1))
+            % ImpactSound.variants
+        return variant
     }
 
     #if DEBUG
@@ -278,19 +294,23 @@ final class ImpactFeedback {
 
         /// Simulator hook: with `-BookwormsImpactLog YES`, appends every hit the scene reports
         /// to `Library/Caches/Bookworms/impact-log.csv`: the clock, its impulse, the body's mass,
-        /// its strength, and whether it played a tap and a sound, which the throttles decide.
-        /// The Simulator plays no haptics, so there `tap` says whether a device would have.
-        /// The file is written every 20 hits.
+        /// its strength, whether it played a tap and a sound, which the throttles decide, and
+        /// the knock it played (`ImpactSound.bank`'s index, or -1 for none). The Simulator plays
+        /// no haptics, so there `tap` says whether a device would have. The file is written
+        /// every 20 hits and at the deep knock that ends a dominoes finale.
         private func logHit(
-            impulse: Float, mass: Float, strength: Float, played: (tap: Bool, sound: Bool)
+            impulse: Float, mass: Float, strength: Float, played: (tap: Bool, knock: Int?)
         ) {
             guard Self.logsHits else { return }
-            if hitLog.isEmpty { hitLog = ["clock,impulse,mass,strength,tap,sound"] }
+            if hitLog.isEmpty { hitLog = ["clock,impulse,mass,strength,tap,sound,knock"] }
             hitLog.append(
                 [clock, Double(impulse), Double(mass), Double(strength)]
                     .map { String(format: "%.4f", $0) }
-                    .joined(separator: ",") + ",\(played.tap ? 1 : 0),\(played.sound ? 1 : 0)")
-            guard hitLog.count.isMultiple(of: 20) else { return }
+                    .joined(separator: ",")
+                    + ",\(played.tap ? 1 : 0),\(played.knock == nil ? 0 : 1),\(played.knock ?? -1)")
+            guard hitLog.count.isMultiple(of: 20) || played.knock == ImpactSound.deep else {
+                return
+            }
             let url = URL.cachesDirectory.appending(path: "Bookworms/impact-log.csv")
             try? FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -301,9 +321,6 @@ final class ImpactFeedback {
     /// Starts keeping every hit whose sound passes the throttle, replacing a recording in
     /// progress.
     func startRecording() { recording = (clock, []) }
-
-    /// The hits recorded so far, in the order they happened, while a recording runs.
-    var recorded: [ImpactRecord] { recording?.records ?? [] }
 
     /// Stops recording and returns the hits in the order they happened.
     func finishRecording() -> [ImpactRecord] {
@@ -378,7 +395,7 @@ actor ImpactAudio {
     private var isRunning = false
     private var engine: AVAudioEngine?
     private var voices: [AVAudioPlayerNode] = []
-    private var buffers: [ImpactSound.Kind: [AVAudioPCMBuffer]] = [:]
+    private var buffers: [AVAudioPCMBuffer] = []
     private var nextVoice = 0
     private var activatedSession = false
     private var observers: [any NSObjectProtocol] = []
@@ -394,10 +411,9 @@ actor ImpactAudio {
         if running { setUp() } else { tearDown() }
     }
 
-    /// Plays a variant of `kind` at `volume` (0 to 1), panned to `pan`, if the engine runs.
-    func play(_ kind: ImpactSound.Kind, variant: Int, volume: Float, pan: Float) {
-        guard let engine, let variants = buffers[kind], variants.indices.contains(variant)
-        else { return }
+    /// Plays the knock `variant` at `volume` (0 to 1), panned to `pan`, if the engine runs.
+    func play(_ variant: Int, volume: Float, pan: Float) {
+        guard let engine, buffers.indices.contains(variant) else { return }
         if !engine.isRunning {
             let now = ContinuousClock.now
             if let lastRestart, now - lastRestart < .seconds(1) { return }
@@ -408,7 +424,7 @@ actor ImpactAudio {
         nextVoice = (nextVoice + 1) % voices.count
         voice.volume = volume * ImpactSound.level
         voice.pan = min(1, max(-1, pan))
-        voice.scheduleBuffer(variants[variant], at: nil, options: .interrupts)
+        voice.scheduleBuffer(buffers[variant], at: nil, options: .interrupts)
         if !voice.isPlaying { try? voice.playAudio() }
     }
 
@@ -436,9 +452,7 @@ actor ImpactAudio {
                     return voice
                 }
             if buffers.isEmpty {
-                buffers = ImpactSound.bank.mapValues { variants in
-                    variants.compactMap { samples in Self.buffer(samples, format: format) }
-                }
+                buffers = ImpactSound.bank.compactMap { Self.buffer($0, format: format) }
             }
             engine.prepare()
             try engine.start()

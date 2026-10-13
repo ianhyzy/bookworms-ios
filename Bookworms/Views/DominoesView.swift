@@ -19,7 +19,10 @@ import SwiftUI
 /// **Camera** in the desk's options menu chooses how the camera films the chain
 /// (`DominoCameraMode`). Pinch to zoom, and drag to look along the path; either takes the
 /// camera over until the next push. **Set up again** stands every book again.
-/// Collisions play taps and, while the desk's **Sounds** is on, clacks (`ImpactFeedback`).
+/// Collisions play taps and, while the desk's **Sounds** is on, knocks (`ImpactFeedback`).
+/// Once the books have gathered, **Share** offers the run's video, which the scene recorded as
+/// it played (`DominoRecorder`), and its last frame, through the share sheet; without a
+/// recording, it offers an image of the view.
 ///
 /// The scene's view lives only while Desk is on screen (`DeskSceneView`), so a hidden tab runs
 /// no frame loop; the scene keeps its books, so the chain is as the reader left it on return,
@@ -55,8 +58,10 @@ struct DominoesView: View {
     /// Set between `onAppear` and `onDisappear`. The view stays in the hierarchy under a pushed
     /// book or in a tab that is not selected.
     @State private var isShown = false
-    /// Set while the video sheet is open.
-    @State private var sharesRun = false
+    /// The files the share sheet offers, while it shows.
+    @State private var files: SharedFiles?
+    /// What the reader chose to share while the run's video was still being written.
+    @State private var waitingShare: Shared?
     /// Set while fingers move the camera, and reset when they lift.
     @GestureState private var movesCamera = false
     /// Where the current touch started, for a touch and hold, which `LongPressGesture` does not
@@ -142,6 +147,7 @@ struct DominoesView: View {
         .onDisappear {
             isShown = false
             scene.endCameraMove()
+            scene.recorder.interrupt()
             // `onChange(of: playsFeedback)` does not run for a view that is being removed.
             scene.feedback.stop()
             if !showsBook { details.putBack(scene) }
@@ -184,9 +190,19 @@ struct DominoesView: View {
                 AccessibilityNotification.Announcement(status).post()
             default: break
             }
-            #if DEBUG
-                if scene.status.phase == .finished, DominoVideoDebug.opensSheet { sharesRun = true }
-            #endif
+        }
+        // The recording takes the view's layout and heading as the chain stands.
+        .onChange(of: recordingLayout, initial: true) { _, layout in
+            scene.recorder.layout = layout
+        }
+        // iOS may stop the hardware encoder in the background.
+        .onChange(of: scenePhase) {
+            if scenePhase == .background { scene.recorder.interrupt() }
+        }
+        .onChange(of: scene.recorder.isRecording) {
+            guard !scene.recorder.isRecording, let waiting = waitingShare else { return }
+            waitingShare = nil
+            share(waiting)
         }
         .toolbar {
             if details.lift == nil {
@@ -195,15 +211,13 @@ struct DominoesView: View {
                         generation += 1
                     }
                 }
-                // A video of the run, once the books have gathered.
+                // The run's video and image, once the books have gathered.
                 if scene.status.phase == .finished {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("Share", systemImage: "square.and.arrow.up") { sharesRun = true }
-                    }
+                    ToolbarItem(placement: .topBarTrailing) { shareMenu }
                 }
             }
         }
-        .sheet(isPresented: $sharesRun) { PileVideoSheet(dominoes: books, title: title) }
+        .shareSheet($files)
         // Outside the viewport reading, so the path starts below the button, which hides with
         // the other controls while a lifted book's details show.
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -222,12 +236,70 @@ struct DominoesView: View {
             DominoFinaleCard(
                 title: title, count: books.count, pages: DominoFinaleCard.pages(of: books),
                 scale: viewport.size.width / ShareAspect.story.size.width,
-                insets: EdgeInsets(top: 8, leading: 0, bottom: 0, trailing: 0)
+                insets: EdgeInsets(
+                    top: DominoFinaleCard.liveTop, leading: 0, bottom: 0, trailing: 0)
             )
             .allowsHitTesting(false)
             .transition(.opacity.animation(.easeIn(duration: 0.6)))
             // VoiceOver reads the same totals as the scene's value.
             .accessibilityHidden(true)
+        }
+    }
+
+    /// What **Share** shares.
+    private enum Shared {
+        case video, image
+    }
+
+    /// **Share**: the run's video or its last frame, or, when no recording of the run was
+    /// kept, an image of the view. A choice made while the video is still being written waits
+    /// for it, with a spinner in the button's place.
+    @ViewBuilder private var shareMenu: some View {
+        let recorder = scene.recorder
+        if waitingShare != nil {
+            ProgressView()
+                .accessibilityLabel("Preparing to share")
+        } else {
+            Menu("Share", systemImage: "square.and.arrow.up") {
+                if recorder.clip != nil || recorder.isRecording {
+                    Button("Video", systemImage: "video") { share(.video) }
+                    Button("Image", systemImage: "photo") { share(.image) }
+                } else {
+                    Section("To share a video, set up again and watch the run through.") {
+                        Button("Image", systemImage: "photo") { share(.image) }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Opens the share sheet for the run's video or image, once the video is written, or for
+    /// an image of the view when there is no recording.
+    private func share(_ shared: Shared) {
+        let recorder = scene.recorder
+        if let clip = recorder.clip {
+            files = SharedFiles(urls: [shared == .video ? clip.movie : clip.still])
+        } else if recorder.isRecording {
+            waitingShare = shared
+        } else if shared == .video {
+            model.toasts.show(.failure("Couldn't make the video"))
+        } else {
+            Task {
+                do {
+                    files = SharedFiles(urls: [try await recorder.snapshot()])
+                } catch {
+                    model.toasts.show(.failure("Couldn't make the image"))
+                }
+            }
+        }
+    }
+
+    /// The view's layout and heading, for the recording.
+    private var recordingLayout: DominoRecorder.Layout? {
+        viewport.map {
+            DominoRecorder.Layout(
+                viewport: $0, title: title, count: books.count,
+                pages: DominoFinaleCard.pages(of: books))
         }
     }
 

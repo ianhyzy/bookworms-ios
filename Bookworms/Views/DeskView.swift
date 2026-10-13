@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// The books in a 3D scene on a desk under a lamp, in the chosen `ThreeDView`: the Pile, which
-/// drops them onto the desk (`BookPileView`), or Dominoes, which stands them on end and topples
-/// them (`DominoesView`).
+/// The books in a 3D scene on a desk under a lamp, in the chosen `ThreeDView`: the Desk scene,
+/// which drops them onto the desk to throw around (`BookPileView`), or Dominoes, which stands
+/// them on end and topples them (`DominoesView`).
 ///
 /// The scenes show the read books and current reads finished within their own time frame,
 /// which the button under the bar chooses (`FrameChip`), apart from Library's. Filtering and
@@ -100,7 +100,7 @@ struct DeskView: View {
         ThreeDView.offered.contains(threeDView) ? threeDView : .dominoes
     }
 
-    /// Reads `shownView` and saves the reader's choice, for the **Dominoes | Pile** control.
+    /// Reads `shownView` and saves the reader's choice, for the **Dominoes | Desk** control.
     private var shownViewChoice: Binding<ThreeDView> {
         Binding {
             shownView
@@ -136,7 +136,7 @@ struct DeskView: View {
     }
 }
 
-/// Desk's title and bar: the **Dominoes | Pile** control and the options menu. While a lifted
+/// Desk's title and bar: the **Dominoes | Desk** control and the options menu. While a lifted
 /// book's details show, they give way to the details' **Back** and **Share**
 /// (`LiftedDetailsOverlay`).
 ///
@@ -152,8 +152,8 @@ private struct DeskBar: ViewModifier {
     @Binding var designedOnly: Bool
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// How the pile follows the phone's tilt, which `BookPileView` reads.
-    @AppStorage("BookwormsPileTiltMode") private var tilt = PileTilt.table
+    /// How the Desk scene follows the phone's tilt, which `BookPileView` reads.
+    @AppStorage("BookwormsPileTiltMode") private var tilt = PileTilt.off
     /// Whether the pile drops period by period, which `BookPileView` reads.
     @AppStorage("BookwormsPileByPeriod") private var dropsByPeriod = false
     /// Whether collisions in 3D play sounds, which the 3D views read.
@@ -320,9 +320,10 @@ struct FrameChip: View {
 
 /// The scenes Desk can show. Each takes the desk's books within the time frame that all of them
 /// share, and orders them as the view needs. Adding a view takes a case here, titled by its raw
-/// value, its arm in `DeskView.content`, and an entry in `offered`, which the
-/// **Dominoes | Pile** control lists.
+/// value unless `title` names it, its arm in `DeskView.content`, and an entry in `offered`,
+/// which the **Dominoes | Desk** control lists.
 enum ThreeDView: String, CaseIterable, Identifiable {
+    /// The Desk scene. Its raw value keeps the name saved choices and launch arguments use.
     case pile
     case dominoes
     case bookworm
@@ -332,5 +333,5 @@ enum ThreeDView: String, CaseIterable, Identifiable {
     static let offered: [ThreeDView] = [.dominoes, .pile]
 
     var id: Self { self }
-    var title: String { rawValue.capitalized }
+    var title: String { self == .pile ? "Desk" : rawValue.capitalized }
 }

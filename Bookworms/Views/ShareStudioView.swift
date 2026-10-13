@@ -2,8 +2,9 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// The Share tab: choose a template and its options, preview the exact export, and share it.
+/// The Share tab: choose a template and its options, preview the export, and share it.
 ///
+/// The preview shows the rendered image without the credit, which only the shared files carry.
 /// Each option change renders the image again after a short pause and cancels a render still in
 /// progress; a new design for a drawn book renders after it instead. Covers and spine fonts
 /// load before each render, because `ImageRenderer` draws synchronously and would capture
@@ -38,6 +39,10 @@ struct ShareStudioView: View {
     @State private var filmsPile = false
     /// The Pile template's books and heading when **Video** was tapped, which the video films.
     @State private var film: (books: [CloudBook], title: String) = ([], "")
+    /// The files the share sheet offers while it is open.
+    @State private var files: SharedFiles?
+    /// Whether **Share** is adding the credit and writing the files.
+    @State private var isPreparing = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init() {
@@ -120,6 +125,7 @@ struct ShareStudioView: View {
                 form(isPending: isPending, hasNoBooks: request.covers.isEmpty)
             }
         }
+        .shareSheet($files)
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
         .sheet(isPresented: $filmsPile) {
             PileVideoSheet(books: film.books, title: film.title, aspect: aspect, seed: seed)
@@ -202,14 +208,25 @@ struct ShareStudioView: View {
         .toolbar {
             if !images.isEmpty {
                 ToolbarItem(placement: .topBarTrailing) {
-                    // Every page goes in one share, in order, so Instagram can post them as a
-                    // carousel or a run of stories, and Photos saves them all.
-                    ShareLink(items: images) { image in
-                        SharePreview(image.name, image: Image(uiImage: image.image))
+                    Button("Share", systemImage: "square.and.arrow.up") {
+                        Task { await share() }
                     }
-                    .disabled(isPending)
+                    .disabled(isPending || isPreparing)
                 }
             }
+        }
+    }
+
+    /// Opens the share sheet with every page, in order, so Instagram can post them as a
+    /// carousel or a run of stories, and Photos saves them all. Only the shared files carry the
+    /// credit.
+    private func share() async {
+        isPreparing = true
+        defer { isPreparing = false }
+        do {
+            files = try await SharedFiles.images(images)
+        } catch {
+            model.toasts.show(.failure("Couldn't prepare the image"))
         }
     }
 
@@ -664,7 +681,7 @@ private struct RenderRequest: Equatable {
     }
 }
 
-/// A rendered share image, which the share sheet receives as PNG data.
+/// A rendered share image and the name its file takes, which `ShareLink` receives as PNG data.
 struct ShareImage: Transferable {
     let image: UIImage
     let name: String
@@ -730,14 +747,15 @@ private struct ShareBookPicker: View {
     /// `-BookwormsShareFrame <year:2025|month:2025-08|lifetime>`, `-BookwormsShareBook <id>`,
     /// `-BookwormsShareCover <threeD|flat>`, `-BookwormsShareDirection <lovedMore|lovedLess>`,
     /// and `-BookwormsShareSeed <n>` set its options, and `-BookwormsShareSamples <n>` adds
-    /// fictional reviews and current reads (`samples(_:)`). Each render is then written to
+    /// fictional reviews and current reads (`samples(_:)`). Each render is then written, with
+    /// the credit that sharing adds, to
     /// `Library/Caches/Bookworms/share-debug.png`; `-BookwormsShareBatch` renders a list of
     /// option sets in one launch (`ShareStudioView.renderBatch()`). A Year Stack's later pages go
     /// to `share-debug-2.png` and so on.
     enum ShareDebug {
         /// Writes the first page as `share-debug<name>.png` and later pages as
-        /// `share-debug<name>-2.png` and so on.
-        static func write(_ images: [ShareImage], name: String = "") {
+        /// `share-debug<name>-2.png` and so on, with the credit, as sharing exports them.
+        @MainActor static func write(_ images: [ShareImage], name: String = "") {
             guard UserDefaults.standard.string(forKey: "BookwormsShareTemplate") != nil else {
                 return
             }
@@ -747,7 +765,7 @@ private struct ShareBookPicker: View {
                     path: "Bookworms/share-debug\(name)\(page).png")
                 try? FileManager.default.createDirectory(
                     at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try? image.image.pngData()?.write(to: url, options: .atomic)
+                try? image.image.withShareCredit()?.pngData()?.write(to: url, options: .atomic)
             }
         }
 

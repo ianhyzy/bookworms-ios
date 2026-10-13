@@ -1,16 +1,21 @@
+import CoreImage
 import Metal
 import RealityKit
 import SwiftUI
 import os
 
-/// A pile video on disk: the movie, and the still of its last frame, which pair as a Live
-/// Photo. Both live in a folder of their own in the temporary directory.
+/// A video on disk: the MP4 to share, and the still of its last frame. A pile video's still
+/// is a JPEG that pairs with `livePhoto`, the movie's QuickTime copy, as a Live Photo; a
+/// dominoes run's still is a PNG to share. The files live in a folder of their own in the
+/// temporary directory.
 struct PileMovie: Sendable {
     let movie: URL
     let still: URL
+    /// The Live Photo's movie, for a pile video.
+    var livePhoto: URL?
     /// The last frame, for previews.
     let poster: CGImage
-    /// The name to share the movie under, such as "Pile 2025".
+    /// The name to share the movie under, such as "Desk 2025".
     let name: String
 
     /// Deletes the movie, the still, and their folder.
@@ -32,10 +37,11 @@ extension PileSnapshotRenderer {
     /// knock itself.
     ///
     /// The scene steps on the main actor, `PileMovieTiming.stepsPerFrame` steps per frame.
-    /// Each frame renders into a Metal texture, which a blit copies into memory (`FrameTarget`);
-    /// `PileMovieWriter` copies it into a pixel buffer, draws the heading and credit over it
-    /// there, and encodes it. Hits that `ImpactFeedback` would play are recorded, and the
-    /// soundtrack is mixed from them (`ImpactMix`) once the frames are done.
+    /// Each frame renders into a Metal texture (`FrameTarget`), and `FrameComposer` draws it,
+    /// with the heading and credit over it, into a pixel buffer that `PileMovieWriter` encodes.
+    /// Hits that `ImpactFeedback` would play are recorded, and the soundtrack is mixed from
+    /// them (`ImpactMix`) once the frames are done. The movie is an MP4 to share, with a
+    /// QuickTime copy and a JPEG of the last frame that pair as a Live Photo.
     ///
     /// The render's turn ends with the last frame, so finishing the movie and the still never
     /// holds up the live pile or a share image. Each frame must render and reach the encoder
@@ -59,12 +65,12 @@ extension PileSnapshotRenderer {
         let layout = PileSnapshotLayout(aspect: aspect, count: shown.count)
         removeStaleClips()
         let folder = URL.temporaryDirectory.appending(path: "PileVideo-\(UUID().uuidString)")
-        let name = "Pile \(title)"
+        let name = "Desk \(title)"
         let file = name.replacing("/", with: "-").replacing(":", with: "-")
         let identifier = UUID().uuidString
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let movie = folder.appending(path: "\(file).mov")
+            let movie = folder.appending(path: "\(file).mp4")
             let still = folder.appending(path: "\(file).jpg")
             try await claim()
             let filmed: (writer: PileMovieWriter, poster: CGImage, hits: [ImpactRecord])
@@ -72,13 +78,15 @@ extension PileSnapshotRenderer {
                 defer { release() }
                 filmed = try await film(
                     shown, title: title, count: books.count, layout: layout, seed: seed,
-                    model: model, to: movie, identifier: identifier, progress: progress,
-                    preview: preview)
+                    model: model, to: movie, progress: progress, preview: preview)
             }
             try await filmed.writer.finish(
-                hits: filmed.hits, before: .now + PileMovieWriter.finishTimeout)
+                hits: filmed.hits, livePhoto: identifier,
+                before: .now + PileMovieWriter.finishTimeout)
             try await writeStill(filmed.poster, identifier: identifier, to: still)
-            return PileMovie(movie: movie, still: still, poster: filmed.poster, name: name)
+            return PileMovie(
+                movie: movie, still: still, livePhoto: PileMovieWriter.livePhotoURL(for: movie),
+                poster: filmed.poster, name: name)
         } catch {
             try? FileManager.default.removeItem(at: folder)
             throw error
@@ -121,12 +129,14 @@ extension PileSnapshotRenderer {
     /// frame.
     private static func film(
         _ books: [CloudBook], title: String, count: Int, layout: PileSnapshotLayout,
-        seed: UInt64, model: AppModel, to url: URL, identifier: String,
-        progress: (Double?) -> Void, preview: (CGImage) -> Void
+        seed: UInt64, model: AppModel, to url: URL, progress: (Double?) -> Void,
+        preview: (CGImage) -> Void
     ) async throws -> (writer: PileMovieWriter, poster: CGImage, hits: [ImpactRecord]) {
-        let width = Int(layout.aspect.size.width)
-        let height = Int(layout.aspect.size.height)
+        let size = layout.aspect.size
+        let width = Int(size.width)
+        let height = Int(size.height)
         let target = try FrameTarget(width: width, height: height)
+        let composer = try FrameComposer()
         guard let overlay = overlay(title: title, count: count, layout: layout) else {
             throw PileSnapshotError.drawingFailed
         }
@@ -207,11 +217,11 @@ extension PileSnapshotRenderer {
             }
         }
 
-        let writer = try PileMovieWriter(
-            url: url, width: width, height: height, identifier: identifier)
+        let writer = try PileMovieWriter(url: url, width: width, height: height)
         let last = PileMovieTiming.frameCount - 1
         do {
-            try writer.start(stillFrame: last)
+            try writer.start()
+            let pool = try writer.framePool()
             var poster: CGImage?
             scene.feedback.startRecording()
             for frame in 0...last {
@@ -228,12 +238,26 @@ extension PileSnapshotRenderer {
                 try renderer.updateAndRender(
                     deltaTime: PileMovieTiming.stepDuration, cameraOutput: target.output,
                     actionsAfterRender: [.signal(target.event, value: signal)])
-                try await target.read(after: signal, before: deadline)
-                if frame == 0, target.isBlank { throw PileSnapshotError.drawingFailed }
-                let snapshot = try await writer.appendFrame(
-                    target.buffer.contents(), bytesPerRow: target.bytesPerRow, overlay: overlay,
-                    at: frame, snapshot: frame == last ? 1 : frame % 6 == 0 ? 2 : nil,
-                    before: deadline)
+                if frame == 0 {
+                    try await target.read(after: signal, before: deadline)
+                    if target.isBlank { throw PileSnapshotError.drawingFailed }
+                }
+                let picture = CVReadOnlyPixelBuffer(try pool.makeMutablePixelBuffer())
+                try await target.run(after: signal, before: deadline) { commands in
+                    guard let render = composer.image(of: target.texture) else {
+                        throw PileSnapshotError.drawingFailed
+                    }
+                    try composer.render(
+                        composer.frame(
+                            of: render, crop: CGRect(origin: .zero, size: size), size: size,
+                            overlays: [(overlay, 1)]),
+                        into: picture, on: commands)
+                }
+                let snapshot =
+                    frame == last
+                    ? composer.cgImage(of: picture)
+                    : frame % 6 == 0 ? composer.cgImage(of: picture, scale: 0.5) : nil
+                try await writer.append(picture, at: frame, before: deadline)
                 if let snapshot { preview(snapshot) }
                 if frame == last { poster = snapshot }
                 progress(Double(frame + 1) / Double(PileMovieTiming.frameCount))
@@ -251,27 +275,27 @@ extension PileSnapshotRenderer {
         }
     }
 
-    /// The heading and the credit of a pile image, without the pile, in Display P3, to draw
-    /// over each frame.
+    /// The heading and the credit of a pile image, without the pile, to draw over each frame.
     private static func overlay(title: String, count: Int, layout: PileSnapshotLayout)
-        -> CGImage?
+        -> CIImage?
     {
         let renderer = ImageRenderer(
             content: PileSnapshotCard(pile: nil, title: title, count: count, layout: layout))
         renderer.scale = 1
         renderer.isOpaque = false
-        return renderer.cgImage.flatMap(PileMovieOverlay.displayP3)
+        return renderer.cgImage.map { CIImage(cgImage: $0) }
     }
 }
 
 /// Where `RealityRenderer` draws a pile image's or video's frames, and where the CPU reads them.
 ///
-/// RealityKit renders into a private `bgra8Unorm_srgb` texture, and a blit copies each frame
-/// into a shared buffer once the render signals `event`. The frames have
-/// Display P3 primaries with the sRGB transfer curve.
+/// RealityKit renders into a private `bgra8Unorm_srgb` texture. Once the render signals
+/// `event`, a blit copies the frame into a shared buffer (`read(after:before:)`), or other GPU
+/// work, such as drawing a video frame, reads the texture (`run(after:before:_:)`). The frames
+/// have Display P3 primaries with the sRGB transfer curve.
 ///
-/// If the render never signals, the copy would wait forever, and with it the render's turn
-/// that the live pile and every share image wait on. `read(after:before:)` therefore signals
+/// If the render never signals, that work would wait forever, and with it the render's turn
+/// that the live pile and every share image wait on. `run(after:before:_:)` therefore signals
 /// the event itself at its deadline.
 @MainActor
 struct FrameTarget {
@@ -281,8 +305,8 @@ struct FrameTarget {
     let output: RealityRenderer.CameraOutput
     let buffer: any MTLBuffer
     let bytesPerRow: Int
+    let texture: any MTLTexture
     private let queue: any MTLCommandQueue
-    private let texture: any MTLTexture
 
     init(width: Int, height: Int) throws {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
@@ -303,26 +327,37 @@ struct FrameTarget {
         output = try RealityRenderer.CameraOutput(.singleProjection(colorTexture: texture))
     }
 
-    /// Copies the frame into `buffer` once the render signals `event` with `value`, and waits
-    /// for the copy, even when the task is cancelled, so the render never ends while RealityKit
-    /// still draws into the texture.
-    ///
-    /// - Throws: `PileSnapshotError` when the frame did not render by `deadline` or the copy
-    ///   failed.
+    /// Copies the frame into `buffer` once the render signals `event` with `value` (see
+    /// `run(after:before:_:)`).
     func read(after value: UInt64, before deadline: ContinuousClock.Instant) async throws {
+        try await run(after: value, before: deadline) { commands in
+            guard let blit = commands.makeBlitCommandEncoder() else {
+                throw PileSnapshotError.drawingFailed
+            }
+            blit.copy(
+                from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
+                sourceSize: MTLSize(width: texture.width, height: texture.height, depth: 1),
+                to: buffer, destinationOffset: 0, destinationBytesPerRow: bytesPerRow,
+                destinationBytesPerImage: bytesPerRow * texture.height)
+            blit.endEncoding()
+        }
+    }
+
+    /// Runs the GPU work that `encode` adds to a command buffer once the render signals
+    /// `event` with `value`, and waits for it, even when the task is cancelled, so the render
+    /// never ends while RealityKit still draws into the texture.
+    ///
+    /// - Throws: `PileSnapshotError` when the frame did not render by `deadline` or the work
+    ///   failed, and the errors of `encode`.
+    func run(
+        after value: UInt64, before deadline: ContinuousClock.Instant,
+        _ encode: (any MTLCommandBuffer) throws -> Void
+    ) async throws {
         guard let commands = queue.makeCommandBuffer() else {
             throw PileSnapshotError.drawingFailed
         }
         commands.encodeWaitForEvent(event, value: value)
-        guard let blit = commands.makeBlitCommandEncoder() else {
-            throw PileSnapshotError.drawingFailed
-        }
-        blit.copy(
-            from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
-            sourceSize: MTLSize(width: texture.width, height: texture.height, depth: 1),
-            to: buffer, destinationOffset: 0, destinationBytesPerRow: bytesPerRow,
-            destinationBytesPerImage: bytesPerRow * texture.height)
-        blit.endEncoding()
+        try encode(commands)
         let event = self.event
         let watchdog = Task {
             guard (try? await Task.sleep(until: deadline)) != nil, event.signaledValue < value
@@ -337,7 +372,7 @@ struct FrameTarget {
         watchdog.cancel()
         guard await !watchdog.value, commands.status == .completed else {
             Self.log.error(
-                "A frame did not render by its deadline (copy status \(commands.status.rawValue))")
+                "A frame did not render by its deadline (status \(commands.status.rawValue))")
             throw PileSnapshotError.drawingFailed
         }
     }

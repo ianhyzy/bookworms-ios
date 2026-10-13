@@ -4,42 +4,27 @@ import SwiftUI
 import UIKit
 import os
 
-/// Films the pile as a six-second video, then shares the movie or saves it as a Live Photo;
-/// or films a run of the dominoes, then shares the movie or its last frame as an image.
+/// Films the pile as a six-second video, then shares the MP4 or saves the clip as a Live Photo.
 ///
 /// The video renders as soon as the sheet opens, with its progress and its latest frame in the
-/// preview (see `PileSnapshotRenderer.renderMovie` and `renderDominoMovie`). Pile images and
-/// videos take turns in the order they start. The screen stays awake while the video renders.
-/// When the app stops being active, the render stops, since iOS suspends the GPU and the
-/// encoder in the background; it starts again when the app is active again, and the seed makes
-/// the same clip. Closing the sheet cancels a render in progress, and the video's files are
-/// deleted once the sheet is gone. The finished clip loops in the preview, except with Reduce
-/// Motion on, when it waits for Play. For the pile, **Share** offers the movie file, and
-/// **Save as Live Photo** asks to add to Photos, then saves the clip's last frame paired with
-/// the clip. For the dominoes, **Video** and **Image** share the movie file and its last frame.
+/// preview (see `PileSnapshotRenderer.renderMovie`). Pile images and videos take turns in the
+/// order they start. The screen stays awake while the video renders. When the app stops being
+/// active, the render stops, since iOS suspends the GPU and the encoder in the background; it
+/// starts again when the app is active again, and the seed makes the same clip. Closing the
+/// sheet cancels a render in progress, and the video's files are deleted once the sheet is
+/// gone. The finished clip loops in the preview, except with Reduce Motion on, when it waits
+/// for **Play**; a tap pauses or plays it. The preview leaves out the credit at the clip's
+/// bottom edge, which the shared MP4 and the Live Photo carry. **Share** offers the MP4 in the
+/// share sheet, which reports the result in a toast (`shareSheet(_:onComplete:)`). **Save as Live Photo** asks to add to Photos, then saves the
+/// clip's last frame paired with the clip's QuickTime copy, and reports the result in a toast.
 struct PileVideoSheet: View {
-    /// What the sheet films.
-    enum Subject {
-        /// The pile's books falling into the share image's spread, at `aspect` and `seed`.
-        case pile(books: [CloudBook], title: String, aspect: ShareAspect, seed: UInt64)
-        /// A run of the dominoes of `books`, as a story-size clip.
-        case dominoes(books: [CloudBook], title: String)
-    }
-
-    let subject: Subject
+    let books: [CloudBook]
+    let title: String
+    let aspect: ShareAspect
+    let seed: UInt64
 
     nonisolated private static let log = Logger(
         subsystem: "gay.ian.Bookworms.iOS", category: "video")
-
-    /// Films the pile of `books` under the heading `title`.
-    init(books: [CloudBook], title: String, aspect: ShareAspect, seed: UInt64) {
-        subject = .pile(books: books, title: title, aspect: aspect, seed: seed)
-    }
-
-    /// Films a run of the dominoes of `books` under the heading `title`.
-    init(dominoes books: [CloudBook], title: String) {
-        subject = .dominoes(books: books, title: title)
-    }
 
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -54,13 +39,10 @@ struct PileVideoSheet: View {
     @State private var failed = false
     @State private var footage = Footage()
     @State private var player: AVQueuePlayer?
+    @State private var isPlaying = false
     @State private var looper: AVPlayerLooper?
-    @State private var saving = Saving.idle
-
-    private enum Saving: Equatable {
-        case idle, inProgress, saved
-        case failed(String)
-    }
+    @State private var files: SharedFiles?
+    @State private var isSaving = false
 
     /// Owns the video's files, and deletes them when the sheet's state goes away. The sheet's
     /// `onDisappear` cannot tell that from the share sheet covering it.
@@ -73,10 +55,15 @@ struct PileVideoSheet: View {
         NavigationStack {
             VStack(spacing: 20) {
                 preview
-                if let movie { saveControls(movie) }
+                if movie != nil {
+                    Button("Save as Live Photo", systemImage: "livephoto") {
+                        Task { await saveLivePhoto() }
+                    }
+                    .disabled(isSaving)
+                }
             }
             .padding()
-            .navigationTitle(isPile ? "Pile video" : "Dominoes video")
+            .navigationTitle("Desk video")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -86,44 +73,61 @@ struct PileVideoSheet: View {
                         Button(role: .close) { dismiss() }
                     }
                 }
-                if let movie, isPile {
+                if let movie {
                     ToolbarItem(placement: .primaryAction) {
-                        ShareLink(
-                            item: movie.movie,
-                            preview: SharePreview(
-                                movie.name, image: Image(decorative: movie.poster, scale: 1)))
+                        Button("Share", systemImage: "square.and.arrow.up") {
+                            files = SharedFiles(urls: [movie.movie])
+                        }
                     }
                 }
             }
         }
+        .shareSheet($files)
         // Stops the render when the app stops being active, and starts it again on return; a
         // finished clip stays.
         .task(id: scenePhase == .active) {
             if scenePhase == .active { await render() }
         }
-        // Dark from either tab, like Share pile: the clip's heading and table are dark.
+        // Dark from either tab, like Share desk: the clip's heading and table are dark.
         .preferredColorScheme(.dark)
     }
 
+    /// The clip, or its latest frame and progress while it renders. The frames end in the
+    /// credit, which the app leaves out: the preview is `ShareCredit.height` shorter than the
+    /// clip at the bottom, and as much at the top, above the heading, and fills its width, so
+    /// the credit falls outside it. The clip has no system controls, whose full-screen view
+    /// would show the whole frame: a tap pauses or plays it, and **Play** shows while it is
+    /// paused.
     private var preview: some View {
         ZStack {
             // Fills the video's shape before there is one.
             Rectangle().fill(.quaternary)
-            if let player {
-                VideoPlayer(player: player)
-            } else if failed {
-                ContentUnavailableView(
-                    isPile ? "Couldn't film the pile" : "Couldn't film the dominoes",
-                    systemImage: "exclamationmark.triangle",
-                    description: Text(
-                        isPile
-                            ? "Close this, then try Shuffle or another size."
-                            : "Close this, then try again."
-                    ))
-            } else {
-                if let frame {
-                    Image(decorative: frame, scale: 1).resizable()
+            Color.clear.overlay {
+                if let player {
+                    FilledPlayer(player: player)
+                        .onTapGesture { play(!isPlaying) }
+                        .accessibilityElement()
+                        .accessibilityLabel("Video preview")
+                        .accessibilityAction(named: isPlaying ? "Pause" : "Play") {
+                            play(!isPlaying)
+                        }
+                } else if let frame, !failed {
+                    Image(decorative: frame, scale: 1).resizable().scaledToFill()
                 }
+            }
+            if player != nil, !isPlaying {
+                Button("Play", systemImage: "play.fill") { play(true) }
+                    .labelStyle(.iconOnly)
+                    .font(.title)
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.circle)
+                    .controlSize(.large)
+            }
+            if failed {
+                ContentUnavailableView(
+                    "Couldn't film the desk", systemImage: "exclamationmark.triangle",
+                    description: Text("Close this, then try Shuffle or another size."))
+            } else if player == nil {
                 Group {
                     if let progress {
                         ProgressView(value: progress) {
@@ -132,7 +136,7 @@ struct PileVideoSheet: View {
                             Text(progress.formatted(.percent.precision(.fractionLength(0))))
                         }
                     } else {
-                        ProgressView(isPile ? "Dropping books" : "Standing books up")
+                        ProgressView("Dropping books")
                     }
                 }
                 .padding()
@@ -142,81 +146,24 @@ struct PileVideoSheet: View {
                 .frame(maxHeight: .infinity, alignment: frame == nil ? .center : .bottom)
             }
         }
-        .aspectRatio(aspect.size.width / aspect.size.height, contentMode: .fit)
+        .aspectRatio(
+            aspect.size.width / (aspect.size.height - 2 * ShareCredit.height), contentMode: .fit
+        )
         .clipShape(.rect(cornerRadius: 12))
         .frame(maxHeight: .infinity)
-    }
-
-    private var isPile: Bool {
-        if case .pile = subject { return true }
-        return false
-    }
-
-    private var aspect: ShareAspect {
-        if case .pile(_, _, let aspect, _) = subject { return aspect }
-        return .story
-    }
-
-    /// The pile's **Save as Live Photo**, or the dominoes' choice of the movie or its last
-    /// frame.
-    @ViewBuilder
-    private func saveControls(_ movie: PileMovie) -> some View {
-        if !isPile {
-            HStack(spacing: 24) {
-                ShareLink(
-                    item: movie.movie,
-                    preview: SharePreview(
-                        movie.name, image: Image(decorative: movie.poster, scale: 1))
-                ) {
-                    Label("Video", systemImage: "video")
-                }
-                ShareLink(
-                    item: ShareImage(image: UIImage(cgImage: movie.poster), name: movie.name),
-                    preview: SharePreview(
-                        movie.name, image: Image(decorative: movie.poster, scale: 1))
-                ) {
-                    Label("Image", systemImage: "photo")
-                }
-            }
-            .buttonStyle(.borderedProminent)
-        } else {
-            Button("Save as Live Photo", systemImage: "livephoto") {
-                Task { await save(movie) }
-            }
-            .disabled(saving == .inProgress || saving == .saved)
-        }
-        switch saving {
-        case .idle, .inProgress:
-            EmptyView()
-        case .saved:
-            Label("Saved to Photos", systemImage: "checkmark.circle")
-                .foregroundStyle(.secondary)
-        case .failed(let message):
-            Text(message)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-        }
     }
 
     private func render() async {
         guard movie == nil, !failed else { return }
         let application = UIApplication.shared
         let wasIdleTimerDisabled = application.isIdleTimerDisabled
-        // No one touches the screen while it renders, which takes up to a minute.
+        // No one touches the screen while it renders.
         application.isIdleTimerDisabled = true
         defer { application.isIdleTimerDisabled = wasIdleTimerDisabled }
         do {
-            let made: PileMovie =
-                switch subject {
-                case .pile(let books, let title, let aspect, let seed):
-                    try await PileSnapshotRenderer.renderMovie(
-                        books: books, title: title, aspect: aspect, seed: seed, model: model,
-                        progress: { progress = $0 }, preview: { frame = $0 })
-                case .dominoes(let books, let title):
-                    try await PileSnapshotRenderer.renderDominoMovie(
-                        books: books, title: title, model: model, progress: { progress = $0 },
-                        preview: { frame = $0 })
-                }
+            let made = try await PileSnapshotRenderer.renderMovie(
+                books: books, title: title, aspect: aspect, seed: seed, model: model,
+                progress: { progress = $0 }, preview: { frame = $0 })
             frame = nil
             // A render cancelled after its last check still returns.
             guard !Task.isCancelled else { return made.remove() }
@@ -225,10 +172,10 @@ struct PileVideoSheet: View {
             let player = AVQueuePlayer()
             looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: made.movie))
             self.player = player
-            if !reduceMotion { player.play() }
+            play(!reduceMotion)
             AccessibilityNotification.Announcement("Video ready").post()
             #if DEBUG
-                if isPile { PileVideoDebug.write(made) } else { DominoVideoDebug.write(made) }
+                PileVideoDebug.write(made)
             #endif
         } catch is CancellationError {
             return
@@ -241,13 +188,21 @@ struct PileVideoSheet: View {
         }
     }
 
-    /// Saves the clip and its last frame to Photos as one Live Photo, with the app's permission
-    /// to add photos.
-    private func save(_ movie: PileMovie) async {
-        saving = .inProgress
+    /// Plays or pauses the clip.
+    private func play(_ plays: Bool) {
+        isPlaying = plays
+        if plays { player?.play() } else { player?.pause() }
+    }
+
+    /// Saves the clip's QuickTime copy and its last frame to Photos as one Live Photo, with the
+    /// app's permission to add photos, and shows the result in a toast.
+    private func saveLivePhoto() async {
+        guard let movie, let livePhoto = movie.livePhoto else { return }
+        isSaving = true
+        defer { isSaving = false }
         let access = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
         guard access == .authorized || access == .limited else {
-            saving = .failed("To save, allow Bookworms to add to Photos in Settings.")
+            model.toasts.show(.failure("Allow Bookworms to add to Photos in Settings"))
             return
         }
         do {
@@ -255,13 +210,36 @@ struct PileVideoSheet: View {
                 .performChanges {
                     let request = PHAssetCreationRequest.forAsset()
                     request.addResource(with: .photo, fileURL: movie.still, options: nil)
-                    request.addResource(with: .pairedVideo, fileURL: movie.movie, options: nil)
+                    request.addResource(with: .pairedVideo, fileURL: livePhoto, options: nil)
                 }
-            saving = .saved
-            AccessibilityNotification.Announcement("Saved to Photos").post()
+            model.toasts.show(
+                Toast(message: "Saved to Photos", systemImage: "checkmark.circle.fill"))
         } catch {
-            saving = .failed("The Live Photo could not be saved.")
+            Self.log.error("The Live Photo could not be saved: \(error)")
+            model.toasts.show(.failure("Couldn't save to Photos"))
         }
+    }
+}
+
+/// A player layer whose video fills its view, cropping the video's edges, which SwiftUI's
+/// `VideoPlayer` cannot do.
+private struct FilledPlayer: UIViewRepresentable {
+    let player: AVPlayer
+
+    final class PlayerView: UIView {
+        override static var layerClass: AnyClass { AVPlayerLayer.self }
+        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+    }
+
+    func makeUIView(context: Context) -> PlayerView {
+        let view = PlayerView()
+        view.playerLayer.videoGravity = .resizeAspectFill
+        view.playerLayer.player = player
+        return view
+    }
+
+    func updateUIView(_ view: PlayerView, context: Context) {
+        view.playerLayer.player = player
     }
 }
 
@@ -269,8 +247,9 @@ struct PileVideoSheet: View {
     /// Simulator hooks, since a script cannot tap **Video**.
     ///
     /// With `-BookwormsPileShare YES`, `-BookwormsPileVideo YES` also opens the pile's video
-    /// sheet, and each finished video is copied to `Library/Caches/Bookworms/pile-video-debug.mov`
-    /// with its still at `pile-video-debug.jpg`.
+    /// sheet, and each finished video is copied to `Library/Caches/Bookworms/pile-video-debug.mp4`,
+    /// with its Live Photo copy at `pile-video-debug.mov` and its still at
+    /// `pile-video-debug.jpg`.
     enum PileVideoDebug {
         static var opensSheet: Bool { UserDefaults.standard.bool(forKey: "BookwormsPileVideo") }
 
@@ -278,9 +257,11 @@ struct PileVideoSheet: View {
             guard opensSheet else { return }
             let folder = URL.cachesDirectory.appending(path: "Bookworms")
             try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            for (source, name) in [
-                (movie.movie, "pile-video-debug.mov"), (movie.still, "pile-video-debug.jpg"),
-            ] {
+            let files =
+                [
+                    (movie.movie, "pile-video-debug.mp4"), (movie.still, "pile-video-debug.jpg"),
+                ] + [movie.livePhoto.map { ($0, "pile-video-debug.mov") }].compactMap(\.self)
+            for (source, name) in files {
                 let target = folder.appending(path: name)
                 try? FileManager.default.removeItem(at: target)
                 try? FileManager.default.copyItem(at: source, to: target)
