@@ -2,7 +2,7 @@ import RealityKit
 import SwiftUI
 import UIKit
 
-/// How the pile follows the phone's tilt, which **Tilt** in **Sort and filter** sets.
+/// How the pile follows the phone's tilt, which **Tilt** in the desk's options menu sets.
 enum PileTilt: String, CaseIterable, Identifiable {
     /// The table stays level, and the pile reads no motion, so shakes do nothing either.
     case off

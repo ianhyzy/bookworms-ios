@@ -148,7 +148,7 @@ struct ImpactThrottle {
 /// until `finishRecording`, so an offline renderer can mix the same `ImpactSound` samples.
 @MainActor
 final class ImpactFeedback {
-    /// Whether hits play sounds. **Sounds** in **Sort and filter** sets it.
+    /// Whether hits play sounds. **Sounds** in the desk's options menu sets it.
     var playsSounds = true {
         didSet {
             guard playsSounds != oldValue, isActive else { return }

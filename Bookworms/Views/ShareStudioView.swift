@@ -753,8 +753,9 @@ private struct ShareBookPicker: View {
 
         @MainActor private static var switchesTabs = false
 
-        /// With `-BookwormsShareTabs "shelf:0 share:8"`, selects each tab once its seconds pass
-        /// after the previous entry. It checks the Shelf's pile while the Share tab renders one.
+        /// With `-BookwormsShareTabs "desk:0 share:8"`, selects each tab, named by its `AppTab`
+        /// raw value, once its seconds pass after the previous entry. It checks the Desk's pile
+        /// while the Share tab renders one.
         @MainActor static func switchTabs(_ model: AppModel) {
             guard !switchesTabs,
                 let schedule = UserDefaults.standard.string(forKey: "BookwormsShareTabs")
@@ -765,7 +766,7 @@ private struct ShareBookPicker: View {
                 for entry in schedule.split(separator: " ") {
                     let parts = entry.split(separator: ":")
                     try? await Task.sleep(for: .seconds(Double(parts.last ?? "") ?? 0))
-                    model.selectedTab = parts.first == "shelf" ? .shelf : .share
+                    model.selectedTab = AppTab(rawValue: String(parts.first ?? "")) ?? .share
                 }
             }
         }

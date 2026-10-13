@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The details of a book that a 3D view lifts out of its scene, and the sequence that opens and
-/// closes them, for `BookPileView` and `DominoesView`. `ShelfView` keeps it, so the shelf's bar
+/// closes them, for `BookPileView` and `DominoesView`. `DeskView` keeps it, so the desk's bar
 /// gives way to the details' **Back** and **Share** while they show.
 ///
 /// A tap lifts the book (see `LiftingScene`). The details join the hierarchy at once, hidden,

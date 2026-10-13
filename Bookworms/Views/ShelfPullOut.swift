@@ -355,7 +355,7 @@ struct ShelfPullOutStage: ViewModifier {
                 if let book = pullOut.book { ShelfPullOutLayer(book: book, pullOut: pullOut) }
             }
             .onAppear { pullOut.keepsForShare = false }
-            // Another tab or 3D closes the details at once, except for the book's Share, which
+            // Another tab closes the details at once, except for the book's Share, which
             // keeps them for the reader's return, as pushed details stay.
             .onDisappear { if !pullOut.keepsForShare { pullOut.close() } }
     }

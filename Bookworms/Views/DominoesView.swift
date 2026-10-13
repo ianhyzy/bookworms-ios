@@ -15,29 +15,30 @@ import SwiftUI
 /// (`LiftedDetails`), and **Back** returns it (see `DominoScene`). With Reduce Motion on, or when
 /// the scene cannot lift the book, `open` pushes the details instead, and the chain is as the
 /// reader left it on return.
-/// **Camera** in the shelf's **Sort and filter** chooses how the camera films the chain
+/// **Camera** in the desk's options menu chooses how the camera films the chain
 /// (`DominoCameraMode`). Pinch to zoom, and drag to look along the path; either takes the
 /// camera over until the next push. **Set up again** stands every book again.
-/// Collisions play taps and, while the shelf's **Sounds** is on, clacks (`ImpactFeedback`).
+/// Collisions play taps and, while the desk's **Sounds** is on, clacks (`ImpactFeedback`).
 ///
-/// Leaving stops the haptic and audio engines. Leaving other than for details, such as for
-/// another tab, also puts a lifted book back at once and frees the books and textures, and they
-/// stand again on return. While a pile image renders, the scene leaves the view and a lifted
+/// Leaving stops the haptic and audio engines and disables the table and books, so nothing
+/// simulates or draws out of sight. Leaving other than for details, such as for another tab,
+/// also puts a lifted book back at once and frees the books and textures, and they stand again
+/// on return. While a pile image renders, the scene leaves the view and a lifted
 /// book goes back, as `BookPileView` explains.
 struct DominoesView: View {
     let books: [CloudBook]
     /// The name of the books' time frame.
     let title: String
-    /// The details of a book lifted out of the chain, which the shelf's bar also reads.
+    /// The details of a book lifted out of the chain, which the desk's bar also reads.
     let details: LiftedDetails
     let open: (CloudBook) -> Void
 
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
-    /// Set by **Sounds** in the shelf's **Sort and filter** menu.
+    /// Set by **Sounds** in the desk's options menu.
     @AppStorage("BookwormsThreeDSounds") private var sounds = true
-    /// Set by **Camera** in the shelf's **Sort and filter** menu.
+    /// Set by **Camera** in the desk's options menu.
     @AppStorage("BookwormsDominoCamera") private var cameraMode = DominoCameraMode.overview
     @State private var scene = DominoScene()
     @State private var viewport: PileViewport?
@@ -48,7 +49,8 @@ struct DominoesView: View {
     /// Set while pushed details cover the chain, or while the lifted book's details wait for
     /// the reader to return from the Share tab, so leaving keeps it.
     @State private var showsBook = false
-    /// Set between `onAppear` and `onDisappear`.
+    /// Set between `onAppear` and `onDisappear`. The view stays in the hierarchy under a pushed
+    /// book or in a tab that is not selected.
     @State private var isShown = false
     /// Set while fingers move the camera, and reset when they lift.
     @GestureState private var movesCamera = false
@@ -92,7 +94,7 @@ struct DominoesView: View {
         .accessibilityElement()
         .accessibilityLabel("Dominoes of \(count)")
         .accessibilityValue("\(title). \(cobwebs)\(status)")
-        .accessibilityHint("To go through books one at a time, choose Stack or Shelf.")
+        .accessibilityHint("To go through books one at a time, open Library.")
         .accessibilityActions {
             if scene.status.phase.waitsForPush {
                 Button("Push the next book") { scene.pushNext() }
@@ -133,12 +135,16 @@ struct DominoesView: View {
         .onAppear {
             showsBook = false
             isShown = true
+            scene.root.isEnabled = true
         }
         .onDisappear {
             isShown = false
             scene.endCameraMove()
             // `onChange(of: playsFeedback)` does not run for a view that is being removed.
             scene.feedback.stop()
+            // A hidden tab keeps its `RealityView`, which RealityKit goes on updating and
+            // drawing, so the root is disabled until the view shows again.
+            scene.root.isEnabled = false
             guard !showsBook else { return }
             details.putBack(scene)
             scene.release()

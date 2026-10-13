@@ -8,7 +8,7 @@ import SwiftUI
 /// or a segment of the worm names the book. A tally of the books and pages eaten so far shows
 /// under the worm. With Reduce Motion on, the worm shows curled up after the meal at once, with
 /// its tally, and no dust drifts in the lamp's beam. Collisions and bites play taps and, while
-/// the shelf's **Sounds** is on, sounds, only while the view shows in the active app. Leaving
+/// the desk's **Sounds** is on, sounds, only while the view shows in the active app. Leaving
 /// the view releases the books and their textures, and the meal starts over on return.
 ///
 /// As `BookPileView` does, the view takes its entities out of its scene while a pile image
@@ -24,7 +24,7 @@ struct BookwormView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
-    /// Set by **Sounds** in the shelf's **Sort and filter** menu.
+    /// Set by **Sounds** in the desk's options menu.
     @AppStorage("BookwormsThreeDSounds") private var sounds = true
     @State private var scene = BookwormScene()
     /// Counts **Restart** presses; each starts the meal over.

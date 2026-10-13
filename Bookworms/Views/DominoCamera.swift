@@ -1,7 +1,7 @@
 import Foundation
 import simd
 
-/// The cameras that **Camera** in **Sort and filter** offers for the dominoes.
+/// The cameras that **Camera** in the desk's options menu offers for the dominoes.
 enum DominoCameraMode: String, CaseIterable, Identifiable {
     /// Frames the whole path, eases across the rows after the falling books, and eases back
     /// once all have fallen.
