@@ -182,9 +182,11 @@ extension PileTray {
     }
 
     /// Fits the tray between the bars that cover `viewport`'s edges, as `camera` sees it.
+    /// Returns `nil` when the bars leave no room between them.
     init?(viewport: PileViewport, pileHeight: Float = 4.5, camera: PileCamera = PileCamera()) {
         let height = Float(viewport.size.height)
-        guard viewport.size.width > 0, height > 0 else { return nil }
+        guard viewport.size.width > 0, Float(viewport.insets.top + viewport.insets.bottom) < height
+        else { return nil }
         self.init(
             aspect: Float(viewport.size.width) / height,
             safeTop: 1 - 2 * Float(viewport.insets.top) / height,
@@ -632,13 +634,16 @@ final class BookPileScene {
         factory.coverArrived = { [weak self] id, material in self?.retexture(id, cover: material) }
     }
 
-    /// Calls `update` every frame, and plays collisions through `feedback`, while the view
-    /// shows the scene. A thrown-back book's first hit lands it instead (see
+    /// Calls `update` every frame, and plays collisions through `feedback`, while `root` is
+    /// active in the view's scene. A thrown-back book's first hit lands it instead (see
     /// `BookLifter.handle`).
     func attach(to content: inout RealityViewCameraContent) {
         content.add(root)
         updates = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
-            self?.update(event.deltaTime)
+            // Physics stops while the root is inactive, disabled out of sight or out of the
+            // scene while a pile image renders, so the scene's clocks and camera wait too.
+            guard let self, root.isActive else { return }
+            update(event.deltaTime)
         }
         collisions = content.subscribe(to: CollisionEvents.Began.self) { [weak self] event in
             guard let self else { return }
@@ -660,23 +665,36 @@ final class BookPileScene {
 
     // MARK: Building
 
-    /// Adds the table, walls, and lights the first time the view has a size.
-    private func build(_ viewport: PileViewport) {
-        guard tray == nil, let tray = PileTray(viewport: viewport) else { return }
+    /// Adds the table, walls, and lights once the view has room for the tray, and fits them to
+    /// each new size until the first books drop: a tab's first layouts pass through sizes it
+    /// never shows, such as one with a large title. Returns whether the tray changed.
+    @discardableResult
+    private func build(_ viewport: PileViewport) -> Bool {
+        guard tray == nil || spawned == 0, let tray = PileTray(viewport: viewport),
+            tray != self.tray
+        else { return false }
         aspect = Float(viewport.size.width / viewport.size.height)
         box = PileBox(viewport: viewport)
         build(tray)
+        return true
     }
 
-    /// Lays the lamp's pool over the tray, with its edges a little past the tray's corners.
+    /// Lays the lamp's pool over the tray, with its edges a little past the tray's corners, and
+    /// puts walls along its edges.
     private func build(_ tray: PileTray) {
-        self.tray = tray
         let middle = (tray.farZ + tray.nearZ) / 2
-        stage.build(
-            pool: [0, 0, middle],
-            radius: simd_length(
-                SIMD2(max(tray.farHalfWidth, tray.nearHalfWidth), tray.nearZ - middle)) * 1.05)
+        let pool: SIMD3<Float> = [0, 0, middle]
+        let radius =
+            simd_length(SIMD2(max(tray.farHalfWidth, tray.nearHalfWidth), tray.nearZ - middle))
+            * 1.05
+        if self.tray == nil {
+            stage.build(pool: pool, radius: radius)
+        } else {
+            stage.aim(pool: pool, radius: radius)
+        }
+        self.tray = tray
         root.addChild(walls)
+        walls.children.removeAll()
         walls.addChild(Self.makeWalls(around: tray))
     }
 
@@ -729,13 +747,13 @@ final class BookPileScene {
         _ books: [CloudBook], tidy: Bool, periods: TimeFrame? = nil, generation: Int,
         viewport: PileViewport
     ) {
-        build(viewport)
+        let refits = build(viewport)
         guard let tray else { return }
         let periods = tidy ? nil : periods
         let key = PlanKey(
             ids: books.map(\.id), tidy: tidy, periods: periods, generation: generation)
-        guard key != planKey else { return }
-        if !tidy, periods == nil, let planKey, !planKey.tidy, planKey.periods == nil,
+        guard refits || key != planKey else { return }
+        if !refits, !tidy, periods == nil, let planKey, !planKey.tidy, planKey.periods == nil,
             planKey.generation == generation,
             let added = PileLayout.added(to: planKey.ids, in: books)
         {

@@ -30,6 +30,67 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(ShelfSort.rating.sorted(books).map(\.id), [3, 1, 4, 2])
     }
 
+    private func finished(_ id: Int, _ date: String?) -> CloudBook {
+        var book = book(id, "Book \(id)")
+        book.finished = date
+        book.isRead = true
+        return book
+    }
+
+    /// 9 p.m. on 12 October 2026 in Los Angeles, already 13 October in UTC.
+    private let evening = Date(timeIntervalSince1970: 1_791_864_000)
+    private let losAngeles = TimeZone(identifier: "America/Los_Angeles")!
+
+    private func ids(_ time: LibraryTime, _ books: [CloudBook]) -> [Int] {
+        time.books(in: books, now: evening, timeZone: losAngeles).map(\.id)
+    }
+
+    func testRollingTimesEndTodayAndStartAfterTheSameDateBefore() {
+        let books = [
+            finished(1, "2026-10-13"), finished(2, "2026-10-12"), finished(3, "2025-10-13"),
+            finished(4, "2025-10-12"), finished(5, "2021-10-13"), finished(6, "2021-10-12"),
+        ]
+        // Today is the reader's 12 October, so a book finished on UTC's 13 October still counts.
+        XCTAssertEqual(ids(.last12Months, books), [1, 2, 3])
+        XCTAssertEqual(ids(.last5Years, books), [1, 2, 3, 4, 5])
+    }
+
+    func testCalendarYearsFollowTheReadersToday() {
+        let books = [finished(1, "2026-01-01"), finished(2, "2025-12-31")]
+        // 4 p.m. on New Year's Eve in Los Angeles, already 2026 in UTC.
+        let newYearsEve = Date(timeIntervalSince1970: 1_767_225_600)
+        XCTAssertEqual(
+            LibraryTime.thisYear.books(in: books, now: newYearsEve, timeZone: losAngeles)
+                .map(\.id), [2])
+        XCTAssertEqual(ids(.thisYear, books), [1])
+        XCTAssertEqual(ids(.year(2025), books), [2])
+    }
+
+    func testBooksWithoutFinishDatesShowOnlyUnderAllTime() {
+        let books = [finished(1, nil), finished(2, "2026-05-01"), finished(3, "2026")]
+        for time in [LibraryTime.last12Months, .thisYear, .last5Years, .year(2026)] {
+            XCTAssertEqual(ids(time, books), [2], time.title)
+        }
+        XCTAssertEqual(ids(.allTime, books), [1, 2, 3])
+    }
+
+    func testYearMenuListsFinishedYearsNewestFirst() {
+        let books = [
+            finished(1, "2024-03-02"), finished(2, "2026-08-01"), finished(3, nil),
+            finished(4, "2024-11-30"), finished(5, "2019-01-09"),
+        ]
+        XCTAssertEqual(LibraryTime.years(in: books), [2026, 2024, 2019])
+    }
+
+    func testLibraryTimeSavesAndRestoresEveryChoice() {
+        for time in LibraryTime.spans + [.year(2019)] {
+            XCTAssertEqual(LibraryTime(rawValue: time.rawValue), time)
+        }
+        XCTAssertNil(LibraryTime(rawValue: "pile"))
+        XCTAssertNil(LibraryTime(rawValue: "year:"))
+        XCTAssertEqual(LibraryTime.spans.first, .last12Months)
+    }
+
     func testFormatLabelsMatchTheAppleTV() {
         XCTAssertEqual(ShelfLabels.format("Read"), "Physical")
         XCTAssertEqual(ShelfLabels.format("Listened"), "Audiobook")

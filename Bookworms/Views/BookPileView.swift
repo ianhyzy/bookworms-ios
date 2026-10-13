@@ -13,10 +13,10 @@ struct PileViewport: Equatable {
 /// from above the top of the screen.
 ///
 /// Drag a book to pick it up and throw it, tap one for its details, pinch to zoom, and turn two
-/// fingers to look around the pile. When the phone reports motion, the shelf's **Tilt** tips the
+/// fingers to look around the pile. When the phone reports motion, the desk's **Tilt** tips the
 /// table or makes the phone the pile's box (`PileTilt`), and in either a hard shake throws the
-/// books. With the shelf's drop by period on, the books drop a month, week, or year at a time
-/// (see `PileLayout.periods`). Collisions play haptic taps and, while the shelf's **Sounds** is
+/// books. With the desk's drop by period on, the books drop a month, week, or year at a time
+/// (see `PileLayout.periods`). Collisions play haptic taps and, while the desk's **Sounds** is
 /// on, knocks (`ImpactFeedback`), only while the pile shows in the active app. With Reduce
 /// Motion on, books appear in tidy stacks instead of falling, tilt and shaking are off, and no
 /// dust drifts in the lamp's beam. The table fills the screen, but walls keep the books between
@@ -24,14 +24,16 @@ struct PileViewport: Equatable {
 ///
 /// A tapped book rises out of the pile and flies to where `BookDetailView` draws its book, and
 /// the details fade in over the darkened pile once it lands (`LiftedDetails`). While they show,
-/// the pile's gestures, tilt, shaking, and controls, and the shelf's, give way to **Back**.
+/// the pile's gestures, tilt, shaking, and controls, and the desk's, give way to **Back**.
 /// **Back** fades the details out, returns the controls, and throws the book back into the
 /// pile. With Reduce Motion on, or when the pile cannot lift the book, a tap calls `open` to
 /// push the details instead.
-/// Returning from pushed details, or from the Share tab that the lifted book's **Share** opens,
-/// finds the pile as the reader left it. Leaving the pile any other way, such as for another
-/// tab, puts a lifted or returning book back at once and frees the books and textures, and the
-/// books drop again on the reader's return.
+///
+/// Out of sight, under pushed details or in another tab, the table and books are disabled, so
+/// nothing simulates or draws. Returning from pushed details, or from the Share tab
+/// that the lifted book's **Share** opens, finds the pile as the reader left it. Leaving the
+/// pile any other way, such as for another tab, puts a lifted or returning book back at once
+/// and frees the books and textures, and the books drop again on the reader's return.
 ///
 /// **Share** makes an image of `books`, up to `PileSnapshotRenderer.maximumBooks` of them, in a
 /// new pile headed `title`. While its sheet is open, the pile leaves the screen and keeps its
@@ -53,18 +55,18 @@ struct BookPileView: View {
     let title: String
     /// The books' time frame, or `nil` for every book, which a drop by period goes through.
     var frame: TimeFrame? = nil
-    /// The details of a book lifted out of the pile, which the shelf's bar also reads.
+    /// The details of a book lifted out of the pile, which the desk's bar also reads.
     let details: LiftedDetails
     let open: (CloudBook) -> Void
 
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
-    /// Set by **Tilt** in the shelf's **Sort and filter** menu.
+    /// Set by **Tilt** in the desk's options menu.
     @AppStorage("BookwormsPileTiltMode") private var tilt = PileTilt.table
-    /// Set by the drop by period toggle in the shelf's **Sort and filter** menu.
+    /// Set by the drop by period toggle in the desk's options menu.
     @AppStorage("BookwormsPileByPeriod") private var dropsByPeriod = false
-    /// Set by **Sounds** in the shelf's **Sort and filter** menu.
+    /// Set by **Sounds** in the desk's options menu.
     @AppStorage("BookwormsThreeDSounds") private var sounds = true
     @State private var scene = BookPileScene()
     @State private var viewport: PileViewport?
@@ -127,7 +129,7 @@ struct BookPileView: View {
         .accessibilityLabel("Pile of \(count)")
         .accessibilityValue(title)
         .accessibilityHint(
-            "Drag a book to throw it, or tap one for its details. To go through books one at a time, choose Stack or Shelf."
+            "Drag a book to throw it, or tap one for its details. To go through books one at a time, open Library."
         )
         .accessibilityAction(named: dropTitle) { generation += 1 }
         .settingUp(scene.loading.isLoading)
@@ -176,6 +178,7 @@ struct BookPileView: View {
         .onAppear {
             showsBook = false
             isShown = true
+            scene.root.isEnabled = true
             #if DEBUG
                 if PileSnapshotDebug.opensSheet { sharesPile = true }
             #endif
@@ -187,6 +190,9 @@ struct BookPileView: View {
             // A view removed from the hierarchy, such as for another 3D view, gets no
             // `playsFeedback` change, so this releases the engines and the audio session.
             scene.feedback.stop()
+            // A hidden tab keeps its `RealityView`, which RealityKit goes on updating and
+            // drawing, so the root is disabled until the view shows again.
+            scene.root.isEnabled = false
             guard !showsBook else { return }
             details.putBack(scene)
             scene.release()
@@ -313,7 +319,7 @@ extension TimeFrame {
         }
     }
 
-    /// The `UserDefaults` key of the 3D views' time frame, which `ShelfView` reads and
+    /// The `UserDefaults` key of the 3D views' time frame, which `DeskView` reads and
     /// `FrameChip` sets.
     static let pileSettingKey = "BookwormsPileFrame"
     /// The saved time frame until the reader chooses one: the current year.

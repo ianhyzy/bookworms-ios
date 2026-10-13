@@ -20,7 +20,7 @@ final class AppModel {
     private(set) var isLoading = false
     private(set) var loadError: String?
     /// The visible tab. Other features switch it, such as **Share** from a book's details.
-    var selectedTab = AppTab.shelf
+    var selectedTab = AppTab.share
     /// A book that a share request named; the Share tab shows it, then clears this.
     var shareBookID: Int?
     let fonts = SpineFonts()
@@ -295,6 +295,8 @@ extension LibrarySnapshot {
     }
 }
 
-enum AppTab: Hashable {
-    case shelf, share, spines
+/// The app's tabs, in the tab bar's order. Debug launch arguments name them by raw value, such
+/// as `-BookwormsTab desk`.
+enum AppTab: String, Hashable {
+    case share, library, desk, spines
 }

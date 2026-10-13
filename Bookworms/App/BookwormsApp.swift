@@ -14,6 +14,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             Task { await GenerationController.shared.installWorklistSubscription() }
         }
         #if DEBUG
+            // `-BookwormsShelfMode <stack|shelf>` opens Library, and `pile` opens Desk.
+            // `-BookwormsTab <share|library|desk|spines>` opens that tab. Only launch arguments
+            // count: Library saves its mode under the same key.
+            let arguments = UserDefaults.standard.volatileDomain(
+                forName: UserDefaults.argumentDomain)
+            if !testing, let mode = arguments["BookwormsShelfMode"] as? String {
+                AppModel.shared.selectedTab = mode == "pile" ? .desk : .library
+            }
+            if !testing, let tab = (arguments["BookwormsTab"] as? String).flatMap(AppTab.init) {
+                AppModel.shared.selectedTab = tab
+            }
             // `-BookwormsGenerateOnLaunch YES` starts a run for Simulator checks, and
             // `-BookwormsShowSpines YES` opens the Spines tab without one.
             if !testing && UserDefaults.standard.bool(forKey: "BookwormsShowSpines") {
@@ -66,21 +77,33 @@ struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(GenerationController.self) private var generation
     @Environment(\.scenePhase) private var scenePhase
+    /// Set once the first launch outside preview mode has offered the Hardcover sheet.
+    @AppStorage("BookwormsOfferedHardcover") private var offeredHardcover = false
+    @State private var showsAccount = false
 
     var body: some View {
         @Bindable var model = model
         TabView(selection: $model.selectedTab) {
-            // The shelf sets its own tint; this keeps the bar's lamp tint out of its account
-            // sheet, which follows the system appearance.
-            Tab("Shelf", systemImage: "books.vertical", value: .shelf) {
-                ShelfView().tint(.accentColor)
-            }
             Tab("Share", systemImage: "square.and.arrow.up", value: .share) { ShareStudioView() }
+            // Library and Desk set their own tint; this keeps the bar's lamp tint out of their
+            // account sheets, which follow the system appearance.
+            Tab("Library", systemImage: "books.vertical", value: .library) {
+                LibraryView().tint(.accentColor)
+            }
+            Tab("Desk", systemImage: "lamp.desk", value: .desk) { DeskView().tint(.accentColor) }
             Tab("Spines", systemImage: "wand.and.sparkles", value: .spines) { GenerationView() }
         }
-        // In light appearance, the bar over the shelf's dark wall leaves the default blue with
-        // almost no contrast, so the shelf's lamp marks its selected tab.
-        .tint(model.selectedTab == .shelf ? ShelfPalette.lamp : nil)
+        // In light appearance, the bar over Library's and Desk's dark wall leaves the default
+        // blue with almost no contrast, so their lamp marks the selected tab.
+        .tint([.library, .desk].contains(model.selectedTab) ? ShelfPalette.lamp : nil)
+        // Hardcover is the library's own source, so the first launch offers it once, over
+        // whichever tab opens. Outside the tint, so the sheet follows the system appearance.
+        .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
+        .task {
+            guard !offeredHardcover, !model.isPreview else { return }
+            offeredHardcover = true
+            if !model.account.isSignedIn { showsAccount = true }
+        }
         .task { await model.reload() }
         .onChange(of: scenePhase) { _, phase in
             generation.scenePhaseChanged(to: phase)

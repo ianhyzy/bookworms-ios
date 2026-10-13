@@ -454,6 +454,8 @@ final class DominoScene {
     /// The index of the book `marker` marks, if it shows.
     private var marked: Int?
     private var key: Key?
+    /// The viewport the plan was framed for.
+    private var plannedViewport: PileViewport?
     private var plan: [DominoSlot] = []
     private var extent = SIMD2<Float>.zero
     private var spawned = 0
@@ -589,12 +591,15 @@ final class DominoScene {
         lifter.standing = { [weak self] in self?.returnPose }
     }
 
-    /// Calls `update` every frame, and plays collisions through `feedback`, while the view
-    /// shows the scene.
+    /// Calls `update` every frame, and plays collisions through `feedback`, while `root` is
+    /// active in the view's scene.
     func attach(to content: inout RealityViewCameraContent) {
         content.add(root)
         updates = content.subscribe(to: SceneEvents.Update.self) { [weak self] event in
-            self?.update(event.deltaTime)
+            // Physics stops while the root is inactive, disabled out of sight or out of the
+            // scene while a pile image renders, so the scene's clocks and camera wait too.
+            guard let self, root.isActive else { return }
+            update(event.deltaTime)
         }
         collisions = content.subscribe(to: CollisionEvents.Began.self) { [weak self] event in
             guard let self, event.entityA != hitBox, event.entityB != hitBox,
@@ -639,7 +644,7 @@ final class DominoScene {
     /// Stands `books` along a new path, or continues standing them up after an earlier call
     /// for the same chain and generation, such as one interrupted by pushed details.
     ///
-    /// The chain is `DominoLayout.chain(_:)`, so the order of `books`, the shelf's sort
+    /// The chain is `DominoLayout.chain(_:)`, so the order of `books`, the desk's sort
     /// order, does not matter. A new chain or generation removes every book, frames the whole
     /// path between the bars of `viewport`, and lays the lamp's pool over it. Books stand up
     /// `batchSize` at a time, each batch waiting at most `coverWait` for its covers and then
@@ -690,11 +695,16 @@ final class DominoScene {
     /// Plans the chain of `books` as `setUp` does, without standing any book. Call it before
     /// `setUp` to learn at once whether a new chain removed the lifted book. Returns `false`
     /// when `viewport` leaves no room for the chain.
+    ///
+    /// Until the first book drops, a new viewport frames the chain again: a tab's first
+    /// layouts pass through sizes it never shows, such as one with a large title.
     @discardableResult
     func planSetUp(_ books: [CloudBook], generation: Int, viewport: PileViewport) -> Bool {
         let chain = DominoLayout.chain(books)
         let key = Key(ids: chain.map { $0.book.id }, generation: generation)
-        guard key != self.key else { return true }
+        guard key != self.key || (spawned == 0 && viewport != plannedViewport) else {
+            return true
+        }
         let size = viewport.size
         let insets = viewport.insets
         let safe = CGSize(
@@ -710,6 +720,7 @@ final class DominoScene {
         light(radius: max(6, simd_length(plan.extent) + 3))
         frame(plan, in: viewport)
         self.key = key
+        plannedViewport = viewport
         loading.isLoading = !plan.slots.isEmpty
         return true
     }
