@@ -426,26 +426,124 @@ final class ShareRenderTests: XCTestCase {
             "He paused. She said \"Stop.\" …", "A closing quote stays with its sentence")
     }
 
-    func testStackLayoutLeavesOutLowestRatedBooksWhenCrowded() {
-        let books = (1...60)
+    func testTitleFormsDropSeriesTagsThenSubtitles() {
+        func titles(_ title: String, series: String? = nil) -> [String] {
+            ShareStyle.titles(
+                CloudBook(
+                    id: 1, title: title, author: "Author", coverURL: nil, detailCoverURL: nil,
+                    seriesID: series == nil ? nil : 5, seriesName: series))
+        }
+        XCTAssertEqual(titles("Fictional Book"), ["Fictional Book"])
+        XCTAssertEqual(titles("The Gilded Ferry (Ferry Saga, #4)"), ["The Gilded Ferry"])
+        XCTAssertEqual(titles("Salt Roads (The Tidewater 3)"), ["Salt Roads"])
+        XCTAssertEqual(titles("Salt Roads (Tidewater)", series: "Tidewater"), ["Salt Roads"])
+        XCTAssertEqual(titles("Salt Roads (Illustrated)"), ["Salt Roads (Illustrated)"])
+        XCTAssertEqual(titles("(Untitled)"), ["(Untitled)"])
+        XCTAssertEqual(
+            titles("Ledger: A Critique of Imaginary Economics, Volume 1"),
+            ["Ledger: A Critique of Imaginary Economics, Volume 1", "Ledger"])
+        XCTAssertEqual(
+            titles("Harbor — A Memoir (Harbor Days, #1)"), ["Harbor — A Memoir", "Harbor"])
+        XCTAssertEqual(
+            titles("Star Rangers: Nightfall", series: "Star Rangers"),
+            ["Star Rangers: Nightfall", "Nightfall"], "A series prefix goes, not the rest")
+        XCTAssertEqual(
+            titles("Star Rangers: Nightfall: A Novel", series: "star rangers"),
+            ["Star Rangers: Nightfall: A Novel", "Nightfall: A Novel", "Nightfall"])
+        XCTAssertEqual(titles(": Colon First"), [": Colon First"])
+    }
+
+    func testStackSpinesGroupNamedSeriesAtTheirFirstBook() {
+        func book(_ id: Int, series: Int? = nil, name: String? = nil, rating: Double? = nil)
+            -> CloudBook
+        {
+            CloudBook(
+                id: id, title: "Book \(id)", author: "Author", coverURL: nil, detailCoverURL: nil,
+                seriesID: series, seriesName: name, pages: 400, finished: "2025-01-0\(id)",
+                rating: rating)
+        }
+        // Series 8 has no name, as in the Apple TV's archive, and series 9 has one book here.
+        let books = [
+            book(1, rating: 4), book(2, series: 7, name: "Tide Saga", rating: 2),
+            book(3, series: 8), book(4, series: 7, name: "Tide Saga", rating: 5),
+            book(5, series: 8), book(6, series: 9, name: "Lone Series"),
+            book(7, series: 7, name: "Tide Saga"),
+        ]
+        let spines = StackSpine.spines(books)
+        XCTAssertEqual(spines.map { $0.books.map(\.id) }, [[1], [2, 4, 7], [3], [5], [6]])
+        XCTAssertEqual(spines[1].titles, ["Tide Saga ×3"])
+        XCTAssertEqual(spines[0].titles, ["Book 1"])
+        XCTAssertEqual(spines[1].weight, 1.75)
+        XCTAssertGreaterThan(spines[1].weight, spines[0].weight)
+        let long = StackSpine.spines((1...9).map { book($0, series: 7, name: "Tide Saga") })
+        XCTAssertEqual(long.map(\.weight), [2], "The thickness is capped")
+        // A group ranks as its best-rated book.
+        XCTAssertTrue(StackSpine.isRankedHigher(spines[1], spines[0]))
+    }
+
+    func testStackPagesSplitEvenlyInFinishOrderUpToTwentyPages() {
+        func spines(_ count: Int) -> [StackSpine] {
+            StackSpine.spines(
+                (1...count)
+                    .map { index in
+                        CloudBook(
+                            id: index, title: "Book \(index)", author: "Author", coverURL: nil,
+                            detailCoverURL: nil, pages: 400, finished: "2025-01-01",
+                            rating: Double(index % 5) + 1)
+                    })
+        }
+        let area = CGSize(width: 952, height: 700)
+        let few = spines(10)
+        XCTAssertEqual(
+            StackPages(spines: few, area: area).pages.map { $0.map(\.id) }, [few.map(\.id)])
+
+        // A crowded frame fills pages evenly and in order, leaving nothing out.
+        let crowded = spines(60)
+        let pages = StackPages(spines: crowded, area: area)
+        XCTAssertGreaterThan(pages.pages.count, 1)
+        XCTAssertEqual(pages.hiddenCount, 0)
+        XCTAssertEqual(pages.pages.flatMap { $0 }.map(\.id), crowded.map(\.id))
+        let weights = pages.pages.map(StackLayout.weight)
+        XCTAssertLessThanOrEqual(weights.max() ?? 0, StackLayout.capacity(area))
+        XCTAssertLessThanOrEqual((weights.max() ?? 0) - (weights.min() ?? 0), 2)
+        for page in pages.pages {
+            let layout = StackLayout(spines: page, area: area, seed: 1)
+            XCTAssertEqual(layout.slabs.count, page.count)
+            XCTAssertLessThanOrEqual(layout.height, area.height + 0.5)
+        }
+
+        // Past 20 pages, the lowest-ranked books are left out.
+        let many = spines(1000)
+        let capped = StackPages(spines: many, area: area)
+        XCTAssertEqual(capped.pages.count, StackPages.maximumPages)
+        XCTAssertGreaterThan(capped.hiddenCount, 0)
+        let shown = capped.pages.flatMap { $0 }
+        XCTAssertEqual(shown.count + capped.hiddenCount, many.count)
+        let shownIDs = Set(shown.map(\.id))
+        let hiddenRatings = many.filter { !shownIDs.contains($0.id) }.compactMap(\.book.rating)
+        XCTAssertGreaterThanOrEqual(
+            shown.compactMap(\.book.rating).min() ?? 0, hiddenRatings.max() ?? 0)
+    }
+
+    /// A crowded Year Stack spans several pages, each a full image.
+    @MainActor
+    func testCrowdedYearStackRendersEveryPage() throws {
+        let books = (1...90)
             .map { index in
                 CloudBook(
-                    id: index, title: "Book \(index)", author: "Author", coverURL: nil,
-                    detailCoverURL: nil, pages: 400, finished: "2025-01-01",
-                    rating: Double(index % 5) + 1)
+                    id: index, title: "Fictional Book \(index)", author: "Author",
+                    coverURL: nil, detailCoverURL: nil, pages: 300,
+                    finished: String(format: "2025-%02d-15", index % 12 + 1))
             }
-        let area = CGSize(width: 952, height: 700)
-        let layout = StackLayout(books: books, area: area, seed: 1)
-        XCTAssertGreaterThan(layout.hiddenCount, 0)
-        XCTAssertEqual(layout.slabs.count + layout.hiddenCount, books.count)
-        XCTAssertLessThanOrEqual(layout.height, area.height + 0.5)
-        let shownRatings = layout.slabs.compactMap(\.book.rating)
-        let hiddenRatings =
-            books.filter { book in
-                !layout.slabs.contains { $0.book.id == book.id }
-            }
-            .compactMap(\.rating)
-        XCTAssertGreaterThanOrEqual(shownRatings.min() ?? 0, hiddenRatings.max() ?? 0)
+        var input = ShareInput(
+            template: .yearStack, aspect: .square, books: books, frame: .year(2025), seed: 2)
+        XCTAssertGreaterThan(input.pageCount, 1)
+        for page in 0..<input.pageCount {
+            input.page = page
+            let image = try XCTUnwrap(input.render()?.cgImage, "page \(page)")
+            XCTAssertEqual(image.width, 1080)
+            XCTAssertEqual(image.height, 1080)
+        }
     }
 
     /// The largest difference in any color channel between two renders of the same size.

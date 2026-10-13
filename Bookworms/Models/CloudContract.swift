@@ -107,7 +107,7 @@ struct CloudSourceSnapshot: Decodable, Sendable {
 /// ignores the rest. Optional reading fields are absent from older archives.
 struct CloudBook: Codable, Sendable, Hashable, Identifiable {
     let id: Int
-    let title: String
+    var title: String
     let author: String
     let coverURL: URL?
     let detailCoverURL: URL?
@@ -116,6 +116,9 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
     var format: String? = nil
     var seriesID: Int? = nil
     var seriesPosition: Double? = nil
+    /// The name of the `seriesID` series. The iPhone's own Hardcover download carries it; the
+    /// Apple TV archive does not, so its books have none.
+    var seriesName: String? = nil
     var pages: Int? = nil
     /// The finish date as `yyyy-MM-dd`.
     var finished: String? = nil

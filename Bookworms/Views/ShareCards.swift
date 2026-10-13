@@ -1,31 +1,48 @@
 import SwiftUI
 
 /// The time frame's books as spines stacked on a shelf, with the frame and its totals.
+///
+/// Two or more books of a series with a known name share one spine (`StackSpine`). When the
+/// spines don't fit one image at a legible size, the card spans several pages (`StackPages`),
+/// and `ShareInput.page` chooses the one to draw.
 struct YearStackCard: View {
     let input: ShareInput
 
-    var body: some View {
-        let aspect = input.aspect
-        let isSquare = aspect == .square
-        let headerHeight: CGFloat = isSquare ? 170 : 250
-        let plankHeight: CGFloat = 60
-        let spacing: CGFloat = 32
-        let area = CGSize(
+    private nonisolated static let plankHeight: CGFloat = 60
+    private nonisolated static let spacing: CGFloat = 32
+
+    /// The space the spines stack in, between the header and the shelf.
+    nonisolated static func area(_ aspect: ShareAspect) -> CGSize {
+        let headerHeight: CGFloat = aspect == .square ? 170 : 250
+        return CGSize(
             width: aspect.size.width - aspect.insets.leading - aspect.insets.trailing,
             height: aspect.size.height - aspect.insets.top - aspect.insets.bottom - headerHeight
                 - plankHeight - 2 * spacing)
-        let layout = StackLayout(books: input.books, area: area, seed: input.seed)
+    }
+
+    /// The input's books as spines, split into the card's pages.
+    nonisolated static func pages(for input: ShareInput) -> StackPages {
+        StackPages(spines: StackSpine.spines(input.books), area: area(input.aspect))
+    }
+
+    var body: some View {
+        let aspect = input.aspect
+        let area = Self.area(aspect)
+        let pages = Self.pages(for: input)
+        let count = pages.pages.count
+        let page = min(max(0, input.page), count - 1)
+        let layout = StackLayout(spines: pages.pages[page], area: area, seed: input.seed)
         let theme = input.theme
         ZStack {
             RadialGradient(
                 colors: [theme.backdropLight.color, theme.backdropDark.color],
                 center: UnitPoint(x: 0.5, y: 0.3), startRadius: 0,
                 endRadius: aspect.size.height * 0.8)
-            VStack(spacing: spacing) {
-                header(isSquare: isSquare)
+            VStack(spacing: Self.spacing) {
+                header(isSquare: aspect == .square)
                 ZStack(alignment: .topLeading) {
                     ForEach(layout.slabs) { slab in
-                        ShareSpine(book: slab.book, look: input.look(for: slab.book))
+                        ShareSpine(spine: slab.spine, look: input.look(for: slab.spine.book))
                             .frame(width: slab.size.width, height: slab.size.height)
                             // Turned as Stack turns a flat spine, so it faces a little left or
                             // right while lying flat on the book below it.
@@ -38,13 +55,18 @@ struct YearStackCard: View {
                     }
                 }
                 .frame(width: area.width, height: layout.height)
-                ShelfPlank(note: layout.hiddenCount > 0 ? "+\(layout.hiddenCount) more" : nil)
-                    .frame(height: plankHeight)
+                ShelfPlank(
+                    page: count > 1 ? "\(page + 1) of \(count)" : nil,
+                    note: page == count - 1 && pages.hiddenCount > 0
+                        ? "+\(pages.hiddenCount) more" : nil
+                )
+                .frame(height: Self.plankHeight)
             }
             .padding(aspect.insets)
         }
     }
 
+    /// The period and totals, which count every book in the frame on every page.
     private func header(isSquare: Bool) -> some View {
         let count = input.books.count
         let pages = input.books.reduce(0) { $0 + max(0, $1.pages ?? 0) }
@@ -63,84 +85,184 @@ struct YearStackCard: View {
     }
 }
 
-/// Places spines in one stack, oldest at the bottom, or in two side by side when one stack would
-/// make the lettering too small. When two stacks are still too crowded, the lowest-rated books
-/// are left out.
+/// One spine of the Year Stack: a book, or the books of one series lettered as a single spine.
+struct StackSpine: Identifiable {
+    /// The books in finish order. The first sets the spine's place, design, and variation.
+    let books: [CloudBook]
+
+    var book: CloudBook { books[0] }
+    var id: Int { book.id }
+
+    /// The lettering's forms, longest first: a group's series name and book count, such as
+    /// "Dungeon Crawler Carl ×5", or a book's title forms (`ShareStyle.titles(_:)`).
+    var titles: [String] {
+        guard books.count > 1, let name = book.seriesName else { return ShareStyle.titles(book) }
+        return ["\(name) ×\(books.count)"]
+    }
+
+    /// The relative thickness. A book's is 0.8 to 1.25, from its page count. A group's is 1.5
+    /// for two books and 0.25 more for each further book, up to 2: thicker than any one book, so
+    /// it reads as several, without dominating the stack.
+    var weight: CGFloat {
+        guard books.count == 1 else { return min(2, 1 + 0.25 * CGFloat(books.count)) }
+        return 0.8 + 0.45 * min(1, max(0, (CGFloat(book.pages ?? 320) - 150) / 650))
+    }
+
+    /// Orders spines as `ShareTemplate.isRankedHigher` orders their best-ranked books, so a
+    /// group ranks as its best-rated book.
+    static func isRankedHigher(_ lhs: StackSpine, _ rhs: StackSpine) -> Bool {
+        ShareTemplate.isRankedHigher(lhs.best, rhs.best)
+    }
+
+    private var best: CloudBook { books.min(by: ShareTemplate.isRankedHigher) ?? book }
+
+    /// Returns `books`, given in finish order, as spines in that order. Two or more books of a
+    /// series with a known name become one spine at the place of the first of them. Books
+    /// without a series name, such as those from the Apple TV's archive, stay single.
+    static func spines(_ books: [CloudBook]) -> [StackSpine] {
+        func series(_ book: CloudBook) -> Int? {
+            book.seriesName?.isEmpty == false ? book.seriesID : nil
+        }
+        let groups = Dictionary(grouping: books.filter { series($0) != nil }) { series($0) ?? 0 }
+        var placed = Set<Int>()
+        return books.compactMap { book in
+            guard let id = series(book), let group = groups[id], group.count > 1 else {
+                return StackSpine(books: [book])
+            }
+            return placed.insert(id).inserted ? StackSpine(books: group) : nil
+        }
+    }
+}
+
+/// The Year Stack's spines split across pages, in finish order.
+///
+/// Spines that fit two stacks at a legible thickness stay on one page. Otherwise they fill as
+/// few pages as hold them, up to `maximumPages`, each a run of spines whose weights come as
+/// near an equal share as the spines allow, so page 1 holds the earliest books. Only spines
+/// that 20 pages cannot hold are left out, lowest-ranked first.
+struct StackPages {
+    /// Instagram's carousel limit.
+    static let maximumPages = 20
+
+    /// The pages' spines. There is always at least one page, which can be empty.
+    private(set) var pages: [[StackSpine]]
+    /// The books left out because 20 pages could not hold them.
+    private(set) var hiddenCount = 0
+
+    init(spines: [StackSpine], area: CGSize) {
+        let capacity = StackLayout.capacity(area)
+        guard StackLayout.weight(spines) > capacity else {
+            pages = [spines]
+            return
+        }
+        var shown = spines
+        let limit = CGFloat(Self.maximumPages) * capacity
+        if StackLayout.weight(spines) > limit {
+            var kept = Set<Int>()
+            var sum: CGFloat = 0
+            for spine in spines.sorted(by: StackSpine.isRankedHigher) {
+                guard sum + spine.weight <= limit else { break }
+                kept.insert(spine.id)
+                sum += spine.weight
+            }
+            shown = spines.filter { kept.contains($0.id) }
+        }
+        while true {
+            let fewest = max(2, Int((StackLayout.weight(shown) / capacity).rounded(.up)))
+            if let split = (fewest...max(fewest, Self.maximumPages)).lazy
+                .map({ StackLayout.split(shown, into: $0) })
+                .first(where: { $0.allSatisfy { StackLayout.weight($0) <= capacity } })
+            {
+                pages = split
+                break
+            }
+            // Uneven spines can leave 20 even pages over capacity; the lowest-ranked spine goes.
+            if let lowest = shown.indices.max(by: {
+                StackSpine.isRankedHigher(shown[$0], shown[$1])
+            }) {
+                shown.remove(at: lowest)
+            }
+        }
+        hiddenCount =
+            spines.reduce(0) { $0 + $1.books.count } - shown.reduce(0) { $0 + $1.books.count }
+    }
+}
+
+/// Places one page's spines in one stack, oldest at the bottom, or in two side by side when one
+/// stack would make the lettering too small.
 struct StackLayout {
     struct Slab: Identifiable {
-        let book: CloudBook
+        let spine: StackSpine
         let center: CGPoint
         let size: CGSize
         /// The turn about the vertical axis, in degrees, that faces the spine a little left or
         /// right. Spines never tilt in the image's plane: each lies flat on the one below.
         let turn: Double
-        var id: Int { book.id }
+        var id: Int { spine.id }
     }
 
+    // Thickness per unit of weight. The thinnest spine, at 0.8 units, stays thick enough for
+    // `ShareSpine`'s 30-pixel lettering.
+    private static let largest: CGFloat = 104
+    private static let smallestSingle: CGFloat = 60
+    private static let smallestDouble: CGFloat = 58
+    private static let gap: CGFloat = 36
+
     private(set) var slabs: [Slab] = []
-    private(set) var hiddenCount = 0
     /// The taller stack's height.
     private(set) var height: CGFloat = 0
 
-    init(books: [CloudBook], area: CGSize, seed: UInt64) {
-        // Relative thickness, 0.8 to 1.25, from the page count.
-        func weight(_ book: CloudBook) -> CGFloat {
-            0.8 + 0.45 * min(1, max(0, (CGFloat(book.pages ?? 320) - 150) / 650))
-        }
-        func total(_ books: [CloudBook]) -> CGFloat { books.reduce(0) { $0 + weight($1) } }
-        // Thickness per unit of weight. The thinnest spine, at 0.8 units, stays thick enough
-        // for `ShareSpine`'s 30-pixel lettering.
-        let largest: CGFloat = 104
-        let smallestSingle: CGFloat = 60
-        let smallestDouble: CGFloat = 58
-        let gap: CGFloat = 36
+    /// The most weight two stacks in `area` hold at a legible thickness, with room to spare for
+    /// stacks of unequal height.
+    static func capacity(_ area: CGSize) -> CGFloat { 2 * area.height / smallestDouble * 0.96 }
 
-        var columns = [books]
-        if total(books) * smallestSingle > area.height {
-            let capacity = 2 * area.height / smallestDouble * 0.96
-            var kept = Set<Int>()
-            var sum: CGFloat = 0
-            for book in books.sorted(by: ShareTemplate.isRankedHigher) {
-                guard sum + weight(book) <= capacity else { break }
-                kept.insert(book.id)
-                sum += weight(book)
-            }
-            let shown = books.filter { kept.contains($0.id) }
-            hiddenCount = books.count - shown.count
-            // Older books on the left, split where the two stacks' heights differ least.
-            var left: CGFloat = 0
-            var split = shown.count
-            for (index, book) in shown.enumerated() {
-                if abs(sum - 2 * (left + weight(book))) > abs(sum - 2 * left) {
-                    split = index
-                    break
-                }
-                left += weight(book)
-            }
-            columns = [Array(shown[..<split]), Array(shown[split...])].filter { !$0.isEmpty }
-        }
+    static func weight(_ spines: [StackSpine]) -> CGFloat { spines.reduce(0) { $0 + $1.weight } }
 
-        let tallest = columns.map(total).max() ?? 0
+    /// Splits `spines` into up to `count` runs in order, ending each run where the total so far
+    /// comes nearest its equal share of the whole.
+    static func split(_ spines: [StackSpine], into count: Int) -> [[StackSpine]] {
+        let share = weight(spines) / CGFloat(count)
+        var runs: [[StackSpine]] = []
+        var sum: CGFloat = 0
+        for spine in spines {
+            let end = share * CGFloat(runs.count)
+            if runs.isEmpty
+                || (runs.count < count && abs(sum + spine.weight - end) > abs(sum - end))
+            {
+                runs.append([])
+            }
+            runs[runs.count - 1].append(spine)
+            sum += spine.weight
+        }
+        return runs
+    }
+
+    init(spines: [StackSpine], area: CGSize, seed: UInt64) {
+        // Older spines on the left.
+        let columns =
+            Self.weight(spines) * Self.smallestSingle > area.height
+            ? Self.split(spines, into: 2) : [spines]
+        let tallest = columns.map(Self.weight).max() ?? 0
         guard tallest > 0 else { return }
-        let unit = min(largest, area.height / tallest)
-        let columnWidth = columns.count == 1 ? min(area.width, 880) : (area.width - gap) / 2
+        let unit = min(Self.largest, area.height / tallest)
+        let columnWidth = columns.count == 1 ? min(area.width, 880) : (area.width - Self.gap) / 2
         height = tallest * unit
-        for (column, books) in columns.enumerated() {
+        for (column, spines) in columns.enumerated() {
             let centerX =
                 columns.count == 1
-                ? area.width / 2 : columnWidth / 2 + CGFloat(column) * (columnWidth + gap)
+                ? area.width / 2 : columnWidth / 2 + CGFloat(column) * (columnWidth + Self.gap)
             var bottom = height
-            for book in books {
-                let thickness = weight(book) * unit
-                let length = columnWidth * (0.84 + 0.16 * ShareStyle.unit(seed, book.id, 1))
-                let shift =
-                    (ShareStyle.unit(seed, book.id, 2) - 0.5) * min(40, columnWidth - length)
+            for spine in spines {
+                let id = spine.id
+                let thickness = spine.weight * unit
+                let length = columnWidth * (0.84 + 0.16 * ShareStyle.unit(seed, id, 1))
+                let shift = (ShareStyle.unit(seed, id, 2) - 0.5) * min(40, columnWidth - length)
                 // Up to 10 degrees, mostly much less, as `StackArrangement` spreads its turns.
-                let even = 2 * ShareStyle.unit(seed, book.id, 3) - 1
+                let even = 2 * ShareStyle.unit(seed, id, 3) - 1
                 let turn = 10 * even * abs(even)
                 slabs.append(
                     Slab(
-                        book: book,
+                        spine: spine,
                         center: CGPoint(x: centerX + shift, y: bottom - thickness / 2),
                         size: CGSize(width: length, height: thickness), turn: turn))
                 bottom -= thickness
@@ -149,41 +271,49 @@ struct StackLayout {
     }
 }
 
-/// A `SpineView` lettered for a share image: the title alone, never below 30 pixels.
+/// A `SpineView` lettered for a share image: one line, never below 30 pixels.
 ///
 /// `SpineView` sizes its lettering from the thickness and shrinks long titles, which leaves
 /// stacked spines with text too small to read on a phone. This view draws the spine blank and
-/// letters it here instead, truncating a title that does not fit.
+/// letters it here instead, with the first of the spine's `titles` that fits. Lettering that
+/// never fits truncates, a group's in the middle so its book count stays.
 struct ShareSpine: View {
-    let book: CloudBook
+    let spine: StackSpine
     let look: SpineLook
 
     var body: some View {
         SpineView(
             book: CloudBook(
-                id: book.id, title: "", author: "", coverURL: nil, detailCoverURL: nil),
+                id: spine.id, title: "", author: "", coverURL: nil, detailCoverURL: nil),
             look: look
         )
         .overlay {
             GeometryReader { proxy in
-                let (length, thickness) = (proxy.size.width, proxy.size.height)
+                let length = proxy.size.width
+                // A group's thicker spine is lettered as the thickest single book, at 1.25 units,
+                // is, so its label doesn't outshout the titles around it.
+                let thickness = proxy.size.height * min(1, 1.25 / spine.weight)
                 let size = max(30, thickness * 0.5)
-                Text(look.text(book.spineTitle))
-                    .font(look.font(size: size))
-                    .lineLimit(1)
-                    .minimumScaleFactor(30 / size)
-                    .foregroundStyle(look.foreground.color)
-                    // Clears SpineView's accent bands at the head and tail.
-                    .padding(.horizontal, max(14, length * 0.035) + thickness * 0.3)
-                    .frame(width: length, height: thickness, alignment: .leading)
+                ShareFittingText(
+                    forms: spine.titles.map(look.text), size: size, minimumScale: 30 / size
+                ) {
+                    look.font(size: $0)
+                }
+                .truncationMode(spine.books.count > 1 ? .middle : .tail)
+                .foregroundStyle(look.foreground.color)
+                // Clears SpineView's accent bands at the head and tail.
+                .padding(.horizontal, max(14, length * 0.035) + thickness * 0.3)
+                .frame(width: length, height: proxy.size.height, alignment: .leading)
             }
         }
     }
 }
 
-/// A wooden shelf board seen from the front, with an optional note on its edge.
+/// A wooden shelf board seen from the front, with optional notes on its edge: the page, such as
+/// "1 of 3", at the left, and a note, such as "+12 more", at the right.
 struct ShelfPlank: View {
-    let note: String?
+    var page: String? = nil
+    var note: String? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -202,13 +332,15 @@ struct ShelfPlank: View {
                 ],
                 startPoint: .top, endPoint: .bottom
             )
-            .overlay(alignment: .trailing) {
-                if let note {
-                    Text(note)
-                        .font(ShareStyle.serif(32, .semibold))
-                        .foregroundStyle(ShareStyle.cream.color.opacity(0.9))
-                        .padding(.trailing, 28)
+            .overlay {
+                HStack {
+                    if let page { Text(page) }
+                    Spacer(minLength: 0)
+                    if let note { Text(note) }
                 }
+                .font(ShareStyle.serif(32, .semibold))
+                .foregroundStyle(ShareStyle.cream.color.opacity(0.9))
+                .padding(.horizontal, 28)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -294,10 +426,12 @@ struct FeaturedBookCard: View {
             if let label {
                 ShareStyle.label(label).foregroundStyle(ShareStyle.gold)
             }
-            Text(book.spineTitle)
-                .font(ShareStyle.serif(isSquare ? 64 : 80, .semibold))
-                .lineLimit(isSquare ? 4 : 3)
-                .minimumScaleFactor(0.5)
+            ShareFittingText(
+                forms: ShareStyle.titles(book), size: isSquare ? 64 : 80, minimumScale: 0.5,
+                lines: isSquare ? 4 : 3
+            ) {
+                ShareStyle.serif($0, .semibold)
+            }
             Text(SpineView.shortAuthor(book.author))
                 .font(ShareStyle.serif(40))
                 .lineLimit(2)
@@ -431,9 +565,9 @@ struct TopFiveCard: View {
                 .foregroundStyle(ShareStyle.gold)
                 .frame(width: 44)
             VStack(alignment: .leading, spacing: 0) {
-                Text(book.spineTitle)
-                    .font(ShareStyle.serif(38, .semibold))
-                    .minimumScaleFactor(0.8)
+                ShareFittingText(forms: ShareStyle.titles(book), size: 38, minimumScale: 0.8) {
+                    ShareStyle.serif($0, .semibold)
+                }
                 if showsAuthor {
                     Text(SpineView.shortAuthor(book.author))
                         .font(ShareStyle.serif(30))
