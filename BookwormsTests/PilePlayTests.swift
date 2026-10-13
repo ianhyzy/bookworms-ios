@@ -145,4 +145,66 @@ final class PilePlayTests: XCTestCase {
             (7 + 22.0 / 62) / 12, accuracy: 0.0001)
         XCTAssertEqual(PileSeasons.season(of: .year(2020), index: 3, count: 4), 0.875)
     }
+
+    // MARK: Carrying a book
+
+    func testAHeldBookLevelsTheNearerWayAndKeepsItsTurn() {
+        let yaw = simd_quatf(angle: 0.7, axis: [0, 1, 0])
+        let tipped = simd_quatf(angle: 0.5, axis: [1, 0, 0])
+        for flip in [
+            simd_quatf(angle: 0, axis: [1, 0, 0]), simd_quatf(angle: .pi, axis: [1, 0, 0]),
+        ] {
+            let resting = yaw * PileLayout.lyingFlat * flip
+            let level = PileCarry.level(tipped * resting)
+            // Front cover up stays up, and face down stays down.
+            assertNear(level.act([0, 0, 1]), resting.act([0, 0, 1]))
+            // The spine lies flat and points across the table as it did, give or take the tip.
+            let spine = level.act([-1, 0, 0])
+            XCTAssertEqual(spine.y, 0, accuracy: 0.001)
+            XCTAssertGreaterThan(simd_dot(spine, resting.act([-1, 0, 0])), 0.95)
+        }
+    }
+
+    func testAThrowKeepsTheFingersSpeedUpToTheCapAndTossesTheBookUp() {
+        assertNear(PileCarry.throwVelocity([5, 0, 0]), [5, 1, 0])
+        assertNear(PileCarry.throwVelocity(.zero), .zero)
+        let flick = PileCarry.throwVelocity([0, 3, -300])
+        XCTAssertEqual(
+            simd_length(SIMD2(flick.x, flick.z)), PileCarry.maximumThrowSpeed, accuracy: 0.001)
+        XCTAssertLessThan(flick.z, 0)
+        XCTAssertEqual(flick.y, PileCarry.maximumThrowSpeed / 5, accuracy: 0.001)
+    }
+
+    func testTurnIsTheShorterRotationToTheTarget() {
+        let start = simd_quatf(angle: 0.3, axis: [0, 1, 0])
+        assertNear(PileCarry.turn(from: start, to: start), .zero)
+        let target = simd_quatf(angle: 0.5, axis: [1, 0, 0]) * start
+        assertNear(PileCarry.turn(from: start, to: target), [0.5, 0, 0])
+        // The same target as a negated quaternion turns the same short way.
+        assertNear(
+            PileCarry.turn(from: start, to: simd_quatf(vector: -target.vector)), [0.5, 0, 0])
+    }
+
+    func testAHeldBookLeansIntoAPushAndSettlesLevel() {
+        var swing = PileSwing()
+        let step: Float = 1 / 60
+        var peak: Float = 0
+        // A steady push toward +x leans the book's top toward +x, so its leading edge dips.
+        for _ in 0..<120 {
+            swing.advance(acceleration: [100, 0], by: step)
+            peak = max(peak, swing.lean.x)
+        }
+        XCTAssertEqual(swing.lean.x, 100 * PileSwing.sensitivity, accuracy: 0.01)
+        XCTAssertGreaterThan(peak, swing.lean.x)
+        XCTAssertEqual(swing.lean.y, 0, accuracy: 1e-6)
+        XCTAssertGreaterThan(swing.tilt.act([0, 1, 0]).x, 0)
+        // Once the finger moves steadily, the swing dies away.
+        for _ in 0..<120 { swing.advance(acceleration: .zero, by: step) }
+        XCTAssertLessThan(simd_length(swing.lean), 0.01)
+        // However hard the push, the lean stays under its cap.
+        var hard = PileSwing()
+        for _ in 0..<60 { hard.advance(acceleration: [0, 1e4], by: step) }
+        XCTAssertLessThanOrEqual(hard.tilt.angle, PileSwing.maximumTilt + 1e-4)
+        XCTAssertGreaterThan(hard.tilt.act([0, 1, 0]).z, 0)
+    }
 }

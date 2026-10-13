@@ -3,6 +3,7 @@ import SwiftUI
 import UIKit
 
 /// How the pile follows the phone's tilt, which **Tilt** in the desk's options menu sets.
+/// Throwing books by hand is the scene's main play, so tilt starts **Off**.
 enum PileTilt: String, CaseIterable, Identifiable {
     /// The table stays level, and the pile reads no motion, so shakes do nothing either.
     case off
@@ -20,6 +21,89 @@ enum PileTilt: String, CaseIterable, Identifiable {
         case .table: "Tip the table"
         case .box: "Phone is the box"
         }
+    }
+}
+
+/// How a finger picks up, carries, and throws a book on the desk (see `BookPileScene.pickUp`).
+enum PileCarry {
+    /// How long a finger rests on a book before it picks the book up. A finger that lifts
+    /// sooner taps the book instead.
+    static let holdDelay = Duration.milliseconds(250)
+    /// How far, in points, a finger can move before the hold and still pick up or tap.
+    static let slop: CGFloat = 10
+    /// How high a held book rides over what lies under it: 8 cm at the scene's scale.
+    static let lift: Float = 0.8
+    /// The fastest a thrown book flies across the desk, in units a second: 3 m/s at the scene's
+    /// scale. A hard flick reaches it, and the walls still stop the book.
+    static let maximumThrowSpeed: Float = 30
+
+    /// `rotation` turned the least way to lie flat, front or back cover up, whichever is
+    /// nearer, keeping the book's turn on the table.
+    static func level(_ rotation: simd_quatf) -> simd_quatf {
+        let cover = rotation.act([0, 0, 1])
+        return simd_quatf(from: cover, to: cover.y < 0 ? [0, -1, 0] : [0, 1, 0]) * rotation
+    }
+
+    /// The velocity of a book let go while the finger moves at `finger` across the desk:
+    /// the finger's speed, at most `maximumThrowSpeed`, tossed up by a fifth of it, so the
+    /// book flies in a low arc instead of skimming the books under it.
+    static func throwVelocity(_ finger: SIMD3<Float>) -> SIMD3<Float> {
+        var across = SIMD3(finger.x, 0, finger.z)
+        let speed = simd_length(across)
+        if speed > maximumThrowSpeed { across *= maximumThrowSpeed / speed }
+        return across + [0, min(speed, maximumThrowSpeed) / 5, 0]
+    }
+
+    /// The rotation from `current` to `target` the shorter way, as an axis scaled by the angle
+    /// in radians: the angular velocity that turns a body there in one second.
+    static func turn(from current: simd_quatf, to target: simd_quatf) -> SIMD3<Float> {
+        var change = target * current.inverse
+        if change.real < 0 { change = simd_quatf(vector: -change.vector) }
+        let sine = simd_length(change.imag)
+        guard sine > 1e-6 else { return change.imag * 2 }
+        return change.imag / sine * 2 * atan2(sine, change.real)
+    }
+}
+
+/// How a held book swings under the finger, as if it hung from the fingertip on its top cover.
+///
+/// When the finger speeds up, the book's middle, below the fingertip, lags behind, so the
+/// book leans its leading edge down; it swings back past level and settles once the finger
+/// moves steadily. Slowing down leans it the other way. The pendulum is stiff, so a brisk drag
+/// tips the book by several degrees, never more than `maximumTilt`.
+struct PileSwing {
+    /// The swing's angular frequency, in radians a second: about 1.5 swings a second.
+    static let frequency: Float = 10
+    /// How fast a swing dies away, per second: it fades to a fifth in about half a second.
+    static let damping: Float = 6
+    /// The lean, in radians, for each unit a second squared of steady acceleration.
+    static let sensitivity: Float = 0.002
+    /// The most the book leans, in radians (20 degrees).
+    static let maximumTilt: Float = 0.35
+
+    /// Where the book's up axis leans, across the table as x and z, in radians before
+    /// `maximumTilt` softly caps it.
+    private(set) var lean = SIMD2<Float>.zero
+    private var rate = SIMD2<Float>.zero
+
+    /// Advances the swing by `deltaTime` seconds while the fingertip accelerates at
+    /// `acceleration` across the table, as x and z.
+    mutating func advance(acceleration: SIMD2<Float>, by deltaTime: Float) {
+        let stiffness = Self.frequency * Self.frequency
+        rate +=
+            (stiffness * (Self.sensitivity * acceleration - lean) - Self.damping * rate)
+            * deltaTime
+        lean += rate * deltaTime
+    }
+
+    /// The book's lean as a rotation that tips its up axis toward `lean`.
+    var tilt: simd_quatf {
+        let amount = simd_length(lean)
+        guard amount > 1e-5 else { return simd_quatf(angle: 0, axis: [0, 1, 0]) }
+        let toward = SIMD3(lean.x, 0, lean.y) / amount
+        return simd_quatf(
+            angle: Self.maximumTilt * tanh(amount / Self.maximumTilt),
+            axis: simd_normalize(simd_cross([0, 1, 0], toward)))
     }
 }
 
