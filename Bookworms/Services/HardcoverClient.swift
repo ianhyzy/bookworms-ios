@@ -250,10 +250,11 @@ actor HardcoverClient {
         }
     }
 
-    /// Turns a review into plain text: HTML tags and Markdown markers are removed, entities are
-    /// decoded, and paragraphs stay separated by one blank line. Returns `nil` for an empty review.
-    static func plainText(fromReview review: String?) -> String? {
-        guard var text = review else { return nil }
+    /// Turns a review or a book description into plain text: HTML tags and Markdown markers are
+    /// removed, entities are decoded, and paragraphs stay separated by one blank line. Returns
+    /// `nil` for empty text.
+    static func plainText(from markup: String?) -> String? {
+        guard var text = markup else { return nil }
         text = text.replacing(/(?i)<br\s*\/?>|<\/li>/, with: "\n")
             .replacing(/(?i)<\/(p|div|blockquote|h[1-6])>/, with: "\n\n")
             // Only tag-shaped text goes, so "I <3 it" keeps its heart.
@@ -404,8 +405,8 @@ actor HardcoverClient {
         query PhoneLibrary($user: Int!, $offset: Int!, $language: String!) {
           user_books(where: {user_id: {_eq: $user}}, order_by: {id: asc}, limit: 100, offset: $offset) {
             last_read_date rating status_id review
-            book { id title pages release_year cached_contributors cached_tags rating ratings_count
-              image { url width height }
+            book { id title description pages release_year cached_contributors cached_tags rating
+              ratings_count ratings_distribution image { url width height }
               book_series { featured position series { id name } }
               editions(where: {image_id: {_is_null: false},
                   _or: [{language_id: {_is_null: true}}, {language: {code2: {_eq: $language}}}]},
@@ -495,7 +496,8 @@ actor HardcoverClient {
                     : nil,
                 started: isReading ? current?.startedAt : nil, audioSeconds: edition?.audioSeconds,
                 communityRating: source.rating, ratingsCount: source.ratingsCount,
-                review: plainText(fromReview: row.review))
+                ratingDistribution: source.ratingsDistribution, description: source.description,
+                review: plainText(from: row.review))
             if let previous = unique[book.id], !recentFirst(book, previous) { continue }
             unique[book.id] = book
         }
@@ -665,16 +667,19 @@ private struct LibraryPage: Decodable {
         let cachedTags: [String: [Tag]]?
         let rating: Double?
         let ratingsCount: Int?
+        let ratingsDistribution: [RatingBucket]?
+        let description: String?
         let image: Image?
         let bookSeries: [SeriesMembership]?
         let editions: [EditionImage]?
 
         enum CodingKeys: String, CodingKey {
-            case id, title, pages, rating, image, editions
+            case id, title, description, pages, rating, image, editions
             case releaseYear = "release_year"
             case cachedContributors = "cached_contributors"
             case cachedTags = "cached_tags"
             case ratingsCount = "ratings_count"
+            case ratingsDistribution = "ratings_distribution"
             case bookSeries = "book_series"
         }
     }

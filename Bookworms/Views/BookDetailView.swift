@@ -1,9 +1,9 @@
 import SwiftUI
 
 /// A book's details: a 3D model to turn with a drag and its title, over three tabs that switch
-/// only the content below them: **Details** (facts about the book and **Change cover**),
-/// **Journal** (the reader's reading dates, progress, and review), and **Spine** (the spine's
-/// design and colors).
+/// only the content below them: **Details** (**Change cover**, then the book's description and
+/// facts on a grid of cards), **Journal** (the reader's reading dates, progress, format, and
+/// review, on the same cards), and **Spine** (the spine's design and colors).
 ///
 /// With a `HostedBook`, the details draw no book, backdrop, or **Share** button of their own: a
 /// transparent stand-in takes the book's place and turns as it would, the host draws the book
@@ -17,7 +17,6 @@ struct BookDetailView: View {
 
     @Environment(AppModel.self) private var model
     @Environment(GenerationController.self) private var generation
-    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var cover: UIImage?
     @State private var choosesCover = false
     /// When the reader last changed the cover here.
@@ -29,6 +28,9 @@ struct BookDetailView: View {
     /// The scroll view's visible height, which every tab's content fills at least, so switching
     /// to a shorter tab never scrolls the book.
     @State private var viewport: CGFloat = 0
+    /// The book's description as plain text, or `nil` without one. Cleaning a long description
+    /// takes milliseconds, so it happens off the main actor when the description changes.
+    @State private var about: String?
 
     init(book: CloudBook, hostedBook: HostedBook? = nil) {
         opened = book
@@ -58,6 +60,9 @@ struct BookDetailView: View {
                 }
                 .pickerStyle(.segmented)
                 tabContent(look: look, design: design)
+                    // Cards take the height they are offered, so the content keeps its own
+                    // height and the minimum height adds room below it instead.
+                    .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, minHeight: viewport, alignment: .top)
             }
             .padding(.horizontal, 20)
@@ -81,6 +86,10 @@ struct BookDetailView: View {
         }
         // A new cover choice changes the first candidate; the old cover shows until it loads.
         .task(id: book.coverCandidates.first) { cover = await model.covers.image(for: book) }
+        .task(id: book.description) {
+            let text = await Self.plainText(book.description)
+            if !Task.isCancelled { about = text }
+        }
         .onChange(of: design?.generatedAt) { designedCover = book.chosenCoverURL }
         .sheet(isPresented: $choosesCover) {
             // The shelf sets a dark scheme for its walnut backdrop, which the sheet's content
@@ -152,7 +161,7 @@ struct BookDetailView: View {
             VStack(spacing: 24) {
                 Button("Change cover", systemImage: "photo.on.rectangle") { choosesCover = true }
                     .buttonStyle(.bordered)
-                rows(facts)
+                CardGrid(cards: DetailCard.details(of: book, about: about))
             }
         case .journal:
             journal
@@ -164,57 +173,15 @@ struct BookDetailView: View {
         }
     }
 
-    /// Facts about the book itself, as Hardcover records them.
-    private var facts: [(String, String)] {
-        let genres = (book.genres ?? []).prefix(3).joined(separator: ", ")
-        return [
-            book.seriesPosition.map { ("Series", "Book \($0.formatted())") },
-            book.publicationYear.map { ("Published", String($0)) },
-            ShelfLabels.length(of: book).map { ("Length", $0) },
-            ShelfLabels.format(book.format).map { ("Format", $0) },
-            genres.isEmpty ? nil : ("Genres", genres),
-            book.communityRating.flatMap { rating in
-                guard rating > 0, let count = book.ratingsCount, count > 0 else { return nil }
-                let average = rating.formatted(.number.precision(.fractionLength(1)))
-                return ("Readers' rating", "\(average) from \(count.formatted()) ratings")
-            },
-        ]
-        .compactMap(\.self)
-    }
-
-    /// The reader's own record of the book: when they read it, how far they are, and their
-    /// review, all from their reading service.
+    /// The reader's own record of the book, all from their reading service, with a note on where
+    /// a missing review would come from.
     @ViewBuilder private var journal: some View {
-        let started = book.startedDate
-        let finished = book.finishedDate
-        let progress = book.isReading == true ? book.progress : nil
-        let entries: [(String, String)] = [
-            book.isReading == true
-                ? (
-                    "Status",
-                    progress.map {
-                        "Reading now, \($0.formatted(.percent.precision(.fractionLength(0))))"
-                    } ?? "Reading now"
-                )
-                : nil,
-            started.map { ("Started", $0.formatted(ShelfLabels.finishedFormat)) },
-            finished.map { ("Finished", $0.formatted(ShelfLabels.finishedFormat)) },
-            ShelfLabels.readingTime(from: started, to: finished).map { ("Reading time", $0) },
-        ]
-        .compactMap(\.self)
-        let review = book.review?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cards = DetailCard.journal(of: book)
         VStack(spacing: 24) {
-            rows(entries)
-            if let review, !review.isEmpty {
-                Card {
-                    Text("Your review").font(.headline)
-                    Text(review)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                }
-            } else {
+            CardGrid(cards: cards)
+            if !cards.contains(where: { if case .review = $0 { true } else { false } }) {
                 Text(
-                    entries.isEmpty
+                    cards.isEmpty
                         ? "Your reading dates and review from Hardcover appear here."
                         : "A review you write on Hardcover appears here."
                 )
@@ -225,25 +192,8 @@ struct BookDetailView: View {
         }
     }
 
-    /// Labeled values on a card, or nothing without any.
-    @ViewBuilder private func rows(_ rows: [(String, String)]) -> some View {
-        if !rows.isEmpty {
-            Card {
-                ForEach(rows, id: \.0) { row in
-                    // Side by side at accessibility sizes, the label and value break mid-word.
-                    if typeSize.isAccessibilitySize {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(row.0).foregroundStyle(.secondary)
-                            Text(row.1)
-                        }
-                        .accessibilityElement(children: .combine)
-                    } else {
-                        LabeledContent(row.0, value: row.1)
-                    }
-                    if row.0 != rows.last?.0 { Divider() }
-                }
-            }
-        }
+    @concurrent nonisolated private static func plainText(_ markup: String?) async -> String? {
+        HardcoverClient.plainText(from: markup)
     }
 
     private func designCard(look: SpineLook, design: SpineDesignV1?) -> some View {
@@ -259,6 +209,116 @@ enum DetailTab: String, CaseIterable, Identifiable {
 
     var id: Self { self }
     var title: String { rawValue.capitalized }
+}
+
+/// One card of the **Details** or **Journal** grid, with what it shows.
+enum DetailCard: Hashable {
+    /// The description as plain text.
+    case about(String)
+    /// Hardcover readers' average rating and how many ratings it averages, with the number of
+    /// readers per half star (`ratingCounts(_:)`) when known, and the reader's own rating.
+    case rating(average: Double, count: Int, counts: [Int]?, yours: Double?)
+    case series(name: String?, position: Double?)
+    case published(Int)
+    /// The page count, which describes the book in any format.
+    case length(String)
+    case genres([String])
+    /// A current read, with the fraction read when known.
+    case status(progress: Double?)
+    case started(Date)
+    case finished(Date)
+    case readingTime(String)
+    /// How the reader read the book, such as "Audiobook", with that format's length.
+    case format(String, length: String?)
+    case review(String)
+
+    /// Whether the card fills its row: text and tags need the width, and a rating's bars sit
+    /// beside the average there instead of making the card taller than the card beside it.
+    var isWide: Bool {
+        switch self {
+        case .about, .genres, .review: true
+        case .rating(_, _, let counts, _): counts != nil
+        default: false
+        }
+    }
+
+    /// The **Details** cards: facts about the book itself, whichever way anyone reads it. A fact
+    /// that is missing has no card. `about` is the description as plain text.
+    static func details(of book: CloudBook, about: String?) -> [DetailCard] {
+        let genres = (book.genres ?? []).filter(YearInBooks.isEnglishTag).prefix(3)
+            .map(YearInBooks.displayGenre)
+        var rating: DetailCard?
+        if let average = book.communityRating, average > 0, let count = book.ratingsCount,
+            count > 0
+        {
+            rating = .rating(
+                average: average, count: count, counts: ratingCounts(book.ratingDistribution),
+                yours: book.rating)
+        }
+        let inSeries = book.seriesName != nil || book.seriesPosition != nil
+        let cards: [DetailCard?] = [
+            about.map(DetailCard.about),
+            rating,
+            inSeries ? .series(name: book.seriesName, position: book.seriesPosition) : nil,
+            book.publicationYear.map(DetailCard.published),
+            ShelfLabels.pages(of: book).map(DetailCard.length),
+            genres.isEmpty ? nil : .genres(genres),
+        ]
+        return cards.compactMap(\.self)
+    }
+
+    /// The **Journal** cards: the reader's own record of the book, from their reading service.
+    /// The format card gives the length of the format read: listening time for an audiobook when
+    /// known, pages otherwise.
+    static func journal(of book: CloudBook) -> [DetailCard] {
+        let started = book.startedDate
+        let finished = book.finishedDate
+        let review = book.review?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cards: [DetailCard?] = [
+            book.isReading == true ? .status(progress: book.progress) : nil,
+            started.map(DetailCard.started),
+            finished.map(DetailCard.finished),
+            ShelfLabels.readingTime(from: started, to: finished).map(DetailCard.readingTime),
+            ShelfLabels.format(book.format)
+                .map { .format($0, length: ShelfLabels.length(of: book)) },
+            review?.isEmpty == false ? review.map(DetailCard.review) : nil,
+        ]
+        return cards.compactMap(\.self)
+    }
+
+    /// The number of readers who gave each rating, in half-star steps from half a star to five
+    /// stars, or `nil` when no rating has a reader.
+    static func ratingCounts(_ buckets: [RatingBucket]?) -> [Int]? {
+        var counts = Array(repeating: 0, count: 10)
+        for bucket in buckets ?? [] where (0.5...5).contains(bucket.rating) && bucket.count > 0 {
+            counts[Int((bucket.rating * 2).rounded()) - 1] += bucket.count
+        }
+        return counts.contains { $0 > 0 } ? counts : nil
+    }
+
+    /// Arranges `cards` in order in rows of one or two, leaving no holes. A wide card fills its
+    /// own row, and the cards between wide ones pair up; when their number is odd, the first
+    /// fills a row alone, since it can use the room. With `oneColumn`, each card fills a row.
+    static func rows(_ cards: [DetailCard], oneColumn: Bool) -> [[DetailCard]] {
+        guard !oneColumn else { return cards.map { [$0] } }
+        var rows: [[DetailCard]] = []
+        var halves: [DetailCard] = []
+        func pairHalves() {
+            if !halves.count.isMultiple(of: 2) { rows.append([halves.removeFirst()]) }
+            rows += stride(from: 0, to: halves.count, by: 2).map { Array(halves[$0...$0 + 1]) }
+            halves = []
+        }
+        for card in cards {
+            if card.isWide {
+                pairHalves()
+                rows.append([card])
+            } else {
+                halves.append(card)
+            }
+        }
+        pairHalves()
+        return rows
+    }
 }
 
 /// The 3D book's orientation, in radians.
@@ -516,7 +576,8 @@ struct Drift: Equatable {
 /// card fill, below the 4.5:1 that footnote and caption text need.
 private let cardNote = ShelfPalette.paper.opacity(0.7)
 
-/// A grouped panel on the walnut backdrop.
+/// A grouped panel on the walnut backdrop. It takes the height it is offered, so cards side by
+/// side in a `CardGrid` row match.
 private struct Card<Content: View>: View {
     @ViewBuilder let content: Content
 
@@ -524,8 +585,257 @@ private struct Card<Content: View>: View {
         VStack(alignment: .leading, spacing: 12) { content }
             .foregroundStyle(ShelfPalette.paper)
             .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(.white.opacity(0.07), in: .rect(cornerRadius: 22))
+    }
+}
+
+/// A card's name with a small symbol, above its content.
+private func caption(_ title: String, systemImage: String) -> some View {
+    Label(title, systemImage: systemImage)
+        .font(.footnote.weight(.medium))
+        .foregroundStyle(cardNote)
+}
+
+/// Cards in the rows that `DetailCard.rows(_:oneColumn:)` arranges: two columns, or one at
+/// accessibility text sizes. Each row is as tall as its tallest card.
+private struct CardGrid: View {
+    let cards: [DetailCard]
+
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    var body: some View {
+        VStack(spacing: 12) {
+            ForEach(
+                DetailCard.rows(cards, oneColumn: typeSize.isAccessibilitySize), id: \.self
+            ) { row in
+                HStack(alignment: .top, spacing: 12) {
+                    ForEach(row, id: \.self) { DetailCardView(card: $0, fillsRow: row.count == 1) }
+                }
+                // Measures the row at its tallest card's height, then offers every card that
+                // height.
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+/// One card of a `CardGrid`. VoiceOver reads each card as one element.
+private struct DetailCardView: View {
+    let card: DetailCard
+    let fillsRow: Bool
+
+    var body: some View {
+        switch card {
+        case .about(let text):
+            AboutCard(text: text)
+        case .rating(let average, let count, let counts, let yours):
+            RatingCard(
+                average: average, count: count, counts: counts, yours: yours, isWide: fillsRow)
+        case .series(let name, let position):
+            let number = position.map { "Book \($0.formatted())" }
+            FactCard(
+                title: "Series", systemImage: "books.vertical", value: name ?? number ?? "",
+                detail: name == nil ? nil : number)
+        case .published(let year):
+            FactCard(title: "Published", systemImage: "calendar", value: String(year))
+        case .length(let pages):
+            FactCard(title: "Length", systemImage: "text.book.closed", value: pages)
+        case .genres(let genres):
+            GenresCard(genres: genres)
+        case .status(let progress):
+            FactCard(
+                title: "Status", systemImage: "book", value: "Reading now",
+                detail: progress.map {
+                    "\($0.formatted(.percent.precision(.fractionLength(0)))) read"
+                })
+        case .started(let date):
+            FactCard(
+                title: "Started", systemImage: "calendar",
+                value: date.formatted(ShelfLabels.finishedFormat))
+        case .finished(let date):
+            FactCard(
+                title: "Finished", systemImage: "checkmark.circle",
+                value: date.formatted(ShelfLabels.finishedFormat))
+        case .readingTime(let time):
+            FactCard(title: "Reading time", systemImage: "hourglass", value: time)
+        case .format(let format, let length):
+            FactCard(
+                title: "Read as", systemImage: ShelfLabels.formatSymbol(format), value: format,
+                detail: length)
+        case .review(let review):
+            Card {
+                caption("Your review", systemImage: "text.quote")
+                Text(review)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
+}
+
+/// A card with one fact, with an optional detail under it.
+private struct FactCard: View {
+    let title: String
+    let systemImage: String
+    let value: String
+    var detail: String?
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 4) {
+                caption(title, systemImage: systemImage)
+                Text(value).font(.title3.weight(.semibold))
+                if let detail {
+                    Text(detail).font(.subheadline).foregroundStyle(cardNote)
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// The description, cut to six lines, with **More** to show the rest in place when it runs
+/// longer. A hidden copy at full height detects whether the six lines cut it off.
+private struct AboutCard: View {
+    let text: String
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isExpanded = false
+    @State private var shownHeight: CGFloat = 0
+    @State private var fullHeight: CGFloat = 0
+
+    var body: some View {
+        Card {
+            caption("About", systemImage: "text.alignleft")
+            Text(text)
+                .lineLimit(isExpanded ? nil : 6)
+                .textSelection(.enabled)
+                .onGeometryChange(for: CGFloat.self) {
+                    $0.size.height
+                } action: {
+                    shownHeight = $0
+                }
+                .background(alignment: .topLeading) {
+                    if !isExpanded {
+                        Text(text)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .hidden()
+                            .onGeometryChange(for: CGFloat.self) {
+                                $0.size.height
+                            } action: {
+                                fullHeight = $0
+                            }
+                    }
+                }
+            if !isExpanded, fullHeight > shownHeight + 1 {
+                Button("More") {
+                    withAnimation(reduceMotion ? nil : .smooth) { isExpanded = true }
+                }
+                .font(.subheadline.weight(.semibold))
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Hardcover readers' average rating, with stars, the number of ratings, and bars for the
+/// readers who gave each rating, the reader's own rating in gold. A wide card puts the bars
+/// beside the average, except at accessibility text sizes.
+private struct RatingCard: View {
+    let average: Double
+    let count: Int
+    let counts: [Int]?
+    let yours: Double?
+    let isWide: Bool
+
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    var body: some View {
+        let ratings = count == 1 ? "1 rating" : "\(count.formatted()) ratings"
+        let layout =
+            isWide && !typeSize.isAccessibilitySize
+            ? AnyLayout(HStackLayout(alignment: .bottom, spacing: 20))
+            : AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+        Card {
+            caption("Readers' rating", systemImage: "person.2")
+            layout {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(average, format: .number.precision(.fractionLength(1)))
+                        .font(.largeTitle.weight(.semibold))
+                    RatingStars(rating: average).font(.footnote)
+                    Text(ratings).font(.footnote).foregroundStyle(cardNote)
+                }
+                if let counts { RatingBars(counts: counts, yours: yours) }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Readers' rating")
+        .accessibilityValue(
+            "\(average.formatted(.number.precision(.fractionLength(1)))) out of 5, from \(ratings)")
+    }
+}
+
+/// One bar for each half-star rating, from half a star on the left to five stars on the right,
+/// as tall as its share of the most common rating.
+private struct RatingBars: View {
+    let counts: [Int]
+    let yours: Double?
+
+    var body: some View {
+        let most = CGFloat(max(1, counts.max() ?? 0))
+        let yourIndex = yours.map { Int(($0 * 2).rounded()) - 1 }
+        VStack(spacing: 4) {
+            HStack(alignment: .bottom, spacing: 3) {
+                ForEach(counts.indices, id: \.self) { index in
+                    UnevenRoundedRectangle(topLeadingRadius: 2, topTrailingRadius: 2)
+                        .fill(index == yourIndex ? ShelfPalette.gold : cardNote.opacity(0.5))
+                        // A sliver marks a rating that no reader gave.
+                        .frame(height: max(2, 44 * CGFloat(counts[index]) / most))
+                }
+            }
+            .frame(height: 44, alignment: .bottom)
+            HStack {
+                Text("½")
+                Spacer()
+                Text("5")
+            }
+            .font(.caption2)
+            .foregroundStyle(cardNote)
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// Up to three genres as tags: in one line, or two and then one when they do not fit across, or
+/// one a line.
+private struct GenresCard: View {
+    let genres: [String]
+
+    var body: some View {
+        Card {
+            caption("Genres", systemImage: "tag")
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { tags(genres) }
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) { tags(genres.prefix(2)) }
+                    HStack(spacing: 8) { tags(genres.dropFirst(2)) }
+                }
+                VStack(alignment: .leading, spacing: 8) { tags(genres) }
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func tags(_ genres: some RandomAccessCollection<String>) -> some View {
+        ForEach(Array(genres), id: \.self) { genre in
+            Text(genre)
+                .font(.subheadline.weight(.medium))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(.white.opacity(0.1), in: .capsule)
+        }
     }
 }
 

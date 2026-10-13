@@ -100,6 +100,126 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertNil(ShelfLabels.format(nil))
     }
 
+    func testDetailsShowOnlyTheFactsTheBookHas() {
+        var full = book(1, "The Lantern Keeper", rating: 4.5, pages: 352)
+        full.seriesName = "The Lantern Cycle"
+        full.seriesPosition = 2
+        full.publicationYear = 2021
+        full.format = "Listened"
+        full.audioSeconds = 43_500
+        full.genres = ["Fantasy", "mystery", "Adventure", "Romance"]
+        full.communityRating = 4.12
+        full.ratingsCount = 250
+        full.ratingDistribution = [
+            RatingBucket(rating: 4, count: 120), RatingBucket(rating: 4.5, count: 10),
+            RatingBucket(rating: 5, count: 120),
+        ]
+        XCTAssertEqual(
+            DetailCard.details(of: full, about: "A keeper tends the last lantern."),
+            [
+                .about("A keeper tends the last lantern."),
+                .rating(
+                    average: 4.12, count: 250, counts: [0, 0, 0, 0, 0, 0, 0, 120, 10, 120],
+                    yours: 4.5),
+                .series(name: "The Lantern Cycle", position: 2),
+                .published(2021),
+                // Pages even for an audiobook: the book's length whatever the format. The
+                // format and its listening time belong to the Journal.
+                .length("352 pages"),
+                .genres(["Fantasy", "Mystery", "Adventure"]),
+            ])
+
+        var bare = book(2, "Unrated")
+        bare.communityRating = 4
+        bare.ratingsCount = 0
+        bare.seriesID = 12
+        XCTAssertEqual(DetailCard.details(of: bare, about: nil), [])
+        bare.seriesPosition = 3
+        bare.publicationYear = 1999
+        XCTAssertEqual(
+            DetailCard.details(of: bare, about: nil),
+            [.series(name: nil, position: 3), .published(1999)])
+    }
+
+    func testRatingCountsFillEveryHalfStar() {
+        XCTAssertNil(DetailCard.ratingCounts(nil))
+        XCTAssertNil(DetailCard.ratingCounts([RatingBucket(rating: 3, count: 0)]))
+        XCTAssertEqual(
+            DetailCard.ratingCounts([
+                RatingBucket(rating: 0.5, count: 1), RatingBucket(rating: 3, count: 2),
+                RatingBucket(rating: 3, count: 3), RatingBucket(rating: 0, count: 9),
+                RatingBucket(rating: 5.5, count: 9),
+            ]),
+            [1, 0, 0, 0, 0, 5, 0, 0, 0, 0])
+    }
+
+    func testJournalShowsHowTheReaderReadTheBook() throws {
+        var listened = book(1, "Heard", pages: 352)
+        listened.format = "Listened"
+        listened.audioSeconds = 43_500
+        listened.finished = "2025-03-01"
+        listened.review = "  Loved it.\n"
+        XCTAssertEqual(
+            DetailCard.journal(of: listened),
+            [
+                .finished(try XCTUnwrap(listened.finishedDate)),
+                .format("Audiobook", length: "12 hr, 5 min"),
+                .review("Loved it."),
+            ])
+
+        var reading = book(2, "Now", pages: 200)
+        reading.format = "Read"
+        reading.isReading = true
+        reading.progress = 0.25
+        reading.started = "2025-04-10"
+        XCTAssertEqual(
+            DetailCard.journal(of: reading),
+            [
+                .status(progress: 0.25), .started(try XCTUnwrap(reading.startedDate)),
+                .format("Physical", length: "200 pages"),
+            ])
+        XCTAssertEqual(DetailCard.journal(of: book(3, "Unrecorded")), [])
+    }
+
+    func testCardRowsPairHalfCardsWithoutHoles() {
+        let about = DetailCard.about("A keeper tends the last lantern.")
+        let rating = DetailCard.rating(average: 4, count: 10, counts: nil, yours: nil)
+        let series = DetailCard.series(name: "The Lantern Cycle", position: 2)
+        let year = DetailCard.published(2021)
+        let length = DetailCard.length("352 pages")
+        let genres = DetailCard.genres(["Fantasy"])
+        XCTAssertEqual(
+            DetailCard.rows([about, rating, series, year, length, genres], oneColumn: false),
+            [[about], [rating, series], [year, length], [genres]])
+        // With an odd number, the first half card fills a row alone.
+        XCTAssertEqual(
+            DetailCard.rows([about, rating, year, length, genres], oneColumn: false),
+            [[about], [rating], [year, length], [genres]])
+        // Half cards pair only with their neighbors on the same side of a wide card.
+        XCTAssertEqual(
+            DetailCard.rows([year, about, length, rating, series], oneColumn: false),
+            [[year], [about], [length], [rating, series]])
+        // A rating with bars fills its row.
+        let bars = DetailCard.rating(
+            average: 4, count: 10, counts: [0, 0, 0, 0, 0, 0, 0, 4, 0, 6], yours: nil)
+        XCTAssertEqual(
+            DetailCard.rows([about, bars, year, length], oneColumn: false),
+            [[about], [bars], [year, length]])
+        XCTAssertEqual(DetailCard.rows([], oneColumn: false), [])
+        XCTAssertEqual(
+            DetailCard.rows([about, rating, year], oneColumn: true), [[about], [rating], [year]])
+    }
+
+    func testDescriptionsBecomePlainText() {
+        XCTAssertEqual(
+            HardcoverClient.plainText(
+                from:
+                    "<strong>A heist in orbit</strong>\r\n\r\nThe crew of the *Long Night* steals a moon.[2] Tea &amp; toast.\r\n\r\nContains:\r\n- [Part 1](https://example.com/1)\r\n- [Part 2](https://example.com/2)"
+            ),
+            "A heist in orbit\n\nThe crew of the Long Night steals a moon.[2] Tea & toast.\n\nContains:\n- Part 1\n- Part 2"
+        )
+    }
+
     func testSlabThicknessStaysInTheComfortableRange() {
         XCTAssertEqual(book(1, "Short", pages: 40).slabThickness, 44, accuracy: 0.001)
         XCTAssertEqual(book(2, "Long", pages: 2_000).slabThickness, 96, accuracy: 0.001)
