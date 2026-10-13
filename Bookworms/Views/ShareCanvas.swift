@@ -227,8 +227,9 @@ struct ShareInput {
         template == .yearStack ? YearStackCard.pages(for: self).pages.count : 1
     }
 
-    /// Draws `page` at exactly `aspect.size` pixels. Piles need `PileSnapshotRenderer` instead;
-    /// here they draw only the credit.
+    /// Draws `page` at exactly `aspect.size` pixels, without the credit, which sharing adds
+    /// (`UIImage.withShareCredit()`). Piles need `PileSnapshotRenderer` instead; here they draw
+    /// nothing.
     @MainActor
     func render() -> UIImage? {
         let renderer = ImageRenderer(content: ShareCanvas(input: self))
@@ -238,11 +239,11 @@ struct ShareInput {
     }
 }
 
-/// The exported image: one card at its pixel size, one point per pixel.
+/// The exported image without its credit: one card at its pixel size, one point per pixel.
 ///
-/// The studio previews the rendered image rather than this view, so the preview always matches
-/// the export. Card text uses `ShareStyle` type in each book's own capitalization; only spines
-/// keep their designed lettering.
+/// The studio previews the rendered image rather than this view, so the preview matches the
+/// export except for the credit, which only exports carry. Card text uses `ShareStyle` type in
+/// each book's own capitalization; only spines keep their designed lettering.
 struct ShareCanvas: View {
     let input: ShareInput
 
@@ -261,17 +262,35 @@ struct ShareCanvas: View {
             }
         }
         .frame(width: input.aspect.size.width, height: input.aspect.size.height)
-        // A quiet credit in the bottom margin, which every card keeps free of content.
-        .overlay(alignment: .bottom) {
-            Text("Created with Bookworms for iPhone")
-                .font(.system(size: 24, weight: .medium))
-                .foregroundStyle(ShareStyle.cream.color.opacity(0.45))
-                .shadow(color: .black.opacity(0.35), radius: 3)
-                .padding(.bottom, 18)
-        }
         .clipped()
         // Exports keep one appearance whatever the system setting.
         .environment(\.colorScheme, .dark)
+    }
+}
+
+/// The quiet credit that every exported share image and video carries at its bottom edge, in
+/// the bottom margin that every card keeps free of content. Previews in the app leave it out.
+struct ShareCredit: View {
+    var body: some View {
+        Text("Created with Bookworms for iPhone")
+            .font(.system(size: 22, weight: .medium))
+            .foregroundStyle(ShareStyle.cream.color.opacity(0.5))
+            .shadow(color: .black.opacity(0.35), radius: 3)
+            .padding(.bottom, 10)
+    }
+}
+
+extension UIImage {
+    /// This image with `ShareCredit` at its bottom edge, at the same size and scale, or `nil`
+    /// when it cannot be drawn. Every share image gets its credit here on its way out of the
+    /// app, so a preview of the image alone matches the export everywhere else.
+    @MainActor
+    func withShareCredit() -> UIImage? {
+        let renderer = ImageRenderer(
+            content: Image(uiImage: self).overlay(alignment: .bottom) { ShareCredit() })
+        renderer.scale = scale
+        renderer.isOpaque = true
+        return renderer.uiImage
     }
 }
 

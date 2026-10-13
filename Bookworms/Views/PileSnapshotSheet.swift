@@ -7,8 +7,9 @@ import UIKit
 /// Each size change or shuffle renders a new image and cancels one in progress. A change to the
 /// books, such as a design a generation run saves every few seconds under **Designed only**,
 /// draws again once the image in progress, if any, is ready. The previous image stays in view
-/// under a progress indicator until the new one is ready, and sharing waits for it. **Video**
-/// films the same books falling into the same spread (`PileVideoSheet`).
+/// under a progress indicator until the new one is ready, and sharing waits for it. The preview
+/// leaves out the credit, which the shared file carries. **Video** films the same books falling
+/// into the same spread (`PileVideoSheet`).
 struct PileSnapshotSheet: View {
     let books: [CloudBook]
     let title: String
@@ -29,6 +30,10 @@ struct PileSnapshotSheet: View {
     /// Counts book changes that arrived while no loop ran; each starts a loop.
     @State private var redraws = 0
     @State private var filmsPile = false
+    /// The files the share sheet offers while it is open.
+    @State private var files: SharedFiles?
+    /// Whether **Share** is adding the credit and writing the file.
+    @State private var isPreparing = false
 
     private struct Options: Equatable {
         var aspect: ShareAspect
@@ -90,15 +95,15 @@ struct PileSnapshotSheet: View {
                 }
                 if let image {
                     ToolbarItem(placement: .primaryAction) {
-                        ShareLink(
-                            item: image,
-                            preview: SharePreview(image.name, image: Image(uiImage: image.image))
-                        )
-                        .disabled(isPending)
+                        Button("Share", systemImage: "square.and.arrow.up") {
+                            Task { await share(image) }
+                        }
+                        .disabled(isPending || isPreparing)
                     }
                 }
             }
         }
+        .shareSheet($files)
         .task(id: LoopKey(options: options.restartKey, redraws: redraws)) { await render() }
         .sheet(isPresented: $filmsPile) {
             PileVideoSheet(books: latest, title: title, aspect: aspect, seed: seed)
@@ -144,6 +149,17 @@ struct PileSnapshotSheet: View {
         .frame(maxHeight: .infinity)
     }
 
+    /// Opens the share sheet with the image and its credit, which the preview leaves out.
+    private func share(_ image: ShareImage) async {
+        isPreparing = true
+        defer { isPreparing = false }
+        do {
+            files = try await SharedFiles.images([image])
+        } catch {
+            model.toasts.show(.failure("Couldn't prepare the image"))
+        }
+    }
+
     /// Renders until the image shows the latest books.
     private func render() async {
         drawing += 1
@@ -185,7 +201,8 @@ struct PileSnapshotSheet: View {
     ///
     /// `-BookwormsPileShare YES` opens the pile's share sheet when the pile appears, and
     /// `-BookwormsPileShareAspect <story|portrait|square>` picks its size. Each image is then
-    /// written to `Library/Caches/Bookworms/pile-share-debug.png`. `-BookwormsPileShareSeed <n>`
+    /// written, with the credit that sharing adds, to
+    /// `Library/Caches/Bookworms/pile-share-debug.png`. `-BookwormsPileShareSeed <n>`
     /// sets the first image's seed, and `-BookwormsPileRedrops <n>` renders an image for each
     /// seed after it up to n.
     enum PileSnapshotDebug {
@@ -194,12 +211,12 @@ struct PileSnapshotSheet: View {
             UInt64(max(0, UserDefaults.standard.integer(forKey: "BookwormsPileRedrops")))
         }
 
-        static func write(_ image: UIImage) {
+        @MainActor static func write(_ image: UIImage) {
             guard opensSheet else { return }
             let url = URL.cachesDirectory.appending(path: "Bookworms/pile-share-debug.png")
             try? FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? image.pngData()?.write(to: url, options: .atomic)
+            try? image.withShareCredit()?.pngData()?.write(to: url, options: .atomic)
         }
     }
 #endif

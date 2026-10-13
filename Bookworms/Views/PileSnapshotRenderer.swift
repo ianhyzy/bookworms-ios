@@ -7,8 +7,8 @@ import UIKit
 ///
 /// `ImageRenderer` cannot capture a `RealityView`, so the renderer builds a `BookPileScene` that
 /// no view shows, runs its physics in a `RealityRenderer`, renders one frame into a Metal
-/// texture, and copies the frame to memory. SwiftUI then draws the heading and the credit over
-/// it.
+/// texture, and copies the frame to memory. SwiftUI then draws the heading over it; sharing adds
+/// the credit (`UIImage.withShareCredit()`).
 @MainActor
 enum PileSnapshotRenderer {
     /// The most books one image drops. Books drop last first, so the books left out would lie
@@ -59,7 +59,8 @@ enum PileSnapshotRenderer {
         let layout = PileSnapshotLayout(aspect: aspect, count: shown.count)
         let pile = try await renderPile(shown, layout: layout, seed: seed, model: model)
         let renderer = ImageRenderer(
-            content: PileSnapshotCard(pile: pile, title: title, count: books.count, layout: layout))
+            content: PileSnapshotCard(
+                pile: pile, title: title, count: books.count, layout: layout, showsCredit: false))
         renderer.scale = 1
         renderer.isOpaque = true
         guard let image = renderer.uiImage else { throw PileSnapshotError.drawingFailed }
@@ -363,6 +364,9 @@ struct PileSnapshotCard: View {
     let title: String
     let count: Int
     let layout: PileSnapshotLayout
+    /// Whether the card draws `ShareCredit`. A still image leaves it out so its preview shows
+    /// none, and sharing adds it (`UIImage.withShareCredit()`).
+    var showsCredit = true
 
     /// The darker end of `ShelfPalette.wall`.
     private static let walnut = Color(red: 0.11, green: 0.078, blue: 0.055)
@@ -410,13 +414,8 @@ struct PileSnapshotCard: View {
                 )
                 .frame(height: 120)
             }
-            // The credit that `ShareCanvas` puts on every share image.
             .overlay(alignment: .bottom) {
-                Text("Created with Bookworms for iPhone")
-                    .font(.system(size: 24, weight: .medium))
-                    .foregroundStyle(ShareStyle.cream.color.opacity(0.45))
-                    .shadow(color: .black.opacity(0.35), radius: 3)
-                    .padding(.bottom, 18)
+                if showsCredit { ShareCredit() }
             }
             .environment(\.colorScheme, .dark)
     }

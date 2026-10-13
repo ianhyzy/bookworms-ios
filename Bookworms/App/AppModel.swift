@@ -24,6 +24,8 @@ final class AppModel {
     /// A book that a share request named; the Share tab shows it, then clears this.
     var shareBookID: Int?
     let fonts = SpineFonts()
+    /// Short confirmations, such as "Saved to Photos", that any screen can show.
+    let toasts = ToastCenter()
     /// This iPhone's own Hardcover sign-in and library.
     let account = HardcoverAccount()
     @ObservationIgnored let covers = CoverStore()
