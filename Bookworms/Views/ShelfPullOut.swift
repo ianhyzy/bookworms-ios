@@ -14,7 +14,9 @@ final class ShelfPullOut {
     /// The opening. It runs at an even pace because `PullOutPath` eases each part of the flight
     /// itself, so the parts keep their share of the time. The book lands, and the details fade
     /// in, as it ends, about when a book the Pile lifts lands.
-    static let opening = Animation.linear(duration: 1.1)
+    static let opening = Animation.linear(duration: openingDuration)
+    /// The opening's length in seconds, which maps the flight's progress to time.
+    nonisolated static let openingDuration = 1.1
     /// The return, which starts as the details finish fading out and retraces the opening. It
     /// eases out, so the book leaves the stage at once rather than as slowly as it settled there,
     /// and slows as it slides into its place.
@@ -135,11 +137,11 @@ final class ShelfPullOut {
 /// Each part of the flight runs over its own share of the progress, with its own easing:
 ///
 /// 1. The book slides out of its place, straight toward the reader, which shows as its spine
-///    growing, while the books around it hold still. On **Stack**, it comes out along the way
-///    its spine faces (`slide`), so a turned book also moves a little to that side, and down
-///    the screen, until it is clear of the book above. The 3D stack draws this part itself,
-///    under the books above (`Rest.slidesInStack`). The book casts a shadow on the shelf, and
-///    the faces' shading fades in.
+///    growing. On **Stack**, it comes out along the way its spine faces (`slide`), so a turned
+///    book also moves a little to that side, and down the screen, until it is clear of the
+///    book above, while the books above and below make a little room (`StackRoom`). The stack
+///    draws this part itself, under the books above (`Rest.slidesInStack`). The book casts a
+///    shadow on the shelf, and the faces' shading fades in.
 /// 2. As the slide ends, the book starts to float to the stage, growing or shrinking to the
 ///    stage's height, and to turn from the way it lay (`Rest`) to the details' pose, while a book
 ///    from **Stack** stands up from lying on its back. On **Shelf**, the float and the turn start
