@@ -108,8 +108,8 @@ final class PileMovieTests: XCTestCase {
     }
 
     func testEachSoundStartsOnItsFrameWithItsVolumeAndPan() {
-        let hit = record(time: 0.05, kind: .thud, variant: 2, volume: 0.5, pan: -1)
-        let sound = ImpactSound.bank[.thud]![2]
+        let hit = record(time: 0.05, variant: 2, volume: 0.5, pan: -1)
+        let sound = ImpactSound.bank[2]
         let frame = PileMovieTiming.samplesPerFrame
         XCTAssertTrue(ImpactMix.samples([hit], in: 0..<frame).allSatisfy { $0 == 0 })
         let mix = ImpactMix.samples([hit], in: frame..<frame * 2)
@@ -130,10 +130,10 @@ final class PileMovieTests: XCTestCase {
 
     func testMixingFrameByFrameMatchesMixingWhole() {
         let hits = [
-            record(time: 0.02, kind: .slap, variant: 0, volume: 1, pan: 0.3),
+            record(time: 0.02, variant: 0, volume: 1, pan: 0.3),
             // Starts before the first ends, and runs across several frames.
-            record(time: 0.06, kind: .thud, variant: 1, volume: 0.8, pan: -0.5),
-            record(time: 0.3, kind: .thud, variant: 3, volume: 0.4, pan: 0.8),
+            record(time: 0.06, variant: 1, volume: 0.8, pan: -0.5),
+            record(time: 0.3, variant: 3, volume: 0.4, pan: 0.8),
         ]
         let frame = PileMovieTiming.samplesPerFrame
         let whole = ImpactMix.samples(hits, in: 0..<frame * 20)
@@ -145,17 +145,17 @@ final class PileMovieTests: XCTestCase {
     func testTheMixStaysWithinFullScale() {
         let pileUp = (0..<20)
             .map {
-                record(time: 0.01, kind: .thud, variant: $0 % 4, volume: 1, pan: 1)
+                record(time: 0.01, variant: $0 % 4, volume: 1, pan: 1)
             }
         let mix = ImpactMix.samples(pileUp, in: 0..<PileMovieTiming.samplesPerFrame * 4)
         XCTAssertEqual(mix.map(abs).max() ?? 0, 1, accuracy: 1e-6)
     }
 
     private func record(
-        time: TimeInterval, kind: ImpactSound.Kind, variant: Int, volume: Float, pan: Float
+        time: TimeInterval, variant: Int, volume: Float, pan: Float
     ) -> ImpactRecord {
         ImpactRecord(
-            time: time, impulse: 1, mass: 0.5, position: .zero, kind: kind, variant: variant,
+            time: time, impulse: 1, mass: 0.5, position: .zero, variant: variant,
             volume: volume, pan: pan)
     }
 }
