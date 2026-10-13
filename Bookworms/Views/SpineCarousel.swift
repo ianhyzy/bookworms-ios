@@ -17,8 +17,8 @@ enum ShelfMode: String, CaseIterable, Identifiable {
 /// Both styles draw `Book3DView` as the flight draws it at rest, so a flight starts and lands
 /// exactly on the stacked book.
 enum StackStyle: String {
-    /// Books seen straight on and unshaded, so each shows its spine as a flat one, and the
-    /// page edges at one end when it is strongly turned.
+    /// Books seen straight on, unshaded, and barely turned (`flatTwist`), so each shows only its
+    /// spine, as a flat one.
     case flat = "2d"
     /// Books seen from slightly above and in front, and shaded, so each book's top board shows
     /// above its spine.
@@ -30,6 +30,9 @@ enum StackStyle: String {
     /// left, which lies at the lower left of a book on its back, so full shading would darken
     /// the top boards most.
     static let lighting = 0.6
+    /// How far a 2D book turns at most, in radians: about 3 degrees, so the books barely face
+    /// left or right and never show their page edges.
+    static let flatTwist = 0.05
 
     /// How `book` lies in the stack, which is also where its flight to the details starts.
     ///
@@ -38,12 +41,15 @@ enum StackStyle: String {
     /// the flight then draws it in front of the stack. The books around it make a little room
     /// while it is out (`StackRoom`).
     func rest(of book: CloudBook) -> PullOutPath.Rest {
-        let twist = StackArrangement.twist(of: book)
         switch self {
-        case .flat: return PullOutPath.Rest(pitch: twist, slidesInStack: true)
+        case .flat:
+            return PullOutPath.Rest(
+                pitch: StackArrangement.twist(of: book, maximum: Self.flatTwist),
+                slidesInStack: true)
         case .threeD:
             return PullOutPath.Rest(
-                yaw: -Self.lookDown, pitch: twist, lighting: Self.lighting, slidesInStack: true)
+                yaw: -Self.lookDown, pitch: StackArrangement.twist(of: book),
+                lighting: Self.lighting, slidesInStack: true)
         }
     }
 }
@@ -118,9 +124,8 @@ struct SpineCarousel: View {
         let stops = StackArrangement.maskStops(
             height: size.height + bleed, top: track.maxThickness / 2,
             bottom: track.maxThickness / 2 + rise)
-        // The pulled book's index and the flight's progress, which move the books around it.
-        let pulled = pullOut.book.flatMap { book in track.ids.firstIndex(of: book.id) }
-        let progress = pulled == nil ? 0 : pullOut.progress
+        // The pulled book's index, which the books around it make room for.
+        let pulled = pullOut.roomID.flatMap { track.ids.firstIndex(of: $0) }
         return ScrollView(.vertical) {
             VStack(spacing: 0) {
                 Color.clear.frame(height: track.leadingSpace(viewport: size.height))
@@ -135,7 +140,7 @@ struct SpineCarousel: View {
                                 .padding(.top, slot.inset)
                                 .modifier(
                                     StackRoom(
-                                        progress: progress,
+                                        room: pullOut.room, closing: pullOut.closing,
                                         distance: pulled.map { slot.index - $0 } ?? 0)
                                 )
                                 // Each book lies over the top board of the book below it.
@@ -362,48 +367,59 @@ private struct StackSlide: ViewModifier, Animatable {
 }
 
 /// Makes room for a pulled book: moves a stacked book up while it lies above the pulled book and
-/// down while it lies below, by a few points, as the flight's `progress` runs.
+/// down while it lies below, by a few points, then snaps it back once the book is back.
 ///
-/// The nudge spreads outward from the pulled book like a Newton's cradle: each book starts
-/// `stagger` seconds of the opening after the book nearer the pulled one, and settles with a
-/// little overshoot (`spring`). The nearest books move `near` points and farther books a little
-/// more, up to `far`. SwiftUI animates `progress`, so the motion follows the flight frame by
-/// frame: the return plays it backward, the neighbors close in as the book slides back into its
-/// place, nothing is left to snap when the flight ends, and **Back** during the opening turns
-/// them around with the book. With Reduce Motion on, no book is pulled, so nothing moves.
+/// Both motions spread outward from the pulled book like a nudge along a Newton's cradle: each
+/// book starts `stagger` seconds after the book nearer the pulled one. The books open over the
+/// opening (`room`) and settle with a little overshoot (`opening`). The nearest books move `near`
+/// points and farther books a little more, up to `far`. They hold the room while the book is
+/// out, so the returning book never touches them. Once it is back in its place, they snap shut
+/// (`closing`) and rebound a fraction of a point before they settle, without ever overlapping
+/// it. With Reduce Motion on, no book is pulled, so nothing moves.
 struct StackRoom: GeometryEffect {
     static let near: CGFloat = 3.5
     static let far: CGFloat = 5
     static let stagger = 0.03
-    static let spring = Spring(duration: 0.5, bounce: 0.45)
+    static let opening = Spring(duration: 0.5, bounce: 0.45)
+    static let snap = Spring(duration: 0.3, bounce: 0.5)
+    /// How long the snap shut runs, long enough for the books a dozen places away to settle.
+    static let closingDuration = 0.9
 
-    var progress: Double
+    /// `ShelfPullOut.room`.
+    var room: Double
+    /// `ShelfPullOut.closing`.
+    var closing: Double
     /// The book's index less the pulled book's: negative above it, and 0 for the pulled book
     /// or while no book is pulled.
     let distance: Int
 
-    nonisolated var animatableData: Double {
-        get { progress }
-        set { progress = newValue }
+    nonisolated var animatableData: AnimatablePair<Double, Double> {
+        get { AnimatablePair(room, closing) }
+        set { (room, closing) = (newValue.first, newValue.second) }
     }
 
     nonisolated func effectValue(size: CGSize) -> ProjectionTransform {
         ProjectionTransform(
             CGAffineTransform(
-                translationX: 0, y: Self.offset(distance: distance, progress: progress)))
+                translationX: 0,
+                y: Self.offset(distance: distance, room: room, closing: closing)))
     }
 
-    /// How far a book `distance` places from the pulled book has moved at `progress`, down the
-    /// screen for a positive distance and up for a negative one.
-    static func offset(distance: Int, progress: Double) -> CGFloat {
-        guard distance != 0 else { return 0 }
-        let places = CGFloat(abs(distance))
-        let amplitude = far - (far - near) / places
-        let time =
-            progress * ShelfPullOut.openingDuration - Double(places - 1) * stagger
-        guard time > 0 else { return 0 }
-        let reach = amplitude * CGFloat(spring.value(target: 1.0, time: time))
+    /// How far a book `distance` places from the pulled book has moved, down the screen for a
+    /// positive distance and up for a negative one.
+    static func offset(distance: Int, room: Double, closing: Double) -> CGFloat {
+        guard distance != 0, closing < 1 else { return 0 }
+        let places = abs(distance)
+        let delay = Double(places - 1) * stagger
+        let opened = value(of: opening, at: room * ShelfPullOut.openingDuration - delay)
+        // The snap's overshoot shows as a rebound away from the book, not a dip into it.
+        let shut = value(of: snap, at: closing * closingDuration - delay)
+        let reach = (far - (far - near) / CGFloat(places)) * CGFloat(opened * abs(1 - shut))
         return distance < 0 ? -reach : reach
+    }
+
+    private static func value(of spring: Spring, at time: Double) -> Double {
+        time > 0 ? spring.value(target: 1.0, time: time) : 0
     }
 }
 
@@ -667,7 +683,9 @@ struct StackArrangement {
         width * Self.maximumShift * Self.spread(book, salt: 70)
     }
 
-    static func twist(of book: CloudBook) -> Double { maximumTwist * spread(book, salt: 72) }
+    static func twist(of book: CloudBook, maximum: Double = maximumTwist) -> Double {
+        maximum * spread(book, salt: 72)
+    }
 
     /// The books from the top of the stack to the bottom, each lying flat on the one below it.
     func track(of books: [CloudBook]) -> SpineTrack {

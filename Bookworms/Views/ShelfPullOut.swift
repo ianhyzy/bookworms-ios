@@ -42,6 +42,15 @@ final class ShelfPullOut {
     var pose = BookPose.resting
     /// The flight's progress: 0 with the book in its place, 1 in the details' stage.
     private(set) var progress = 0.0
+    /// The book whose neighbors in **Stack** make room for it (`StackRoom`). It is set with
+    /// `book` and kept after the book is back, while they close in.
+    private(set) var roomID: CloudBook.ID?
+    /// How far the neighbors have opened, from 0 to 1 over the opening. They hold the room while
+    /// the book is out.
+    private(set) var room = 0.0
+    /// How far the neighbors have closed in, from 0 to 1 over `StackRoom.closingDuration`,
+    /// which starts once the book is back in its place.
+    private(set) var closing = 0.0
     /// Whether the details show: set once the book lands, and cleared by **Back**.
     private(set) var showsText = false
     /// Set by **Back**, until the book is back in its place.
@@ -65,6 +74,9 @@ final class ShelfPullOut {
         progress = 0
         showsText = false
         isReturning = false
+        roomID = book.id
+        room = 0
+        closing = 0
         self.upright = upright
         self.book = book
     }
@@ -77,6 +89,7 @@ final class ShelfPullOut {
         isOut = true
         withAnimation(Self.opening, completionCriteria: .logicallyComplete) {
             progress = 1
+            room = 1
         } completion: { [self] in
             guard self.revision == revision else { return }
             // As the Pile's details fade in.
@@ -108,18 +121,25 @@ final class ShelfPullOut {
             progress = 0
         } completion: { [self] in
             guard self.revision == revision else { return }
-            close()
+            close(keepingRoom: true)
+            // The neighbors snap back into place now that the book is back between them.
+            withAnimation(.linear(duration: StackRoom.closingDuration)) { closing = 1 }
             AccessibilityNotification.ScreenChanged(nil).post()
         }
     }
 
     /// Puts the book back in its place at once, without the flight, and closes its details.
-    func close() {
+    /// The neighbors close in at once too, unless `keepingRoom`.
+    func close(keepingRoom: Bool = false) {
         guard book != nil else { return }
         revision &+= 1
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
+            if !keepingRoom {
+                roomID = nil
+                room = 0
+            }
             book = nil
             isOut = false
             home = nil
