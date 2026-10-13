@@ -105,7 +105,10 @@ final class ShelfLogicTests: XCTestCase {
         let top = book(1, "Top", pages: 300)
         let twist = StackArrangement.twist(of: top)
         XCTAssertEqual(
-            StackStyle.flat.rest(of: top), PullOutPath.Rest(pitch: twist, slidesInStack: true))
+            StackStyle.flat.rest(of: top),
+            PullOutPath.Rest(
+                pitch: twist * StackStyle.flatTwist / StackArrangement.maximumTwist,
+                slidesInStack: true))
         XCTAssertEqual(
             StackStyle.threeD.rest(of: top),
             PullOutPath.Rest(
@@ -394,33 +397,32 @@ final class ShelfLogicTests: XCTestCase {
     }
 
     func testStackNeighborsMakeRoomOutwardThenSettle() {
+        let open = { (distance: Int, room: Double) in
+            StackRoom.offset(distance: distance, room: room, closing: 0)
+        }
         // The pulled book, and every book while none is pulled, stays put.
-        for progress in [0.0, 0.3, 1] {
-            XCTAssertEqual(StackRoom.offset(distance: 0, progress: progress), 0)
+        for room in [0.0, 0.3, 1] {
+            XCTAssertEqual(open(0, room), 0)
         }
         // Before the pull, nothing has moved.
         for distance in [-3, -1, 1, 3] {
-            XCTAssertEqual(StackRoom.offset(distance: distance, progress: 0), 0)
+            XCTAssertEqual(open(distance, 0), 0)
         }
         // Once settled, books above are up and books below are down, the nearest by `near`
         // and farther ones a little more, up to `far`.
-        XCTAssertEqual(StackRoom.offset(distance: 1, progress: 1), StackRoom.near, accuracy: 0.1)
-        XCTAssertEqual(StackRoom.offset(distance: -1, progress: 1), -StackRoom.near, accuracy: 0.1)
-        XCTAssertGreaterThan(
-            StackRoom.offset(distance: 2, progress: 1), StackRoom.offset(distance: 1, progress: 1))
+        XCTAssertEqual(open(1, 1), StackRoom.near, accuracy: 0.1)
+        XCTAssertEqual(open(-1, 1), -StackRoom.near, accuracy: 0.1)
+        XCTAssertGreaterThan(open(2, 1), open(1, 1))
         XCTAssertEqual(
-            StackRoom.offset(distance: 20, progress: 1),
-            StackRoom.far - (StackRoom.far - StackRoom.near) / 20, accuracy: 0.3)
+            open(20, 1), StackRoom.far - (StackRoom.far - StackRoom.near) / 20, accuracy: 0.3)
         // The nudge spreads outward: a farther book starts later, and the overshoot stays small.
-        XCTAssertGreaterThan(
-            StackRoom.offset(distance: 1, progress: 0.1),
-            StackRoom.offset(distance: 4, progress: 0.1))
-        XCTAssertEqual(StackRoom.offset(distance: 8, progress: 0.1), 0)
+        XCTAssertGreaterThan(open(1, 0.1), open(4, 0.1))
+        XCTAssertEqual(open(8, 0.1), 0)
         for distance in [1, 2, 5, 12] {
             var peak: CGFloat = 0
             var previous: CGFloat = 0
             for step in 0...200 {
-                let offset = StackRoom.offset(distance: distance, progress: Double(step) / 200)
+                let offset = open(distance, Double(step) / 200)
                 XCTAssertLessThan(abs(offset - previous), 0.6, "no jump at step \(step)")
                 peak = max(peak, offset)
                 previous = offset
@@ -428,6 +430,32 @@ final class ShelfLogicTests: XCTestCase {
             XCTAssertLessThan(peak, StackRoom.far * 1.2)
             XCTAssertGreaterThan(peak, StackRoom.near)
         }
+    }
+
+    func testStackNeighborsSnapShutWithoutOverlappingTheReturnedBook() {
+        // The books hold their room until the snap starts, and are back in place when it ends.
+        XCTAssertEqual(
+            StackRoom.offset(distance: 1, room: 1, closing: 0), StackRoom.near, accuracy: 0.1)
+        XCTAssertEqual(StackRoom.offset(distance: -3, room: 1, closing: 1), 0)
+        for distance in [-12, -5, -1, 1, 2, 5, 12] {
+            var rebounded = false
+            var previous = StackRoom.offset(distance: distance, room: 1, closing: 0)
+            for step in 0...400 {
+                let offset = StackRoom.offset(
+                    distance: distance, room: 1, closing: Double(step) / 400)
+                // A book above stays at or above its place, and a book below at or below it.
+                XCTAssertGreaterThanOrEqual(offset * CGFloat(distance.signum()), 0)
+                if abs(offset) > abs(previous) { rebounded = true }
+                previous = offset
+            }
+            XCTAssertTrue(rebounded, "a book \(distance) places away rebounds")
+            XCTAssertLessThan(
+                abs(StackRoom.offset(distance: distance, room: 1, closing: 0.999)), 0.05)
+        }
+        // The snap spreads outward like the opening.
+        XCTAssertLessThan(
+            abs(StackRoom.offset(distance: 1, room: 1, closing: 0.15)),
+            abs(StackRoom.offset(distance: 6, room: 1, closing: 0.15)))
     }
 
     func testThreeDStackedBookStartsAsItLiesAndLandsInTheDetails() {
