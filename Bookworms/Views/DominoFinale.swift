@@ -14,9 +14,11 @@ import simd
 /// (`PileSpread`): each lifts off the desk, flies in an arc to its place, turning face up on
 /// the way, and settles flat, one after another in the spread's order, so a book lands only
 /// after the books it rests on. Every book but the spread's last has landed `settleMargin`
-/// before the camera comes to rest. The last book waits where it fell; as the camera settles,
-/// it springs up out of the spread toward the viewer, hangs there a beat, and slams down into
-/// its place, landing `snapLanding` after the camera stops (`snapPose(from:to:top:time:)`).
+/// before the camera comes to rest. The spread's last book is the last book read, the chain's
+/// last, which the spread puts down last, so no book rests on it (`PileSpread`'s `last`). It
+/// waits where it fell; as the camera settles, it springs up out of the spread toward the
+/// viewer, hangs there a beat, and slams down into its place, landing `snapLanding` after the
+/// camera stops (`snapPose(from:to:top:time:)`).
 /// Out of the lamp's beam, the room lights it more (`DeskStage.light(_:boost:)`), so it stays
 /// lit rather than going dark (`boost(at:over:radius:)`).
 /// The poses are pure functions of time, so tests replay them.

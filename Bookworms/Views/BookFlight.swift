@@ -6,8 +6,8 @@ import SwiftUI
 /// The book first rises straight up until it clears the books that lay over it, speeding up as
 /// it goes. A spring then carries it from the top of the rise to its details, starting at the
 /// rise's speed and overshooting slightly. Back throws it at the place it left, on a path that
-/// gravity bends, so it lands there after `whipDuration(from:to:)`, or sets it down in a place
-/// it must stand in again (see `setDown`).
+/// gravity bends, so it lands there after `whipDuration(from:to:)`, or, in a scene whose books
+/// are arranged, sets it back down exactly where it lay (see `setDown`).
 enum BookFlight {
     static let spring = Spring(duration: 0.8, bounce: 0.2)
     /// The shortest a throw back takes, and the fastest it flies on average, in units per
@@ -217,10 +217,13 @@ protocol LiftingScene: AnyObject {
 /// the lifted book or touches it (`BookFlight.disturbed`) wakes as the book starts to rise and
 /// again as it stops colliding. The books it carried then fall into the gap and settle.
 ///
-/// The book returns thrown, or set down standing where `standing` gives a pose. The scene moves
-/// its camera: each update passes `aim` the camera's share of the way from the view it shows
-/// the scene from to the view it shows the flight from, which the veil's opacity also follows.
-/// Collisions reach the scene first, which hands them to `handle`.
+/// The book returns thrown, as in the Desk scene, whose books lie loose. A scene whose books are
+/// arranged, as the dominoes are, holds still while a book is out and passes `setsDownInPlace`:
+/// the book then rises and returns by its pose alone, colliding with nothing, so it shoves no
+/// book, and **Back** sets it down exactly where it lay, in the body mode and with the motion it
+/// had. The scene moves its camera: each update passes `aim` the camera's share of the way from
+/// the view it shows the scene from to the view it shows the flight from, which the veil's
+/// opacity also follows. Collisions reach the scene first, which hands them to `handle`.
 @MainActor
 final class BookLifter {
     private let root: Entity
@@ -233,11 +236,9 @@ final class BookLifter {
     /// The share of a thrown book's sideways speed, its fall, and its tumble that its first hit
     /// keeps (see `land`).
     private let keeps: (sideways: Float, fall: Float, tumble: Float)
-    /// The pose a returning book stands in, in its place, or `nil` when it is thrown back or,
-    /// put back at once, dropped over its place. The scene answers for the book in flight. The
-    /// lifter asks as the book leaves the details and again as it lands, because the scene's
-    /// books can fill its place in between.
-    var standing: (@MainActor () -> Transform?)?
+    /// Whether the book rises and returns by its pose and is set down exactly where it lay,
+    /// rather than thrown back, for a scene that holds still while it is out.
+    private let setsDownInPlace: Bool
     private var lifted: Lifted?
     private var returning: Return?
     /// A camera-facing walnut plane that dims the scene behind a lifted book, made by the first
@@ -251,6 +252,9 @@ final class BookLifter {
         let size: SIMD3<Float>
         let resting: Transform
         let rise: Float
+        /// The book's body mode and motion as it lay, which a book set down in place takes again.
+        let mode: PhysicsBodyMode
+        let motion: PhysicsMotionComponent
         /// The other books, which the lift can disturb, and the bounds the book left.
         let others: [ModelEntity]
         let bounds: BoundingBox
@@ -291,7 +295,8 @@ final class BookLifter {
     init(
         root: Entity, camera: PerspectiveCamera, factory: BookFactory, feedback: ImpactFeedback,
         passes: CollisionGroup = [],
-        keeps: (sideways: Float, fall: Float, tumble: Float) = (0.25, 1, 0.5)
+        keeps: (sideways: Float, fall: Float, tumble: Float) = (0.25, 1, 0.5),
+        setsDownInPlace: Bool = false
     ) {
         self.root = root
         self.camera = camera
@@ -299,6 +304,7 @@ final class BookLifter {
         self.feedback = feedback
         self.passes = passes
         self.keeps = keeps
+        self.setsDownInPlace = setsDownInPlace
     }
 
     /// The ID of the lifted book, if any.
@@ -321,19 +327,27 @@ final class BookLifter {
         self.aspect = aspect
         let others = books.filter { $0 !== book }
         let bounds = book.visualBounds(relativeTo: root)
+        let mode = book.components[PhysicsBodyComponent.self]?.mode ?? .dynamic
+        let motion = book.components[PhysicsMotionComponent.self] ?? PhysicsMotionComponent()
         book.components[PhysicsBodyComponent.self]?.mode = .kinematic
         book.components.set(PhysicsMotionComponent())
         let rise = BookFlight.rise(
             of: bounds, clearing: others.map { $0.visualBounds(relativeTo: root) }, margin: margin)
         lifted = Lifted(
             book: book, id: id, size: parts.shape.size, resting: book.transform, rise: rise,
-            others: others, bounds: bounds, materials: parts.materials)
-        // Asleep, they would let the rising book pass through them.
-        #if DEBUG
-            lifted?.riders = wake(others, around: bounds)
-        #else
-            wake(others, around: bounds)
-        #endif
+            mode: mode, motion: motion, others: others, bounds: bounds,
+            materials: parts.materials)
+        if setsDownInPlace {
+            // The scene holds still, so the book shoves nothing on its way out or back.
+            book.components[CollisionComponent.self]?.filter = CollisionFilter(group: [], mask: [])
+        } else {
+            // Asleep, they would let the rising book pass through them.
+            #if DEBUG
+                lifted?.riders = wake(others, around: bounds)
+            #else
+                wake(others, around: bounds)
+            #endif
+        }
         if veil == nil { veil = makeVeil() }
         return BookFlight.landing(rise: rise)
     }
@@ -399,10 +413,10 @@ final class BookLifter {
         await factory.restyle(book, cover: cover, look: look)
     }
 
-    /// Returns the lifted book: sets it down standing in the pose `standing` gives (see
-    /// `BookFlight.setDown`), or else throws it back at the place it left, fast and tumbling,
-    /// so it crashes into the books that fell into its place. The camera and the veil return
-    /// over the same time.
+    /// Returns the lifted book: with `setsDownInPlace`, sets it down where it lay (see
+    /// `BookFlight.setDown`), and otherwise throws it back at the place it left, fast and
+    /// tumbling, so it crashes into the books that fell into its place. The camera and the veil
+    /// return over the same time.
     ///
     /// The book leaves once three frames in a row follow one another closely, so a main-thread
     /// stall from the caller's own changes passes while it holds still. A thrown book's details
@@ -442,13 +456,13 @@ final class BookLifter {
         return true
     }
 
-    /// Ends a lift or a return at once: puts the book at rest (see `put`), and the camera,
-    /// through `aim`, and the veil as they were.
+    /// Ends a lift or a return at once: puts the book back (see `put`), and the camera, through
+    /// `aim`, and the veil as they were.
     func drop(aim: (Float) -> Void) {
         guard let flight = lifted ?? returning?.flight else { return }
         lifted = nil
         returning = nil
-        put(flight, at: standing?())
+        put(flight, at: setsDownInPlace ? flight.resting : nil)
         aim(0)
         showVeil(0)
     }
@@ -493,18 +507,26 @@ final class BookLifter {
         aim(lifted.share)
         let book = lifted.book
         if lifted.elapsed < BookFlight.riseDuration(lifted.rise) {
-            // A velocity, as for a held book, lets the physics shove other books aside.
             let goal =
                 lifted.resting.translation
                 + [0, BookFlight.climb(lifted.rise, at: lifted.elapsed), 0]
-            let step = Float(max(deltaTime, 1.0 / 120))
-            book.components.set(
-                PhysicsMotionComponent(
-                    linearVelocity: (goal - book.position(relativeTo: root)) / step))
+            if setsDownInPlace {
+                book.position = goal
+            } else {
+                // A velocity, as for a held book, lets the physics shove other books aside.
+                let step = Float(max(deltaTime, 1.0 / 120))
+                book.components.set(
+                    PhysicsMotionComponent(
+                        linearVelocity: (goal - book.position(relativeTo: root)) / step))
+            }
             self.lifted = lifted
         } else {
             let leaves = lifted.clear == nil
-            if leaves {
+            if leaves, setsDownInPlace {
+                lifted.clear = Transform(
+                    scale: lifted.resting.scale, rotation: lifted.resting.rotation,
+                    translation: lifted.resting.translation + [0, lifted.rise, 0])
+            } else if leaves {
                 lifted.clear = book.transform
                 book.components.set(PhysicsMotionComponent())
                 // Above the scene now, it lets the books it carried fall back instead of
@@ -540,12 +562,12 @@ final class BookLifter {
             time: lifted.elapsed - BookFlight.riseDuration(lifted.rise))
     }
 
-    /// Sends the lifted book back: set down in the pose `standing` gives now, or thrown.
+    /// Sends the lifted book back: set down where it lay, or thrown.
     private func launch() {
         guard let lifted else { return }
         self.lifted = nil
         let book = lifted.book
-        let place = standing?()
+        let place = setsDownInPlace ? lifted.resting : nil
         var duration = BookFlight.setDownDuration
         if place == nil {
             book.components[PhysicsBodyComponent.self]?.mode = .dynamic
@@ -562,7 +584,7 @@ final class BookLifter {
                 PhysicsMotionComponent(
                     linearVelocity: velocity, angularVelocity: BookFlight.spin(for: velocity)))
         } else {
-            // It stays kinematic and collides with nothing until it stands in its place.
+            // It stays kinematic and collides with nothing until it is back in its place.
             book.components[CollisionComponent.self]?.filter = CollisionFilter(
                 group: [], mask: [])
         }
@@ -629,31 +651,29 @@ final class BookLifter {
             pan: pan, minimum: 0.85)
     }
 
-    /// Ends a set-down: stands the book in its place, with a soft knock, if `standing` still
-    /// gives a pose, or else, with a book come into its place since it left the details, puts
-    /// it over that book (see `put`).
+    /// Ends a set-down: puts the book where it lay, with a soft knock (see `put`).
     private func settle(_ flight: Lifted) {
-        let place = standing?()
-        put(flight, at: place)
-        guard place != nil else { return }
+        put(flight, at: flight.resting)
         let book = flight.book
         feedback.impact(
             impulse: 0, mass: book.components[PhysicsBodyComponent.self]?.massProperties.mass ?? 0,
             position: book.position(relativeTo: root), pan: pan, minimum: 0.3)
     }
 
-    /// Puts the book of `flight` at rest and colliding again, in its scene textures: standing
-    /// in `place`, or else at the top of its rise over the place it left, so it falls onto the
-    /// books that fell into that place.
+    /// Puts the book of `flight` back and colliding again, in its scene textures: in `place`,
+    /// where it lay, with the body mode and motion it had there, or else at rest at the top of
+    /// its rise over the place it left, so it falls onto the books that fell into that place.
     private func put(_ flight: Lifted, at place: Transform?) {
         undress(flight)
         let book = flight.book
-        book.components[PhysicsBodyComponent.self]?.mode = .dynamic
         book.components[CollisionComponent.self]?.filter = .default
-        book.components.set(PhysicsMotionComponent())
         if let place {
+            book.components[PhysicsBodyComponent.self]?.mode = flight.mode
+            book.components.set(flight.motion)
             book.transform = place
         } else {
+            book.components[PhysicsBodyComponent.self]?.mode = .dynamic
+            book.components.set(PhysicsMotionComponent())
             var pose = flight.resting
             pose.translation.y += flight.rise
             book.transform = pose

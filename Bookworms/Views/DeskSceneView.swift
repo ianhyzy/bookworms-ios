@@ -16,7 +16,8 @@ import UIKit
 /// The view draws with a transparent background, so the wall shows around the table, and
 /// takes no gestures of its own: the SwiftUI gestures on it find books with the scene's rays.
 struct DeskSceneView: UIViewRepresentable {
-    /// Puts the scene in `view`'s scene and starts its updates (see `DominoScene.attach`).
+    /// Puts the scene that shows in `view`'s scene and starts its updates (see
+    /// `DeskScenes.attach(to:)`).
     let attach: @MainActor (ARView) -> Void
 
     func makeUIView(context: Context) -> SceneWindowView { SceneWindowView(attach: attach) }

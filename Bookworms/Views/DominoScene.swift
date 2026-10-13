@@ -401,21 +401,6 @@ enum DominoLayout {
         return settled ? .stalled(fallen: next) : .running
     }
 
-    /// Whether a book lifted out of the chain from `index` stands in its place again when it
-    /// returns, rather than being thrown back, given `next`, the first book that has not
-    /// fallen. `place` is the box the book stands in, and `others` the other books' bounds, in
-    /// the frame of the book's standing pose (`standingPose(of:)`), whose y axis points up.
-    ///
-    /// It stands again when it had not fallen, at or past the front, and no other book reaches
-    /// into its place or over it. A book that had fallen is thrown back. So is a book whose place
-    /// another book has filled, such as the book before it, fallen in: standing in that place,
-    /// it would start inside that book, and the two would fly apart.
-    static func standsAgain(index: Int, next: Int, place: BoundingBox, others: [BoundingBox])
-        -> Bool
-    {
-        index >= next && BookFlight.disturbed(by: place, among: others, margin: 0).isEmpty
-    }
-
     /// The pose of the book of `slot` standing in its place, a hair above the table, so it
     /// settles onto the table rather than starting inside it.
     static func standingPose(of slot: DominoSlot) -> Transform {
@@ -479,13 +464,20 @@ final class DominoStatus {
 /// places it, and a cobweb (`Cobweb`) between each pair of books whose finishes lie
 /// `DominoLayout.cobwebDays` or more apart.
 ///
-/// The simulation runs in slow motion, at `slowMotion` of real time, except while a book flies
-/// to or from its details. Frame times, such as the books' drops into place, the stall time, and
-/// the cameras, stay in real time.
+/// The simulation runs in slow motion, at `slowMotion` of real time. It runs at full speed
+/// while the books set themselves up, and stands still while a book is out at its details.
+/// Frame times, such as the books' moves into place, the stall time, and the cameras, stay in
+/// real time.
 ///
-/// As the chain stands up, its books drop one after another down the path from above the top
-/// of the view onto their places, and each cobweb fades in once the book behind it lands. With
-/// Reduce Motion on, they appear standing. The chain waits for a push once every book stands.
+/// The live Desk shares its desk and book parts with the Desk scene (`DeskScenes`), which hands
+/// this scene the books lying on the desk (`receive(_:books:generation:viewport:)`). They set
+/// themselves up from where they lie, one after another in finish order (`DominoSetup`): each
+/// turns up onto its tail and hops to its place, and each cobweb fades in once the book behind
+/// it lands. With Reduce Motion on, they appear standing. **Set up again** sets the books up
+/// from where they lie the same way (`setUpAgain(generation:)`). A chain of books that were not
+/// on the desk, such as another time frame's, stands up as its books drop one after another
+/// down the path from above the top of the view onto their places. The chain waits for a push
+/// once every book stands.
 ///
 /// The chain's front is the book after the last one that tilted past about 26 degrees. Each
 /// frame checks only the next three books, so the work per frame does not grow with the
@@ -511,13 +503,12 @@ final class DominoStatus {
 /// only the webs near the front.
 ///
 /// A book lifted to its details (`BookLifter`) tears the cobwebs it holds, and the Follow camera
-/// no longer pushes in on them. While it flies, the chain counts it as standing in its place, so
-/// its flight neither moves the front on nor starts the chain, and the camera modes give the
-/// camera to the flight (see `aim`), which brings it back to them as the book returns. A book
-/// the chain has not reached stands in its place again when it returns, while no other book
-/// fills that place (`DominoLayout.standsAgain`): it is set down rather than thrown, so it
-/// knocks nothing over and does not push the chain. Any other book is thrown back into the
-/// books around its place, more softly than in the pile, which has walls to stop it.
+/// no longer pushes in on them. The books are arranged, so none is ever thrown: while the book
+/// is out, the simulation stands still, so the chain holds exactly as it was, standing, falling,
+/// or gathered, and **Back** sets the book down exactly where it lay, with the motion it had,
+/// without colliding on the way, so it knocks nothing over and does not start the chain. The
+/// run then goes on from where it stood. The camera modes give the camera to the flight (see
+/// `aim`), which brings it back to them as the book returns.
 @MainActor
 final class DominoScene {
     /// The scene root, which runs the physics simulation.
@@ -557,6 +548,8 @@ final class DominoScene {
     private static let handoffSpeed: Float = 15
     private static let handoffTime: ClosedRange<Float> = 0.7...5
     private static let coverWait = Duration.seconds(1.5)
+    /// The longest the first book of a setup from the desk waits for the camera, in seconds.
+    private static let setupLead: Float = 1.2
     /// How many books are built and stood up at a time.
     private static let batchSize = 16
     /// The cosine of the tilt under which a book counts as upright, about 6 degrees: more
@@ -574,6 +567,10 @@ final class DominoScene {
     private static let pokeTime: TimeInterval = 0.22
     private static let handFade: TimeInterval = 0.35
     private static let handDriftScale: Float = 0.008
+    /// The least width a tap on the hand counts within, about a fingertip, and how far past
+    /// the hand a tap that hits no book still pushes, in points.
+    private static let handTouch: CGFloat = 44
+    private static let handSlack: CGFloat = 16
     /// The glow's size as a share of the hand's, how far behind the hand's middle, toward the
     /// wrist, it centers, so it never reaches the book, even at a poke, and its opacity, which
     /// pulses `haloPulse` either way.
@@ -586,21 +583,13 @@ final class DominoScene {
     private let camera = PerspectiveCamera()
     /// The current view's anchor that holds `root` (see `attach`).
     private var holder: AnchorEntity?
-    private let factory = BookFactory()
-    private let stage = DeskStage()
-    private var poolRadius: Float?
+    private let factory: BookFactory
+    private let stage: DeskStage
+    /// The radius of the lamp's pool over the chain, which the finale's boost measures from.
+    private var poolRadius: Float = 6
     private let shelf = Entity()
-    /// Holds the pointing hand at the book a push tips, with its halo, and takes that book's
-    /// taps with `hitBox`.
+    /// Holds the pointing hand at the book a push tips, with its halo.
     private let marker = Entity()
-    /// A box a little larger than the marked book, since a thin book is hard to hit from the
-    /// overview. `tap(at:in:)` finds it with a raycast. It is a trigger, so books pass through
-    /// it, and its overlaps play no sound. Its filter is the default one, because a raycast
-    /// skips a shape whose filter collides with nothing.
-    private let hitBox = Entity()
-    /// An empty entity in a returning book's standing pose, in whose frame `returnPose`
-    /// measures the other books.
-    private let probe = Entity()
     private let hand: ModelEntity
     private let halo: ModelEntity
     /// The index of the book `marker` marks, if it shows.
@@ -688,7 +677,7 @@ final class DominoScene {
     private let simulationClock: CMTimebase?
     /// The index of the book in flight, while one flies.
     private var flying: Int? {
-        didSet { try? simulationClock?.setRate(flying == nil ? Self.slowMotion : 1) }
+        didSet { updateClockRate() }
     }
     /// While a book flies, the view the camera rises from, until **Back** returns the book to
     /// the camera mode's view (`nil`), and the view the flight rises to.
@@ -699,6 +688,52 @@ final class DominoScene {
     private var spreadTask: Task<Void, Never>?
     /// The finale, from the moment every book has fallen until the books stand again.
     private var ending: Ending?
+    /// The books setting themselves up from where they lay, from a handover until every book
+    /// stands, and the task that gets them ready.
+    private var arrangement: Arrangement?
+    private var arrangementTask: Task<Void, Never>?
+    /// The lamp's pool moving from one place to another, and how far it has come.
+    private var lampMove: LampMove?
+
+    /// The books' setup from where they lay (see `DominoSetup`).
+    private struct Arrangement {
+        /// The seconds from one book's start to the next (`DominoSetup.step(count:)`), and the
+        /// seconds since the first book was due, once the books are ready to move; less than 0
+        /// while the first book waits for the camera.
+        let step: Float
+        var time: Float?
+        var schedule = DominoSetup.Schedule()
+        /// The next book to start, in chain order, when it may start, and since when its way
+        /// has been blocked, if it has.
+        var next = 0
+        var nextStart: Float = 0
+        var heldSince: Float?
+        /// Each book's move once it has started, and whether it stands in its place.
+        var moves: [DominoSetup.Move?]
+        var landed: [Bool]
+        /// The cobweb in front of each book, by the book's index, and when it started to fade
+        /// in, once the book has landed.
+        var webs: [Int: Entity] = [:]
+        var fades: [Int: Float] = [:]
+        #if DEBUG
+            /// The setup log's lines (see `logSetup`).
+            var log: [String] = []
+        #endif
+
+        init(count: Int, step: Float) {
+            self.step = step
+            moves = Array(repeating: nil, count: count)
+            landed = Array(repeating: false, count: count)
+        }
+    }
+
+    /// The lamp's pool moving from `from` to `to` over `duration` seconds, `time` of them gone.
+    private struct LampMove {
+        let from: (center: SIMD3<Float>, radius: Float)
+        let to: (center: SIMD3<Float>, radius: Float)
+        let duration: Float
+        var time: Float = 0
+    }
     /// The finale's progress (see `DominoFinale`).
     private struct Ending {
         /// Seconds since the last book fell.
@@ -763,8 +798,11 @@ final class DominoScene {
         case live(DominoCameraMode)
     }
 
-    /// Creates an empty chain.
-    init() {
+    /// Creates an empty chain. The live Desk passes the `factory` and `stage` it shares with the
+    /// Desk scene, and hands covers that arrive late to `retexture(_:cover:)` itself.
+    init(factory: BookFactory? = nil, stage: DeskStage? = nil) {
+        self.factory = factory ?? BookFactory()
+        self.stage = stage ?? DeskStage()
         var simulation = PhysicsSimulationComponent()
         simulation.gravity = [0, -PileLayout.gravity, 0]
         simulation.solverIterations = .init(positionIterations: 12, velocityIterations: 2)
@@ -781,33 +819,35 @@ final class DominoScene {
             fieldOfViewOrientation: .vertical)
         camera.transform = view.transform
         root.addChild(camera)
-        root.addChild(stage.root)
+        root.addChild(self.stage.root)
         root.addChild(shelf)
-        // No walls stop a book that bounces off the chain, so its first hit keeps little speed.
+        // The chain holds still while a book is out, so the book returns to where it lay.
         lifter = BookLifter(
-            root: root, camera: camera, factory: factory, feedback: feedback,
-            keeps: (sideways: 0.1, fall: 0.25, tumble: 0.2))
+            root: root, camera: camera, factory: self.factory, feedback: feedback,
+            setsDownInPlace: true)
         hand = Self.makeHand()
         halo = Self.makeHalo()
         marker.addChild(halo)
         marker.addChild(hand)
-        marker.addChild(hitBox)
-        hitBox.components.set(InputTargetComponent())
         marker.isEnabled = false
         root.addChild(marker)
-        root.addChild(probe)
-        factory.coverArrived = { [weak self] id, material in self?.retexture(id, cover: material) }
-        lifter.standing = { [weak self] in self?.returnPose }
+        if factory == nil {
+            self.factory.coverArrived = { [weak self] id, material in
+                self?.retexture(id, cover: material)
+            }
+        }
         feedback.speeds = ImpactSound.dominoSpeeds
     }
 
     /// Shows the scene in `view`, and calls `update` every frame and plays collisions through
     /// `feedback` while `root` is active there. Each view gets an anchor of its own, under
     /// which the root hangs; a view that goes leaves the root under its orphaned anchor, and
-    /// the next view's anchor takes it (see `DeskSceneView`). The recorder records from the
-    /// view.
+    /// the next view's anchor takes it (see `DeskSceneView`). The desk comes under the root,
+    /// from the Desk scene if it had it. The recorder records from the view.
     func attach(to view: ARView) {
         recorder.attach(to: view)
+        root.addChild(stage.root)
+        holder?.removeFromParent()
         let holder = AnchorEntity(world: .zero)
         holder.addChild(root)
         view.scene.addAnchor(holder)
@@ -819,9 +859,7 @@ final class DominoScene {
             update(event.deltaTime)
         }
         collisions = view.scene.subscribe(to: CollisionEvents.Began.self) { [weak self] event in
-            guard let self, event.entityA != hitBox, event.entityB != hitBox,
-                !lifter.handle(event)
-            else { return }
+            guard let self, !lifter.handle(event) else { return }
             feedback.collide(event, pan: pan)
         }
     }
@@ -870,7 +908,9 @@ final class DominoScene {
     }
 
     /// Whether every book stands in its place, so the chain can start.
-    private var isReady: Bool { !plan.isEmpty && spawned == plan.count && entering.isEmpty }
+    private var isReady: Bool {
+        !plan.isEmpty && spawned == plan.count && entering.isEmpty && arrangement == nil
+    }
 
     /// Whether the finale runs: from the last book's fall until the books lie gathered.
     private var isGathering: Bool { ending != nil && status.phase != .finished }
@@ -889,8 +929,9 @@ final class DominoScene {
     /// into its place from above the view (see `spawn`), as far behind the one before as the
     /// books have taken to build on average (`DominoLayout.entryStep(count:perBook:)`), so
     /// the drops run on without a pause while later books build. `loading` is set until the
-    /// first batch starts to drop. Returns when every book is built or the task is cancelled;
-    /// the chain waits for a push once the last book has landed.
+    /// first batch starts to drop. A chain that `receive(_:books:generation:viewport:)` set up
+    /// from the desk has every book already. Returns once every book stands, when the Follow
+    /// camera is built, or when the task is cancelled.
     func setUp(_ books: [CloudBook], generation: Int, viewport: PileViewport, model: AppModel)
         async
     {
@@ -907,7 +948,7 @@ final class DominoScene {
             let end = min(spawned + Self.batchSize, plan.count)
             let batch = plan[spawned..<end]
             async let next: Void = prepare(from: end, model: model)
-            let cobwebs = await makeCobwebs(before: batch)
+            let cobwebs = await makeCobwebs(batch, after: slots.last)
             await next
             // Keeps the first books until the room's light is ready, so they enter lit.
             if spawned == 0 { await stage.lit() }
@@ -920,13 +961,12 @@ final class DominoScene {
             spawned = end
             if loading.isLoading { loading.isLoading = false }
         }
+        while !Task.isCancelled, self.key == key, !isReady {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        guard !Task.isCancelled, self.key == key else { return }
         if rig == nil { rig = makeRig() }
         #if DEBUG
-            // The hooks start once every book stands.
-            while !Task.isCancelled, self.key == key, !isReady {
-                try? await Task.sleep(for: .milliseconds(50))
-            }
-            guard !Task.isCancelled, self.key == key else { return }
             showDebugCobweb()
             // Apart from the setting up, so the details hook times from the standing chain.
             Task { await runDebugPushes(key: key) }
@@ -1013,6 +1053,11 @@ final class DominoScene {
         spreadTask?.cancel()
         spreadTask = nil
         ending = nil
+        arrangement = nil
+        arrangementTask?.cancel()
+        arrangementTask = nil
+        lampMove = nil
+        updateClockRate()
         mark(nil)
         #if DEBUG
             cameraLog = []
@@ -1023,16 +1068,13 @@ final class DominoScene {
         status.cobwebs = 0
     }
 
-    /// Lays the lamp's pool over a circle of `radius` about the table's center: the first
-    /// call builds the stage, and later ones only re-aim its lamp.
+    /// Lays the lamp's pool over a circle of `radius` about the table's center, building the
+    /// stage first if no scene has.
     private func light(radius: Float) {
-        guard poolRadius != radius else { return }
-        if poolRadius == nil {
-            stage.build(pool: .zero, radius: radius)
-        } else {
-            stage.aim(pool: .zero, radius: radius)
-        }
         poolRadius = radius
+        stage.build(pool: .zero, radius: radius)
+        guard stage.pool.center != .zero || stage.pool.radius != radius else { return }
+        stage.aim(pool: .zero, radius: radius)
     }
 
     /// Frames every book of `plan`, standing or fallen (`DominoLayout.outline`), between the
@@ -1043,10 +1085,7 @@ final class DominoScene {
         let size = viewport.size
         let insets = viewport.insets
         aspect = Float(size.width / size.height)
-        let rect = CGRect(
-            x: insets.leading + 16, y: insets.top + 8,
-            width: size.width - insets.leading - insets.trailing - 32,
-            height: size.height - insets.top - insets.bottom - 88)
+        let rect = frameRect(in: viewport)
         let outline = DominoLayout.outline(of: plan.slots)
         overview = PileCamera().framing(outline, in: rect, of: size, zoomRange: 0.2...2.5)
         overview.zoom *= Self.overviewRoom
@@ -1081,6 +1120,17 @@ final class DominoScene {
                 1 - 2 * Float(insets.trailing + 16) / width, 1 - 2 * Float(insets.top + 8) / height,
             ])
         follows = mode == .follow
+    }
+
+    /// The part of `viewport` that the overview frames the books in: between the bars, with room
+    /// around the books and more at the bottom.
+    private func frameRect(in viewport: PileViewport) -> CGRect {
+        let size = viewport.size
+        let insets = viewport.insets
+        return CGRect(
+            x: insets.leading + 16, y: insets.top + 8,
+            width: size.width - insets.leading - insets.trailing - 32,
+            height: size.height - insets.top - insets.bottom - 88)
     }
 
     /// The Follow camera for the books that stand and the cobwebs that hang between them, which
@@ -1193,12 +1243,14 @@ final class DominoScene {
     }
 
     /// The cobwebs to hang in front of the books of `batch`, by the ID of the book behind each
-    /// web: one between each book with parts and the one before it that stands, wherever
-    /// `DominoLayout.cobweb(days:)` finds the days between their finishes long enough. A book
-    /// without parts cannot stand, so the days across its place count toward the web between
-    /// its neighbors. Each web runs between the books' facing top edges, from near their
-    /// corners.
-    private func makeCobwebs(before batch: ArraySlice<DominoSlot>) async -> [Int: HangingCobweb] {
+    /// web: one between each book with parts and the one before it that stands, from `first`,
+    /// the book before the batch, wherever `DominoLayout.cobweb(days:)` finds the days between
+    /// their finishes long enough. A book without parts cannot stand, so the days across its
+    /// place count toward the web between its neighbors. Each web runs between the books'
+    /// facing top edges, from near their corners.
+    private func makeCobwebs(_ batch: some Sequence<DominoSlot>, after first: DominoSlot?) async
+        -> [Int: HangingCobweb]
+    {
         func edge(_ slot: DominoSlot, facing direction: Float) -> [SIMD3<Float>] {
             // The built book's width follows its cover, unlike the slot's.
             let size = factory.parts[slot.book.id]?.shape.size ?? slot.size
@@ -1208,7 +1260,7 @@ final class DominoScene {
             return [middle - across, middle + across].map { [$0.x, size.y - 0.005, $0.y] }
         }
         var cobwebs: [Int: HangingCobweb] = [:]
-        var near = slots.last
+        var near = first
         for far in batch where factory.parts[far.book.id] != nil {
             if let near, let density = DominoLayout.cobweb(days: far.day - near.day) {
                 let web = Cobweb(
@@ -1224,41 +1276,420 @@ final class DominoScene {
     }
 
     /// Puts a cover that arrived after its book was built onto the standing book.
-    private func retexture(_ id: Int, cover: any RealityKit.Material) {
+    func retexture(_ id: Int, cover: any RealityKit.Material) {
         for (book, slot) in zip(books, slots) where slot.book.id == id {
             book.children.first?.components[ModelComponent.self]?
                 .materials[Int(BookSlot.cover)] = cover
         }
     }
 
+    // MARK: Setting up from the desk
+
+    /// Takes the books lying on the desk, which the Desk scene hands over, as the chain of
+    /// `books`, and sets them up from where they lie (see `DominoSetup`).
+    ///
+    /// The chain is planned and framed as `planSetUp` plans it, with the same key, so the view's
+    /// next set-up request for these books and `generation` keeps them. Each book with parts
+    /// starts as a rigid body where it lay, moving as it moved, and the camera and the lamp stay
+    /// as they were. Once the books lie still, the setup starts (see `prepareArrangement`). A
+    /// book that was not handed over, such as one RealityKit could not build, leaves its place
+    /// empty.
+    func receive(
+        _ handover: DeskHandover, books chained: [CloudBook], generation: Int,
+        viewport: PileViewport
+    ) {
+        let chain = DominoLayout.chain(chained)
+        let key = Key(ids: chain.map { $0.book.id }, generation: generation)
+        let size = viewport.size
+        let insets = viewport.insets
+        guard size.width - insets.leading - insets.trailing > 0,
+            size.height - insets.top - insets.bottom > 0
+        else { return }
+        reset(keeping: Set(key.ids))
+        let plan = DominoLayout.plan(
+            chain,
+            aspect: Float(
+                (size.width - insets.leading - insets.trailing)
+                    / (size.height - insets.top - insets.bottom)) * sin(PileCamera.pitch))
+        self.plan = plan.slots
+        extent = plan.extent
+        poolRadius = max(6, simd_length(plan.extent) + 3)
+        frame(plan, in: viewport)
+        self.key = key
+        plannedViewport = viewport
+        // The camera keeps the desk's view until the setup moves it.
+        follows = false
+        view = PileCamera(matching: handover.camera, fallback: view.target)
+        camera.transform = handover.camera
+        let handed = Dictionary(
+            handover.books.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for slot in plan.slots {
+            guard let lying = handed[slot.book.id],
+                let book = factory.makeBook(
+                    slot.book.id, mode: reducesMotion ? .kinematic : .dynamic,
+                    lighting: stage.lighting, mass: DominoLayout.mass(height: slot.size.y))
+            else { continue }
+            book.transform = lying.transform
+            if !reducesMotion { book.components.set(lying.motion) }
+            shelf.addChild(book)
+            indices[book.id] = books.count
+            books.append(book)
+            slots.append(slot)
+        }
+        spawned = plan.slots.count
+        loading.isLoading = false
+        arrangement = Arrangement(
+            count: books.count, step: DominoSetup.step(count: books.count))
+        updateClockRate()
+        arrangementTask = Task { await prepareArrangement(key: key) }
+    }
+
+    /// **Set up again**: sets the books up from where they lie, fallen or gathered, as
+    /// `receive` does, as the chain of the same books for `generation`. Does nothing without
+    /// books, which the view's next set-up request then stands from above.
+    func setUpAgain(generation: Int) {
+        guard let viewport = plannedViewport, !books.isEmpty else { return }
+        receive(handOff(), books: plan.map(\.book), generation: generation, viewport: viewport)
+    }
+
+    /// The books as they lie, with how they move, and the camera's view, for the Desk scene to
+    /// take back (see `DeskScenes`). A lifted book is put back first.
+    func handOff() -> DeskHandover {
+        dropLifted()
+        let handed = zip(books, slots)
+            .map { book, slot in
+                DeskBook(
+                    id: slot.book.id, transform: book.transform,
+                    motion: book.components[PhysicsMotionComponent.self] ?? PhysicsMotionComponent()
+                )
+            }
+        return DeskHandover(books: handed, camera: camera.transform)
+    }
+
+    /// Removes the books, their cobwebs, and any recording, but keeps the books' parts, which
+    /// the Desk scene shares, once the books are handed back. The next set-up request stands
+    /// the books again.
+    func removeBooks() {
+        reset(keeping: Set(plan.map(\.book.id)))
+        plan = []
+        key = nil
+    }
+
+    /// Gets the handed-over books ready to set themselves up: hangs the chain's cobwebs, unseen,
+    /// and waits, at most two seconds, until the books lie still. It then moves the books, the
+    /// camera, and the lamp's pool across the table by whole tiles, which the table does not
+    /// show, so the places lie clear of the books (`DominoSetup.offset(of:aspect:)`), and moves
+    /// the camera to a view of both the books and their places. With Reduce Motion on, the books
+    /// stand in their places at once instead, and the camera cuts to the overview.
+    private func prepareArrangement(key: Key) async {
+        let webs = await makeCobwebs(slots.dropFirst(), after: slots.first)
+        guard !Task.isCancelled, self.key == key, arrangement != nil else { return }
+        for (index, slot) in slots.enumerated() {
+            guard var web = webs[slot.book.id] else { continue }
+            web.book = index - 1
+            web.root.components.set(OpacityComponent(opacity: 0))
+            shelf.addChild(web.root)
+            cobwebs.append(web)
+            arrangement?.webs[index] = web.root
+            status.cobwebs += 1
+        }
+        guard !reducesMotion else { return finishArrangement() }
+        let still = ContinuousClock.now + .seconds(2)
+        while ContinuousClock.now < still, books.contains(where: Self.isMoving) {
+            try? await Task.sleep(for: .milliseconds(50))
+            guard !Task.isCancelled, self.key == key, arrangement != nil else { return }
+        }
+        let sizes = books.indices.map(size(of:))
+        let lying = books.indices.map {
+            (
+                size: sizes[$0], lying: books[$0].transform,
+                slot: DominoLayout.standingPose(of: slots[$0])
+            )
+        }
+        let offset = await Self.offset(of: lying, aspect: aspect)
+        guard !Task.isCancelled, self.key == key, arrangement != nil else { return }
+        for book in books { book.position += offset }
+        var shown = camera.transform
+        shown.translation += offset
+        camera.transform = shown
+        view = PileCamera(matching: shown, fallback: view.target + offset)
+        let pool = stage.pool
+        stage.moveLamp(pool: pool.center + offset, radius: pool.radius)
+        // A view of the books where they lie and of their places, under the same bars as the
+        // overview.
+        var points = DominoLayout.outline(of: slots)
+        for book in books {
+            let bounds = book.visualBounds(relativeTo: root)
+            points += [
+                bounds.min, bounds.max, [bounds.min.x, 0, bounds.max.z],
+                [bounds.max.x, 0, bounds.min.z],
+            ]
+        }
+        if let viewport = plannedViewport {
+            view = PileCamera()
+                .framing(
+                    points, in: frameRect(in: viewport), of: viewport.size, zoomRange: 0.05...2.5)
+        }
+        blend(from: .still(shown))
+        let reach =
+            points.map { simd_length(SIMD2($0.x, $0.z) - SIMD2(view.target.x, view.target.z)) }
+            .max() ?? poolRadius
+        moveLamp(to: (view.target, reach + 2), over: 1)
+        // The first book waits until the camera has come part of the way, so the places it
+        // hops to show.
+        arrangement?.time = -min((handoff?.duration ?? 0) * 0.5, Self.setupLead)
+    }
+
+    /// The offset `DominoSetup.offset(of:aspect:)` finds, away from the main actor.
+    @concurrent
+    nonisolated private static func offset(
+        of books: [(size: SIMD3<Float>, lying: Transform, slot: Transform)], aspect: Float
+    ) async -> SIMD3<Float> {
+        DominoSetup.offset(of: books, aspect: aspect)
+    }
+
+    /// Whether `book` still moves faster than a crawl.
+    private static func isMoving(_ book: ModelEntity) -> Bool {
+        guard book.components[PhysicsBodyComponent.self]?.mode == .dynamic,
+            let motion = book.components[PhysicsMotionComponent.self]
+        else { return false }
+        return simd_length(motion.linearVelocity) > 0.1 || simd_length(motion.angularVelocity) > 0.2
+    }
+
+    /// The size of the book at `index` as it was built.
+    private func size(of index: Int) -> SIMD3<Float> {
+        factory.parts[slots[index].book.id]?.shape.size ?? slots[index].size
+    }
+
+    /// Moves the setup on by `deltaTime`: starts the next books whose turn has come and whose way
+    /// is clear (`DominoSetup.Schedule`), each from where it lies then, moves the books under way,
+    /// and lands each in its place with a soft knock, fading in the cobweb in front of it over
+    /// `DominoLayout.webFade`. A book whose way stays blocked for `DominoSetup.hold(at:)` goes
+    /// regardless, so the setup's time stays capped. Moving books are kinematic, and the books
+    /// still lying are rigid bodies, so they settle as the books under them leave and a book
+    /// that turns up among them shoves them aside.
+    private func arrange(by deltaTime: TimeInterval) {
+        guard var arrangement, var time = arrangement.time else { return }
+        time += Float(deltaTime)
+        arrangement.time = time
+        while arrangement.next < books.count, time >= arrangement.nextStart {
+            #if DEBUG
+                let began = ContinuousClock.now
+            #endif
+            let index = arrangement.next
+            let size = size(of: index)
+            let place = DominoLayout.standingPose(of: slots[index])
+            let lying = (index + 1..<books.count)
+                .map {
+                    DominoSetup.Box(books[$0].transform, size: self.size(of: $0))
+                }
+            var move = arrangement.schedule.move(
+                from: books[index].transform, size: size, to: place, at: time, among: lying)
+            if move == nil {
+                let held = arrangement.heldSince ?? time
+                arrangement.heldSince = held
+                guard time - held >= DominoSetup.hold(at: time) else { break }
+                let upright =
+                    DominoSetup.Move(
+                        start: time, from: books[index].transform, size: size, to: place,
+                        lift: DominoSetup.lifts.upperBound
+                    )
+                    .upright
+                move = DominoSetup.Move(
+                    start: time, from: books[index].transform, size: size, to: place,
+                    lift: DominoSetup.lift(from: upright, to: place, size: size, over: lying))
+            }
+            guard let move else { break }
+            #if DEBUG
+                let planned = (ContinuousClock.now - began).components.attoseconds
+                arrangement.log.append(
+                    String(
+                        format: "%d,%.3f,%.3f,%.2f,%.3f,%.2f", index, arrangement.nextStart, time,
+                        time - (arrangement.heldSince ?? time), move.lift,
+                        Double(planned) / 1e15))
+            #endif
+            arrangement.schedule.commit(move)
+            arrangement.moves[index] = move
+            arrangement.heldSince = nil
+            arrangement.next += 1
+            // The books keep their pace, several in a frame when frames come slowly, and the
+            // books after one held back go as soon as their ways are clear.
+            arrangement.nextStart += arrangement.step
+            books[index].components[PhysicsBodyComponent.self]?.mode = .kinematic
+            books[index].components.set(PhysicsMotionComponent())
+        }
+        // The time the physics steps to the next frame, about.
+        let step = Float(min(max(deltaTime, 1.0 / 120), 1.0 / 20))
+        for index in 0..<arrangement.next where !arrangement.landed[index] {
+            guard let move = arrangement.moves[index] else { continue }
+            let book = books[index]
+            guard time >= move.end else {
+                // A book in the air collides with nothing, so its leap tosses none of the books
+                // around it, which settle into the room it leaves; its way clears the books
+                // that stand (`DominoSetup.Schedule`). While it turns up onto its tail, a
+                // velocity toward where the move is due next, as the lifter's rise moves a book,
+                // lets the physics push aside the lying books it meets, rather than throw them
+                // out of a book that jumps into them.
+                if move.isHopping(at: time) {
+                    book.components[CollisionComponent.self]?.filter = CollisionFilter(
+                        group: [], mask: [])
+                }
+                let goal = move.pose(at: time + step)
+                let current = book.transform
+                var turn = goal.rotation * current.rotation.inverse
+                if turn.real < 0 { turn = simd_quatf(vector: -turn.vector) }
+                book.components.set(
+                    PhysicsMotionComponent(
+                        linearVelocity: (goal.translation - current.translation) / step,
+                        angularVelocity: turn.angle > 1e-5 ? turn.axis * turn.angle / step : .zero
+                    ))
+                continue
+            }
+            book.transform = move.to
+            book.components.set(PhysicsMotionComponent())
+            book.components[CollisionComponent.self]?.filter = .default
+            arrangement.landed[index] = true
+            arrangement.fades[index] = time
+            feedback.impact(
+                impulse: 0,
+                mass: book.components[PhysicsBodyComponent.self]?.massProperties.mass ?? 0,
+                position: book.position(relativeTo: root), pan: pan, minimum: 0.25)
+        }
+        for (index, start) in arrangement.fades {
+            let fade = (time - start) / Float(DominoLayout.webFade)
+            if fade < 1 {
+                arrangement.webs[index]?.components.set(OpacityComponent(opacity: max(0, fade)))
+            } else {
+                arrangement.webs[index]?.components.remove(OpacityComponent.self)
+                arrangement.fades[index] = nil
+            }
+        }
+        self.arrangement = arrangement
+        if arrangement.next == books.count, !arrangement.landed.contains(false),
+            arrangement.fades.isEmpty
+        {
+            finishArrangement()
+        }
+    }
+
+    /// Ends the setup: stands every book in its place as a rigid body at rest, shows every
+    /// cobweb, and hands the camera to the camera mode, blending from the setup's view, or
+    /// cutting to it with Reduce Motion on, and moves the lamp's pool over the chain.
+    private func finishArrangement() {
+        guard let arrangement else { return }
+        #if DEBUG
+            logSetup(arrangement)
+        #endif
+        for (book, slot) in zip(books, slots) {
+            book.transform = DominoLayout.standingPose(of: slot)
+            book.components[PhysicsBodyComponent.self]?.mode = .dynamic
+            book.components[CollisionComponent.self]?.filter = .default
+            book.components.set(PhysicsMotionComponent())
+        }
+        for web in cobwebs { web.root.components.remove(OpacityComponent.self) }
+        self.arrangement = nil
+        updateClockRate()
+        let from = camera.transform
+        view = overview
+        if reducesMotion {
+            handoff = nil
+            camera.transform = view.transform
+            lampMove = nil
+            stage.aim(pool: .zero, radius: poolRadius)
+        } else {
+            follows = mode == .follow
+            blend(from: .still(from))
+            moveLamp(to: (.zero, poolRadius), over: 1.5)
+        }
+    }
+
+    /// Starts moving the lamp's pool from where it lies to `pool` over `duration` seconds.
+    private func moveLamp(to pool: (center: SIMD3<Float>, radius: Float), over duration: Float) {
+        lampMove = LampMove(from: stage.pool, to: pool, duration: duration)
+    }
+
+    /// Moves the lamp's pool on by `deltaTime`, easing in and out, and lays the dust over its
+    /// last place.
+    private func updateLamp(by deltaTime: Float) {
+        guard var move = lampMove else { return }
+        move.time += deltaTime
+        let share = DominoCameraRig.ease(min(1, move.time / move.duration))
+        let center = move.from.center + (move.to.center - move.from.center) * share
+        let radius = move.from.radius + (move.to.radius - move.from.radius) * share
+        if share < 1 {
+            stage.moveLamp(pool: center, radius: radius)
+            lampMove = move
+        } else {
+            stage.aim(pool: center, radius: radius)
+            lampMove = nil
+        }
+    }
+
+    /// The simulation's speed: still while a book is out, full while the books set themselves
+    /// up, so the books that still lie settle as they would, and `slowMotion` otherwise.
+    private func updateClockRate() {
+        let rate = flying != nil ? 0 : arrangement != nil ? 1 : Self.slowMotion
+        try? simulationClock?.setRate(rate)
+    }
+
     // MARK: Interaction
 
-    /// Returns the ID of the book under `point`, in a view of `size`, when the chain has
-    /// passed it, fallen or standing, for its details. A tap on `hitBox` or on any book the
-    /// chain has not reached pushes the chain on (see `pushNext`), so a near miss beside a
-    /// thin book still pushes, and returns `nil`, as does a tap on the table or a tap while the
-    /// books gather.
+    /// What a tap at `point`, in a view of `size`, does: a tap on the pointing hand pushes the
+    /// chain on (see `pushNext`) and returns `nil`, and a tap on a book returns its ID, for its
+    /// details. A tap beside the hand that hits no book also pushes, so a hand drawn small, far
+    /// off, is still easy to hit. Anything else returns `nil`.
     func tap(at point: CGPoint, in size: CGSize) -> Int? {
-        guard !isGathering, let index = book(at: point, in: size) else { return nil }
-        if index < next { return slots[index].book.id }
-        pushNext()
+        if let reach = handReach(from: point, in: size), reach <= 0 {
+            pushNext()
+            return nil
+        }
+        if let id = bookID(at: point, in: size) { return id }
+        if let reach = handReach(from: point, in: size), reach <= Self.handSlack {
+            pushNext()
+        }
         return nil
     }
 
-    /// The ID of any book under `point`, in a view of `size`, the marked book's on `hitBox`,
-    /// or `nil` for the table, for a touch and hold. Returns `nil` until every book stands,
-    /// since `lift(_:)` cannot lift a book before then, and a touch and hold would otherwise
-    /// push the details, and while the books gather.
+    /// The ID of the book under `point`, in a view of `size`, or `nil` for the table. Returns
+    /// `nil` while the books cannot lift (see `lift(_:)`): while they set themselves up, before
+    /// they stand, and while they gather.
     func bookID(at point: CGPoint, in size: CGSize) -> Int? {
-        guard isReady, !isGathering else { return nil }
+        guard canLift else { return nil }
         return book(at: point, in: size).map { slots[$0].book.id }
     }
 
-    /// The index of the book under `point`, in a view of `size`, the marked book's on
-    /// `hitBox`, or `nil` for the table.
+    /// Whether a book can lift to its details: once every book stands, and other than while
+    /// the books gather.
+    private var canLift: Bool { isReady && !isGathering && root.scene != nil }
+
+    /// How far `point`, in a view of `size`, lies outside the pointing hand as it shows, in
+    /// points, or `nil` while no hand shows. The hand counts as a circle around its middle as
+    /// wide as the hand shows, and at least `handTouch` across.
+    private func handReach(from point: CGPoint, in size: CGSize) -> CGFloat? {
+        guard marker.isEnabled,
+            let middle = screenPoint(of: hand.position(relativeTo: root), in: size)
+        else { return nil }
+        let side = camera.transform.rotation.act([Self.handSize / 2, 0, 0])
+        let edge = screenPoint(of: hand.position(relativeTo: root) + side, in: size)
+        let radius = max(
+            Self.handTouch / 2, edge.map { hypot($0.x - middle.x, $0.y - middle.y) } ?? 0)
+        return hypot(point.x - middle.x, point.y - middle.y) - radius
+    }
+
+    /// Where `point` shows in a view of `size`, in points, or `nil` behind the camera.
+    private func screenPoint(of point: SIMD3<Float>, in size: CGSize) -> CGPoint? {
+        let shown = camera.transform
+        let local = shown.rotation.inverse.act(point - shown.translation)
+        guard local.z < -0.01, size.width > 0, size.height > 0 else { return nil }
+        let slope = tan(PileCamera.fieldOfView / 2)
+        let ndc = SIMD2(local.x / (-local.z * slope * aspect), local.y / (-local.z * slope))
+        return CGPoint(
+            x: CGFloat(ndc.x + 1) / 2 * size.width, y: CGFloat(1 - ndc.y) / 2 * size.height)
+    }
+
+    /// The index of the book under `point`, in a view of `size`, or `nil` for the table.
     ///
-    /// It casts its own ray from the camera: a targeted gesture fires only on a touch that
-    /// lands on a book, even where `hitBox` lies around it.
+    /// It casts its own ray from the camera, since the view takes no entity-targeted gestures.
     private func book(at point: CGPoint, in size: CGSize) -> Int? {
         guard size.width > 0, size.height > 0, let scene = root.scene else { return nil }
         let ray = ray(through: point, in: size)
@@ -1271,7 +1702,7 @@ final class DominoScene {
                 .first?
                 .entity
         else { return nil }
-        return entity == hitBox ? marked : indices[entity.id]
+        return indices[entity.id]
     }
 
     /// The book a push tips (see `DominoLayout.pushTarget`).
@@ -1315,7 +1746,9 @@ final class DominoScene {
         if let move = cameraMove, move.pinches != (focus != nil) { cameraMove = nil }
         if cameraMove == nil {
             // Takes over from the view as it shows, so the camera neither jumps nor tilts.
-            if follows || handoff != nil { view = overviewCamera(matching: camera.transform) }
+            if follows || handoff != nil {
+                view = PileCamera(matching: camera.transform, fallback: view.target)
+            }
             follows = false
             handoff = nil
             let ray = ray(
@@ -1375,46 +1808,39 @@ final class DominoScene {
         PileCamera.pan(of: point, seenFrom: camera.transform, aspect: aspect)
     }
 
-    /// An overview camera with the yaw, pitch, and eye of `transform`, looking at the table
-    /// under the view's middle, so pinches and drags can take over from the view as it shows.
-    private func overviewCamera(matching transform: Transform) -> PileCamera {
-        let forward = transform.rotation.act([0, 0, -1])
-        let target =
-            PileCamera.intersect((transform.translation, forward), height: 0) ?? view.target
-        let zoom = PileCamera.distance / max(simd_distance(target, transform.translation), 1)
-        return PileCamera(
-            target: [target.x, 0, target.z], yaw: atan2(-forward.x, -forward.z),
-            zoom: min(zoom, PileCamera.zoomRange.upperBound),
-            pitch: asin(min(max(-forward.y, -1), 1)))
-    }
-
     // MARK: Following the chain
 
-    /// Moves the scene, the hits' clock, and a recording on by `deltaTime`.
+    /// Moves the scene, the hits' clock, and a recording on by `deltaTime`. While a book is out
+    /// at its details, the chain stands still, so its front, its stall time, and its phase
+    /// wait too.
     private func update(_ deltaTime: TimeInterval) {
         feedback.advance(by: deltaTime)
         defer {
             updateCamera(Float(deltaTime))
             updateFlight(deltaTime)
+            updateLamp(by: Float(deltaTime))
         }
         enter(by: deltaTime)
+        arrange(by: deltaTime)
         guard isReady else { return }
-        clock += deltaTime
-        for index in next..<min(next + 3, books.count) where upright(index) < Self.fallenTilt {
-            next = index + 1
-            lastAdvance = clock
-            started = true
-        }
-        // A book still tipping toward the next moves the front on, by more than a book rocks
-        // as it settles against its neighbor.
-        let front = frontDistance
-        if front > farthest + 0.02 {
-            farthest = front
-            lastAdvance = clock
-        }
-        tearCobwebs()
         for index in torn.indices.reversed() {
             if !torn[index].advance(by: Float(deltaTime)) { torn.remove(at: index) }
+        }
+        if flying == nil {
+            clock += deltaTime
+            for index in next..<min(next + 3, books.count) where upright(index) < Self.fallenTilt {
+                next = index + 1
+                lastAdvance = clock
+                started = true
+            }
+            // A book still tipping toward the next moves the front on, by more than a book
+            // rocks as it settles against its neighbor.
+            let front = frontDistance
+            if front > farthest + 0.02 {
+                farthest = front
+                lastAdvance = clock
+            }
+            tearCobwebs()
         }
         let fallen = DominoLayout.phase(
             next: next, count: books.count, started: started,
@@ -1490,17 +1916,6 @@ final class DominoScene {
         marker.transform = Transform(
             rotation: simd_quatf(angle: atan2(slot.heading.x, slot.heading.y), axis: [0, 1, 0]),
             translation: [slot.position.x, 0, slot.position.y])
-        // Past the book's covers by less than the gap to a neighbor (`DominoLayout.gap`), so
-        // the box does not cover a neighbor's taps on a row, and back over the hand, which
-        // floats before the front cover, so a tap on the hand pushes too.
-        let reach = Self.handTipGap + Self.handSize
-        let box = slot.size + [0.4, 1, 0.3 + reach]
-        hitBox.components.set(
-            CollisionComponent(
-                shapes: [
-                    .generateBox(size: box).offsetBy(translation: [0, box.y / 2, -reach / 2])
-                ],
-                mode: .trigger))
         if !marker.isEnabled {
             marker.isEnabled = true
             poke = nil
@@ -1670,18 +2085,19 @@ final class DominoScene {
 
     /// Starts lifting the book with `id` out of the chain toward its details, which
     /// `BookLifter.place` places, and returns the seconds until it gets there. Returns `nil`,
-    /// leaving the chain as it was, while the books stand up, once every book has fallen, when
-    /// the book is not in the chain, or when the view does not show the scene.
+    /// leaving the chain as it was, while the books set themselves up or stand up, while they
+    /// gather, when the book is not in the chain, or when the view does not show the scene. A
+    /// book lifts before the push, while the chain falls, and once the books lie gathered.
     ///
-    /// The book rises clear of its standing neighbors (`riseMargin`) and tears the cobwebs it
-    /// holds. The camera rises to look down at the overview's pitch on the table under the
-    /// view's middle, with the view's turn, from the pile's default distance, so the book in
-    /// front of it clears the chain, the veil dims the whole view, and a throw back comes from
-    /// no farther than in the pile (see `BookLifter`). A recording of the run pauses until the
-    /// book is back, so the video leaves out the flight and the details.
+    /// The simulation stands still until the book is back, so the chain holds as it was. The
+    /// book rises clear of its standing neighbors (`riseMargin`), colliding with nothing, and
+    /// tears the cobwebs it holds. The camera rises to look down at the overview's pitch on the
+    /// table under the view's middle, with the view's turn, from the pile's default distance, so
+    /// the book in front of it clears the chain and the veil dims the whole view (see
+    /// `BookLifter`). A recording of the run pauses until the book is back, so the video leaves
+    /// out the flight and the details, and the run goes on from where it stood.
     func lift(_ id: Int) -> Double? {
-        guard root.scene != nil, isReady, ending == nil,
-            let index = slots.firstIndex(where: { $0.book.id == id }),
+        guard canLift, let index = slots.firstIndex(where: { $0.book.id == id }),
             let landing = lifter.lift(
                 books[index], id: id, among: books, aspect: aspect, margin: Self.riseMargin)
         else { return nil }
@@ -1694,44 +2110,27 @@ final class DominoScene {
             self.torn.append(torn)
             rig?.forgetCobweb(at: (slots[torn.book].distance + slots[torn.book + 1].distance) / 2)
         }
-        let matched = overviewCamera(matching: camera.transform)
+        let matched = PileCamera(matching: camera.transform, fallback: view.target)
         flightViews = (
             camera.transform, PileCamera(target: matched.target, yaw: matched.yaw).transform
         )
         return landing
     }
 
-    /// Returns the lifted book: sets it down standing in its place when it stands again
-    /// (`returnPose`), and otherwise throws it back into the books around its place. The camera
-    /// returns to the camera mode's view as it moves on, rather than to the view the book left.
+    /// Returns the lifted book and sets it down exactly where it lay, with the motion it had
+    /// (see `BookLifter`). The camera returns to the camera mode's view as it moves on, rather
+    /// than to the view the book left.
     func throwBack() {
         lifter.throwBack()
         flightViews?.from = nil
     }
 
-    /// Ends a lift or a return at once: puts the book back as `throwBack` would return it, at
-    /// rest, or just above its place, and the camera and veil as they were.
+    /// Ends a lift or a return at once: puts the book back where it lay, as `throwBack` would,
+    /// and the camera and veil as they were.
     func dropLifted() {
         guard flying != nil else { return }
         lifter.drop(aim: aim)
         endFlight()
-    }
-
-    /// The standing pose a returning book takes in its place, or `nil` for a book that is thrown
-    /// back: one that had fallen, or one whose place another book has filled (see
-    /// `DominoLayout.standsAgain`). The lifter asks as the book leaves its details and again as
-    /// it lands.
-    private var returnPose: Transform? {
-        guard let flying else { return nil }
-        let slot = slots[flying]
-        let place = DominoLayout.standingPose(of: slot)
-        probe.transform = place
-        let size = factory.parts[slot.book.id]?.shape.size ?? slot.size
-        let others = books.indices.filter { $0 != flying }
-            .map { books[$0].visualBounds(relativeTo: probe) }
-        return DominoLayout.standsAgain(
-            index: flying, next: next, place: BoundingBox(min: -size / 2, max: size / 2),
-            others: others) ? place : nil
     }
 
     /// Moves the book in flight, and the camera through `aim`, after the camera modes have
@@ -1801,7 +2200,7 @@ final class DominoScene {
     /// move carries it on, and held still after a pinch or drag.
     private func startEnding() {
         guard !slots.isEmpty, next >= books.count, flying == nil, let spread else { return }
-        let yaw = overviewCamera(matching: camera.transform).yaw
+        let yaw = PileCamera(matching: camera.transform, fallback: view.target).yaw
         let placed = DominoFinale.turned(spread.slots, camera: spread.camera, by: yaw)
         let moves = follows && cameraMove == nil
         handoff = nil
@@ -1836,19 +2235,27 @@ final class DominoScene {
                 factory.parts[slot.book.id]?.shape ?? BookShape(of: slot.book, coverAspect: 2 / 3)
             )
         }
+        let last = lastRead
         spreadTask = Task {
-            let spread = await Self.layOut(shaped, in: rect, of: size, seed: UInt64(seed))
+            let spread = await Self.layOut(
+                shaped, in: rect, of: size, seed: UInt64(seed), last: last)
             guard !Task.isCancelled else { return }
             self.spread = spread
         }
     }
 
+    /// The ID of the last book read: the chain's last book with a finish date, or, in a chain
+    /// with none, its last book. It does the finale's flourish (`DominoFinale.snapPose`).
+    private var lastRead: Int? {
+        (slots.last { $0.book.finishedDate != nil } ?? slots.last)?.book.id
+    }
+
     @concurrent
     nonisolated private static func layOut(
         _ books: [(book: CloudBook, shape: BookShape)], in rect: CGRect, of size: CGSize,
-        seed: UInt64
+        seed: UInt64, last: Int?
     ) async -> PileSpread {
-        PileSpread(books, in: rect, of: size, seed: seed)
+        PileSpread(books, in: rect, of: size, seed: seed, last: last)
     }
 
     /// The flights of the books into `ending`'s spread, from where they lie, which leaves them
@@ -1899,7 +2306,7 @@ final class DominoScene {
                     book,
                     boost: DominoFinale.boost(
                         at: book.transform.translation, over: flight.to.translation,
-                        radius: poolRadius ?? 6))
+                        radius: poolRadius))
                 continue
             }
             book.transform = flight.to
@@ -2125,6 +2532,22 @@ final class DominoScene {
         func mostBuriedID() -> Int? {
             BookFlight.mostBuried(books.map { $0.visualBounds(relativeTo: root) })
                 .map { slots[$0].book.id }
+        }
+
+        /// Simulator hook: with `-BookwormsSetupLog YES`, writes each book's start in a setup
+        /// from the desk to `Library/Caches/Bookworms/domino-setup.csv` once every book stands:
+        /// its index in the chain, when it was due and when it started, in seconds of the setup,
+        /// how long its way was blocked, its arc's lift, and the milliseconds its start took to
+        /// plan in the frame it started, and, last, when the last book landed.
+        private func logSetup(_ arrangement: Arrangement) {
+            guard UserDefaults.standard.bool(forKey: "BookwormsSetupLog") else { return }
+            let lines =
+                ["book,due,start,held,lift,ms"] + arrangement.log
+                + [String(format: "landed,%.3f", arrangement.time ?? 0)]
+            let url = URL.cachesDirectory.appending(path: "Bookworms/domino-setup.csv")
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
         }
 
         /// Simulator hook: `-BookwormsDominoPush <seconds>` pushes the next book whenever the

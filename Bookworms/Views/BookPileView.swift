@@ -32,12 +32,14 @@ struct PileViewport: Equatable {
 /// pile. With Reduce Motion on, or when the pile cannot lift the book, a tap calls `open` to
 /// push the details instead.
 ///
-/// The scene's view lives only while Desk is on screen and no share sheet covers the pile
-/// (`DeskSceneView`), so a hidden tab runs no frame loop; the scene keeps its books, so the
-/// pile is as the reader left it on return. Under pushed details, the table and books are
-/// disabled, so nothing simulates or draws. Leaving the pile other than for details, such as
-/// for another tab, puts a lifted or returning book back at once. A memory warning while the
-/// tab is hidden frees the books and textures, and the books drop again on the reader's return.
+/// The scene (`DeskScenes.pile`) draws in the desk's view, which lives only while Desk is on
+/// screen and no share sheet covers the pile (`DeskSceneView`), so a hidden tab runs no frame
+/// loop; the scene keeps its books, so the pile is as the reader left it on return. This view
+/// lays the gestures, controls, and details over it. Under pushed details, the table and books
+/// are disabled, so nothing simulates or draws. Leaving the pile other than for details, such
+/// as for another tab or for the dominoes, puts a lifted or returning book back at once. A
+/// memory warning while the tab is hidden frees the books and textures, and the books drop
+/// again on the reader's return.
 ///
 /// **Share** makes an image of `books`, up to `PileSnapshotRenderer.maximumBooks` of them, in a
 /// new pile headed `title`. While its sheet is open, the pile leaves the screen and keeps its
@@ -57,6 +59,8 @@ struct BookPileView: View {
     let title: String
     /// The books' time frame, or `nil` for every book, which a drop by period goes through.
     var frame: TimeFrame? = nil
+    /// The desk's scenes, whose Desk scene this view shows.
+    let desk: DeskScenes
     /// The details of a book lifted out of the pile, which the desk's bar also reads.
     let details: LiftedDetails
     let open: (CloudBook) -> Void
@@ -70,12 +74,9 @@ struct BookPileView: View {
     @AppStorage("BookwormsPileByPeriod") private var dropsByPeriod = false
     /// Set by **Sounds** in the desk's options menu.
     @AppStorage("BookwormsThreeDSounds") private var sounds = true
-    @State private var scene = BookPileScene()
     @State private var viewport: PileViewport?
     /// The canvas's frame in global coordinates, which the details' book frame converts from.
     @State private var canvas = CGRect.zero
-    /// Counts **Drop again** presses; each starts a new drop with new poses.
-    @State private var generation = 0
     /// Set while pushed details cover the pile, or while the lifted book's details wait for the
     /// reader to return from the Share tab, so leaving keeps the pile.
     @State private var showsBook = false
@@ -114,153 +115,156 @@ struct BookPileView: View {
         let viewport: PileViewport?
     }
 
+    private var scene: BookPileScene { desk.pile }
+
     var body: some View {
         let dropped = Array(PileLayout.dropped(books, count: Self.maximumBooks))
-        ZStack {
-            if sharesPile {
-                Color.clear
-            } else {
-                DeskSceneView { view in
-                    scene.attach(to: view)
-                    if PileSnapshotRenderer.isRendering { scene.detach() }
+        // A SwiftUI layer over the desk's view takes the touches: gestures on the hosted view
+        // would not fire.
+        Color.clear
+            .contentShape(.rect)
+            .gesture(touchBook)
+            .simultaneousGesture(moveCamera)
+            .allowsHitTesting(details.lift == nil)
+            .onGeometryChange(for: CGRect.self) {
+                $0.frame(in: .global)
+            } action: {
+                canvas = $0
+            }
+            .ignoresSafeArea()
+            .accessibilityElement()
+            .accessibilityLabel("Desk with \(count)")
+            .accessibilityValue(title)
+            .accessibilityHint(
+                "Touch and hold a book, then drag and let go to throw it, or tap one for its details. To go through books one at a time, open Library."
+            )
+            .accessibilityAction(named: dropTitle) { desk.pileGeneration += 1 }
+            .settingUp(scene.loading.isLoading)
+            .modifier(
+                LiftedDetailsOverlay(details: details, scene: scene, canvas: canvas) {
+                    showsBook = true
                 }
-                // A SwiftUI layer takes the touches: gestures on the hosted view would not fire.
-                .overlay {
-                    Color.clear
-                        .contentShape(.rect)
-                        .gesture(touchBook)
-                        .simultaneousGesture(moveCamera)
+            )
+            // Outside `ignoresSafeArea`, the proxy reports the safe area's size and the insets the
+            // view extends past.
+            .onGeometryChange(for: PileViewport.self) { proxy in
+                let insets = proxy.safeAreaInsets
+                return PileViewport(
+                    size: CGSize(
+                        width: proxy.size.width + insets.leading + insets.trailing,
+                        height: proxy.size.height + insets.top + insets.bottom),
+                    insets: insets)
+            } action: {
+                viewport = $0
+                desk.viewport = $0
+            }
+            .task(
+                id: DropRequest(
+                    ids: dropped.map(\.id), tidy: reduceMotion, periods: periods,
+                    generation: desk.pileGeneration, viewport: viewport)
+            ) {
+                guard let viewport else { return }
+                let generation = desk.pileGeneration
+                scene.planDrop(
+                    dropped, tidy: reduceMotion, periods: periods, generation: generation,
+                    viewport: viewport)
+                // A new pile, such as one without the lifted book, removed it.
+                if let lift = details.lift, scene.liftedID != lift.book.id {
+                    details.putBack(scene)
                 }
-                .allowsHitTesting(details.lift == nil)
-                .onGeometryChange(for: CGRect.self) {
-                    $0.frame(in: .global)
-                } action: {
-                    canvas = $0
+                await scene.fill(
+                    dropped, tidy: reduceMotion, periods: periods, generation: generation,
+                    viewport: viewport, model: model)
+                #if DEBUG
+                    await desk.setUpDominoesOnLaunch(books: dropped, reduceMotion: reduceMotion)
+                    await details.openDebugBook(in: books, scene: scene, show: show)
+                    // `-BookwormsPileRedrops <n>` drops again, as **Drop again** does, until the
+                    // drop with generation n.
+                    if !Task.isCancelled,
+                        generation < UserDefaults.standard.integer(forKey: "BookwormsPileRedrops")
+                    {
+                        desk.pileGeneration += 1
+                    }
+                #endif
+            }
+            .onAppear {
+                showsBook = false
+                isShown = true
+                #if DEBUG
+                    if PileSnapshotDebug.opensSheet { sharesPile = true }
+                #endif
+            }
+            // The pile leaves the screen while its share sheet covers it.
+            .onChange(of: sharesPile, initial: true) { desk.hidesView = sharesPile }
+            .onDisappear {
+                isShown = false
+                scene.endDrag()
+                scene.setTilt(tiltMode, tracking: false)
+                // A view removed from the hierarchy, such as for another 3D view, gets no
+                // `playsFeedback` change, so this releases the engines and the audio session.
+                scene.feedback.stop()
+                if !showsBook { details.putBack(scene) }
+            }
+            // Leaves the view nothing to draw while a share image renders, in whichever tab, and
+            // puts the scene back when it ends.
+            .onChange(of: PileSnapshotRenderer.isRendering) { _, isRendering in
+                if isRendering {
+                    details.putBack(scene)
+                    scene.detach()
+                } else {
+                    scene.reattach()
                 }
             }
-        }
-        .ignoresSafeArea()
-        .accessibilityElement()
-        .accessibilityLabel("Desk with \(count)")
-        .accessibilityValue(title)
-        .accessibilityHint(
-            "Touch and hold a book, then drag and let go to throw it, or tap one for its details. To go through books one at a time, open Library."
-        )
-        .accessibilityAction(named: dropTitle) { generation += 1 }
-        .settingUp(scene.loading.isLoading)
-        .modifier(
-            LiftedDetailsOverlay(details: details, scene: scene, canvas: canvas) {
-                showsBook = true
-            }
-        )
-        // Outside `ignoresSafeArea`, the proxy reports the safe area's size and the insets the
-        // view extends past.
-        .onGeometryChange(for: PileViewport.self) { proxy in
-            let insets = proxy.safeAreaInsets
-            return PileViewport(
-                size: CGSize(
-                    width: proxy.size.width + insets.leading + insets.trailing,
-                    height: proxy.size.height + insets.top + insets.bottom),
-                insets: insets)
-        } action: {
-            viewport = $0
-        }
-        .task(
-            id: DropRequest(
-                ids: dropped.map(\.id), tidy: reduceMotion, periods: periods,
-                generation: generation, viewport: viewport)
-        ) {
-            guard let viewport else { return }
-            scene.planDrop(
-                dropped, tidy: reduceMotion, periods: periods, generation: generation,
-                viewport: viewport)
-            // A new pile, such as one without the lifted book, removed it.
-            if let lift = details.lift, scene.liftedID != lift.book.id { details.putBack(scene) }
-            await scene.fill(
-                dropped, tidy: reduceMotion, periods: periods, generation: generation,
-                viewport: viewport, model: model)
-            #if DEBUG
-                await details.openDebugBook(in: books, scene: scene, show: show)
-                // `-BookwormsPileRedrops <n>` drops again, as **Drop again** does, until the
-                // drop with generation n.
-                if !Task.isCancelled,
-                    generation < UserDefaults.standard.integer(forKey: "BookwormsPileRedrops")
-                {
-                    generation += 1
-                }
-            #endif
-        }
-        .onAppear {
-            showsBook = false
-            isShown = true
-            #if DEBUG
-                if PileSnapshotDebug.opensSheet { sharesPile = true }
-            #endif
-        }
-        .onDisappear {
-            isShown = false
-            scene.endDrag()
-            scene.setTilt(tiltMode, tracking: false)
-            // A view removed from the hierarchy, such as for another 3D view, gets no
-            // `playsFeedback` change, so this releases the engines and the audio session.
-            scene.feedback.stop()
-            if !showsBook { details.putBack(scene) }
-        }
-        // Leaves the view nothing to draw while a share image renders, in whichever tab, and
-        // puts the scene back when it ends.
-        .onChange(of: PileSnapshotRenderer.isRendering) { _, isRendering in
-            if isRendering {
+            // The books and their textures are the pile's only large memory; a hidden pile gives
+            // them up under pressure and drops again on return.
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: UIApplication.didReceiveMemoryWarningNotification)
+            ) { _ in
+                guard !isShown else { return }
                 details.putBack(scene)
-                scene.detach()
-            } else {
-                scene.reattach()
+                scene.release()
             }
-        }
-        // The books and their textures are the pile's only large memory; a hidden pile gives
-        // them up under pressure and drops again on return.
-        .onReceive(
-            NotificationCenter.default.publisher(
-                for: UIApplication.didReceiveMemoryWarningNotification)
-        ) { _ in
-            guard !isShown else { return }
-            details.putBack(scene)
-            scene.release()
-        }
-        // Stops sampling motion while nothing reads it, and takes a new reference afterward.
-        .onChange(of: tracksMotion) { scene.setTilt(tiltMode, tracking: tracksMotion) }
-        .onChange(of: tiltMode, initial: true) { scene.setTilt(tiltMode, tracking: tracksMotion) }
-        .onChange(of: sounds, initial: true) { scene.feedback.playsSounds = sounds }
-        // Keeps the haptic and audio engines only while collisions can be seen.
-        .onChange(of: playsFeedback, initial: true) {
-            if playsFeedback { scene.feedback.start() } else { scene.feedback.stop() }
-        }
-        .onChange(of: reduceMotion, initial: true) { scene.setDust(!reduceMotion) }
-        .onChange(of: touches) { if !touches { endTouch() } }
-        .sensoryFeedback(.impact(weight: .light), trigger: pickups)
-        .onChange(of: movesCamera) { if !movesCamera { scene.endCameraMove() } }
-        .toolbar {
-            if details.lift == nil {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(dropTitle, systemImage: "arrow.counterclockwise") { generation += 1 }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Share", systemImage: "square.and.arrow.up") { sharesPile = true }
+            // Stops sampling motion while nothing reads it, and takes a new reference afterward.
+            .onChange(of: tracksMotion) { scene.setTilt(tiltMode, tracking: tracksMotion) }
+            .onChange(of: tiltMode, initial: true) {
+                scene.setTilt(tiltMode, tracking: tracksMotion)
+            }
+            .onChange(of: sounds, initial: true) { scene.feedback.playsSounds = sounds }
+            // Keeps the haptic and audio engines only while collisions can be seen.
+            .onChange(of: playsFeedback, initial: true) {
+                if playsFeedback { scene.feedback.start() } else { scene.feedback.stop() }
+            }
+            .onChange(of: reduceMotion, initial: true) { scene.setDust(!reduceMotion) }
+            .onChange(of: touches) { if !touches { endTouch() } }
+            .sensoryFeedback(.impact(weight: .light), trigger: pickups)
+            .onChange(of: movesCamera) { if !movesCamera { scene.endCameraMove() } }
+            .toolbar {
+                if details.lift == nil {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button(dropTitle, systemImage: "arrow.counterclockwise") {
+                            desk.pileGeneration += 1
+                        }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Share", systemImage: "square.and.arrow.up") { sharesPile = true }
+                    }
                 }
             }
-        }
-        // Outside the viewport reading, so the pile's walls keep the books below the button,
-        // which hides with the other controls while a lifted book's details show.
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if details.lift == nil {
-                FrameChip(title: title, shown: dropped.count, total: books.count)
-            }
-        }
-        .sheet(isPresented: $sharesPile) { PileSnapshotSheet(books: books, title: title) }
+            .sheet(isPresented: $sharesPile) { PileSnapshotSheet(books: books, title: title) }
     }
 
     private var tiltMode: PileTilt { reduceMotion ? .off : tilt }
     /// The frame a drop goes through period by period, or `nil` for a drop in waves.
-    private var periods: TimeFrame? { dropsByPeriod && !reduceMotion ? frame ?? .lifetime : nil }
+    private var periods: TimeFrame? {
+        Self.periods(byPeriod: dropsByPeriod, reduceMotion: reduceMotion, frame: frame)
+    }
+
+    /// The frame a drop goes through period by period, or `nil` for a drop in waves: `frame`, or
+    /// every book's years for `nil`, while the desk's drop by period is on and Reduce Motion off.
+    static func periods(byPeriod: Bool, reduceMotion: Bool, frame: TimeFrame?) -> TimeFrame? {
+        byPeriod && !reduceMotion ? frame ?? .lifetime : nil
+    }
     private var playsFeedback: Bool { isShown && !sharesPile && scenePhase == .active }
     /// Whether the pile may sample motion, for tilt and shakes, which **Tilt**'s **Off** turns
     /// off too (see `BookPileScene.setTilt`).
