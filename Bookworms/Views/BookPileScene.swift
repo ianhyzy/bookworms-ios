@@ -703,12 +703,14 @@ final class BookPileScene {
     }
 
     /// The book under `point`, in a view of `size`, or `nil` for the table or an empty view.
+    /// The ray passes through the walls: the camera stands outside the near wall, which would
+    /// otherwise stop every ray.
     func book(at point: CGPoint, in size: CGSize) -> ModelEntity? {
         guard let ray = ray(through: point, in: size), let scene = root.scene,
             let hit =
                 scene.raycast(
                     origin: ray.origin, direction: ray.direction, length: 300, query: .nearest,
-                    relativeTo: root
+                    mask: CollisionGroup.all.subtracting(Self.wallGroup), relativeTo: root
                 )
                 .first?
                 .entity as? ModelEntity, bookIDs[hit.id] != nil
