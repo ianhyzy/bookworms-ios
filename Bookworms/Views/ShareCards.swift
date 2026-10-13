@@ -204,8 +204,9 @@ struct StackSpine: Identifiable {
 /// Spines fill as few pages as hold them, up to `maximumPages`, in order, so page 1 holds the
 /// earliest books. Each page's run of spines must fit the page at its own smallest legible scale
 /// (`StackLayout.fits(_:area:)`): the scale at which its thinnest spine letters at the minimum
-/// size and every spine whose title can fit has room to letter it in full. The pages share the spines as evenly as
-/// that allows, so each draws at a similar size. Only spines that 20 pages cannot hold are left out,
+/// size and every spine whose title can fit has room to letter it in full, which the page's
+/// longest spine must leave room for. The pages share the spines as evenly as that allows, so
+/// each draws at a similar size. Only spines that 20 pages cannot hold are left out,
 /// lowest-ranked first.
 struct StackPages {
     /// Instagram's carousel limit.
@@ -352,9 +353,13 @@ struct StackLayout {
         return area.width * (1 - 2 * StackArrangement.maximumShift) / longest
     }
 
-    /// Whether `spines` fit one page of `area` at their own `minimumScale(_:)`.
+    /// Whether `spines` fit one page of `area` at their own `minimumScale(_:)`: they stack no
+    /// taller than the area, and the longest of them leaves room for that scale. A long book can
+    /// keep a page from the scale that another spine's title needs to letter in full.
     static func fits(_ spines: [StackSpine], area: CGSize) -> Bool {
-        thickness(spines) * minimumScale(spines) <= area.height
+        let scale = minimumScale(spines)
+        return thickness(spines) * scale <= area.height
+            && scale <= maximumScale(spines, area: area)
     }
 
     static func thickness(_ spines: [StackSpine]) -> CGFloat {

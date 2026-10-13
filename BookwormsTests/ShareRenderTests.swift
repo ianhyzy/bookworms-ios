@@ -680,6 +680,32 @@ final class ShareRenderTests: XCTestCase {
         XCTAssertGreaterThan(long.pages[0][0].minimumScale, shortScale)
     }
 
+    /// A long book and a spine whose title needs a larger scale than the long book leaves room
+    /// for never share a page, so neither page draws smaller than its spines allow.
+    func testStackPagesKeepALongBookFromCappingATitlesScale() throws {
+        func book(_ id: Int, pages: Int) -> CloudBook {
+            CloudBook(
+                id: id, title: "Book \(id)", author: "Author", coverURL: nil, detailCoverURL: nil,
+                pages: pages, finished: "2025-01-01")
+        }
+        let area = CGSize(width: 952, height: 1046)
+        let longID = try XCTUnwrap(
+            (1...200).first { StackSpine.shape(of: book($0, pages: 1400)).width >= 2.79 })
+        let long = StackSpine(books: [book(longID, pages: 1400)])
+        var titled = StackSpine(books: [book(1000, pages: 100)])
+        titled.minimumScale = StackLayout.maximumScale([long], area: area) * 1.1
+        XCTAssertTrue(StackLayout.fits([long], area: area))
+        XCTAssertTrue(StackLayout.fits([titled], area: area))
+        XCTAssertFalse(StackLayout.fits([long, titled], area: area))
+
+        let pages = StackPages(spines: [long, titled], area: area).pages
+        XCTAssertEqual(pages.map { $0.map(\.id) }, [[long.id], [titled.id]])
+        for page in pages {
+            let layout = StackLayout(spines: page, area: area, seed: 1)
+            XCTAssertGreaterThanOrEqual(layout.scale, StackLayout.minimumScale(page))
+        }
+    }
+
     /// Titles and series names as long and as wide as those the owner reviewed in a 2026 story
     /// image, in the same capitalization, ask for a scale that letters them in full, on one line
     /// or two, and have room for it, in wide system faces.
