@@ -1,9 +1,9 @@
 import SwiftUI
 
 /// A book's details: a 3D model to turn with a drag and its title, over three tabs that switch
-/// only the content below them: **Details** (**Change cover**, then the book's description and
-/// facts on a grid of cards), **Journal** (the reader's reading dates, progress, format, and
-/// review, on the same cards), and **Spine** (the spine's design and colors).
+/// only the content below them: **Details** (the book's description and facts on a grid of
+/// cards), **Journal** (the reader's reading dates, progress, format, and review, on the same
+/// cards), and **Style** (**Change cover**, then the spine's design and colors).
 ///
 /// With a `HostedBook`, the details draw no book, backdrop, or **Share** button of their own: a
 /// transparent stand-in takes the book's place and turns as it would, the host draws the book
@@ -37,7 +37,7 @@ struct BookDetailView: View {
         self.hostedBook = hostedBook
         _designedCover = State(initialValue: book.chosenCoverURL)
         #if DEBUG
-            // `-BookwormsDetailTab <details|journal|spine>` opens that tab, for Simulator checks.
+            // `-BookwormsDetailTab <details|journal|style>` opens that tab, for Simulator checks.
             let debugTab = UserDefaults.standard.string(forKey: "BookwormsDetailTab")
             if let debugTab, let tab = DetailTab(rawValue: debugTab) {
                 _tab = State(initialValue: tab)
@@ -94,11 +94,8 @@ struct BookDetailView: View {
         .sheet(isPresented: $choosesCover) {
             // The shelf sets a dark scheme for its walnut backdrop, which the sheet's content
             // inherits; the sheet's own background must match it to keep text readable.
-            // A new cover can call for a new spine, so the **Spine** tab shows its offer.
-            CoverPickerView(book: book) {
-                coverChangedAt = .now
-                if design != nil { tab = .spine }
-            }
+            // A new cover can call for a new spine, which **Style** offers below the button.
+            CoverPickerView(book: book) { coverChangedAt = .now }
             .preferredColorScheme(.dark)
         }
         #if DEBUG
@@ -158,15 +155,13 @@ struct BookDetailView: View {
     private func tabContent(look: SpineLook, design: SpineDesignV1?) -> some View {
         switch tab {
         case .details:
+            CardGrid(cards: DetailCard.details(of: book, about: about), book: book)
+        case .journal:
+            journal
+        case .style:
             VStack(spacing: 24) {
                 Button("Change cover", systemImage: "photo.on.rectangle") { choosesCover = true }
                     .buttonStyle(.bordered)
-                CardGrid(cards: DetailCard.details(of: book, about: about), book: book)
-            }
-        case .journal:
-            journal
-        case .spine:
-            VStack(spacing: 24) {
                 if design != nil, book.chosenCoverURL != designedCover { redesignCard }
                 designCard(look: look, design: design)
             }
@@ -205,7 +200,7 @@ struct BookDetailView: View {
 enum DetailTab: String, CaseIterable, Identifiable {
     case details
     case journal
-    case spine
+    case style
 
     var id: Self { self }
     var title: String { rawValue.capitalized }

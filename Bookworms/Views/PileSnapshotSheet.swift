@@ -5,8 +5,7 @@ import UIKit
 /// (`PileSpread`) under the name of its time frame, in a share size the reader picks.
 ///
 /// Each size change or shuffle renders a new image and cancels one in progress. A change to the
-/// books, such as a design a generation run saves every few seconds under **Designed only**,
-/// draws again once the image in progress, if any, is ready. The previous image stays in view
+/// books, such as a library update, draws again once the image in progress, if any, is ready. The previous image stays in view
 /// under a progress indicator until the new one is ready, and sharing waits for it. The preview
 /// leaves out the credit, which the shared file carries. **Video** films the same books falling
 /// into the same spread (`PileVideoSheet`).
