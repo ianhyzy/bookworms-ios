@@ -507,8 +507,9 @@ final class DominoStatus {
 /// is out, the simulation stands still, so the chain holds exactly as it was, standing, falling,
 /// or gathered, and **Back** sets the book down exactly where it lay, with the motion it had,
 /// without colliding on the way, so it knocks nothing over and does not start the chain. The
-/// run then goes on from where it stood. The camera modes give the camera to the flight (see
-/// `aim`), which brings it back to them as the book returns.
+/// books resting on it, such as the book that fell onto it, make way and lie as they did once
+/// it is back (see `BookExit`). The run then goes on from where it stood. The camera modes give
+/// the camera to the flight (see `aim`), which brings it back to them as the book returns.
 @MainActor
 final class DominoScene {
     /// The scene root, which runs the physics simulation.
@@ -2103,12 +2104,13 @@ final class DominoScene {
     /// book lifts before the push, while the chain falls, and once the books lie gathered.
     ///
     /// The simulation stands still until the book is back, so the chain holds as it was. The
-    /// book rises clear of its standing neighbors (`riseMargin`), colliding with nothing, and
-    /// tears the cobwebs it holds. The camera rises to look down at the overview's pitch on the
-    /// table under the view's middle, with the view's turn, from the pile's default distance, so
-    /// the book in front of it clears the chain and the veil dims the whole view (see
-    /// `BookLifter`). A recording of the run pauses until the book is back, so the video leaves
-    /// out the flight and the details, and the run goes on from where it stood.
+    /// books resting on the book make way (see `BookExit`), and it rises clear of its standing
+    /// neighbors (`riseMargin`), colliding with nothing, and tears the cobwebs it holds. The
+    /// camera rises to look down at the overview's pitch on the table under the view's middle,
+    /// with the view's turn, from the pile's default distance, so the book in front of it clears
+    /// the chain and the veil dims the whole view (see `BookLifter`). A recording of the run
+    /// pauses until the book is back, so the video leaves out the flight and the details, and
+    /// the run goes on from where it stood.
     func lift(_ id: Int) -> Double? {
         guard canLift, let index = slots.firstIndex(where: { $0.book.id == id }),
             let landing = lifter.lift(
