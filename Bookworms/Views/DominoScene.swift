@@ -618,9 +618,10 @@ final class DominoScene {
     /// The cobwebs that still hang, in chain order, and those tearing.
     private var cobwebs: [HangingCobweb] = []
     private var torn: [HangingCobweb] = []
-    /// The cobwebs' material, made with the scene: its first use loads a shader, which would
-    /// otherwise fall in the frame after a handover from the desk.
-    private let silk = HangingCobweb.silk()
+    /// The cobwebs' material, made once for every scene. The first scene's initializer makes
+    /// it, because making it the first time loads a shader, which would otherwise hold up the
+    /// frame after a handover from the desk.
+    private static let silk = HangingCobweb.silk()
     private var indices: [Entity.ID: Int] = [:]
     /// The index of the next book to fall.
     private var next = 0
@@ -845,6 +846,7 @@ final class DominoScene {
             }
         }
         feedback.speeds = ImpactSound.dominoSpeeds
+        _ = Self.silk
     }
 
     /// Shows the scene in `view`, and calls `update` every frame and plays collisions through
@@ -1276,7 +1278,7 @@ final class DominoScene {
                     seed: UInt64(bitPattern: Int64(near.book.id)) &* 0x9E37_79B9_7F4A_7C15
                         ^ UInt64(bitPattern: Int64(far.book.id)))
                 cobwebs[far.book.id] = await HangingCobweb(
-                    web, material: silk, lighting: stage.lighting)
+                    web, material: Self.silk, lighting: stage.lighting)
             }
             near = far
         }
