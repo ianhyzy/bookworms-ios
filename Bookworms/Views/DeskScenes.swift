@@ -104,9 +104,17 @@ final class DeskScenes {
     /// the desk's arrangement of `books`, the books the desk drops, with its drop settings,
     /// `tidy` for Reduce Motion's stacks and the drop by `periods`, so the desk keeps them
     /// rather than dropping them again (see `BookPileScene.adopt`). Discards the dominoes'
-    /// recording. Does nothing before a view shows the dominoes.
+    /// recording. While no view shows the scenes, such as while **Designed only** leaves no
+    /// books, it removes the dominoes' books instead, and the Desk scene drops its books when
+    /// it next shows.
     func backToDesk(books: [CloudBook], tidy: Bool, periods: TimeFrame?) {
-        guard mode == .dominoes, let view, let viewport else { return }
+        guard mode == .dominoes else { return }
+        guard let view, let viewport else {
+            dominoes.detach()
+            dominoes.removeBooks()
+            mode = .desk
+            return
+        }
         let handover = dominoes.handOff()
         dominoes.detach()
         pile.attach(to: view)
