@@ -72,13 +72,17 @@ struct DominoFinaleCard: View {
 /// hits that `ImpactFeedback` recorded, which are mixed into the soundtrack once the recording
 /// ends (`ImpactMix`).
 ///
-/// The recording arms once the chain stands, so its costs fall before the push and outside the
-/// view's frames: the writer is made and started, and Core Image compiles its kernels for the
-/// frames, away from the main actor and the render thread, and then the callback goes on. The
-/// callback comes off when the recording ends. While a book is out at its details, the
-/// recording pauses (`advance(by:phase:progress:paused:)`), so the video cuts from the lift to
-/// the book's return. Leaving the scene before the books have gathered discards the recording;
-/// once they have gathered, leaving ends it early and keeps it. A new chain deletes the clip.
+/// The recording arms once the chain stands, so its costs fall before the push (`arm()`). The
+/// writer is made and started, and Core Image compiles the frames' kernels, away from the main
+/// actor and the render thread. The heading, the credit, and the wall's gradient render on the
+/// main actor in between, in a frame of their own after the one in which the chain stands. The
+/// callback goes on last; a moment later, RealityKit's rendering holds up a frame or two of the
+/// view, with the main actor idle. A push that comes while the recording arms starts it once
+/// it is armed, so the video then starts that much after the push. The callback comes off
+/// when the recording ends. While a book is out at its details, the recording pauses
+/// (`advance(by:phase:progress:paused:)`), so the video cuts from the lift to the book's
+/// return. Leaving the scene before the books have gathered discards the recording; once they
+/// have gathered, leaving ends it early and keeps it. A new chain deletes the clip.
 @MainActor
 @Observable
 final class DominoRecorder {
@@ -379,10 +383,13 @@ final class DominoRecorder {
 
     // MARK: Recording
 
-    /// Starts getting a recording ready for the push: the heading on the main actor, then the
-    /// composer, the folder, and the started writer away from it, since making a writer can
-    /// take a tenth of a second or more, and last the render callback. `interrupt()`,
-    /// `reset()`, or a new view cancels it, and the next standing chain arms again.
+    /// Starts getting a recording ready for the push: the composer, the folder, and the started
+    /// writer away from the main actor, since making a writer can take a tenth of a second or
+    /// more; then the heading, the credit, and the wall's gradient on the main actor, so they
+    /// render a frame or more after the one in which the chain stands; then Core Image's
+    /// kernels away from the main actor (`warmUp(_:height:)`); and last the render callback.
+    /// `interrupt()`, `reset()`, or a new view cancels it, and the next standing chain arms
+    /// again.
     private func arm() {
         guard arming == nil, let view, let layout else { return }
         armings += 1
@@ -400,17 +407,20 @@ final class DominoRecorder {
     }
 
     private func arm(view: ARView, layout: Layout) async {
+        var made: (writer: PileMovieWriter, folder: URL)?
         do {
             let size = ShareAspect.story.size
-            let crop = Self.crop(in: layout.viewport)
-            let (heading, credit) = try Self.overlays(for: layout, crop: crop)
-            let wall = try Self.wall()
             PileSnapshotRenderer.removeStaleClips()
             let name = "Dominoes \(layout.title)"
             let prepared = try await Self.prepare(composer: composer, name: name, size: size)
             let composer = prepared.composer
             let folder = prepared.folder
             let writer = PileMovieWriter(url: prepared.url, encoder: prepared.encoder)
+            made = (writer, folder)
+            guard !Task.isCancelled else { throw CancellationError() }
+            let crop = Self.crop(in: layout.viewport)
+            let (heading, credit) = try Self.overlays(for: layout, crop: crop)
+            let wall = try Self.wall()
             let tap = Tap(
                 composer: composer, pool: try writer.framePool(), size: size, crop: crop,
                 width: layout.viewport.size.width, heading: heading, credit: credit, wall: wall
@@ -420,10 +430,9 @@ final class DominoRecorder {
                 }
             }
             await Self.warmUp(tap, height: layout.viewport.size.height)
+            // An arming that was cancelled, or that another view or arming overtook, ends.
             guard !Task.isCancelled, self.view === view, run == nil else {
-                writer.cancel()
-                try? FileManager.default.removeItem(at: folder)
-                return
+                throw CancellationError()
             }
             self.composer = composer
             run = Run(tap: tap, writer: writer, folder: folder, name: name)
@@ -431,6 +440,11 @@ final class DominoRecorder {
             // A push that came while the recording armed starts it now.
             if let length = pendingStart { start(length: length) }
         } catch {
+            if let made {
+                made.writer.cancel()
+                try? FileManager.default.removeItem(at: made.folder)
+            }
+            guard !(error is CancellationError) else { return }
             Self.log.error("The recording could not start: \(error)")
             cannotRecord = true
         }
