@@ -49,6 +49,8 @@ struct ReviewCard: View {
                         ) {
                             ShareStyle.serif($0, .semibold)
                         }
+                        // The title starts beside the cover, close to the glow's center.
+                        .environment(\.bookTextGround, theme.glow)
                         Text(SpineView.shortAuthor(book.author))
                             .font(ShareStyle.serif(36))
                             .opacity(0.85)

@@ -265,6 +265,8 @@ struct ShareCanvas: View {
         .clipped()
         // Exports keep one appearance whatever the system setting.
         .environment(\.colorScheme, .dark)
+        // Panels are the lightest ground that most card text sits on.
+        .environment(\.bookTextGround, input.theme.panel())
     }
 }
 

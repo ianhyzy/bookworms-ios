@@ -583,11 +583,17 @@ private let cardNote = ShelfPalette.paper.opacity(0.7)
 /// A grouped panel on the walnut backdrop. It takes the height it is offered, so cards side by
 /// side in a `CardGrid` row match.
 private struct Card<Content: View>: View {
+    /// The card's fill over the walnut wall's lighter end, the lightest a card gets.
+    static var ground: ColorValue {
+        ShelfPalette.wallLight.mixed(with: ColorValue(red: 255, green: 255, blue: 255), 0.07)
+    }
+
     @ViewBuilder let content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) { content }
             .foregroundStyle(ShelfPalette.paper)
+            .environment(\.bookTextGround, Self.ground)
             .padding(16)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(.white.opacity(0.07), in: .rect(cornerRadius: 22))

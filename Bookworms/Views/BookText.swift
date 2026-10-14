@@ -4,12 +4,12 @@ import SwiftUI
 /// "house" of House of Leaves in blue.
 ///
 /// Mark Z. Danielewski's novel prints the word "house" in blue. For that book alone
-/// (`HouseOfLeaves.isNovel(_:)`), this view letters each "house" in the novel's blue with a faint
-/// white glow behind it. Any other book's text, including a title with "house" in it, is plain
-/// text. VoiceOver reads the text unchanged.
+/// (`HouseOfLeaves.isNovel(_:)`), this view letters each "house" in the novel's blue, fitted to
+/// the ground behind it (`HouseOfLeaves.lettering(on:ink:highlight:)`). Any other book's text,
+/// including a title with "house" in it, is plain text. VoiceOver reads the text unchanged.
 ///
 /// Pass the spine design when the text is lettered on a spine or a coverless front, so the blue
-/// reads on that cloth. Otherwise the blue follows the color scheme (`HouseOfLeaves.Blue`).
+/// reads on that cloth. Otherwise the blue reads on `EnvironmentValues.bookTextGround`.
 struct BookText: View {
     let text: String
     let book: CloudBook?
@@ -23,14 +23,43 @@ struct BookText: View {
 
     var body: some View {
         if let book, HouseOfLeaves.isNovel(book) {
-            let blue =
-                look.map {
-                    AnyShapeStyle(HouseOfLeaves.blue(on: $0.background, ink: $0.foreground).color)
-                } ?? AnyShapeStyle(HouseOfLeaves.Blue())
-            HouseOfLeaves.text(text, blue: blue).textRenderer(HouseOfLeaves.Glow())
+            HouseOfLeavesText(text: text, look: look)
         } else {
             Text(verbatim: text)
         }
+    }
+}
+
+extension EnvironmentValues {
+    /// The lightest color behind `BookText` that is not on a spine, such as a details card or a
+    /// share image's panel. With `nil`, the ground is the color scheme's
+    /// (`HouseOfLeaves.darkGround` or `HouseOfLeaves.lightGround`).
+    @Entry var bookTextGround: ColorValue? = nil
+}
+
+/// House of Leaves' text, which alone reads the ground from the environment, so other books'
+/// text has no environment dependencies.
+private struct HouseOfLeavesText: View {
+    let text: String
+    let look: SpineLook?
+
+    @Environment(\.bookTextGround) private var ground
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let lettering =
+            if let look {
+                HouseOfLeaves.lettering(
+                    on: look.background, ink: look.foreground,
+                    highlight: SpineView.relief(on: look.background).highlight)
+            } else {
+                HouseOfLeaves.lettering(
+                    on: ground
+                        ?? (colorScheme == .dark
+                            ? HouseOfLeaves.darkGround : HouseOfLeaves.lightGround))
+            }
+        let words = HouseOfLeaves.text(text, blue: lettering.blue.color)
+        if lettering.glows { words.textRenderer(HouseOfLeaves.Glow()) } else { words }
     }
 }
 
@@ -42,22 +71,13 @@ enum HouseOfLeaves {
     static let glowOpacity = 0.35
     /// The glow's radius as a share of the line's height.
     static let glowRadius = 0.15
-    /// The share of white that the glow adds to the ground just beside the word's strokes:
-    /// about 0.1 in Simulator screenshots of captions, cards, spines, and share images.
-    static let glowLift = 0.1
-
-    /// The blue on the app's own grounds in a dark scheme: the walnut wall and its cards, share
-    /// images, and dark system lists.
-    static let darkBlue = blue(on: darkGround, ink: white)
-    /// The blue on the app's own grounds in a light scheme: system lists.
-    static let lightBlue = blue(on: lightGround, ink: ColorValue(red: 0, green: 0, blue: 0))
     private static let white = ColorValue(red: 255, green: 255, blue: 255)
 
-    /// A gray at the lightness of the lightest ground that dark-scheme text sits near: a share
-    /// card's glow (`ShareTheme.glow`, OKLab lightness 0.40), which fades before the text beside
-    /// a cover. The walnut wall, its cards, share backdrops and panels, and dark system grounds
-    /// are all darker.
-    static let darkGround = SpineContrast.color(SpineContrast.Lab(l: 0.40, a: 0, b: 0))
+    /// The lightest ground that dark-scheme text sits on by default: a dark grouped list's
+    /// raised cell, as in a sheet. Its luminance is above the walnut wall's lighter end
+    /// (`ShelfPalette.wallLight`) and the dark lists' other grounds, so a blue that reads here
+    /// reads on all of them.
+    static let darkGround = ColorValue(red: 0x2C, green: 0x2C, blue: 0x2E)
     /// The darkest ground that light-scheme text sits on: the grouped list background.
     static let lightGround = ColorValue(red: 0xF2, green: 0xF2, blue: 0xF7)
 
@@ -84,7 +104,7 @@ enum HouseOfLeaves {
     }
 
     /// `text` with each "house" in `blue`, marked for `Glow`.
-    static func text(_ text: String, blue: AnyShapeStyle) -> Text {
+    static func text(_ text: String, blue: Color) -> Text {
         var result = Text(verbatim: "")
         var start = text.startIndex
         for range in houseRanges(in: text) {
@@ -97,24 +117,35 @@ enum HouseOfLeaves {
         return Text("\(result)\(Text(verbatim: String(text[start...])))")
     }
 
-    /// The novel's blue as lettering on `ground` among text in `ink`.
+    /// How "house" is lettered on `ground` among text in `ink`: the novel's blue, moved as
+    /// little as legibility needs, and whether a faint white glow sits behind it.
     ///
-    /// The blue keeps its hue and moves in OKLab lightness toward `ink`, in steps of 0.01, only
-    /// as far as it must to reach WCAG 4.5:1 and APCA Lc 60 on `ground`, both bare and as the
-    /// glow lights it beside the strokes (`glowLift`). So it stays the novel's blue on white,
-    /// darkens a little on cream, and lightens on dark grounds, where the glow alone cannot
-    /// make a mid-tone blue legible. On a ground that no lightness of the blue reaches, such as
-    /// a saturated mid-blue cloth, the word takes `ink` and keeps only its glow.
-    static func blue(on ground: ColorValue, ink: ColorValue) -> ColorValue {
-        let step = SpineContrast.lab(ink).l > SpineContrast.lab(ground).l ? 0.01 : -0.01
-        let grounds = [ground, ground.mixed(with: white, glowLift)]
+    /// The blue keeps #6570AE's hue and moves in OKLab lightness toward `ink`, in steps of 0.01,
+    /// until it reaches WCAG 4.5:1 and APCA Lc 60 on `ground`. Without `ink`, it moves toward
+    /// black or white, whichever contrasts more with `ground`. So it stays the novel's blue on
+    /// white, darkens a little on cream, and lightens on dark grounds.
+    ///
+    /// The glow lightens the ground beside the strokes. Behind a blue darker than its ground,
+    /// that adds contrast, so the word glows, and the blue already passes without the glow.
+    /// Behind a blue lighter than its ground, a glow would cost contrast, so the word has none.
+    ///
+    /// `highlight` is the share of white that lightens the ground over part of the lettering,
+    /// such as a spine's relief (`SpineView.relief(on:)`). A blue lighter than its ground must
+    /// pass there too. On a ground that no lightness of the blue reaches, such as a mid-blue
+    /// cloth, the word takes `ink`.
+    static func lettering(on ground: ColorValue, ink: ColorValue? = nil, highlight: Double = 0)
+        -> (blue: ColorValue, glows: Bool)
+    {
+        let ink = ink ?? CoverPalette.readableForeground(for: ground)
+        let lightens = SpineContrast.lab(ink).l > SpineContrast.lab(ground).l
+        let grounds = lightens ? [ground, ground.mixed(with: white, highlight)] : [ground]
         var lab = SpineContrast.lab(novelBlue)
         while (0...1).contains(lab.l) {
             let color = SpineContrast.color(lab)
-            if grounds.allSatisfy({ passes(color, on: $0) }) { return color }
-            lab.l += step
+            if grounds.allSatisfy({ passes(color, on: $0) }) { return (color, !lightens) }
+            lab.l += lightens ? 0.01 : -0.01
         }
-        return ink
+        return (ink, !lightens)
     }
 
     /// Whether `color` reaches WCAG 4.5:1 and APCA Lc 60 as text on `ground`.
@@ -123,18 +154,10 @@ enum HouseOfLeaves {
             && abs(SpineContrast.apca(text: color, background: ground)) >= 60
     }
 
-    /// `darkBlue` in a dark color scheme and `lightBlue` in a light one.
-    struct Blue: ShapeStyle {
-        func resolve(in environment: EnvironmentValues) -> Color {
-            (environment.colorScheme == .dark ? darkBlue : lightBlue).color
-        }
-    }
-
     /// Marks a "house" for `Glow`.
     struct Word: TextAttribute {}
 
-    /// Draws text as usual, over a faint, soft white glow behind each `Word`, which sets the
-    /// blue off dark grounds and vanishes on light ones.
+    /// Draws text as usual, over a faint, soft white glow behind each `Word`.
     ///
     /// The glows all draw first, so none lies over a neighboring letter. The renderer keeps the
     /// default `displayPadding` of zero: a padding widens the width that text wraps to.
