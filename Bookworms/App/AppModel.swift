@@ -31,6 +31,9 @@ final class AppModel {
     let toasts = ToastCenter()
     /// This iPhone's own Hardcover sign-in and library.
     let account = HardcoverAccount()
+    /// The readers the Hardcover account follows or looked up, for the Share tab's
+    /// comparisons.
+    let social = SocialModel()
     @ObservationIgnored let covers = CoverStore()
     @ObservationIgnored let store: any SpineStore
     /// Whether the app reads a local preview folder instead of iCloud.
@@ -80,6 +83,12 @@ final class AppModel {
         account.onLibraryChange = { [unowned self] in self.accountLibraryChanged() }
         // A face that any screen loads can change which books its source's font can letter.
         fonts.onFaceLoaded = { [unowned self] in self.alignSeries() }
+        #if DEBUG
+            if SocialSamples.isEnabled { social.useSamples() }
+        #endif
+        if !isPreview, account.isSignedIn, let accountID = account.summary?.accountID {
+            Task { await social.restore(accountID: accountID) }
+        }
     }
 
     /// Opens the Share tab with `book` as the featured book.
@@ -173,10 +182,43 @@ final class AppModel {
         isLoading = false
         // The change's own reload returned early because this one was running.
         if revision != account.libraryRevision { return await reload() }
+        // Social data refreshes on its own, so its downloads never hold up the next reload.
+        Task { await syncSocial() }
         // Fonts load after `isLoading` clears, so a slow download never blocks the next reload.
         if let designs = library?.designs.values {
             await fonts.load(Array(designs))
         }
+    }
+
+    /// Refreshes the readers the Share tab compares with when signed in to Hardcover on this
+    /// iPhone: when their data is a day old, or at once with `force`, such as a pull to
+    /// refresh. Preview mode and a rejected login skip it.
+    func syncSocial(force: Bool = false) async {
+        guard !isPreview, account.isSignedIn, !account.needsReconnect,
+            let accountID = account.summary?.accountID, let token = HardcoverTokenStore().read()
+        else { return }
+        if force {
+            await social.sync(token: token, accountID: accountID)
+        } else {
+            await social.syncIfStale(token: token, accountID: accountID)
+        }
+    }
+
+    /// Finds a public Hardcover reader by username and adds them to the readers to compare
+    /// with (`SocialModel.lookUp(_:token:)`). Needs this iPhone's Hardcover sign-in.
+    func lookUpReader(_ username: String) async throws -> ReaderProfile {
+        guard !isPreview, account.isSignedIn, let token = HardcoverTokenStore().read() else {
+            throw HardcoverError.invalidToken
+        }
+        return try await social.lookUp(username, token: token)
+    }
+
+    /// Downloads a chosen reader's library when the last refresh left it out.
+    func downloadReader(_ id: Int) async {
+        guard !isPreview, account.isSignedIn, let token = HardcoverTokenStore().read() else {
+            return
+        }
+        await social.downloadIfMissing(id, token: token)
     }
 
     /// Shows the new phone library after a Hardcover sign-in, sync, or sign-out. The shown
@@ -185,6 +227,11 @@ final class AppModel {
     private func accountLibraryChanged() {
         guard !isPreview else { return }
         if library?.accountID != account.summary?.accountID { clearLibrary() }
+        // A sign-out or another account must not keep this account's friends.
+        let accountID = account.summary?.accountID
+        if accountID == nil || social.snapshot.map({ String($0.owner.id) != accountID }) == true {
+            social.clear()
+        }
         Task { await reload() }
     }
 
@@ -295,6 +342,7 @@ final class AppModel {
         persistTask = nil
         library = nil
         books = []
+        social.prepare(mine: [])
         alignSeries()
         try? FileManager.default.removeItem(at: cacheURL)
     }
@@ -313,6 +361,7 @@ final class AppModel {
             default: lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
             }
         }
+        social.prepare(mine: books)
     }
 
     /// Recomputes `seriesSources` from the library and the loaded faces. A book whose lettering
