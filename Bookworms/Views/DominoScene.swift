@@ -618,7 +618,9 @@ final class DominoScene {
     /// The cobwebs that still hang, in chain order, and those tearing.
     private var cobwebs: [HangingCobweb] = []
     private var torn: [HangingCobweb] = []
-    private lazy var silk = HangingCobweb.silk()
+    /// The cobwebs' material, made with the scene: its first use loads a shader, which would
+    /// otherwise fall in the frame after a handover from the desk.
+    private let silk = HangingCobweb.silk()
     private var indices: [Entity.ID: Int] = [:]
     /// The index of the next book to fall.
     private var next = 0
