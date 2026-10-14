@@ -207,18 +207,23 @@ enum DominoLayout {
     /// day stand in ID order, so the order of `books` does not matter. Past `maximumBooks`, only
     /// the most recent books stand. The last book's days are 0.
     static func chain(_ books: [CloudBook]) -> [(book: CloudBook, days: Int)] {
+        // `finishedDate` parses a string, so each book's is read once rather than per
+        // comparison: a scene of every book sorts hundreds in a frame.
         let ordered = Array(
-            books.sorted {
-                ($0.finishedDate ?? .distantFuture, $0.id) < (
-                    $1.finishedDate ?? .distantFuture, $1.id
-                )
-            }
-            .suffix(maximumBooks))
+            books.map { (book: $0, date: $0.finishedDate) }
+                .sorted {
+                    ($0.date ?? .distantFuture, $0.book.id) < (
+                        $1.date ?? .distantFuture, $1.book.id
+                    )
+                }
+                .suffix(maximumBooks))
         return ordered.indices.map { index in
-            guard index + 1 < ordered.count, let date = ordered[index].finishedDate,
-                let next = ordered[index + 1].finishedDate
-            else { return (ordered[index], 0) }
-            return (ordered[index], max(0, Int((next.timeIntervalSince(date) / 86_400).rounded())))
+            guard index + 1 < ordered.count, let date = ordered[index].date,
+                let next = ordered[index + 1].date
+            else { return (ordered[index].book, 0) }
+            return (
+                ordered[index].book, max(0, Int((next.timeIntervalSince(date) / 86_400).rounded()))
+            )
         }
     }
 
@@ -613,7 +618,10 @@ final class DominoScene {
     /// The cobwebs that still hang, in chain order, and those tearing.
     private var cobwebs: [HangingCobweb] = []
     private var torn: [HangingCobweb] = []
-    private lazy var silk = HangingCobweb.silk()
+    /// The cobwebs' material, made once for every scene. The first scene's initializer makes
+    /// it, because making it the first time loads a shader, which would otherwise hold up the
+    /// frame after a handover from the desk.
+    private static let silk = HangingCobweb.silk()
     private var indices: [Entity.ID: Int] = [:]
     /// The index of the next book to fall.
     private var next = 0
@@ -838,6 +846,7 @@ final class DominoScene {
             }
         }
         feedback.speeds = ImpactSound.dominoSpeeds
+        _ = Self.silk
     }
 
     /// Shows the scene in `view`, and calls `update` every frame and plays collisions through
@@ -1269,7 +1278,7 @@ final class DominoScene {
                     seed: UInt64(bitPattern: Int64(near.book.id)) &* 0x9E37_79B9_7F4A_7C15
                         ^ UInt64(bitPattern: Int64(far.book.id)))
                 cobwebs[far.book.id] = await HangingCobweb(
-                    web, material: silk, lighting: stage.lighting)
+                    web, material: Self.silk, lighting: stage.lighting)
             }
             near = far
         }

@@ -6,9 +6,10 @@ import UIKit
 /// boxes, and masses.
 ///
 /// `prepare` builds each book's parts once: its shape (`BookShape`), a mesh shared by every
-/// book of that shape, and its materials. Covers download in parallel and spines render on the
-/// main actor, because `ImageRenderer` draws synchronously. A book's parts are kept until its
-/// look or its wear changes or `release` drops them, so a new drop reuses them.
+/// book of that shape, its collision box, and its materials. Covers download in parallel and
+/// spines render on the main actor, because `ImageRenderer` draws synchronously. A book's parts
+/// are kept until its look or its wear changes or `release` drops them, so a new drop reuses
+/// them.
 ///
 /// GPU memory stays bounded by the texture sizes, which grow with the book's length up to 24 cm,
 /// so books up to that length are about as sharp on screen (see `textureScale(forLength:)`).
@@ -24,9 +25,15 @@ final class BookFactory {
     /// A book's mesh, its materials in `BookSlot` order, and the look and wear they were drawn
     /// with, so a changed design, a newly loaded font, or a synced reading history redraws
     /// them. `ribbon` is a current read's bookmark.
+    ///
+    /// `box` is the book's collision box, which every rigid body built from these parts shares
+    /// (see `makeBook`). Each new shape resource costs RealityKit an asset load that the next
+    /// frame waits for, so building hundreds of books at once, as a handover between the desk
+    /// scenes does, would otherwise stall the view.
     struct Parts {
         let shape: BookShape
         let mesh: MeshResource
+        let box: ShapeResource
         var materials: [any RealityKit.Material]
         let look: SpineLook
         let wear: Wear
@@ -219,7 +226,7 @@ final class BookFactory {
         let cloth = cloth(look.background, binding: shape.binding)
         let wear = Wear(book, accent: look.accent)
         return Parts(
-            shape: shape, mesh: mesh,
+            shape: shape, mesh: mesh, box: .generateBox(size: shape.size),
             materials: [
                 coverTexture.map { Self.jacket($0, binding: shape.binding) } ?? cloth,
                 spineTexture.map { Self.jacket($0, binding: shape.binding) } ?? cloth,
@@ -236,7 +243,7 @@ final class BookFactory {
     ) -> ModelEntity? {
         guard let parts = parts[id] else { return nil }
         let size = parts.shape.size
-        let box = ShapeResource.generateBox(size: size)
+        let box = parts.box
         let book = ModelEntity()
         book.components.set(CollisionComponent(shapes: [box]))
         book.components.set(InputTargetComponent())

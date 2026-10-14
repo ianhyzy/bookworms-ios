@@ -71,9 +71,18 @@ final class DeskStage {
 
     /// Moves the lamp so its pool of light covers a circle of `radius` around `center` on the
     /// table, and spreads the dust over it. The table and the room's light stay as they are.
+    ///
+    /// Dust that already drifts keeps its motes and spreads over the new pool as they renew.
+    /// A new emitter would simulate its 10-second warm-up in a single frame, which stalls the
+    /// render for about a tenth of a second.
     func aim(pool center: SIMD3<Float>, radius: Float) {
         moveLamp(pool: center, radius: radius)
-        dust.components.set(Self.dustMotes(radius: radius))
+        if var motes = dust.components[ParticleEmitterComponent.self] {
+            motes.emitterShapeSize = Self.dustSize(radius: radius)
+            dust.components.set(motes)
+        } else {
+            dust.components.set(Self.dustMotes(radius: radius))
+        }
     }
 
     /// Moves the lamp so its pool of light covers a circle of `radius` around `center`, as
@@ -212,7 +221,7 @@ final class DeskStage {
         var emitter = ParticleEmitterComponent()
         emitter.emitterShape = .box
         emitter.birthLocation = .volume
-        emitter.emitterShapeSize = [radius * 0.9, 5, radius * 0.9]
+        emitter.emitterShapeSize = dustSize(radius: radius)
         emitter.speed = 0.03
         emitter.speedVariation = 0.03
         emitter.timing = .repeating(warmUp: 10, emit: .init(duration: 60))
@@ -232,6 +241,11 @@ final class DeskStage {
         motes.blendMode = .alpha
         emitter.mainEmitter = motes
         return emitter
+    }
+
+    /// The box the motes are born in over a pool of `radius`.
+    private static func dustSize(radius: Float) -> SIMD3<Float> {
+        [radius * 0.9, 5, radius * 0.9]
     }
 
     /// Builds the room's light once, the first time a stage needs it.

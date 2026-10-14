@@ -72,12 +72,17 @@ struct DominoFinaleCard: View {
 /// hits that `ImpactFeedback` recorded, which are mixed into the soundtrack once the recording
 /// ends (`ImpactMix`).
 ///
-/// The callback goes on, and the writer starts, once the chain stands, so their costs fall
-/// before the push; the first frame drawn then compiles Core Image's kernels. The callback
-/// comes off when the recording ends. While a book is out at its details, the recording
-/// pauses (`advance(by:phase:progress:paused:)`), so the video cuts from the lift to the
-/// book's return. Leaving the scene before the books have gathered discards the recording;
-/// once they have gathered, leaving ends it early and keeps it. A new chain deletes the clip.
+/// The recording arms once the chain stands, so its costs fall before the push (`arm()`). The
+/// writer is made and started, and Core Image compiles the frames' kernels, away from the main
+/// actor and the render thread. The heading, the credit, and the wall's gradient render on the
+/// main actor in between, in a frame of their own after the one in which the chain stands. The
+/// callback goes on last; a moment later, RealityKit's rendering holds up a frame or two of the
+/// view, with the main actor idle. A push that comes while the recording arms starts it once
+/// it is armed, so the video then starts that much after the push. The callback comes off
+/// when the recording ends. While a book is out at its details, the recording pauses
+/// (`advance(by:phase:progress:paused:)`), so the video cuts from the lift to the book's
+/// return. Leaving the scene before the books have gathered discards the recording; once they
+/// have gathered, leaving ends it early and keeps it. A new chain deletes the clip.
 @MainActor
 @Observable
 final class DominoRecorder {
@@ -107,6 +112,12 @@ final class DominoRecorder {
     @ObservationIgnored private var generation = 0
     /// Set when a recording could not start, so the chain does not try again every frame.
     @ObservationIgnored private var cannotRecord = false
+    /// The recording that is arming (see `arm()`), and how many have armed, so an arming that
+    /// was cancelled does not clear a later one.
+    @ObservationIgnored private var arming: Task<Void, Never>?
+    @ObservationIgnored private var armings = 0
+    /// The chain's length when the push came while the recording armed.
+    @ObservationIgnored private var pendingStart: Float?
 
     nonisolated private static let log = Logger(
         subsystem: "gay.ian.Bookworms.iOS", category: "video")
@@ -219,14 +230,9 @@ final class DominoRecorder {
                 guard let render = composer.image(of: source) else {
                     throw PileSnapshotError.drawingFailed
                 }
-                let scale = CGFloat(source.width) / width
                 let picture = CVReadOnlyPixelBuffer(try pool.makeMutablePixelBuffer())
                 try composer.render(
-                    composer.frame(
-                        of: render, crop: crop.applying(.init(scaleX: scale, y: scale)),
-                        size: size, background: wall,
-                        overlays: [(heading, request.heading), (credit, 1)]),
-                    into: picture, on: commands)
+                    frame(of: render, heading: request.heading), into: picture, on: commands)
                 guard let frames = request.frames else {
                     return DominoRecorder.log.notice(
                         "Recording from a \(source.width) × \(source.height) render in pixel format \(source.pixelFormat.rawValue)"
@@ -238,6 +244,39 @@ final class DominoRecorder {
                 DominoRecorder.log.error("A recording's frame failed: \(error)")
                 if request.frames != nil { state.withLock { $0.drawing -= 1 } }
             }
+        }
+
+        /// Draws a frame from a stand-in render of the view, `height` points tall, and waits
+        /// for the GPU, so Core Image compiles the kernels of the recording's frames before
+        /// the render thread first draws one. Compiling them there holds up the view's frame
+        /// for about a tenth of a second. Runs away from the main actor and the render thread.
+        ///
+        /// The stand-in has the pixel format of the Simulator's render. A view that renders in
+        /// another format may still compile kernels in the first frame the render thread draws.
+        func warmUp(height: CGFloat) throws {
+            let device = composer.device
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .bgra8Unorm_srgb, width: Int(width), height: Int(height),
+                mipmapped: false)
+            descriptor.usage = .shaderRead
+            descriptor.storageMode = .private
+            guard let texture = device.makeTexture(descriptor: descriptor),
+                let render = composer.image(of: texture),
+                let commands = device.makeCommandQueue()?.makeCommandBuffer()
+            else { throw PileSnapshotError.drawingFailed }
+            let picture = CVReadOnlyPixelBuffer(try pool.makeMutablePixelBuffer())
+            try composer.render(frame(of: render, heading: 0), into: picture, on: commands)
+            commands.commit()
+            commands.waitUntilCompleted()
+        }
+
+        /// The recording's frame of `render`, a render of the view at any scale, with the
+        /// heading at `heading` opacity.
+        private func frame(of render: CIImage, heading opacity: CGFloat) -> CIImage {
+            let scale = render.extent.width / width
+            return composer.frame(
+                of: render, crop: crop.applying(.init(scaleX: scale, y: scale)), size: size,
+                background: wall, overlays: [(heading, opacity), (credit, 1)])
         }
     }
 
@@ -287,15 +326,21 @@ final class DominoRecorder {
 
     /// Starts recording an armed chain `length` units long at its push, and the hits with it.
     func start(length: Float) {
-        guard let run, run.timing == nil else { return }
+        guard let run else {
+            if arming != nil { pendingStart = length }
+            return
+        }
+        pendingStart = nil
+        guard run.timing == nil else { return }
         run.timing = DominoMovieTiming(length: length)
         feedback.startRecording()
         isRecording = true
     }
 
     /// Ends a recording early: keeps it once the books lie gathered or it has its most
-    /// frames, and discards it before.
+    /// frames, and discards it before. Cancels a recording that is arming.
     func interrupt() {
+        cancelArming()
         guard let run else { return }
         if run.finishedAt != nil || run.isEnding {
             run.isEnding = true
@@ -310,6 +355,7 @@ final class DominoRecorder {
     func reset() {
         generation += 1
         cannotRecord = false
+        cancelArming()
         if let run { discard(run) }
         clip?.remove()
         clip = nil
@@ -337,42 +383,105 @@ final class DominoRecorder {
 
     // MARK: Recording
 
-    /// Gets a recording ready for the push: the writer, the heading, and the render callback.
+    /// Starts getting a recording ready for the push: the composer, the folder, and the started
+    /// writer away from the main actor, since making a writer can take a tenth of a second or
+    /// more; then the heading, the credit, and the wall's gradient on the main actor, so they
+    /// render a frame or more after the one in which the chain stands; then Core Image's
+    /// kernels away from the main actor (`warmUp(_:height:)`); and last the render callback.
+    /// `interrupt()`, `reset()`, or a new view cancels it, and the next standing chain arms
+    /// again.
     private func arm() {
-        guard let view, let layout else { return }
+        guard arming == nil, let view, let layout else { return }
+        armings += 1
+        let number = armings
+        arming = Task {
+            await arm(view: view, layout: layout)
+            if armings == number { arming = nil }
+        }
+    }
+
+    private func cancelArming() {
+        arming?.cancel()
+        arming = nil
+        pendingStart = nil
+    }
+
+    private func arm(view: ARView, layout: Layout) async {
+        var made: (writer: PileMovieWriter, folder: URL)?
         do {
-            let composer = try composer ?? FrameComposer()
-            self.composer = composer
             let size = ShareAspect.story.size
+            PileSnapshotRenderer.removeStaleClips()
+            let name = "Dominoes \(layout.title)"
+            let prepared = try await Self.prepare(composer: composer, name: name, size: size)
+            let composer = prepared.composer
+            let folder = prepared.folder
+            let writer = PileMovieWriter(url: prepared.url, encoder: prepared.encoder)
+            made = (writer, folder)
+            guard !Task.isCancelled else { throw CancellationError() }
             let crop = Self.crop(in: layout.viewport)
             let (heading, credit) = try Self.overlays(for: layout, crop: crop)
-            PileSnapshotRenderer.removeStaleClips()
-            let folder = URL.temporaryDirectory.appending(path: "PileVideo-\(UUID().uuidString)")
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let name = "Dominoes \(layout.title)"
-            let writer = try PileMovieWriter(
-                url: folder.appending(path: Self.fileName(name) + ".mp4"),
-                width: Int(size.width), height: Int(size.height), live: true)
-            try writer.start()
+            let wall = try Self.wall()
             let tap = Tap(
                 composer: composer, pool: try writer.framePool(), size: size, crop: crop,
-                width: layout.viewport.size.width, heading: heading, credit: credit,
-                wall: try Self.wall()
+                width: layout.viewport.size.width, heading: heading, credit: credit, wall: wall
             ) { [weak self] picture, frames, id in
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated { self?.drew(picture, as: frames, in: id) }
                 }
             }
+            await Self.warmUp(tap, height: layout.viewport.size.height)
+            // An arming that was cancelled, or that another view or arming overtook, ends.
+            guard !Task.isCancelled, self.view === view, run == nil else {
+                throw CancellationError()
+            }
+            self.composer = composer
             run = Run(tap: tap, writer: writer, folder: folder, name: name)
             view.renderCallbacks.postProcess = { @Sendable context in tap.draw(context) }
+            // A push that came while the recording armed starts it now.
+            if let length = pendingStart { start(length: length) }
         } catch {
+            if let made {
+                made.writer.cancel()
+                try? FileManager.default.removeItem(at: made.folder)
+            }
+            guard !(error is CancellationError) else { return }
             Self.log.error("The recording could not start: \(error)")
             cannotRecord = true
         }
     }
 
+    /// `composer`, or a new one, a new folder for a recording named `name`, and a started
+    /// encoder for a movie of `size` pixels at `url` in it, made away from the main actor.
+    @concurrent
+    nonisolated private static func prepare(
+        composer: FrameComposer?, name: String, size: CGSize
+    ) async throws
+        -> sending (
+            composer: FrameComposer, folder: URL, url: URL, encoder: PileMovieWriter.Encoder
+        )
+    {
+        let composer = try composer ?? FrameComposer()
+        let folder = URL.temporaryDirectory.appending(path: "PileVideo-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appending(path: fileName(name) + ".mp4")
+        let encoder = try PileMovieWriter.encoder(
+            url: url, width: Int(size.width), height: Int(size.height), live: true)
+        return (composer, folder, url, encoder)
+    }
+
+    /// Warms Core Image up for `tap`'s frames away from the main actor (see
+    /// `Tap.warmUp(height:)`). A failure leaves the warming to the render thread.
+    @concurrent
+    nonisolated private static func warmUp(_ tap: Tap, height: CGFloat) async {
+        do {
+            try tap.warmUp(height: height)
+        } catch {
+            log.error("Core Image did not warm up for a recording: \(error)")
+        }
+    }
+
     /// `name` without the characters that file names cannot hold.
-    private static func fileName(_ name: String) -> String {
+    nonisolated private static func fileName(_ name: String) -> String {
         name.replacing("/", with: "-").replacing(":", with: "-")
     }
 
