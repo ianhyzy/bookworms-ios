@@ -27,13 +27,14 @@ struct SpineDesigner: Hashable, Sendable {
             }
         }
 
-        /// The model a new choice of this provider starts with; the reader can type another.
+        /// The model a new choice of this provider starts with: each provider's fast, low-cost
+        /// tier. The reader can type another.
         var defaultModel: String {
             switch self {
             case .apple: ""
-            case .anthropic: "claude-opus-5-5"
-            case .openAI: "gpt-5"
-            case .google: "gemini-2.5-flash"
+            case .anthropic: "claude-haiku-5-5"
+            case .openAI: "gpt-6-luna"
+            case .google: "gemini-3.8-flash"
             case .custom: ""
             }
         }
@@ -94,7 +95,7 @@ struct SpineDesigner: Hashable, Sendable {
         return model.isEmpty ? "Enter a model name in Settings." : nil
     }
 
-    /// Records which model made a design, such as "model:anthropic/claude-opus-5-5", in the
+    /// Records which model made a design, such as "model:anthropic/claude-haiku-5-5", in the
     /// design's 80-character `provenance`.
     var provenance: String? {
         guard provider != .apple else { return nil }
