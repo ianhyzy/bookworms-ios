@@ -1,31 +1,36 @@
 import RealityKit
 import SwiftUI
 
-/// The time frame's books as dominoes: they stand on end along a winding path in finish order,
+/// The books on the desk as dominoes: they stand on end along a winding path in finish order,
 /// evenly spaced (`DominoLayout`), and a cobweb hangs between two books wherever 30 days or more
-/// passed between their finishes (`DominoLayout.cobwebDays`). While a new chain's first books get
-/// ready, a spinner shows over the table (`SceneLoading`); then the books drop into their places
-/// from above the top of the screen (see `DominoScene`).
+/// passed between their finishes (`DominoLayout.cobwebDays`). **Set up dominoes** in the desk's
+/// options menu hands this view the books lying on the desk, which set themselves up from where
+/// they lie (see `DominoScene` and `DominoSetup`). A chain of other books, such as another time
+/// frame's, gets its books ready under a spinner (`SceneLoading`), and they drop into their
+/// places from above the top of the screen.
 ///
 /// A pointing hand floats before the first book, as a finger about to poke it; a tap on the
-/// hand or the book topples the whole chain, tearing the cobwebs as it goes. Should the chain
-/// stop, such as where a book leans on the next without knocking it over, the hand points at
-/// the book to tap to nudge it on. A tap on any book the chain has not reached also pushes it
-/// on. Tapping a book the chain has passed, or touching and holding any
-/// book, lifts it out of the chain to its details over the darkened scene, as the Pile does
-/// (`LiftedDetails`), and **Back** returns it (see `DominoScene`). With Reduce Motion on, or when
-/// the scene cannot lift the book, `open` pushes the details instead, and the chain is as the
-/// reader left it on return.
+/// hand topples the whole chain, tearing the cobwebs as it goes. Should the chain stop, such as
+/// where a book leans on the next without knocking it over, the hand points at the book to tap
+/// to nudge it on. Tapping or touching and holding a book, before the push, while the chain
+/// falls, or once the books lie gathered, lifts it out of the chain to its details over the
+/// darkened scene, as the Desk scene does (`LiftedDetails`), while the chain holds still, and
+/// **Back** sets it down exactly where it lay (see `DominoScene`). The books are never thrown:
+/// they are arranged. With Reduce Motion on, or when the scene cannot lift the book, `open`
+/// pushes the details instead, and the chain is as the reader left it on return.
 /// **Camera** in the desk's options menu chooses how the camera films the chain
 /// (`DominoCameraMode`). Pinch to zoom, and drag to look along the path; either takes the
-/// camera over until the next push. **Set up again** stands every book again.
+/// camera over until the next push. **Set up again** sets every book up again from where it
+/// lies.
 /// Collisions play taps and, while the desk's **Sounds** is on, knocks (`ImpactFeedback`).
 /// Once the books have gathered, **Share** offers the run's video, which the scene recorded as
 /// it played (`DominoRecorder`), and its last frame, through the share sheet; without a
 /// recording, it offers an image of the view.
 ///
-/// The scene's view lives only while Desk is on screen (`DeskSceneView`), so a hidden tab runs
-/// no frame loop; the scene keeps its books, so the chain is as the reader left it on return,
+/// The scene (`DeskScenes.dominoes`) draws in the desk's view, which lives only while Desk is
+/// on screen (`DeskSceneView`), so a hidden tab runs no frame loop, and this view lays the
+/// gestures, controls, heading, and details over it. The scene keeps its books, so the chain is
+/// as the reader left it on return,
 /// standing or fallen. Leaving stops the haptic and audio engines, and leaving other than for
 /// details, such as for another tab, puts a lifted book back at once. A memory warning while
 /// the tab is hidden frees the books and textures, and they stand again on return. While a
@@ -35,6 +40,8 @@ struct DominoesView: View {
     let books: [CloudBook]
     /// The name of the books' time frame.
     let title: String
+    /// The desk's scenes, whose dominoes this view shows.
+    let desk: DeskScenes
     /// The details of a book lifted out of the chain, which the desk's bar also reads.
     let details: LiftedDetails
     let open: (CloudBook) -> Void
@@ -46,12 +53,9 @@ struct DominoesView: View {
     @AppStorage("BookwormsThreeDSounds") private var sounds = true
     /// Set by **Camera** in the desk's options menu.
     @AppStorage("BookwormsDominoCamera") private var cameraMode = DominoCameraMode.overview
-    @State private var scene = DominoScene()
     @State private var viewport: PileViewport?
     /// The scene's frame in global coordinates, which the details' book frame converts from.
     @State private var canvas = CGRect.zero
-    /// Counts **Set up again** presses; each stands the books again.
-    @State private var generation = 0
     /// Set while pushed details cover the chain, or while the lifted book's details wait for
     /// the reader to return from the Share tab, so leaving keeps it.
     @State private var showsBook = false
@@ -74,165 +78,162 @@ struct DominoesView: View {
         let viewport: PileViewport?
     }
 
+    private var scene: DominoScene { desk.dominoes }
+
     var body: some View {
-        DeskSceneView { view in
-            scene.attach(to: view)
-            if PileSnapshotRenderer.isRendering { scene.detach() }
-        }
-        // A SwiftUI layer takes the touches: gestures on the hosted view would not fire.
-        .overlay {
-            Color.clear
-                .contentShape(.rect)
-                .gesture(touchBook)
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 0)
-                        .updating($touch) { value, touch, _ in
-                            touch = value.startLocation
+        // A SwiftUI layer over the desk's view takes the touches: gestures on the hosted view
+        // would not fire.
+        Color.clear
+            .contentShape(.rect)
+            .gesture(touchBook)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .updating($touch) { value, touch, _ in
+                        touch = value.startLocation
+                    }
+            )
+            .simultaneousGesture(moveCamera)
+            .allowsHitTesting(details.lift == nil)
+            .onGeometryChange(for: CGRect.self) {
+                $0.frame(in: .global)
+            } action: {
+                canvas = $0
+            }
+            .ignoresSafeArea()
+            .accessibilityElement()
+            .accessibilityLabel("Dominoes of \(count)")
+            .accessibilityValue("\(title). \(cobwebs)\(status)")
+            .accessibilityHint(
+                "Tap a book for its details. To go through books one at a time, open Library."
+            )
+            .accessibilityActions {
+                if scene.status.phase.waitsForPush {
+                    Button("Push the next book") { scene.pushNext() }
+                }
+                Button("Set up again") { desk.setUpDominoesAgain() }
+            }
+            .overlay { heading }
+            .settingUp(scene.loading.isLoading)
+            .modifier(
+                LiftedDetailsOverlay(details: details, scene: scene, canvas: canvas) {
+                    showsBook = true
+                }
+            )
+            // Outside `ignoresSafeArea`, the proxy reports the safe area's size and the insets the
+            // view extends past.
+            .onGeometryChange(for: PileViewport.self) { proxy in
+                let insets = proxy.safeAreaInsets
+                return PileViewport(
+                    size: CGSize(
+                        width: proxy.size.width + insets.leading + insets.trailing,
+                        height: proxy.size.height + insets.top + insets.bottom),
+                    insets: insets)
+            } action: {
+                viewport = $0
+                desk.viewport = $0
+            }
+            .task(
+                id: SetUpRequest(
+                    ids: books.map(\.id), generation: desk.dominoGeneration, viewport: viewport)
+            ) {
+                guard let viewport else { return }
+                let generation = desk.dominoGeneration
+                scene.planSetUp(books, generation: generation, viewport: viewport)
+                // A new chain, such as one without the lifted book, removed it.
+                if let lift = details.lift, scene.lifter.liftedID != lift.book.id {
+                    details.putBack(scene)
+                }
+                await scene.setUp(books, generation: generation, viewport: viewport, model: model)
+                #if DEBUG
+                    await details.openDebugBook(in: books, scene: scene) { show($0) }
+                #endif
+            }
+            .onAppear {
+                showsBook = false
+                isShown = true
+            }
+            .onDisappear {
+                isShown = false
+                scene.endCameraMove()
+                scene.recorder.interrupt()
+                // `onChange(of: playsFeedback)` does not run for a view that is being removed.
+                scene.feedback.stop()
+                if !showsBook { details.putBack(scene) }
+            }
+            // Leaves the view nothing to draw while a pile image renders, in whichever tab, and
+            // puts the scene back when it ends.
+            .onChange(of: PileSnapshotRenderer.isRendering) { _, isRendering in
+                if isRendering {
+                    details.putBack(scene)
+                    scene.detach()
+                } else {
+                    scene.reattach()
+                }
+            }
+            // The books and their textures are the chain's only large memory; a hidden chain gives
+            // them up under pressure and stands again on return.
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: UIApplication.didReceiveMemoryWarningNotification)
+            ) { _ in
+                guard !isShown else { return }
+                details.putBack(scene)
+                scene.release()
+            }
+            .onChange(of: sounds, initial: true) { scene.feedback.playsSounds = sounds }
+            // Keeps the haptic and audio engines only while collisions can be seen.
+            .onChange(of: playsFeedback, initial: true) {
+                if playsFeedback { scene.feedback.start() } else { scene.feedback.stop() }
+            }
+            .onChange(of: reduceMotion, initial: true) { scene.setReduceMotion(reduceMotion) }
+            .onChange(of: cameraMode, initial: true) { old, new in
+                scene.setCameraMode(new, blends: old != new)
+            }
+            .onChange(of: movesCamera) { if !movesCamera { scene.endCameraMove() } }
+            .onChange(of: scene.status.phase) {
+                // Physics runs on under details, which VoiceOver reads instead.
+                guard isShown, details.lift == nil else { return }
+                switch scene.status.phase {
+                case .stalled, .done, .finished:
+                    AccessibilityNotification.Announcement(status).post()
+                default: break
+                }
+            }
+            // The recording takes the view's layout and heading as the chain stands.
+            .onChange(of: recordingLayout, initial: true) { _, layout in
+                scene.recorder.layout = layout
+            }
+            // iOS may stop the hardware encoder in the background.
+            .onChange(of: scenePhase) {
+                if scenePhase == .background { scene.recorder.interrupt() }
+            }
+            .onChange(of: scene.recorder.isRecording) {
+                guard !scene.recorder.isRecording, let waiting = waitingShare else { return }
+                waitingShare = nil
+                share(waiting)
+            }
+            .toolbar {
+                if details.lift == nil {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Set up again", systemImage: "arrow.counterclockwise") {
+                            desk.setUpDominoesAgain()
                         }
-                )
-                .simultaneousGesture(moveCamera)
-        }
-        .allowsHitTesting(details.lift == nil)
-        .onGeometryChange(for: CGRect.self) {
-            $0.frame(in: .global)
-        } action: {
-            canvas = $0
-        }
-        .ignoresSafeArea()
-        .accessibilityElement()
-        .accessibilityLabel("Dominoes of \(count)")
-        .accessibilityValue("\(title). \(cobwebs)\(status)")
-        .accessibilityHint("To go through books one at a time, open Library.")
-        .accessibilityActions {
-            if scene.status.phase.waitsForPush {
-                Button("Push the next book") { scene.pushNext() }
-            }
-            Button("Set up again") { generation += 1 }
-        }
-        .overlay { heading }
-        .settingUp(scene.loading.isLoading)
-        .modifier(
-            LiftedDetailsOverlay(details: details, scene: scene, canvas: canvas) {
-                showsBook = true
-            }
-        )
-        // Outside `ignoresSafeArea`, the proxy reports the safe area's size and the insets the
-        // view extends past.
-        .onGeometryChange(for: PileViewport.self) { proxy in
-            let insets = proxy.safeAreaInsets
-            return PileViewport(
-                size: CGSize(
-                    width: proxy.size.width + insets.leading + insets.trailing,
-                    height: proxy.size.height + insets.top + insets.bottom),
-                insets: insets)
-        } action: {
-            viewport = $0
-        }
-        .task(id: SetUpRequest(ids: books.map(\.id), generation: generation, viewport: viewport)) {
-            guard let viewport else { return }
-            scene.planSetUp(books, generation: generation, viewport: viewport)
-            // A new chain, such as one without the lifted book, removed it.
-            if let lift = details.lift, scene.lifter.liftedID != lift.book.id {
-                details.putBack(scene)
-            }
-            await scene.setUp(books, generation: generation, viewport: viewport, model: model)
-            #if DEBUG
-                await details.openDebugBook(in: books, scene: scene) { show($0) }
-            #endif
-        }
-        .onAppear {
-            showsBook = false
-            isShown = true
-        }
-        .onDisappear {
-            isShown = false
-            scene.endCameraMove()
-            scene.recorder.interrupt()
-            // `onChange(of: playsFeedback)` does not run for a view that is being removed.
-            scene.feedback.stop()
-            if !showsBook { details.putBack(scene) }
-        }
-        // Leaves the view nothing to draw while a pile image renders, in whichever tab, and
-        // puts the scene back when it ends.
-        .onChange(of: PileSnapshotRenderer.isRendering) { _, isRendering in
-            if isRendering {
-                details.putBack(scene)
-                scene.detach()
-            } else {
-                scene.reattach()
-            }
-        }
-        // The books and their textures are the chain's only large memory; a hidden chain gives
-        // them up under pressure and stands again on return.
-        .onReceive(
-            NotificationCenter.default.publisher(
-                for: UIApplication.didReceiveMemoryWarningNotification)
-        ) { _ in
-            guard !isShown else { return }
-            details.putBack(scene)
-            scene.release()
-        }
-        .onChange(of: sounds, initial: true) { scene.feedback.playsSounds = sounds }
-        // Keeps the haptic and audio engines only while collisions can be seen.
-        .onChange(of: playsFeedback, initial: true) {
-            if playsFeedback { scene.feedback.start() } else { scene.feedback.stop() }
-        }
-        .onChange(of: reduceMotion, initial: true) { scene.setReduceMotion(reduceMotion) }
-        .onChange(of: cameraMode, initial: true) { old, new in
-            scene.setCameraMode(new, blends: old != new)
-        }
-        .onChange(of: movesCamera) { if !movesCamera { scene.endCameraMove() } }
-        .onChange(of: scene.status.phase) {
-            // Physics runs on under details, which VoiceOver reads instead.
-            guard isShown, details.lift == nil else { return }
-            switch scene.status.phase {
-            case .stalled, .done, .finished:
-                AccessibilityNotification.Announcement(status).post()
-            default: break
-            }
-        }
-        // The recording takes the view's layout and heading as the chain stands.
-        .onChange(of: recordingLayout, initial: true) { _, layout in
-            scene.recorder.layout = layout
-        }
-        // iOS may stop the hardware encoder in the background.
-        .onChange(of: scenePhase) {
-            if scenePhase == .background { scene.recorder.interrupt() }
-        }
-        .onChange(of: scene.recorder.isRecording) {
-            guard !scene.recorder.isRecording, let waiting = waitingShare else { return }
-            waitingShare = nil
-            share(waiting)
-        }
-        .toolbar {
-            if details.lift == nil {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Set up again", systemImage: "arrow.counterclockwise") {
-                        generation += 1
+                    }
+                    // The run's video and image, once the books have gathered.
+                    if scene.status.phase == .finished {
+                        ToolbarItem(placement: .topBarTrailing) { shareMenu }
                     }
                 }
-                // The run's video and image, once the books have gathered.
-                if scene.status.phase == .finished {
-                    ToolbarItem(placement: .topBarTrailing) { shareMenu }
-                }
             }
-        }
-        .shareSheet($files)
-        // Outside the viewport reading, so the path starts below the button, which hides with
-        // the other controls while a lifted book's details show.
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if details.lift == nil {
-                FrameChip(title: title, shown: chainLength, total: books.count)
-            }
-        }
+            .shareSheet($files)
     }
 
     /// The heading over the gathered books, in the share images' style, once every book lies
     /// in the spread; it fades in, and stays until **Set up again**.
     @ViewBuilder private var heading: some View {
         if scene.status.phase == .finished, details.lift == nil, let viewport {
-            // The overlay lies within the safe area, below the time frame button and above the
-            // tab bar, so the card needs no insets of its own.
+            // The overlay lies within the safe area, below the bar and above the tab bar, so
+            // the card needs no insets of its own.
             DominoFinaleCard(
                 title: title, count: books.count, pages: DominoFinaleCard.pages(of: books),
                 scale: viewport.size.width / ShareAspect.story.size.width,
@@ -337,9 +338,9 @@ struct DominoesView: View {
     /// stands.
     private var count: String { FrameChip.books(chainLength, of: books.count) }
 
-    /// A tap pushes the chain on or lifts a book it has passed to its details (see
-    /// `DominoScene.tap(at:in:)`); touching and holding lifts any book. Both find the book with
-    /// the scene's own ray, which also finds a standing book's glow around it.
+    /// A tap on the hand pushes the chain on, and a tap on a book lifts it to its details (see
+    /// `DominoScene.tap(at:in:)`); touching and holding a book lifts it too. Both find the book
+    /// with the scene's own ray.
     private var touchBook: some Gesture {
         LongPressGesture(minimumDuration: 0.5)
             .exclusively(before: SpatialTapGesture())

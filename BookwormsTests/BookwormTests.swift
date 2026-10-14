@@ -332,9 +332,4 @@ final class BookwormTests: XCTestCase {
         XCTAssertEqual(BookwormLayout.caption(books: 39, pages: 640), "Ate 39 books · 640 pages")
         XCTAssertEqual(BookwormLayout.caption(books: 2, pages: 0), "Ate 2 books")
     }
-
-    func testThreeDOffersTheBookworm() {
-        XCTAssertEqual(ThreeDView.bookworm.title, "Bookworm")
-        XCTAssertEqual(ThreeDView(rawValue: "bookworm"), .bookworm)
-    }
 }

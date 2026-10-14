@@ -13,6 +13,11 @@ import UIKit
 ///
 /// Scene units are decimeters, but RealityKit treats them as meters, so the lamp's intensity
 /// grows with the square of its distance in those units to keep the pool equally bright.
+///
+/// The table reaches far past the pool, and its wood repeats every `tile` units, so a scene can
+/// move its books and camera by whole tiles without the table showing any change (see
+/// `DominoSetup.offset(of:aspect:)`). One stage can serve two scenes in turn: each puts `root`
+/// under its own root while it shows (see `DeskScenes`).
 @MainActor
 final class DeskStage {
     /// The table, lights, and dust.
@@ -25,6 +30,13 @@ final class DeskStage {
     private let dust = Entity()
     private var isBuilt = false
     private var environment: Task<Void, Never>?
+    /// The middle and radius of the lamp's pool of light on the table.
+    private(set) var pool: (center: SIMD3<Float>, radius: Float) = (.zero, 1)
+
+    /// The distance at which the table's wood texture repeats, in units.
+    nonisolated static let tile: Float = 15
+    /// The table's width and depth, in units: a whole number of `tile`s.
+    nonisolated static let tableSize: Float = 180
 
     /// The lamp's color: an incandescent bulb's warm white, about 2700 K.
     static let lampColor = UIColor(red: 1, green: 0.78, blue: 0.55, alpha: 1)
@@ -60,6 +72,15 @@ final class DeskStage {
     /// Moves the lamp so its pool of light covers a circle of `radius` around `center` on the
     /// table, and spreads the dust over it. The table and the room's light stay as they are.
     func aim(pool center: SIMD3<Float>, radius: Float) {
+        moveLamp(pool: center, radius: radius)
+        dust.components.set(Self.dustMotes(radius: radius))
+    }
+
+    /// Moves the lamp so its pool of light covers a circle of `radius` around `center`, as
+    /// `aim(pool:radius:)` does, and moves the dust along without starting it over, for a pool
+    /// that moves from frame to frame.
+    func moveLamp(pool center: SIMD3<Float>, radius: Float) {
+        pool = (center, radius)
         let placement = Self.lampPlacement(pool: center, radius: radius)
         lamp.light = SpotLightComponent(
             color: Self.lampColor, intensity: 7e6 * pow(placement.distance / 19, 2),
@@ -77,7 +98,6 @@ final class DeskStage {
         shadow.lightSize = 1.5
         lamp.shadow = shadow
         lamp.look(at: placement.aim, from: placement.position, relativeTo: nil)
-        dust.components.set(Self.dustMotes(radius: radius))
         dust.position = center + [0, 3.5, 0]
     }
 
@@ -163,13 +183,16 @@ final class DeskStage {
             sampler.mipFilter = .linear
             sampler.maxAnisotropy = 8
             material.baseColor.texture = .init(texture, sampler: .init(sampler))
-            // One 1024-pixel tile spans 15 units (1.5 meters) of the 90-unit table.
-            material.textureCoordinateTransform = .init(scale: [6, 6])
+            // One 1024-pixel tile spans `tile` units (1.5 meters) of the table.
+            let tiles = Self.tableSize / Self.tile
+            material.textureCoordinateTransform = .init(scale: [tiles, tiles])
         }
-        let table = ModelEntity(mesh: .generatePlane(width: 90, depth: 90), materials: [material])
+        let size = Self.tableSize
+        let table = ModelEntity(
+            mesh: .generatePlane(width: size, depth: size), materials: [material])
         table.components.set(
             CollisionComponent(shapes: [
-                ShapeResource.generateBox(width: 90, height: 2, depth: 90)
+                ShapeResource.generateBox(width: size, height: 2, depth: size)
                     .offsetBy(translation: [0, -1, 0])
             ]))
         table.components.set(

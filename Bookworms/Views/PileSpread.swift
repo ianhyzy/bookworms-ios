@@ -48,9 +48,13 @@ struct PileSpread: Sendable {
     /// When the rows had to move apart to show every cover, the books are laid out again with
     /// rows that much farther apart from the start, so the frame's shape, not the moves, still
     /// decides how many rows there are.
+    ///
+    /// `last`, the ID of one of the books, makes that book go down last, in a place where no
+    /// book rests on it (see `arrange(_:in:seed:rowPitch:last:)`), as the dominoes' finale needs
+    /// for the last book read. Without it, the seed alone decides the order.
     init(
         _ books: [(book: CloudBook, shape: BookShape)], in rect: CGRect, of size: CGSize,
-        seed: UInt64
+        seed: UInt64, last: Int? = nil
     ) {
         guard !books.isEmpty else {
             slots = []
@@ -60,13 +64,14 @@ struct PileSpread: Sendable {
         }
         let region = Self.region(rect, of: size)
         var result = Self.uncover(
-            Self.arrange(books, in: region, seed: seed, rowPitch: Self.rowPitch), in: rect,
-            of: size)
+            Self.arrange(books, in: region, seed: seed, rowPitch: Self.rowPitch, last: last),
+            in: rect, of: size)
         if result.widened > 0.01 {
             let low = Self.rowPitch.lowerBound + result.widened
             let pitch = low...(Self.rowPitch.upperBound + result.widened)
             result = Self.uncover(
-                Self.arrange(books, in: region, seed: seed, rowPitch: pitch), in: rect, of: size)
+                Self.arrange(books, in: region, seed: seed, rowPitch: pitch, last: last), in: rect,
+                of: size)
         }
         slots = result.slots
         shapes = result.pieces.map(\.shape)
@@ -209,9 +214,12 @@ struct PileSpread: Sendable {
     /// Those rows take the thinnest books, give or take a size, so the books resting on them lie
     /// nearly flat. The seed decides which books share a row, their order, shifts, and turns, and,
     /// for an even number of rows, which rows go down first.
+    ///
+    /// The book with ID `last`, if any, joins the rows that go down second, across whose books
+    /// nothing rests, or the only rows there are, and goes down after every other book.
     static func arrange(
         _ books: [(book: CloudBook, shape: BookShape)], in region: PileTray, seed: UInt64,
-        rowPitch: ClosedRange<Float> = rowPitch
+        rowPitch: ClosedRange<Float> = rowPitch, last: Int? = nil
     ) -> [Piece] {
         let count = books.count
         let width = books.map(\.shape.size.x).reduce(0, +) / Float(count)
@@ -301,12 +309,13 @@ struct PileSpread: Sendable {
         let room = zip(rows, layers).map { row, layer in (row.span + width, layer) }
         let share =
             room.filter { $0.1 == 0 }.map(\.0).reduce(0, +) / room.map(\.0).reduce(0, +)
+        // The book that goes down last comes after the rest, so it joins the second rows.
         let thinnest = shuffled.sorted {
             func thickness(_ piece: Piece) -> Float {
                 piece.shape.size.z > thickBook ? piece.shape.size.z : 0
             }
-            return (thickness($0), key($0.book.id, 37).0, $0.book.id)
-                < (thickness($1), key($1.book.id, 37).0, $1.book.id)
+            return ($0.book.id == last ? 1 : 0, thickness($0), key($0.book.id, 37).0, $0.book.id)
+                < ($1.book.id == last ? 1 : 0, thickness($1), key($1.book.id, 37).0, $1.book.id)
         }
         let widths = thinnest.map(\.shape.size.x)
         var lower = 0
@@ -375,7 +384,11 @@ struct PileSpread: Sendable {
         return
             placed.sorted {
                 let (first, second) = (key($0.piece.book.id, 41), key($1.piece.book.id, 41))
-                return ($0.layer, first.0, first.1) < ($1.layer, second.0, second.1)
+                let (isLast, otherIsLast) = (
+                    $0.piece.book.id == last ? 1 : 0, $1.piece.book.id == last ? 1 : 0
+                )
+                return ($0.layer, isLast, first.0, first.1)
+                    < ($1.layer, otherIsLast, second.0, second.1)
             }
             .map(\.piece)
     }

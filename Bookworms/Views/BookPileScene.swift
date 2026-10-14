@@ -121,6 +121,22 @@ struct PileCamera: Equatable {
     }
 }
 
+extension PileCamera {
+    /// The camera with the eye, turn, and pitch of `transform`, looking at the table under the
+    /// middle of its view, or at `fallback` for a view that does not meet the table. It leaves
+    /// out any roll, and stays within the zoom range's top.
+    init(matching transform: Transform, fallback: SIMD3<Float> = .zero) {
+        let forward = transform.rotation.act([0, 0, -1])
+        let target =
+            Self.intersect((transform.translation, forward), height: 0) ?? fallback
+        let zoom = Self.distance / max(simd_distance(target, transform.translation), 1)
+        self.init(
+            target: [target.x, 0, target.z], yaw: atan2(-forward.x, -forward.z),
+            zoom: min(zoom, Self.zoomRange.upperBound),
+            pitch: asin(min(max(-forward.y, -1), 1)))
+    }
+}
+
 /// The part of the table the books stay on, with an invisible wall along each edge.
 ///
 /// It is a trapezoid, symmetric about x = 0, that the default camera sees between the
@@ -512,6 +528,13 @@ enum PileLayout {
     }
 }
 
+/// Whether the pile still has books to drop, kept apart from the scene so that views update
+/// only when it changes.
+@MainActor @Observable
+final class PileStatus {
+    fileprivate(set) var isDropping = false
+}
+
 /// The pile's RealityKit content: the desk and its lamp (`DeskStage`), invisible walls and
 /// ceiling, and one rigid body per book (`BookFactory`).
 ///
@@ -526,10 +549,17 @@ enum PileLayout {
 /// While it follows motion (`setTilt`), the pile tilts as `PileTilt` says, and a hard shake
 /// throws the books. In **Phone is the box**, the box's walls and glass (`PileBox`) close once
 /// nothing waits to fall, and gravity follows the phone while they are closed.
+///
+/// The live Desk shares its desk and book parts with the dominoes (`DeskScenes`): `handOff()`
+/// gives the dominoes the books as they lie, and `adopt(_:camera:books:tidy:periods:generation:
+/// viewport:)` takes them back, wherever they lie, as the desk's arrangement until the next drop.
 @MainActor
 final class BookPileScene {
     /// The scene root, which runs the physics simulation.
     let root = Entity()
+    /// Whether a drop still has books to drop, kept apart from the scene so that views update
+    /// only when it changes.
+    let status = PileStatus()
     /// Whether the device reports motion, which tilt and shaking need. The Simulator does not,
     /// unless a Debug build fakes it with `-BookwormsPileGravity`.
     static let canTilt: Bool = {
@@ -550,11 +580,17 @@ final class BookPileScene {
     /// Set from a new pile's plan until its first books fall (see `planDrop`).
     let loading = SceneLoading()
     private let factory: BookFactory
-    private let stage = DeskStage()
+    private let stage: DeskStage
     private let shelf = Entity()
     private let walls = Entity()
     private lazy var motion = CMMotionManager()
     private var view = PileCamera()
+    /// The view the camera rests at, from which it zooms in and to which a lifted book's flight
+    /// takes it, keeping the reader's turn: the default camera, or, for books the dominoes
+    /// handed back, the view they were handed back in, until the next drop.
+    private var home = PileCamera()
+    /// Whether the books are the dominoes' handed back (`adopt`), rather than a drop's.
+    private var isAdopted = false
     private var aspect: Float = 0.5
     private var tray: PileTray?
     private var cameraMove: (start: PileCamera, focus: SIMD3<Float>)?
@@ -643,11 +679,14 @@ final class BookPileScene {
     private static let heldGroup = CollisionGroup(rawValue: 1 << 2)
 
     /// Creates an empty pile. `textureScale` multiplies the texture sizes, for still images that
-    /// frame a few books closely; their GPU memory grows with its square.
-    init(textureScale: CGFloat = 1) {
-        factory = BookFactory(textureScale: textureScale)
+    /// frame a few books closely; their GPU memory grows with its square. The live Desk passes
+    /// the `factory` and `stage` it shares with the dominoes, and hands covers that arrive late
+    /// to `retexture(_:cover:)` itself.
+    init(textureScale: CGFloat = 1, factory: BookFactory? = nil, stage: DeskStage? = nil) {
+        self.factory = factory ?? BookFactory(textureScale: textureScale)
+        self.stage = stage ?? DeskStage()
         lifter = BookLifter(
-            root: root, camera: camera, factory: factory, feedback: feedback,
+            root: root, camera: camera, factory: self.factory, feedback: feedback,
             passes: Self.wallGroup)
         var simulation = PhysicsSimulationComponent()
         simulation.gravity = gravity
@@ -658,17 +697,24 @@ final class BookPileScene {
             fieldOfViewOrientation: .vertical)
         camera.transform = view.transform
         root.addChild(camera)
-        root.addChild(stage.root)
+        root.addChild(self.stage.root)
         root.addChild(shelf)
         root.addChild(calendar.label)
-        factory.coverArrived = { [weak self] id, material in self?.retexture(id, cover: material) }
+        if factory == nil {
+            self.factory.coverArrived = { [weak self] id, material in
+                self?.retexture(id, cover: material)
+            }
+        }
     }
 
     /// Shows the scene in `view`, and calls `update` every frame and plays collisions through
     /// `feedback` while `root` is active there. A thrown-back book's first hit lands it instead
     /// (see `BookLifter.handle`). Each view gets an anchor of its own under which the root
-    /// hangs, as `DominoScene.attach` explains.
+    /// hangs, as `DominoScene.attach` explains, and the desk comes under the root, from the
+    /// dominoes if they had it.
     func attach(to view: ARView) {
+        root.addChild(stage.root)
+        holder?.removeFromParent()
         let holder = AnchorEntity(world: .zero)
         holder.addChild(root)
         view.scene.addAnchor(holder)
@@ -861,6 +907,7 @@ final class BookPileScene {
             loading.isLoading = !plan.isEmpty
         }
         planKey = key
+        updateStatus()
         // Opens the box before the new books spawn above it.
         updateBox()
     }
@@ -923,6 +970,7 @@ final class BookPileScene {
                     isLast: period == groups.count - 1, facing: view)
             }
             spawned += wave.count
+            updateStatus()
             lastWave = .now
             if loading.isLoading {
                 // Keeps a spinner that has shown until the first books can show, so it fades
@@ -961,6 +1009,8 @@ final class BookPileScene {
         stage.setLampColor(nil)
         factory.release(keeping: ids)
         view = PileCamera()
+        home = PileCamera()
+        isAdopted = false
         #if DEBUG
             // Simulator screenshot hooks: `-BookwormsPileZoom <1...2.5>` and
             // `-BookwormsPileYaw <radians>` set the camera for each drop.
@@ -979,6 +1029,28 @@ final class BookPileScene {
         reset(keeping: [])
         plan = []
         planKey = nil
+        updateStatus()
+    }
+
+    /// Removes the books but keeps their parts, which the dominoes share, once the pile has
+    /// handed its books to the dominoes. The next `fill` drops the books again, unless `adopt`
+    /// takes them back first.
+    func removeBooks() {
+        endDrag()
+        lifter.reset()
+        shelf.children.removeAll()
+        bookIDs = [:]
+        falling = [:]
+        plan = []
+        planKey = nil
+        spawned = 0
+        updateStatus()
+    }
+
+    /// Notes whether books wait to drop.
+    private func updateStatus() {
+        let dropping = spawned < plan.count
+        if status.isDropping != dropping { status.isDropping = dropping }
     }
 
     /// Shows the pile through `camera`.
@@ -988,7 +1060,7 @@ final class BookPileScene {
     }
 
     /// Puts a cover that arrived after its book was built onto the book in the pile.
-    private func retexture(_ id: Int, cover: any RealityKit.Material) {
+    func retexture(_ id: Int, cover: any RealityKit.Material) {
         for case let book as ModelEntity in shelf.children where bookIDs[book.id] == id {
             book.children.first?.components[ModelComponent.self]?
                 .materials[
@@ -1224,15 +1296,24 @@ final class BookPileScene {
             cameraMove = (view, PileCamera.intersect(ray, height: 0) ?? view.target)
         }
         guard let move = cameraMove else { return }
-        view.zoom = PileCamera.zoomRange.clamp(move.start.zoom * Float(magnification))
+        let zooms =
+            min(home.zoom, PileCamera.zoomRange.lowerBound)...PileCamera.zoomRange.upperBound
+        view.zoom = zooms.clamp(move.start.zoom * Float(magnification))
         if tilt != .box { view.yaw = move.start.yaw - Float(rotation.radians) }
-        // Keeps the focus point in place while zooming. Zoomed out fully, the camera returns
-        // to the tray's center, and zoomed in it may move only as far as the tray reaches.
+        // Keeps the focus point in place while zooming. Zoomed out to the home view, the
+        // camera returns to its target, and zoomed in it may move only as far as the tray
+        // reaches.
         let target = move.focus + (move.start.target - move.focus) * move.start.zoom / view.zoom
-        let reach = 1 - 1 / view.zoom
+        let reach = max(0, 1 - home.zoom / view.zoom)
+        let middle = home.target
         view.target = [
-            min(max(target.x, -tray.farHalfWidth * reach), tray.farHalfWidth * reach), 0,
-            min(max(target.z, tray.farZ * reach), tray.nearZ * reach),
+            min(
+                max(target.x, middle.x + (-tray.farHalfWidth - middle.x) * reach),
+                middle.x + (tray.farHalfWidth - middle.x) * reach),
+            0,
+            min(
+                max(target.z, middle.z + (tray.farZ - middle.z) * reach),
+                middle.z + (tray.nearZ - middle.z) * reach),
         ]
         camera.transform = view.transform
     }
@@ -1283,10 +1364,88 @@ final class BookPileScene {
     /// its pile textures, and the camera and veil as they were.
     func dropLifted() { lifter.drop(aim: aim) }
 
-    /// Moves the camera `share` of the way from the reader's camera to its default framing,
-    /// with the reader's turn, for a book's flight.
+    /// Moves the camera `share` of the way from the reader's camera to the home view, with the
+    /// reader's turn, for a book's flight.
     private func aim(_ share: Float) {
-        look(through: readerCamera.mixed(with: PileCamera(yaw: readerCamera.yaw), share))
+        var rest = home
+        rest.yaw = readerCamera.yaw
+        look(through: readerCamera.mixed(with: rest, share))
+    }
+
+    // MARK: Handing books over
+
+    /// The books as they lie, with how they move, and the camera's view, for the dominoes to set
+    /// up from (see `DeskScenes`). A held book is let go, and a lifted one put back, first.
+    func handOff() -> DeskHandover {
+        endDrag()
+        dropLifted()
+        let books = shelf.children.compactMap { entity -> DeskBook? in
+            guard let id = bookIDs[entity.id] else { return nil }
+            return DeskBook(
+                id: id, transform: entity.transform,
+                motion: entity.components[PhysicsMotionComponent.self] ?? PhysicsMotionComponent())
+        }
+        return DeskHandover(books: books, camera: camera.transform)
+    }
+
+    /// Takes the books of `handover` back from the dominoes as the desk's arrangement, wherever
+    /// they lie: they stay where they are, moving as they moved, in tidy stacks' stillness when
+    /// `tidy`. Walls go up along what the view shows, and around any book outside it, and the
+    /// camera takes the handover's view, which stays its home, the view it zooms out to, until
+    /// the next drop. The box of **Phone is the box** stays open meanwhile, since it fits only
+    /// the default view.
+    ///
+    /// The pile's key becomes the one `planDrop` gives for `books`, `tidy`, `periods`, and
+    /// `generation`, so the view's next drop request keeps these books rather than dropping
+    /// them again.
+    func adopt(
+        _ handover: DeskHandover, books: [CloudBook], tidy: Bool, periods: TimeFrame?,
+        generation: Int, viewport: PileViewport
+    ) {
+        build(viewport)
+        guard let fitted = tray else { return }
+        reset(keeping: Set(handover.books.map(\.id)))
+        let byID = Dictionary(books.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        plan = []
+        for handed in handover.books {
+            guard let book = byID[handed.id] else { continue }
+            let slot = PileSlot(book: book, transform: handed.transform)
+            guard let entity = spawn(slot, mode: tidy ? .kinematic : .dynamic) else { continue }
+            if !tidy { entity.components.set(handed.motion) }
+            plan.append(slot)
+        }
+        spawned = plan.count
+        holdsStill = tidy
+        planKey = PlanKey(
+            ids: books.map(\.id), tidy: tidy, periods: tidy ? nil : periods, generation: generation)
+        let camera = PileCamera(matching: handover.camera)
+        // What the handed-over view shows between the bars, which the walls fit for a view that
+        // looks along the table's middle without turning, as the overview and the spread's do.
+        var centered = camera
+        centered.target.x = 0
+        let seen =
+            abs(camera.yaw) < 0.05 && abs(camera.target.x) < 1
+            ? PileTray(viewport: viewport, camera: centered) : nil
+        let room = seen ?? fitted
+        // Walls along what the view shows, and around the books, a little past them, should
+        // any lie outside it.
+        var walls = room
+        if !shelf.children.isEmpty {
+            let bounds = shelf.visualBounds(relativeTo: root)
+            let side = max(abs(bounds.min.x), abs(bounds.max.x)) + PileLayout.reach
+            walls = PileTray(
+                farZ: min(room.farZ, bounds.min.z - PileLayout.reach),
+                nearZ: max(room.nearZ, bounds.max.z + PileLayout.reach),
+                farHalfWidth: max(room.farHalfWidth, side),
+                nearHalfWidth: max(room.nearHalfWidth, side))
+        }
+        build(walls)
+        look(through: camera)
+        home = view
+        isAdopted = true
+        loading.isLoading = false
+        updateStatus()
+        updateBox()
     }
 
     // MARK: Tilt and shake
@@ -1365,7 +1524,7 @@ final class BookPileScene {
     /// screen there. Books lying on the table stay put.
     private func updateBox() {
         let closes =
-            tilt == .box && !holdsStill && !isFlying && spawned == plan.count
+            tilt == .box && !holdsStill && !isAdopted && !isFlying && spawned == plan.count
             && ContinuousClock.now - lastWave > PileLayout.boxDelay
         guard closes != (boxWalls.parent != nil) else { return }
         guard closes else {

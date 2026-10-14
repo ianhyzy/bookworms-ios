@@ -410,6 +410,37 @@ final class BookPileTests: XCTestCase {
         }
     }
 
+    func testALastBookGoesDownLastSoNothingRestsOnIt() {
+        for (aspect, count) in [(ShareAspect.story, 1), (.story, 3), (.story, 40), (.square, 150)] {
+            let layout = PileSnapshotLayout(aspect: aspect, count: count)
+            let books = spreadBooks(count)
+            for last in Set([books[0].book.id, books[count / 2].book.id, books[count - 1].book.id])
+            {
+                let spread = PileSpread(
+                    books, in: layout.pileRect, of: aspect.size, seed: 1, last: last)
+                let label = "\(aspect) \(count) last \(last)"
+                // A book rests only on books before it, so nothing rests on the last.
+                XCTAssertEqual(spread.slots.last?.book.id, last, label)
+                XCTAssertEqual(Set(spread.slots.map(\.book.id)), Set(books.map(\.book.id)), label)
+                // Every cover still shows at least four fifths.
+                let boxes = zip(spread.slots, spread.shapes).map { ($0.transform, $1) }
+                let shares = PileSpread.visibility(
+                    of: boxes, camera: spread.camera, in: layout.pileRect, of: aspect.size,
+                    samples: [24, 32])
+                XCTAssertGreaterThanOrEqual(shares.map(\.share).min() ?? 0, 0.8, label)
+            }
+        }
+        // Without a last book, the seed alone decides, as the share images need.
+        let layout = PileSnapshotLayout(aspect: .portrait, count: 30)
+        XCTAssertEqual(
+            PileSpread(spreadBooks(30), in: layout.pileRect, of: layout.aspect.size, seed: 4)
+                .slots.map(\.transform),
+            PileSpread(
+                spreadBooks(30), in: layout.pileRect, of: layout.aspect.size, seed: 4, last: nil
+            )
+            .slots.map(\.transform))
+    }
+
     func testSpreadIsRepeatableAndShuffleVariesIt() {
         let layout = PileSnapshotLayout(aspect: .portrait, count: 30)
         let books = spreadBooks(30)

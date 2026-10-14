@@ -1,37 +1,64 @@
 import SwiftUI
 
-/// The books in a 3D scene on a desk under a lamp, in the chosen `ThreeDView`: the Desk scene,
-/// which drops them onto the desk to throw around (`BookPileView`), or Dominoes, which stands
-/// them on end and topples them (`DominoesView`).
+/// The books on a desk under a lamp, in one 3D scene (`DeskScenes`): the Desk scene, which drops
+/// them onto the desk to throw around (`BookPileView`), and the dominoes that **Set up
+/// dominoes** turns them into, which stand on end and topple (`DominoesView`). Desk opens on the
+/// Desk scene; **Back to desk** returns to it with the books where they lie.
 ///
 /// The scenes show the read books and current reads finished within their own time frame,
-/// which the button under the bar chooses (`FrameChip`), apart from Library's. Filtering and
+/// which the bar's middle button chooses (`FrameChip`), apart from Library's. Filtering and
 /// sorting happen here when the snapshot or the options change. A tapped book lifts out of the
 /// scene into its details over it (`LiftedDetails`); with Reduce Motion on, or when the scene
 /// cannot lift the book, its details push instead.
 struct DeskView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("BookwormsShelfSort") private var sort = ShelfSort.finished
     @AppStorage("BookwormsShelfDesignedOnly") private var designedOnly = false
-    /// The 3D view the desk shows.
-    @AppStorage("BookwormsThreeDView") private var threeDView = ThreeDView.dominoes
+    /// Whether the pile drops period by period, which **Back to desk** hands on.
+    @AppStorage("BookwormsPileByPeriod") private var dropsByPeriod = false
     /// The scenes' time frame as `TimeFrame.setting` writes it; empty for every book.
     /// `FrameChip` sets it. Until the reader chooses one, the scenes show the current year.
     @AppStorage(TimeFrame.pileSettingKey) private var frameSetting = TimeFrame.defaultPileSetting
     @State private var path: [Int] = []
     /// The book a scene lifted out to show its details, which replace the desk's controls.
     @State private var liftedDetails = LiftedDetails()
+    @State private var desk = DeskScenes()
     @State private var showsAccount = false
 
+    /// The books the desk shows, and the bar's time frame button for them.
+    private struct Shelf {
+        /// The time frame's books, in the desk's order and filter.
+        let books: [CloudBook]
+        /// The books the Desk scene drops, which also stand as the dominoes.
+        let dropped: [CloudBook]
+        let chip: DeskBar.Chip?
+    }
+
     var body: some View {
+        let frame = frame
+        let shelf = shelf(frame: frame)
         NavigationStack(path: $path) {
-            content
+            content(shelf, frame: frame)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background { ShelfPalette.wall.ignoresSafeArea() }
                 .modifier(
                     DeskBar(
-                        liftedDetails: liftedDetails, view: shownViewChoice, frame: frame,
-                        sort: $sort, designedOnly: $designedOnly)
+                        liftedDetails: liftedDetails, desk: desk, chip: shelf.chip, frame: frame,
+                        sort: $sort, designedOnly: $designedOnly,
+                        canSetUp: !shelf.dropped.isEmpty
+                    ) {
+                        switch desk.mode {
+                        case .desk:
+                            desk.setUpDominoes(books: shelf.dropped, reduceMotion: reduceMotion)
+                        case .dominoes:
+                            desk.backToDesk(
+                                books: shelf.dropped, tidy: reduceMotion,
+                                periods: BookPileView.periods(
+                                    byPeriod: dropsByPeriod, reduceMotion: reduceMotion,
+                                    frame: frame))
+                        }
+                    }
                 )
                 .navigationDestination(for: Int.self) { PushedBookDetail(id: $0) }
         }
@@ -42,13 +69,11 @@ struct DeskView: View {
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
     }
 
-    @ViewBuilder private var content: some View {
+    @ViewBuilder private func content(_ shelf: Shelf, frame: TimeFrame?) -> some View {
         if let library = model.library {
-            let frame = frame
-            let books = shownBooks(in: library, frame: frame)
             if !library.books.contains(where: \.hasBeenRead) {
                 NoBooksYetView()
-            } else if books.isEmpty {
+            } else if shelf.books.isEmpty {
                 // Only Designed only empties a scene: a time frame always has books.
                 // Scrolls so that at accessibility sizes the actions stay above the tab bar.
                 ScrollView {
@@ -69,43 +94,34 @@ struct DeskView: View {
                     }
                 }
                 .defaultScrollAnchor(.center, for: .alignment)
-                // Keeps the time frame button, the only way to another period with designed
-                // spines.
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    FrameChip(
-                        title: frame?.title ?? Self.years(of: model.books), shown: 0, total: 0)
-                }
             } else {
-                let title = frame?.title ?? Self.years(of: books)
-                switch shownView {
-                case .pile:
-                    BookPileView(books: books, title: title, frame: frame, details: liftedDetails) {
-                        path.append($0.id)
+                let title = frame?.title ?? Self.years(of: shelf.books)
+                ZStack {
+                    if !desk.hidesView {
+                        DeskSceneView { desk.attach(to: $0) }
+                            .ignoresSafeArea()
+                            .accessibilityHidden(true)
                     }
-                case .dominoes:
-                    DominoesView(books: books, title: title, details: liftedDetails) {
-                        path.append($0.id)
+                    switch desk.mode {
+                    case .desk:
+                        BookPileView(
+                            books: shelf.books, title: title, frame: frame, desk: desk,
+                            details: liftedDetails
+                        ) {
+                            path.append($0.id)
+                        }
+                    case .dominoes:
+                        DominoesView(
+                            books: shelf.dropped, title: title, desk: desk,
+                            details: liftedDetails
+                        ) {
+                            path.append($0.id)
+                        }
                     }
-                case .bookworm:
-                    BookwormView(books: books, title: title)
                 }
             }
         } else {
             NoLibraryView(showsAccount: $showsAccount)
-        }
-    }
-
-    /// The chosen 3D view, or Dominoes when the saved choice is one the app does not offer.
-    private var shownView: ThreeDView {
-        ThreeDView.offered.contains(threeDView) ? threeDView : .dominoes
-    }
-
-    /// Reads `shownView` and saves the reader's choice, for the **Dominoes | Desk** control.
-    private var shownViewChoice: Binding<ThreeDView> {
-        Binding {
-            shownView
-        } set: {
-            threeDView = $0
         }
     }
 
@@ -119,6 +135,20 @@ struct DeskView: View {
         let years = books.compactMap(\.finishedYear)
         guard let first = years.min(), let last = years.max() else { return "My books" }
         return first == last ? String(first) : "\(first)–\(last)"
+    }
+
+    /// The books the desk shows in `frame`, and the time frame button, which shows once the
+    /// library has read books.
+    private func shelf(frame: TimeFrame?) -> Shelf {
+        guard let library = model.library, library.books.contains(where: \.hasBeenRead) else {
+            return Shelf(books: [], dropped: [], chip: nil)
+        }
+        let books = shownBooks(in: library, frame: frame)
+        let dropped = Array(PileLayout.dropped(books, count: BookPileView.maximumBooks))
+        let title = frame?.title ?? Self.years(of: books.isEmpty ? model.books : books)
+        return Shelf(
+            books: books, dropped: dropped,
+            chip: DeskBar.Chip(title: title, shown: dropped.count, total: books.count))
     }
 
     /// The books in the chosen order and filter, and in `frame` when it is set.
@@ -136,20 +166,32 @@ struct DeskView: View {
     }
 }
 
-/// Desk's title and bar: the **Dominoes | Desk** control and the options menu. While a lifted
-/// book's details show, they give way to the details' **Back** and **Share**
-/// (`LiftedDetailsOverlay`).
+/// Desk's bar: the time frame button in the middle and the options menu, which holds **Set up
+/// dominoes** or **Back to desk**. While a lifted book's details show, they give way to the
+/// details' **Back** and **Share** (`LiftedDetailsOverlay`).
 ///
 /// A modifier of its own, so a book's lift and return update only the bar, not the desk's
 /// body, which sorts the library.
 private struct DeskBar: ViewModifier {
+    /// What the time frame button shows: the time frame's name and the books it counts.
+    struct Chip {
+        let title: String
+        let shown: Int
+        let total: Int
+    }
+
     let liftedDetails: LiftedDetails
-    /// The 3D view shown.
-    @Binding var view: ThreeDView
+    let desk: DeskScenes
+    /// The time frame button, or `nil` while there is no time frame to choose.
+    let chip: Chip?
     /// The scenes' time frame, or `nil` for every book, which names the drop by period.
     let frame: TimeFrame?
     @Binding var sort: ShelfSort
     @Binding var designedOnly: Bool
+    /// Whether the desk has books to set up.
+    let canSetUp: Bool
+    /// **Set up dominoes** or **Back to desk**, for the scene that shows.
+    let switchScene: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// How the Desk scene follows the phone's tilt, which `BookPileView` reads.
@@ -163,40 +205,50 @@ private struct DeskBar: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            // Details over the scene show no title, as pushed details do.
+            // Details over the scene show no title, as pushed details do. The time frame button
+            // takes the title's place.
             .navigationTitle(liftedDetails.lift == nil ? "Desk" : "")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if liftedDetails.lift == nil {
-                    ToolbarItem(placement: .principal) {
-                        Picker("Scene", selection: $view) {
-                            ForEach(ThreeDView.offered) { Text($0.title).tag($0) }
+                    if let chip {
+                        ToolbarItem(placement: .principal) {
+                            FrameChip(title: chip.title, shown: chip.shown, total: chip.total)
                         }
-                        .pickerStyle(.segmented)
-                        .fixedSize()
                     }
                     ToolbarItem(placement: .topBarTrailing) { options }
                 }
             }
     }
 
+    private var isDominoes: Bool { desk.mode == .dominoes }
+
     /// The scene's options, and the order and filter where they change the scene's books:
     /// Dominoes stand in finish order whatever the sort (`DominoLayout.chain(_:)`).
     private var options: some View {
         Menu("Desk options", systemImage: "ellipsis") {
             Section {
+                if isDominoes {
+                    Button("Back to desk", systemImage: "arrow.uturn.backward", action: switchScene)
+                } else {
+                    Button("Set up dominoes", systemImage: "books.vertical", action: switchScene)
+                        // The books on the desk set up the chain, so they finish dropping first.
+                        .disabled(!canSetUp || desk.pile.status.isDropping)
+                }
+            }
+            Section {
                 // Reduce Motion keeps the camera still, so it offers no Follow.
-                if view == .dominoes && !reduceMotion {
+                if isDominoes && !reduceMotion {
                     Picker("Camera", systemImage: "video", selection: $dominoCamera) {
                         ForEach(DominoCameraMode.allCases) { Text($0.title).tag($0) }
                     }
                     .pickerStyle(.menu)
                 }
                 Toggle("Sounds", systemImage: "speaker.wave.2", isOn: $sounds)
-                if view == .pile && !reduceMotion {
+                if !isDominoes && !reduceMotion {
                     Toggle(byPeriodTitle, systemImage: "calendar", isOn: $dropsByPeriod)
                 }
-                if view == .pile && BookPileScene.canTilt && !reduceMotion {
+                if !isDominoes && BookPileScene.canTilt && !reduceMotion {
                     Picker("Tilt", systemImage: "gyroscope", selection: $tilt) {
                         ForEach(PileTilt.allCases) { Text($0.title).tag($0) }
                     }
@@ -205,7 +257,7 @@ private struct DeskBar: ViewModifier {
             }
             Section {
                 // The pile drops its first books first, up to its maximum.
-                if view == .pile {
+                if !isDominoes {
                     Picker("Sort by", selection: $sort) {
                         ForEach(ShelfSort.allCases) { Text($0.title).tag($0) }
                     }
@@ -226,12 +278,9 @@ private struct DeskBar: ViewModifier {
     }
 }
 
-/// The scenes' time frame and book count, such as "2025" and "39", in a glass button under
+/// The scenes' time frame and book count, such as "2025" and "39", in a button in the middle of
 /// the navigation bar. The button opens the time frame menu: **All books**, or a **Year** or
 /// **Month** with finished books. Every 3D view shares the choice, and the app saves it.
-///
-/// A view places the button with `safeAreaInset(edge: .top, spacing: 0)` outside its viewport
-/// reading, so its scene frames the books below the button.
 struct FrameChip: View {
     /// The time frame's name, such as "2025", or the years that every book spans.
     let title: String
@@ -247,7 +296,7 @@ struct FrameChip: View {
         Menu {
             options
         } label: {
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 Label(title, systemImage: "calendar")
                 Label(
                     total > shown
@@ -257,17 +306,16 @@ struct FrameChip: View {
                     .imageScale(.small)
                     .foregroundStyle(.secondary)
             }
+            .labelStyle(.titleAndIcon)
             .font(.subheadline.weight(.semibold))
             .monospacedDigit()
             // A long span and a capped count, such as "2009–2026" and "300 of 412", shrink
             // rather than wrap at the largest text size.
             .lineLimit(1)
             .minimumScaleFactor(0.75)
+            .padding(.horizontal, 6)
         }
-        .buttonStyle(.glass)
-        // At least 44 points tall, the minimum touch target.
-        .controlSize(.large)
-        // Stops growing at the largest standard size so accessibility sizes leave the scene its
+        // Stops growing at the largest standard size so accessibility sizes leave the bar its
         // room; the large content viewer shows the text at those sizes.
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .accessibilityShowsLargeContentViewer {
@@ -275,8 +323,6 @@ struct FrameChip: View {
         }
         .accessibilityLabel("Time frame")
         .accessibilityValue("\(title), \(Self.books(shown, of: total))")
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
     }
 
     /// **All books**, and the years and months with finished books, newest first. Choosing one
@@ -316,22 +362,4 @@ struct FrameChip: View {
         if total > shown { return "\(shown.formatted()) of \(total.formatted()) books" }
         return total == 1 ? "1 book" : "\(total.formatted()) books"
     }
-}
-
-/// The scenes Desk can show. Each takes the desk's books within the time frame that all of them
-/// share, and orders them as the view needs. Adding a view takes a case here, titled by its raw
-/// value unless `title` names it, its arm in `DeskView.content`, and an entry in `offered`,
-/// which the **Dominoes | Desk** control lists.
-enum ThreeDView: String, CaseIterable, Identifiable {
-    /// The Desk scene. Its raw value keeps the name saved choices and launch arguments use.
-    case pile
-    case dominoes
-    case bookworm
-
-    /// The views the app shows, Dominoes first and by default. The Bookworm keeps its code but
-    /// is not offered for now.
-    static let offered: [ThreeDView] = [.dominoes, .pile]
-
-    var id: Self { self }
-    var title: String { self == .pile ? "Desk" : rawValue.capitalized }
 }

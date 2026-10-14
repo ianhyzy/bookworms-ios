@@ -265,31 +265,6 @@ final class DominoTests: XCTestCase {
         XCTAssertTrue(DominoPhase.stalled(fallen: 1).waitsForPush)
     }
 
-    func testLiftedBooksStandAgainOnlyUnfallenAndInAFreePlace() {
-        // A book's place in its own frame, its neighbors standing 0.6 units off its covers, and
-        // the book before it fallen into its place.
-        let place = BoundingBox(min: [-0.75, -1.1, -0.15], max: [0.75, 1.1, 0.15])
-        let neighbors = [
-            BoundingBox(min: [-0.75, -1.1, 0.75], max: [0.75, 1.3, 1.05]),
-            BoundingBox(min: [-0.7, -1.1, -1.05], max: [0.7, 0.9, -0.75]),
-        ]
-        let fallen = BoundingBox(min: [-0.75, -1.1, -0.9], max: [0.75, -0.6, 1.0])
-        func stands(_ index: Int, next: Int, _ others: [BoundingBox]) -> Bool {
-            DominoLayout.standsAgain(index: index, next: next, place: place, others: others)
-        }
-        // At or past the front, between standing neighbors: whether or not a push started the
-        // chain, and at the front of a chain that stopped short of it.
-        XCTAssertTrue(stands(3, next: 3, neighbors))
-        XCTAssertTrue(stands(5, next: 3, neighbors))
-        XCTAssertTrue(stands(0, next: 0, []))
-        // A book fallen into its place, or one leaning over it, sends it back thrown.
-        XCTAssertFalse(stands(3, next: 3, neighbors + [fallen]))
-        let leaning = BoundingBox(min: [-0.7, 0.5, -1.2], max: [0.7, 1.6, 0.9])
-        XCTAssertFalse(stands(4, next: 3, [leaning]))
-        // A book the chain had passed is thrown back, even into a free place.
-        XCTAssertFalse(stands(2, next: 3, neighbors))
-    }
-
     func testSetDownDropsAStandingBookIntoItsPlaceFromAbove() throws {
         let plan = DominoLayout.plan(
             DominoLayout.chain((0..<12).map { book($0, day: $0 * 3) }), aspect: 0.5)
@@ -331,6 +306,36 @@ final class DominoTests: XCTestCase {
         }
         // It arrives at rest, so it lands without a bounce.
         XCTAssertLessThan(simd_distance(pose(0.99).translation, place.translation), 0.01)
+    }
+
+    func testSetDownPutsABookBackExactlyWhereItLay() {
+        // A fallen book, tilted where it lies on the next, or one lying in the gathered spread.
+        let tilted = Transform(
+            rotation: simd_quatf(angle: 1.2, axis: simd_normalize([0.3, 0, 1]))
+                * PileLayout.lyingFlat, translation: [2, 0.6, -1])
+        let start = Transform(
+            rotation: simd_quatf(angle: 2, axis: simd_normalize([0.2, 1, 0.4])),
+            translation: [8, 17, 10])
+        let flat = Transform(rotation: PileSpread.upright, translation: [0, 0.15, 3])
+        for (place, rise) in [(tilted, Float(1.2)), (flat, 0.4)] {
+            func pose(_ progress: Float) -> Transform {
+                BookFlight.setDown(from: start, to: place, rise: rise, progress: progress)
+            }
+            XCTAssertLessThan(simd_distance(pose(1).translation, place.translation), 1e-4)
+            XCTAssertEqual(
+                abs(simd_dot(pose(1).rotation.vector, place.rotation.vector)), 1, accuracy: 1e-4)
+            // The last of the way drops straight down into the place, already turned to it.
+            for step in 0...10 {
+                let progress = BookFlight.crossing + (1 - BookFlight.crossing) * Float(step) / 10
+                let shown = pose(progress)
+                XCTAssertEqual(shown.translation.x, place.translation.x, accuracy: 1e-4)
+                XCTAssertEqual(shown.translation.z, place.translation.z, accuracy: 1e-4)
+                XCTAssertGreaterThanOrEqual(shown.translation.y, place.translation.y - 1e-4)
+                XCTAssertEqual(
+                    abs(simd_dot(shown.rotation.vector, place.rotation.vector)), 1,
+                    accuracy: 1e-4)
+            }
+        }
     }
 
     func testBooksDropFromJustAboveTheView() throws {
@@ -381,11 +386,6 @@ final class DominoTests: XCTestCase {
         // However slowly they build, they drop at most 80 milliseconds apart.
         XCTAssertEqual(
             DominoLayout.entryStep(count: 276, perBook: 0.5), DominoLayout.slowestStep)
-    }
-
-    func testThreeDOffersDominoes() {
-        XCTAssertEqual(ThreeDView.dominoes.title, "Dominoes")
-        XCTAssertEqual(ThreeDView(rawValue: "dominoes"), .dominoes)
     }
 
     // MARK: Worm path
