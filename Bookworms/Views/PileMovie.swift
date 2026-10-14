@@ -228,14 +228,38 @@ final class PileMovieWriter {
     nonisolated private static let log = Logger(
         subsystem: "gay.ian.Bookworms.iOS", category: "video")
 
+    /// The writer of a movie's frames and its input, which `encoder(url:width:height:live:)`
+    /// makes on any thread.
+    struct Encoder {
+        fileprivate let writer: AVAssetWriter
+        fileprivate let frames: AVAssetWriterInput.PixelBufferReceiver
+    }
+
     /// Prepares a movie of `width` by `height` pixels at `url`, an `.mp4` file that must not
     /// exist yet. For a `live` recording, the input expects its frames in real time
     /// (`expectsMediaDataInRealTime`), so it takes them as they come rather than pacing them as
-    /// for an offline render.
-    init(url: URL, width: Int, height: Int, live: Bool = false) throws {
+    /// for an offline render, and the writer starts at once (see `start()`).
+    convenience init(url: URL, width: Int, height: Int, live: Bool = false) throws {
+        self.init(
+            url: url,
+            encoder: try Self.encoder(url: url, width: width, height: height, live: live))
+    }
+
+    /// Takes the writer that `encoder(url:width:height:live:)` made for `url`.
+    init(url: URL, encoder: sending Encoder) {
         self.url = url
-        framesURL = url.deletingPathExtension().appendingPathExtension("frames.mov")
-        writer = try AVAssetWriter(outputURL: framesURL, fileType: .mov)
+        framesURL = Self.framesURL(for: url)
+        writer = encoder.writer
+        frames = encoder.frames
+    }
+
+    /// The writer and input of `init(url:width:height:live:)`, made on any thread, so a
+    /// recorder can make a live writer, which can take a tenth of a second or more, away from
+    /// the main actor.
+    nonisolated static func encoder(url: URL, width: Int, height: Int, live: Bool) throws
+        -> sending Encoder
+    {
+        let writer = try AVAssetWriter(outputURL: framesURL(for: url), fileType: .mov)
         let video = AVAssetWriterInput(
             mediaType: .video,
             outputSettings: [
@@ -259,17 +283,26 @@ final class PileMovieWriter {
             ])
         video.expectsMediaDataInRealTime = live
         guard writer.canAdd(video) else { throw PileSnapshotError.drawingFailed }
-        frames = writer.inputPixelBufferReceiver(
+        let frames = writer.inputPixelBufferReceiver(
             for: video,
             pixelBufferAttributes: CVPixelBufferCreationAttributes(
                 pixelFormatType: CVPixelFormatType(rawValue: kCVPixelFormatType_32BGRA),
                 size: CVImageSize(width: width, height: height), compatibility: .metalTexture))
+        if live { try start(writer) }
+        return Encoder(writer: writer, frames: frames)
     }
 
-    /// Starts the frames at time zero.
+    /// The file of the frames alone for a movie at `url`.
+    nonisolated private static func framesURL(for url: URL) -> URL {
+        url.deletingPathExtension().appendingPathExtension("frames.mov")
+    }
+
+    /// Starts the frames at time zero, for a writer that is not `live`.
     ///
     /// - Throws: `PileSnapshotError` when the writer fails to start.
-    func start() throws {
+    func start() throws { try Self.start(writer) }
+
+    nonisolated private static func start(_ writer: AVAssetWriter) throws {
         try writer.start()
         writer.startSession(atSourceTime: .zero)
     }
