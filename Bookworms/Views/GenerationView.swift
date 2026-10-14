@@ -22,14 +22,12 @@ struct GenerationView: View {
                 progress
                 privateCloudCompute
                 Section {
-                    Toggle("Generate while charging", isOn: $generation.generatesWhileCharging)
+                    Toggle(Self.chargingLabel, isOn: $generation.generatesWhileCharging)
                 } footer: {
                     if generation.generatesWhileCharging, let warning = backgroundRefreshWarning {
                         Text(warning)
                     } else {
-                        Text(
-                            "iOS runs generation when this iPhone is charging and idle on a network, typically overnight. The Apple TV picks up new designs through iCloud."
-                        )
+                        Text(Self.chargingFooter)
                     }
                 }
                 librarySource
@@ -76,13 +74,23 @@ struct GenerationView: View {
         }
     }
 
+    #if targetEnvironment(macCatalyst)
+        private static let chargingLabel = "Generate while idle"
+        private static let chargingFooter =
+            "macOS runs generation when this Mac is on power, idle, and on a network. The Apple TV picks up new designs through iCloud."
+    #else
+        private static let chargingLabel = "Generate while charging"
+        private static let chargingFooter =
+            "iOS runs generation when this iPhone is charging and idle on a network, typically overnight. The Apple TV picks up new designs through iCloud."
+    #endif
+
     /// Why the charging task cannot run, when Background App Refresh is off for this app.
     private var backgroundRefreshWarning: String? {
         switch backgroundRefresh {
         case .denied:
             "Turn on Background App Refresh for Bookworms in Settings to generate while charging."
         case .restricted:
-            "Background App Refresh is restricted on this iPhone, so Bookworms generates spines only when you tap Generate now."
+            "Background App Refresh is restricted on this \(ThisDevice.name), so Bookworms generates spines only when you tap Generate now."
         default: nil
         }
     }
@@ -187,10 +195,10 @@ struct GenerationView: View {
             Text(fromHardcover ? "Hardcover" : "Apple TV")
         } footer: {
             if model.isPreview {
-                Text("Preview mode reads a local library. Designs stay on this iPhone.")
+                Text("Preview mode reads a local library. Designs stay on this \(ThisDevice.name).")
             } else if fromHardcover {
                 Text(
-                    "Your books come from your Hardcover account on this iPhone. When your Apple TV lists books to design, Bookworms designs those instead."
+                    "Your books come from your Hardcover account on this \(ThisDevice.name). When your Apple TV lists books to design, Bookworms designs those instead."
                 )
             }
         }

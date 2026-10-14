@@ -46,6 +46,7 @@ struct ShareStudioView: View {
     /// Whether **Share** is adding the credit and writing the files.
     @State private var isPreparing = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     init() {
         #if DEBUG
@@ -157,53 +158,30 @@ struct ShareStudioView: View {
         #endif
     }
 
+    /// The preview above the settings in a compact width; in a regular width, such as on the
+    /// Mac, the preview fills the window beside a column of settings.
+    @ViewBuilder
     private func form(isPending: Bool, hasNoBooks: Bool) -> some View {
-        Form {
-            Section {
-                preview(isPending: isPending, hasNoBooks: hasNoBooks)
-                Picker("Size", selection: $aspect) {
-                    ForEach(ShareAspect.allCases) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .listRowBackground(Color.clear)
-            }
-            Section("Template") {
-                if dynamicTypeSize >= .xLarge {
-                    // Names in a grid truncate above the default text size.
-                    Picker("Template", selection: $template) {
-                        ForEach(ShareTemplate.allCases) { option in
-                            Label(option.title, systemImage: option.systemImage).tag(option)
-                        }
+        Group {
+            if sizeClass == .regular {
+                HStack(spacing: 0) {
+                    VStack(spacing: 16) {
+                        preview(isPending: isPending, hasNoBooks: hasNoBooks, maxHeight: .infinity)
+                        sizePicker.frame(maxWidth: 420)
                     }
-                    .pickerStyle(.inline)
-                    .labelsHidden()
-                } else {
-                    templateGrid
+                    .padding(24)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    Form { settings(hasNoBooks: hasNoBooks) }
+                        .frame(width: 400)
                 }
-            }
-            if template.usesTimeFrame && !periods.years.isEmpty {
-                Section("Time frame") { frameControls }
-            }
-            if template.isSingleBook {
-                Section("Book") { bookRow }
-            }
-            // Year in Books draws covers only for its records, which Square leaves out.
-            if template.hasCoverStyle && !(template == .yearInBooks && aspect == .square) {
-                Section {
-                    Picker("Cover style", selection: $coverStyle) {
-                        ForEach(ShareCoverStyle.allCases) { Text($0.title).tag($0) }
+            } else {
+                Form {
+                    Section {
+                        preview(isPending: isPending, hasNoBooks: hasNoBooks, maxHeight: 380)
+                        sizePicker.listRowBackground(Color.clear)
                     }
-                    .pickerStyle(.segmented)
-                } header: {
-                    Text("Cover")
-                } footer: {
-                    if template == .yearInBooks {
-                        Text("Applies to the records, which appear when they fit.")
-                    }
+                    settings(hasNoBooks: hasNoBooks)
                 }
-            }
-            if template == .hotTakes || template.hasRatingOption || showsShuffle {
-                Section("Options") { options(hasNoBooks: hasNoBooks) }
             }
         }
         .navigationTitle("Share")
@@ -216,6 +194,55 @@ struct ShareStudioView: View {
                     .disabled(isPending || isPreparing)
                 }
             }
+        }
+    }
+
+    private var sizePicker: some View {
+        Picker("Size", selection: $aspect) {
+            ForEach(ShareAspect.allCases) { Text($0.title).tag($0) }
+        }
+        .pickerStyle(.segmented)
+    }
+
+    @ViewBuilder
+    private func settings(hasNoBooks: Bool) -> some View {
+        Section("Template") {
+            if dynamicTypeSize >= .xLarge {
+                // Names in a grid truncate above the default text size.
+                Picker("Template", selection: $template) {
+                    ForEach(ShareTemplate.allCases) { option in
+                        Label(option.title, systemImage: option.systemImage).tag(option)
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            } else {
+                templateGrid
+            }
+        }
+        if template.usesTimeFrame && !periods.years.isEmpty {
+            Section("Time frame") { frameControls }
+        }
+        if template.isSingleBook {
+            Section("Book") { bookRow }
+        }
+        // Year in Books draws covers only for its records, which Square leaves out.
+        if template.hasCoverStyle && !(template == .yearInBooks && aspect == .square) {
+            Section {
+                Picker("Cover style", selection: $coverStyle) {
+                    ForEach(ShareCoverStyle.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Text("Cover")
+            } footer: {
+                if template == .yearInBooks {
+                    Text("Applies to the records, which appear when they fit.")
+                }
+            }
+        }
+        if template == .hotTakes || template.hasRatingOption || showsShuffle {
+            Section("Options") { options(hasNoBooks: hasNoBooks) }
         }
     }
 
@@ -260,7 +287,7 @@ struct ShareStudioView: View {
     #endif
 
     @ViewBuilder
-    private func preview(isPending: Bool, hasNoBooks: Bool) -> some View {
+    private func preview(isPending: Bool, hasNoBooks: Bool, maxHeight: CGFloat) -> some View {
         // Messages sit outside the image's box, which would clip them at large text sizes.
         if images.isEmpty && hasNoBooks && !model.isLoading {
             let empty = emptyState
@@ -290,7 +317,7 @@ struct ShareStudioView: View {
             .listRowSeparator(.hidden)
         } else {
             VStack(spacing: 10) {
-                box(isPending: isPending)
+                box(isPending: isPending, maxHeight: maxHeight)
                 if images.count > 1 { pageDots }
             }
             .listRowBackground(Color.clear)
@@ -300,7 +327,7 @@ struct ShareStudioView: View {
 
     /// The preview's image, or its pages, in a box shaped like the image, with the render's
     /// progress over it.
-    private func box(isPending: Bool) -> some View {
+    private func box(isPending: Bool, maxHeight: CGFloat) -> some View {
         let size = aspect.size
         return ZStack {
             // Sizes the box as the image does, before there is one.
@@ -336,7 +363,7 @@ struct ShareStudioView: View {
         .aspectRatio(size.width / size.height, contentMode: .fit)
         .background(.quaternary)
         .clipShape(.rect(cornerRadius: 12))
-        .frame(maxWidth: .infinity, maxHeight: 380)
+        .frame(maxWidth: .infinity, maxHeight: maxHeight)
     }
 
     /// A dot for each page, the shown page's filled, which VoiceOver reads and adjusts as one
@@ -383,7 +410,7 @@ struct ShareStudioView: View {
                 "No reviews yet",
                 usesHardcover
                     ? "Reviews you write on Hardcover appear here \(nextSync)."
-                    : "The Apple TV's library has no reviews. Connect Hardcover on this iPhone to share yours."
+                    : "The Apple TV's library has no reviews. Connect Hardcover on this \(ThisDevice.name) to share yours."
             )
         case .review:
             return ("No reviews\(suffix)", "Choose another time frame to share a review.")

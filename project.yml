@@ -46,8 +46,12 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: gay.ian.Bookworms.iOS
-        # XcodeGen's iOS app preset sets 1,2 at the target level; this app is iPhone only.
-        TARGETED_DEVICE_FAMILY: '1'
+        # iPhone, plus the Mac through Mac Catalyst with the Mac idiom (6). Catalyst requires
+        # the iPad family (2) in the build setting.
+        TARGETED_DEVICE_FAMILY: '1,2,6'
+        SUPPORTS_MACCATALYST: YES
+        # The Mac build shares the iPhone's app ID, iCloud container, and capabilities.
+        DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
   BookwormsTests:
     type: bundle.unit-test
@@ -59,7 +63,8 @@ targets:
       - target: Bookworms
     settings:
       base:
-        TARGETED_DEVICE_FAMILY: '1'
+        TARGETED_DEVICE_FAMILY: '1,2,6'
+        SUPPORTS_MACCATALYST: YES
 schemes:
   Bookworms:
     build:

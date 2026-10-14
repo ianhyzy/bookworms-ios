@@ -112,7 +112,7 @@ actor BookAnalyzer {
             switch model.availability {
             case .available: nil
             case .unavailable(.deviceNotEligible):
-                "This iPhone does not support Private Cloud Compute."
+                "This \(ThisDevice.name) does not support Private Cloud Compute."
             case .unavailable(.systemNotReady):
                 "Private Cloud Compute is not ready. Check that Apple Intelligence is on."
             case .unavailable: "Private Cloud Compute is unavailable."

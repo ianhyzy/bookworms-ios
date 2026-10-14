@@ -32,7 +32,9 @@ final class GenerationController {
 
     @ObservationIgnored private let worker: SpineWorker
     @ObservationIgnored private var userRun: Task<Void, Never>?
-    @ObservationIgnored private var continuedTask: BGContinuedProcessingTask?
+    #if !targetEnvironment(macCatalyst)
+        @ObservationIgnored private var continuedTask: BGContinuedProcessingTask?
+    #endif
     @ObservationIgnored private var installedSubscription = false
     /// When this process last received a worklist push. A run that started earlier may have
     /// missed the new work, so its end keeps the push's immediate charging task.
@@ -68,8 +70,10 @@ final class GenerationController {
             await requestContinuedProcessing()
             let started = Date.now
             await worker.reconcile(mode: .foreground)
-            continuedTask?.setTaskCompleted(success: !Task.isCancelled)
-            continuedTask = nil
+            #if !targetEnvironment(macCatalyst)
+                continuedTask?.setTaskCompleted(success: !Task.isCancelled)
+                continuedTask = nil
+            #endif
             userRun = nil
             isGenerating = false
             await scheduleChargingTask(hasNewWork: receivedWorklist(since: started))
@@ -105,8 +109,11 @@ final class GenerationController {
 
     func scenePhaseChanged(to phase: ScenePhase) {
         // Without a continued-processing task, iOS suspends the run mid-download. Cancelling
-        // it records no failure, unlike the errors a suspended download returns on resume.
-        if phase == .background, continuedTask == nil { userRun?.cancel() }
+        // it records no failure, unlike the errors a suspended download returns on resume. A
+        // Mac app keeps running behind other windows, so its run continues.
+        #if !targetEnvironment(macCatalyst)
+            if phase == .background, continuedTask == nil { userRun?.cancel() }
+        #endif
         switch phase {
         case .background where generatesWhileCharging && workMayRemain:
             Task { await scheduleChargingTask() }
@@ -182,57 +189,65 @@ final class GenerationController {
                 Task { await AppModel.shared.reloadIfStale() }
             }
             status = snapshot
-            if let continuedTask { report(snapshot, to: continuedTask) }
+            #if !targetEnvironment(macCatalyst)
+                if let continuedTask { report(snapshot, to: continuedTask) }
+            #endif
         case .saved(let design):
             AppModel.shared.apply(design)
         }
     }
 
-    /// Asks iOS to continue the user's run in the background. When the request fails, as in the
-    /// Simulator, the run continues while the app stays in the foreground.
-    private func requestContinuedProcessing() async {
-        // iOS rejects a registration for the Info.plist wildcard itself, and submitting an
-        // unregistered identifier raises an exception, so each run registers its own identifier.
-        // Continued-processing handlers may register after launch. The main queue lets the
-        // handler attach the task without crossing actors.
-        let identifier = Self.continuedTaskPrefix + UUID().uuidString
-        let registered = BGTaskScheduler.shared.register(
-            forTaskWithIdentifier: identifier, using: .main
-        ) { task in
-            MainActor.assumeIsolated { GenerationController.shared.attach(task) }
+    #if targetEnvironment(macCatalyst)
+        /// Does nothing on the Mac, which keeps the run going without a continued-processing
+        /// task and has none.
+        private func requestContinuedProcessing() async {}
+    #else
+        /// Asks iOS to continue the user's run in the background. When the request fails, as in the
+        /// Simulator, the run continues while the app stays in the foreground.
+        private func requestContinuedProcessing() async {
+            // iOS rejects a registration for the Info.plist wildcard itself, and submitting an
+            // unregistered identifier raises an exception, so each run registers its own identifier.
+            // Continued-processing handlers may register after launch. The main queue lets the
+            // handler attach the task without crossing actors.
+            let identifier = Self.continuedTaskPrefix + UUID().uuidString
+            let registered = BGTaskScheduler.shared.register(
+                forTaskWithIdentifier: identifier, using: .main
+            ) { task in
+                MainActor.assumeIsolated { GenerationController.shared.attach(task) }
+            }
+            guard registered else {
+                generationLog.info("Continued processing registration was rejected")
+                return
+            }
+            let request = BGContinuedProcessingTaskRequest(
+                identifier: identifier, title: "Designing spines", subtitle: "Starting")
+            // Run now or not at all: the foreground run starts either way.
+            request.strategy = .fail
+            do {
+                try await Self.submit(request)
+            } catch {
+                generationLog.info("Continued processing unavailable: \(error, privacy: .public)")
+            }
         }
-        guard registered else {
-            generationLog.info("Continued processing registration was rejected")
-            return
-        }
-        let request = BGContinuedProcessingTaskRequest(
-            identifier: identifier, title: "Designing spines", subtitle: "Starting")
-        // Run now or not at all: the foreground run starts either way.
-        request.strategy = .fail
-        do {
-            try await Self.submit(request)
-        } catch {
-            generationLog.info("Continued processing unavailable: \(error, privacy: .public)")
-        }
-    }
 
-    /// Ties a launched continued-processing task to the user's run: progress follows the run,
-    /// and expiration cancels it.
-    private func attach(_ task: BGTask) {
-        guard let task = task as? BGContinuedProcessingTask, let userRun else {
-            task.setTaskCompleted(success: true)
-            return
+        /// Ties a launched continued-processing task to the user's run: progress follows the run,
+        /// and expiration cancels it.
+        private func attach(_ task: BGTask) {
+            guard let task = task as? BGContinuedProcessingTask, let userRun else {
+                task.setTaskCompleted(success: true)
+                return
+            }
+            continuedTask = task
+            task.expirationHandler = { userRun.cancel() }
+            report(status, to: task)
         }
-        continuedTask = task
-        task.expirationHandler = { userRun.cancel() }
-        report(status, to: task)
-    }
 
-    private func report(_ snapshot: WorkerSnapshot, to task: BGContinuedProcessingTask) {
-        let done = snapshot.completed + snapshot.failed
-        task.progress.totalUnitCount = Int64(done + snapshot.queue)
-        task.progress.completedUnitCount = Int64(done)
-        task.updateTitle(
-            "Designing spines", subtitle: snapshot.currentBook?.title ?? snapshot.phase)
-    }
+        private func report(_ snapshot: WorkerSnapshot, to task: BGContinuedProcessingTask) {
+            let done = snapshot.completed + snapshot.failed
+            task.progress.totalUnitCount = Int64(done + snapshot.queue)
+            task.progress.completedUnitCount = Int64(done)
+            task.updateTitle(
+                "Designing spines", subtitle: snapshot.currentBook?.title ?? snapshot.phase)
+        }
+    #endif
 }

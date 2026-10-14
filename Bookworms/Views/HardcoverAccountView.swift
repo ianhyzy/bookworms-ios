@@ -82,7 +82,7 @@ struct HardcoverAccountView: View {
             Button("Connect Hardcover") { account.startSignIn() }
         } footer: {
             Text(
-                "Your Hardcover login stays in this iPhone's keychain. Bookworms sends it only to Hardcover and never syncs it."
+                "Your Hardcover login stays in this \(ThisDevice.name)'s keychain. Bookworms sends it only to Hardcover and never syncs it."
             )
         }
     }
@@ -173,7 +173,7 @@ struct HardcoverAccountView: View {
             }
         } footer: {
             Text(
-                "Bookworms keeps a copy of your Hardcover library, including your reviews, on this iPhone and refreshes it every few hours."
+                "Bookworms keeps a copy of your Hardcover library, including your reviews, on this \(ThisDevice.name) and refreshes it every few hours."
             )
         }
         Section {
@@ -185,7 +185,7 @@ struct HardcoverAccountView: View {
                     Button("Sign out", role: .destructive) { account.signOut() }
                 } message: {
                     Text(
-                        "Bookworms removes your login and its copy of your library from this iPhone. Your Hardcover account is unchanged."
+                        "Bookworms removes your login and its copy of your library from this \(ThisDevice.name). Your Hardcover account is unchanged."
                     )
                 }
         }
