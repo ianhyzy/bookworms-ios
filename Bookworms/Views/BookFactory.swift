@@ -1,6 +1,11 @@
 import RealityKit
 import SwiftUI
-import UIKit
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 /// Builds the books of a 3D scene as rigid bodies: their meshes, textures, materials, physics
 /// boxes, and masses.

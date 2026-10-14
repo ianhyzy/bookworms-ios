@@ -1,6 +1,13 @@
-import SafariServices
 import SwiftUI
-import UIKit
+
+#if os(iOS)
+    import SafariServices
+#endif
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 /// The Hardcover account sheet: why to connect, the device-code sign-in, and the signed-in
 /// account with **Sync now** and **Sign out**.
@@ -14,6 +21,7 @@ struct HardcoverAccountView: View {
     @State private var copiedCode = false
     @State private var confirmsSignOut = false
     @State private var showsApprovalPage = false
+    @Environment(\.openURL) private var openURL
 
     private var account: HardcoverAccount { model.account }
 
@@ -37,11 +45,20 @@ struct HardcoverAccountView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showsApprovalPage) {
-                if case .waiting(_, let url) = account.signIn {
-                    ApprovalPage(url: url).ignoresSafeArea()
+            #if os(macOS)
+                // The Mac opens the page in the default browser.
+                .onChange(of: showsApprovalPage) { _, shows in
+                    guard shows else { return }
+                    showsApprovalPage = false
+                    if case .waiting(_, let url) = account.signIn { openURL(url) }
                 }
-            }
+            #else
+                .sheet(isPresented: $showsApprovalPage) {
+                    if case .waiting(_, let url) = account.signIn {
+                        ApprovalPage(url: url).ignoresSafeArea()
+                    }
+                }
+            #endif
             .onChange(of: account.signIn) {
                 copiedCode = false
                 // The page has done its job once the code is approved, cancelled, or expired.
@@ -192,16 +209,18 @@ struct HardcoverAccountView: View {
     }
 }
 
-/// Hardcover's approval page in Safari inside the app.
-///
-/// The account sheet presents it itself: `openURL(_:prefersInApp:)` presents Safari from the
-/// window's root view controller, which UIKit refuses while that controller presents the sheet.
-private struct ApprovalPage: UIViewControllerRepresentable {
-    let url: URL
+#if os(iOS)
+    /// Hardcover's approval page in Safari inside the app.
+    ///
+    /// The account sheet presents it itself: `openURL(_:prefersInApp:)` presents Safari from the
+    /// window's root view controller, which UIKit refuses while that controller presents the sheet.
+    private struct ApprovalPage: UIViewControllerRepresentable {
+        let url: URL
 
-    func makeUIViewController(context: Context) -> SFSafariViewController {
-        SFSafariViewController(url: url)
+        func makeUIViewController(context: Context) -> SFSafariViewController {
+            SFSafariViewController(url: url)
+        }
+
+        func updateUIViewController(_ controller: SFSafariViewController, context: Context) {}
     }
-
-    func updateUIViewController(_ controller: SFSafariViewController, context: Context) {}
-}
+#endif

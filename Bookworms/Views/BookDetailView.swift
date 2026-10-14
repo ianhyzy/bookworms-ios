@@ -96,7 +96,7 @@ struct BookDetailView: View {
             // inherits; the sheet's own background must match it to keep text readable.
             // A new cover can call for a new spine, which **Style** offers below the button.
             CoverPickerView(book: book) { coverChangedAt = .now }
-            .preferredColorScheme(.dark)
+                .preferredColorScheme(.dark)
         }
         #if DEBUG
             .onAppear { if CoverPickerDebug.opensPicker { choosesCover = true } }
@@ -907,7 +907,9 @@ private struct SpineDesignCard: View {
             } finish: {
                 picking = nil
             }
-            .presentationDetents([.medium])
+            #if os(iOS)
+                .presentationDetents([.medium])
+            #endif
         }
         .task(id: draft) {
             guard let draft else { return }
@@ -1095,43 +1097,71 @@ private struct Swatch: View {
 /// SwiftUI's `ColorPicker` opens the same picker but reports neither its opening nor its close,
 /// which the **Spine design** card needs to move above the picker's sheet and back. The card
 /// presents this picker in its own sheet instead.
-private struct SystemColorPicker: UIViewControllerRepresentable {
-    let title: String
-    let initial: ColorValue
-    let pick: (ColorValue) -> Void
-    let finish: () -> Void
+#if os(macOS)
+    /// The Mac's color well, which opens the system color panel, in a small sheet whose **Done**
+    /// ends picking.
+    private struct SystemColorPicker: View {
+        let title: String
+        let initial: ColorValue
+        let pick: (ColorValue) -> Void
+        let finish: () -> Void
+        @State private var color: Color?
 
-    func makeUIViewController(context: Context) -> UIColorPickerViewController {
-        let picker = UIColorPickerViewController()
-        picker.title = title
-        picker.supportsAlpha = false
-        picker.selectedColor = initial.uiColor
-        picker.delegate = context.coordinator
-        return picker
-    }
-
-    func updateUIViewController(_ picker: UIColorPickerViewController, context: Context) {
-        context.coordinator.parent = self
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
-
-    @MainActor final class Coordinator: NSObject, UIColorPickerViewControllerDelegate {
-        var parent: SystemColorPicker
-
-        init(parent: SystemColorPicker) { self.parent = parent }
-
-        func colorPickerViewController(
-            _ picker: UIColorPickerViewController, didSelect color: UIColor, continuously: Bool
-        ) {
-            parent.pick(ColorValue(Color(uiColor: color)))
-        }
-
-        func colorPickerViewControllerDidFinish(_ picker: UIColorPickerViewController) {
-            parent.finish()
+        var body: some View {
+            VStack(spacing: 16) {
+                ColorPicker(
+                    title,
+                    selection: Binding(
+                        get: { color ?? Color(uiColor: initial.uiColor) },
+                        set: { color = $0 }),
+                    supportsOpacity: false)
+                Button("Done", action: finish).keyboardShortcut(.defaultAction)
+            }
+            .padding(24)
+            .onChange(of: color) { _, color in
+                if let color { pick(ColorValue(color)) }
+            }
         }
     }
-}
+#else
+    private struct SystemColorPicker: UIViewControllerRepresentable {
+        let title: String
+        let initial: ColorValue
+        let pick: (ColorValue) -> Void
+        let finish: () -> Void
+
+        func makeUIViewController(context: Context) -> UIColorPickerViewController {
+            let picker = UIColorPickerViewController()
+            picker.title = title
+            picker.supportsAlpha = false
+            picker.selectedColor = initial.uiColor
+            picker.delegate = context.coordinator
+            return picker
+        }
+
+        func updateUIViewController(_ picker: UIColorPickerViewController, context: Context) {
+            context.coordinator.parent = self
+        }
+
+        func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+        @MainActor final class Coordinator: NSObject, UIColorPickerViewControllerDelegate {
+            var parent: SystemColorPicker
+
+            init(parent: SystemColorPicker) { self.parent = parent }
+
+            func colorPickerViewController(
+                _ picker: UIColorPickerViewController, didSelect color: UIColor, continuously: Bool
+            ) {
+                parent.pick(ColorValue(Color(uiColor: color)))
+            }
+
+            func colorPickerViewControllerDidFinish(_ picker: UIColorPickerViewController) {
+                parent.finish()
+            }
+        }
+    }
+#endif
 
 extension ColorValue {
     /// The sRGB color nearest `color`, which can lie outside sRGB, such as a Display P3 color

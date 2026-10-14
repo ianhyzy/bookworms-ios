@@ -1,8 +1,13 @@
 import AVKit
 import Photos
 import SwiftUI
-import UIKit
 import os
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 /// Films the pile as a six-second video, then shares the MP4 or saves the clip as a Live Photo.
 ///
@@ -155,11 +160,17 @@ struct PileVideoSheet: View {
 
     private func render() async {
         guard movie == nil, !failed else { return }
-        let application = UIApplication.shared
-        let wasIdleTimerDisabled = application.isIdleTimerDisabled
-        // No one touches the screen while it renders.
-        application.isIdleTimerDisabled = true
-        defer { application.isIdleTimerDisabled = wasIdleTimerDisabled }
+        // No one touches the screen or keyboard while it renders.
+        #if os(macOS)
+            let activity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiated, .idleDisplaySleepDisabled], reason: "Rendering a video")
+            defer { ProcessInfo.processInfo.endActivity(activity) }
+        #else
+            let application = UIApplication.shared
+            let wasIdleTimerDisabled = application.isIdleTimerDisabled
+            application.isIdleTimerDisabled = true
+            defer { application.isIdleTimerDisabled = wasIdleTimerDisabled }
+        #endif
         do {
             let made = try await PileSnapshotRenderer.renderMovie(
                 books: books, title: title, aspect: aspect, seed: seed, model: model,
@@ -223,25 +234,49 @@ struct PileVideoSheet: View {
 
 /// A player layer whose video fills its view, cropping the video's edges, which SwiftUI's
 /// `VideoPlayer` cannot do.
-private struct FilledPlayer: UIViewRepresentable {
-    let player: AVPlayer
+#if os(macOS)
+    private struct FilledPlayer: NSViewRepresentable {
+        let player: AVPlayer
 
-    final class PlayerView: UIView {
-        override static var layerClass: AnyClass { AVPlayerLayer.self }
-        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
-    }
+        final class PlayerView: NSView {
+            let playerLayer = AVPlayerLayer()
 
-    func makeUIView(context: Context) -> PlayerView {
-        let view = PlayerView()
-        view.playerLayer.videoGravity = .resizeAspectFill
-        view.playerLayer.player = player
-        return view
-    }
+            override func makeBackingLayer() -> CALayer { playerLayer }
+        }
 
-    func updateUIView(_ view: PlayerView, context: Context) {
-        view.playerLayer.player = player
+        func makeNSView(context: Context) -> PlayerView {
+            let view = PlayerView()
+            view.wantsLayer = true
+            view.playerLayer.videoGravity = .resizeAspectFill
+            view.playerLayer.player = player
+            return view
+        }
+
+        func updateNSView(_ view: PlayerView, context: Context) {
+            view.playerLayer.player = player
+        }
     }
-}
+#else
+    private struct FilledPlayer: UIViewRepresentable {
+        let player: AVPlayer
+
+        final class PlayerView: UIView {
+            override static var layerClass: AnyClass { AVPlayerLayer.self }
+            var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+        }
+
+        func makeUIView(context: Context) -> PlayerView {
+            let view = PlayerView()
+            view.playerLayer.videoGravity = .resizeAspectFill
+            view.playerLayer.player = player
+            return view
+        }
+
+        func updateUIView(_ view: PlayerView, context: Context) {
+            view.playerLayer.player = player
+        }
+    }
+#endif
 
 #if DEBUG
     /// Simulator hooks, since a script cannot tap **Video**.

@@ -2,7 +2,7 @@
 
 Bookworms for iPhone is a companion to the [Bookworms Apple TV app](../tvos/README.md). It designs book spines with Apple's Private Cloud Compute model and shares them with the Apple TV through iCloud, shows your spines in a stack or a bookcase and your books in 3D scenes on a desk, and makes share images and videos for social media. It never asks for a Hardcover or AI API key.
 
-The app targets iOS 27 on iPhone, and Apple silicon Macs through Mac Catalyst (see [On the Mac](#on-the-mac)). It gets your library in one of two ways:
+The app targets iOS 27 on iPhone and macOS 27 on Apple silicon Macs (see [On the Mac](#on-the-mac)). It gets your library in one of two ways:
 
 - **From Hardcover.** Sign in to Hardcover on the iPhone, and the app reads your Hardcover library, including your reviews, directly. It then works without an Apple TV. See [Hardcover sign-in](#hardcover-sign-in).
 - **From the Apple TV.** Without a sign-in, the app reads the library that the Apple TV app uploads to the private iCloud container `iCloud.gay.ian.Bookworms`, so the Apple TV app needs **iCloud storage** turned on.
@@ -70,11 +70,13 @@ The sheet stays open when the library arrives. Preview mode ignores the sign-in,
 
 ### On the Mac
 
-The Mac build is the iPhone app built with Mac Catalyst and the Mac idiom. It shares the iPhone's bundle ID, iCloud container, and capabilities, so it reads the same library and saves designs the Apple TV picks up. Its differences from the iPhone:
+The Mac app is a native macOS build of the same target and source, so it reads the same library and saves designs the Apple TV picks up. `Bookworms/Support/AppKitBridge.swift` names AppKit's image, color, and font types after UIKit's and adds the UIKit members the shared drawing code uses. Its differences from the iPhone:
 
-- In a regular-width window, **Share** shows the preview beside a 400-point column of settings instead of above them.
-- A **Generate now** run keeps going while the window is in the background, without a continued-processing task, which macOS lacks.
-- **Generate while idle** replaces **Generate while charging**; macOS runs the same background task while the Mac is on power and idle.
+- It stays running in the menu bar after its window closes. The **Bookworms** menu bar item shows design progress and offers **Generate Now** or **Stop**, **Open Bookworms**, **Launch at Login**, and **Quit Bookworms**.
+- **Generate while idle** replaces **Generate while charging**. It schedules the same background run with `NSBackgroundActivityScheduler`, which macOS starts when the Mac is idle, with or without a window open. A **Generate now** run keeps going behind other windows.
+- In a regular-width window, **Share** shows the preview beside a 400-point column of settings, and the page dots choose a crowded Year Stack's page. **Share** opens the macOS sharing picker.
+- Forms use the grouped style, toasts show at the top of the main window, the color picker is the system color well, and Hardcover's approval page opens in the default browser.
+- The Desk scenes take mouse input. Tilt and shaking need device motion, which the Mac lacks, so they are off.
 - Text that names the device says "Mac", including the export credit "Created with Bookworms for Mac".
 
 The Mac menu bar companion in `../macos` is a separate app that designs spines with the on-device model.
@@ -359,15 +361,14 @@ The 3D views share their RealityKit pieces. `BookGeometry` builds each book's me
 2. Set up signing for `gay.ian.Bookworms.iOS` with the `iCloud.gay.ian.Bookworms` container, push notifications, and the managed Private Cloud Compute capability (`com.apple.developer.private-cloud-compute`). Request that capability for the team before signing a device build; Apple grants it to members of the App Store Small Business Program.
 3. Run `script/build_and_run.sh` to build, install, and launch on a Simulator.
 
-To build for the Mac, use the Mac Catalyst destination. Signing a Mac build needs a Mac Catalyst development profile for `gay.ian.Bookworms.iOS`:
+To build for the Mac, use the macOS destination. Signing a Mac build needs a macOS development profile for `gay.ian.Bookworms.iOS` with the same iCloud container and capabilities; the Mac uses `Bookworms/Bookworms-macOS.entitlements`, which adds the App Sandbox and outgoing connections:
 
 ```sh
 xcodebuild -project Bookworms.xcodeproj -scheme Bookworms -derivedDataPath DerivedData \
-  -destination 'platform=macOS,variant=Mac Catalyst,arch=arm64' \
-  OTHER_SWIFT_FLAGS='-disable-sandbox' build
+  -destination 'platform=macOS,arch=arm64' OTHER_SWIFT_FLAGS='-disable-sandbox' build
 ```
 
-An unsigned Mac build cannot use iCloud. To check layouts without signing, build with `CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= CODE_SIGN_ENTITLEMENTS=` and open the app with `--args -BookwormsPreviewFolder <absolute path to .local/preview>`.
+An unsigned Mac build cannot use iCloud. To check layouts without signing, add `CODE_SIGNING_ALLOWED=NO`, sign the app ad hoc with `codesign -s - --force`, and open it with `--args -BookwormsPreviewFolder <absolute path>`. Copy the preview folder outside `~/Documents` first, or macOS asks the unsigned app for access to Documents.
 
 To test on an iPhone before Apple grants the Private Cloud Compute capability, run `script/install_on_device.sh`. It signs an optimized build with `config/NoPCC.entitlements`, compiles it with `NO_PCC` so the app never creates the model, registers the iPhone with the team if needed, and installs it. Generation then reports Private Cloud Compute as unavailable; the Share, Library, and Desk tabs work with the iCloud or Hardcover library. A development-signed build reads the CloudKit Development environment, the same one development builds of the Apple TV app and the Mac companion use.
 

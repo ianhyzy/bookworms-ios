@@ -1,6 +1,11 @@
 import NaturalLanguage
 import SwiftUI
-import UIKit
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 /// A share image layout.
 enum ShareTemplate: String, CaseIterable, Identifiable {

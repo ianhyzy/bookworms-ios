@@ -2,7 +2,12 @@ import Combine
 import CoreMedia
 import RealityKit
 import SwiftUI
-import UIKit
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 /// A book's place in the domino chain.
 struct DominoSlot {

@@ -1,6 +1,11 @@
 import RealityKit
 import SwiftUI
-import UIKit
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 /// How the pile follows the phone's tilt, which **Tilt** in the desk's options menu sets.
 /// Throwing books by hand is the scene's main play, so tilt starts **Off**.
@@ -438,8 +443,12 @@ final class PileCalendar {
             red: CGFloat(color.x), green: CGFloat(color.y), blue: CGFloat(color.z), alpha: 1)
         let face = simd_mix(color, .one, SIMD3(repeating: 0.75))
         let base = UIFont.systemFont(ofSize: 150, weight: .semibold)
-        var font = UIFont(
-            descriptor: base.fontDescriptor.withDesign(.serif) ?? base.fontDescriptor, size: 150)
+        let descriptor = base.fontDescriptor.withDesign(.serif) ?? base.fontDescriptor
+        #if os(macOS)
+            var font = UIFont(descriptor: descriptor, size: 150) ?? base
+        #else
+            var font = UIFont(descriptor: descriptor, size: 150)
+        #endif
         let room = size.width - 140
         let width = (text as NSString).size(withAttributes: [.font: font]).width
         if width > room { font = font.withSize(150 * room / width) }

@@ -39,7 +39,9 @@ struct LibraryView: View {
                 )
                 .navigationDestination(for: Int.self) { id in
                     PushedBookDetail(id: id)
-                        .navigationTransition(.zoom(sourceID: id, in: namespace))
+                        #if os(iOS)
+                            .navigationTransition(.zoom(sourceID: id, in: namespace))
+                        #endif
                 }
         }
         // The walnut backdrop is dark in both appearances, so text and bars use dark styles.

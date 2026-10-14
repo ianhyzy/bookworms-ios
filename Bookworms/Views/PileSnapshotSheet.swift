@@ -1,5 +1,10 @@
 import SwiftUI
-import UIKit
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 /// Shares the pile as an image: the pile's books spread front cover up across the table
 /// (`PileSpread`) under the name of its time frame, in a share size the reader picks.

@@ -1,7 +1,12 @@
 import Metal
 import RealityKit
 import SwiftUI
-import UIKit
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 /// Renders share images of books dropped into a pile, without a view.
 ///

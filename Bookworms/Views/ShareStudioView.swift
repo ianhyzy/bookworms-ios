@@ -1,6 +1,11 @@
 import SwiftUI
-import UIKit
 import UniformTypeIdentifiers
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 /// The Share tab: choose a template and its options, preview the export, and share it.
 ///
@@ -333,16 +338,21 @@ struct ShareStudioView: View {
             // Sizes the box as the image does, before there is one.
             Color.clear.frame(idealWidth: size.width, idealHeight: size.height)
             if images.count > 1 {
-                // Swipes through the pages. Their dots sit below the box, since the system's
-                // would cover the Year Stack's bottom spine.
-                TabView(selection: $shownPage) {
-                    ForEach(images.indices, id: \.self) { index in
-                        page(images[index]).tag(index)
+                #if os(macOS)
+                    // The Mac has no page swipe; the page dots below choose the page.
+                    page(images[min(shownPage, images.count - 1)])
+                #else
+                    // Swipes through the pages. Their dots sit below the box, since the system's
+                    // would cover the Year Stack's bottom spine.
+                    TabView(selection: $shownPage) {
+                        ForEach(images.indices, id: \.self) { index in
+                            page(images[index]).tag(index)
+                        }
                     }
-                }
-                .tabViewStyle(.page(indexDisplayMode: .never))
-                // A new page count starts again at page 1 (see `render(_:)`).
-                .id(images.count)
+                    .tabViewStyle(.page(indexDisplayMode: .never))
+                    // A new page count starts again at page 1 (see `render(_:)`).
+                    .id(images.count)
+                #endif
             } else if let image = images.first {
                 page(image)
             }
@@ -374,6 +384,11 @@ struct ShareStudioView: View {
                 Circle()
                     .fill(index == shownPage ? .primary : .tertiary)
                     .frame(width: 7, height: 7)
+                    #if os(macOS)
+                        .padding(4)
+                        .contentShape(.rect)
+                        .onTapGesture { shownPage = index }
+                    #endif
             }
         }
         .accessibilityElement()
