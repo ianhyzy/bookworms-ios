@@ -539,7 +539,9 @@ struct ShareStudioView: View {
         return NavigationLink {
             ShareBookPicker(books: choices, current: shown?.id, selection: $bookID)
         } label: {
-            LabeledContent("Book", value: shown?.spineTitle ?? "None")
+            LabeledContent("Book") {
+                if let shown { BookText(shown.spineTitle, of: shown) } else { Text("None") }
+            }
         }
         .disabled(choices.isEmpty)
     }
@@ -745,7 +747,7 @@ private struct ShareBookPicker: View {
             } label: {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(book.title).lineLimit(2)
+                        BookText(book.title, of: book).lineLimit(2)
                         Text(book.author).font(.subheadline).foregroundStyle(.secondary)
                             .lineLimit(1)
                     }

@@ -232,7 +232,7 @@ private struct NamedBook: View {
 
     var body: some View {
         VStack(spacing: 3) {
-            Text(book.title)
+            BookText(book.title, of: book)
                 .font(.headline)
                 .fontDesign(.serif)
                 .lineLimit(2)

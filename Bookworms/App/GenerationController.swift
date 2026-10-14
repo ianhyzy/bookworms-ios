@@ -232,6 +232,7 @@ final class GenerationController {
         let done = snapshot.completed + snapshot.failed
         task.progress.totalUnitCount = Int64(done + snapshot.queue)
         task.progress.completedUnitCount = Int64(done)
-        task.updateTitle("Designing spines", subtitle: snapshot.currentTitle ?? snapshot.phase)
+        task.updateTitle(
+            "Designing spines", subtitle: snapshot.currentBook?.title ?? snapshot.phase)
     }
 }

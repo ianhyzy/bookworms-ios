@@ -29,16 +29,23 @@ struct SpineView: View {
 
     /// Shading across the thickness so the flat face reads as a rounded cloth spine.
     private var relief: some View {
-        let strength = 0.025 + 0.12 * (1 - look.background.relativeLuminance)
+        let relief = Self.relief(on: look.background)
         return LinearGradient(
             stops: [
-                .init(color: .black.opacity(strength), location: 0),
+                .init(color: .black.opacity(relief.shade), location: 0),
                 .init(color: .clear, location: 0.08),
-                .init(color: .white.opacity(strength * 0.55), location: 0.14),
+                .init(color: .white.opacity(relief.highlight), location: 0.14),
                 .init(color: .clear, location: 0.25),
                 .init(color: .clear, location: 0.9),
-                .init(color: .black.opacity(strength * 0.65), location: 1),
+                .init(color: .black.opacity(relief.shade * 0.65), location: 1),
             ], startPoint: .top, endPoint: .bottom)
+    }
+
+    /// The relief's opacities on `cloth`: black `shade` at the top edge, and white `highlight`
+    /// just below it, which lightens the top of the lettering. Darker cloth takes more of both.
+    nonisolated static func relief(on cloth: ColorValue) -> (shade: Double, highlight: Double) {
+        let shade = 0.025 + 0.12 * (1 - cloth.relativeLuminance)
+        return (shade, shade * 0.55)
     }
 
     /// Accent bands near the head and tail, as on the Apple TV Book Wall.
@@ -58,7 +65,7 @@ struct SpineView: View {
         let inset = max(14, length * 0.035) + max(2, thickness * 0.07) + thickness * 0.18
         let titleSize = thickness * 0.5
         return HStack(spacing: thickness * 0.3) {
-            Text(look.text(book.spineTitle))
+            BookText(look.text(book.spineTitle), of: book, on: look)
                 .font(look.font(size: titleSize))
                 .lineLimit(thickness >= 64 ? 2 : 1)
                 .minimumScaleFactor(0.3)

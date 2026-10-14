@@ -138,6 +138,17 @@ The **Spine design** card at the bottom of a book's details shows the spine, its
 - **Reset colors** appears while the colors differ from the generator's, and restores the generator's colors.
 - Generation keeps your colors. A run leaves a recolored spine as it is, even after a generator or metadata change, or when the cover's image changes, such as a new default cover from Hardcover, until you choose another cover with **Change cover**. The next run, such as the one **Redesign spine** starts, then designs the spine from the new cover with new colors. The iPhone compares the chosen cover with the one at the book's last check on this iPhone; a book it has not checked yet keeps your colors. Your colors stay with their book: another book in the series that reuses its design gets the generator's colors.
 
+### House of Leaves
+
+Mark Z. Danielewski's *House of Leaves* prints the word "house" in blue, and Bookworms does the same for that book alone. Wherever the app shows the book's own text, each "house" is blue: its title in **Library** captions, its details, the Share tab's **Book** list, and the Spines tab's progress, its description and review, its spine lettering in every view, including the 3D books and a coverless front, and every share image that letters it.
+
+- The app recognizes the book by its author, Danielewski, and its title, "House of Leaves" in any case, ignoring a subtitle after a colon or a dash and an edition note in parentheses or brackets, so every edition counts. No other book changes, including one with "house" in its title.
+- The word counts in any case and with a plural or possessive ending, such as "HOUSE", "houses", or "house's", but not inside another word, such as "household" or "lighthouse".
+- The blue starts from the novel's #6570AE and keeps its hue. It moves in lightness only as far as it must to reach WCAG 4.5:1 and APCA Lc 60 against the lightest ground behind it, so each ground gets its own blue: #5F6AA8 in light system lists, #A9B7FA on the walnut wall and in dark lists, #ACBAFD on the details' cards, and in share images a blue fitted to the image's color theme, such as #AFBDFF for a neutral one, a little lighter for a review's title beside the glow behind the cover. Spine lettering takes a blue fitted to the spine's cloth, such as #6570AE itself on a white cloth, and also reads where the spine's relief lightens the top of the letters.
+- A faint white glow sits behind a blue that is darker than its ground, such as on a light or yellow cloth, where it lightens the ground beside the letters and adds contrast. A blue lighter than its ground, as on the walnut wall, has no glow, because there a glow would take contrast away.
+- On a cloth that no blue reads on, such as a mid-blue one, the word takes the spine's lettering color.
+- VoiceOver reads the text unchanged. Cover images keep their own lettering.
+
 ### Desk
 
 The **Desk** tab shows your books in a 3D scene, on a wooden desk under a lamp at night. It opens on the [Desk scene](#desk-scene), which drops the current year's books, another year's or month's, or up to 300 books, onto the desk as a physics toy to throw around, and shares the pile as an image or a video. **Set up dominoes** turns the books on the desk into [Dominoes](#dominoes): they stand themselves up in the order you finished them, cobwebs string across long gaps between finishes, a push topples them, and they gather into a face-up spread to share as a video or an image. **Back to desk** returns to the Desk scene with the books where they lie. Desk shows the read books, as Library does, and current reads, which the Desk scene marks with ribbons under **All books**.
@@ -408,6 +419,14 @@ Simulator saves land in that Simulator's Photos library. A person checks VoiceOv
 1. Load the preview library, then launch with `-BookwormsPreviewFolder preview -BookwormsTab library -BookwormsShelfMode stack -BookwormsLibraryTime allTime -BookwormsOpenBook <book ID> -BookwormsDetailTab <details|journal|spine>`.
 2. Check a book with a long description, one without a description, an audiobook, a book without ratings, the largest accessibility text size, and both appearances. Tap **More** on a long description.
 3. The preview library has no series, publication years, listening times, or reviews. To check those cards, copy the Simulator's `Library/Caches/Bookworms/preview` folder in the app's data container to a sibling folder, add `seriesName`, `seriesPosition`, `publicationYear`, `audioSeconds`, or `review` to a few books in its `library-v1.json`, and launch with that folder's name in `-BookwormsPreviewFolder`. Delete the copy afterward; never edit the copy in `.local/`.
+
+### Check House of Leaves' blue
+
+1. Copy the preview folder as [Check a book's details](#check-a-books-details) describes, and give House of Leaves (book ID `301814`) and another book with "house" in its title a fictional `review` that uses "house" in several forms, along with words such as "household". For Hot Takes, give House of Leaves a `rating` at least half a star above its `communityRating`.
+2. Launch with that folder in `-BookwormsPreviewFolder`, `-BookwormsTab library -BookwormsLibraryTime allTime -BookwormsOpenBook 301814`, and each of `-BookwormsShelfMode stack`, `-BookwormsShelfMode shelf`, and `-BookwormsDetailTab <details|journal|spine>`. Check the caption, the spine, the 3D book, the header, the description after **More**, and the review. Repeat with `-BookwormsTab desk -BookwormsOpenBook 301814`, with and without `-BookwormsSetUpDominoes YES`.
+3. With `-BookwormsDetailTab spine`, add `-BookwormsSpineColors` with a light, a saturated, and a mid-blue cloth. This saves the colors to the copy.
+4. Render the share templates with `-BookwormsShareTemplate review -BookwormsShareBook 301814 -BookwormsShareBatch "<entries>"`, with one entry for each template, size, and cover style, in the month the book was finished, such as `"review,story,month:<YYYY-MM> justFinished,square,month:<YYYY-MM>,flat topFive,story,month:<YYYY-MM> hotTakes,story,month:<YYYY-MM> yearInBooks,story,month:<YYYY-MM> yearStack,story,month:<YYYY-MM>"`. Remove the book's cover URLs from the copy to check a coverless front.
+5. In both appearances, check the Share tab's **Book** row and list, and check that the other book's title and review stay unchanged everywhere.
 
 ### Check the dominoes' cameras
 

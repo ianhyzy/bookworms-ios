@@ -100,7 +100,7 @@ struct BookFrontPlaceholder: View {
     var body: some View {
         ZStack {
             look.background.color
-            Text(look.text(book.spineTitle))
+            BookText(look.text(book.spineTitle), of: book, on: look)
                 .font(look.font(size: width * 0.14))
                 .multilineTextAlignment(.center)
                 .minimumScaleFactor(0.4)

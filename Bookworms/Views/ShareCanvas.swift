@@ -265,6 +265,8 @@ struct ShareCanvas: View {
         .clipped()
         // Exports keep one appearance whatever the system setting.
         .environment(\.colorScheme, .dark)
+        // Panels are the lightest ground that most card text sits on.
+        .environment(\.bookTextGround, input.theme.panel())
     }
 }
 
@@ -637,7 +639,7 @@ struct ShareCover: View {
                         look.background.color
                         ShareFittingText(
                             forms: ShareStyle.titles(book), size: width * 0.13, minimumScale: 0.4,
-                            lines: nil
+                            lines: nil, book: book, look: look
                         ) {
                             ShareStyle.serif($0, .semibold)
                         }
@@ -673,11 +675,16 @@ struct ShareCover: View {
 /// fit the height of that many lines at `size`, so a smaller size can wrap to an extra line;
 /// with `nil`, it must fit the proposed height. When nothing fits, the last form at the
 /// smallest size truncates.
+///
+/// Forms of a book's own text name `book`, and `look` when lettered on its cloth, so they show
+/// House of Leaves' blue "house" (`BookText`).
 struct ShareFittingText: View {
     let forms: [String]
     let size: CGFloat
     let minimumScale: CGFloat
     var lines: Int? = 1
+    var book: CloudBook?
+    var look: SpineLook?
     let font: (CGFloat) -> Font
 
     var body: some View {
@@ -687,7 +694,7 @@ struct ShareFittingText: View {
         if smallest < size { sizes.append(smallest) }
         let options = forms.flatMap { form in sizes.map { (form: form, size: $0) } }
         let texts = ForEach(options.indices, id: \.self) { index in
-            Text(options[index].form).font(font(options[index].size))
+            BookText(options[index].form, of: book, on: look).font(font(options[index].size))
         }
         return Group {
             switch lines {
