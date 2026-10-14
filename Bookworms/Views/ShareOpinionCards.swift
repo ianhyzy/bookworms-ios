@@ -129,36 +129,36 @@ struct HotTakesCard: View {
         let isHero = input.books.count == 1
         let theme = input.theme
         return VStack(
-                alignment: isHero && aspect != .square ? .center : .leading,
-                spacing: aspect == .square ? 24 : 36
-            ) {
-                VStack(alignment: isHero && aspect != .square ? .center : .leading, spacing: 8) {
-                    Text(heading)
-                        .font(ShareStyle.serif(aspect == .story ? 84 : 68, .semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.6)
-                    Text(subtitle)
-                        .font(.system(size: 32, weight: .medium))
-                        .opacity(0.75)
-                        .lineLimit(1)
-                        .minimumScaleFactor(30 / 32)
-                }
-                if isHero, let book = input.books.first {
-                    hero(book)
-                } else {
-                    let panel = theme.panel().color
-                    // One slot for every cover, as wide as the widest, so each row's text starts
-                    // at the same x.
-                    let slot = input.books
-                        .map {
-                            ShareCover.aspect(of: input.covers[$0.id], style: input.coverStyle)
-                        }
-                        .max()
-                    ForEach(input.books) { book in
-                        row(book, coverAspect: slot ?? 2 / 3, panel: panel)
+            alignment: isHero && aspect != .square ? .center : .leading,
+            spacing: aspect == .square ? 24 : 36
+        ) {
+            VStack(alignment: isHero && aspect != .square ? .center : .leading, spacing: 8) {
+                Text(heading)
+                    .font(ShareStyle.serif(aspect == .story ? 84 : 68, .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                Text(subtitle)
+                    .font(.system(size: 32, weight: .medium))
+                    .opacity(0.75)
+                    .lineLimit(1)
+                    .minimumScaleFactor(30 / 32)
+            }
+            if isHero, let book = input.books.first {
+                hero(book)
+            } else {
+                let panel = theme.panel().color
+                // One slot for every cover, as wide as the widest, so each row's text starts
+                // at the same x.
+                let slot = input.books
+                    .map {
+                        ShareCover.aspect(of: input.covers[$0.id], style: input.coverStyle)
                     }
+                    .max()
+                ForEach(input.books) { book in
+                    row(book, coverAspect: slot ?? 2 / 3, panel: panel)
                 }
             }
+        }
     }
 
     /// Who the takes compare with: the other reader's short name, or Hardcover's readers.

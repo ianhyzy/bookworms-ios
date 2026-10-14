@@ -159,7 +159,8 @@ struct BookSwapCard: View {
 
     private var metrics: (avatar: CGFloat, cover: CGFloat, stars: CGFloat) {
         let match = input.social?.match
-        let scale: CGFloat = match?.forThem.isEmpty == false && match?.forMe.isEmpty == false ? 1 : 1.3
+        let scale: CGFloat =
+            match?.forThem.isEmpty == false && match?.forMe.isEmpty == false ? 1 : 1.3
         return switch input.aspect {
         case .story: (130, 320 * scale, 30)
         case .portrait: (116, 228 * scale, 26)

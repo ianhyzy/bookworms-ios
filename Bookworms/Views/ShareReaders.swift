@@ -245,7 +245,8 @@ struct ShareReaderPicker: View {
                 ShareReaderLabel(
                     reader: reader,
                     isLoading: model.social.loadingReaders.contains(reader.id),
-                    isSelected: reader.id == shown)
+                    isSelected: reader.id == shown
+                )
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
