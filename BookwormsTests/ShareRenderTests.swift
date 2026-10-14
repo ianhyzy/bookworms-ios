@@ -509,7 +509,7 @@ final class ShareRenderTests: XCTestCase {
     }
 
     /// A bundle's slices wear the first book's cloth with at most a faint step in tone, and the
-    /// step never brings the cloth closer to the series name's ink.
+    /// step never brings the cloth closer to the design's ink.
     func testBundleClothStepsFaintlyAwayFromTheInk() {
         let pairs: [(cloth: String, ink: String)] = [
             ("#1F3A5F", "#F5EBD7"), ("#EFE3C3", "#2A1E12"), ("#B0182A", "#FFFFFF"),
@@ -541,6 +541,31 @@ final class ShareRenderTests: XCTestCase {
             if !["#000000", "#FFFFFF"].contains(pair.cloth) {
                 XCTAssertGreaterThan(Set(cloths).count, 1, pair.cloth)
             }
+        }
+    }
+
+    /// A bundle letters its series name on its paper label, in dark ink that reads on the cream
+    /// paper whatever the design, sized to the label. A book letters in its own look across its
+    /// whole thickness.
+    func testBundleLettersOnAPaperLabel() {
+        func book(_ id: Int) -> CloudBook {
+            CloudBook(
+                id: id, title: "Book \(id)", author: "Author", coverURL: nil, detailCoverURL: nil,
+                seriesID: 7, seriesName: "Tide Saga", pages: 300)
+        }
+        var look = SpineLook(book: book(1), design: nil, face: nil)
+        (look.foreground, look.uppercase) = (ColorValue(hex: "#F5EBD7")!, true)
+        let single = ShareSpine.letteringLook(StackSpine(books: [book(1)]), look: look)
+        XCTAssertEqual(single.look, look)
+        XCTAssertEqual(single.share, 1)
+
+        let bundle = ShareSpine.letteringLook(StackSpine(books: [book(1), book(2)]), look: look)
+        XCTAssertEqual(bundle.share, PaperLabel.share)
+        XCTAssertLessThan(bundle.share, 1, "Some cloth shows above and below the label")
+        XCTAssertEqual(bundle.look.foreground, PaperLabel.ink)
+        XCTAssertFalse(bundle.look.uppercase)
+        for paper in PaperLabel.paper {
+            XCTAssertGreaterThanOrEqual(paper.contrast(with: bundle.look.foreground), 7)
         }
     }
 
@@ -745,12 +770,14 @@ final class ShareRenderTests: XCTestCase {
                     XCTAssertLessThan(
                         scale, StackLayout.maximumScale([spine], area: area), "\(label) has room")
                     // At that scale, the first option that fits, as `ViewThatFits` takes it,
-                    // letters the title in full.
-                    let thickness = spine.size.height * scale
+                    // letters the title in full, in the look and thickness it's drawn in: a
+                    // bundle's on its label.
+                    let lettering = ShareSpine.letteringLook(spine, look: look(spine.book))
+                    let thickness = spine.size.height * scale * lettering.share
                     let box = ShareSpine.letteringBox(spine, scale: scale)
                     let fits = ShareSpine.options([title], thickness: thickness)
                         .contains { option in
-                            let font = look(spine.book).uiFont(size: option.size)
+                            let font = lettering.look.uiFont(size: option.size)
                             let width =
                                 option.text.split(separator: "\n")
                                 .map {
