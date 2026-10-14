@@ -207,7 +207,7 @@ final class AppModel {
     /// refresh. Preview mode and a rejected login skip it.
     func syncSocial(force: Bool = false) async {
         guard !isPreview, account.isSignedIn, !account.needsReconnect,
-            let accountID = account.summary?.accountID, let token = HardcoverTokenStore().read()
+            let accountID = account.summary?.accountID, let token = account.accessToken()
         else { return }
         if force {
             await social.sync(token: token, accountID: accountID)
@@ -219,7 +219,7 @@ final class AppModel {
     /// Finds a public Hardcover reader by username and adds them to the readers to compare
     /// with (`SocialModel.lookUp(_:token:)`). Needs this iPhone's Hardcover sign-in.
     func lookUpReader(_ username: String) async throws -> ReaderProfile {
-        guard !isPreview, account.isSignedIn, let token = HardcoverTokenStore().read() else {
+        guard !isPreview, let token = account.accessToken() else {
             throw HardcoverError.invalidToken
         }
         return try await social.lookUp(username, token: token)
@@ -227,7 +227,7 @@ final class AppModel {
 
     /// Downloads a chosen reader's library when the last refresh left it out.
     func downloadReader(_ id: Int) async {
-        guard !isPreview, account.isSignedIn, let token = HardcoverTokenStore().read() else {
+        guard !isPreview, let token = account.accessToken() else {
             return
         }
         await social.downloadIfMissing(id, token: token)

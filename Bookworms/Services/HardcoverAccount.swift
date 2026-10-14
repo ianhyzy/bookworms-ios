@@ -93,6 +93,10 @@ final class HardcoverAccount {
         }
     }
 
+    /// The saved access token, read from the Keychain, or `nil` when signed out. Callers read
+    /// it for an explicit request and do not keep it.
+    func accessToken() -> String? { isSignedIn ? tokens.read() : nil }
+
     /// Requests a code, waits for the reader to approve it on Hardcover, and saves the login.
     ///
     /// The `me` query checks the account before the token is saved. Signing in to another
