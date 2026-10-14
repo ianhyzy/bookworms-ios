@@ -10,7 +10,7 @@ import SwiftUI
 /// A share image layout.
 enum ShareTemplate: String, CaseIterable, Identifiable {
     case yearStack, yearInBooks, topFive, hotTakes, spectrum, pile, justFinished, review
-    case currentlyReading
+    case currentlyReading, tasteMatch, bookSwap
 
     var id: Self { self }
 
@@ -25,6 +25,8 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         case .justFinished: "Just Finished"
         case .review: "Review"
         case .currentlyReading: "Currently Reading"
+        case .tasteMatch: "Taste Match"
+        case .bookSwap: "Book Swap"
         }
     }
 
@@ -39,8 +41,14 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         case .justFinished: "book.closed"
         case .review: "quote.bubble"
         case .currentlyReading: "bookmark"
+        case .tasteMatch: "person.2"
+        case .bookSwap: "arrow.left.arrow.right"
         }
     }
+
+    /// Whether the card compares the reader with someone else, and so exists only with
+    /// friends.
+    var isSocial: Bool { self == .tasteMatch || self == .bookSwap }
 
     /// Whether the card features one book, which the reader can choose.
     var isSingleBook: Bool { self == .justFinished || self == .review || self == .currentlyReading }
@@ -56,8 +64,8 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
     }
 
     /// Whether the time frame selects the card's books. Currently Reading shows what is being
-    /// read now, so it has none.
-    var usesTimeFrame: Bool { self != .currentlyReading }
+    /// read now, and Taste Match and Book Swap compare whole libraries, so they have none.
+    var usesTimeFrame: Bool { self != .currentlyReading && !isSocial }
 
     /// The books a single-book card can feature, newest first: the books finished in `frame`,
     /// only reviewed ones for Review, and for Currently Reading every current read, latest start
@@ -81,11 +89,25 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
     /// the books finished in `frame`, oldest first. Pile draws them newest first, as the shelf
     /// lists them, so the newest books land on top. Top Five draws up to five of them, highest
     /// rated first, then most recently finished. Hot Takes draws up to three whose rating
-    /// differs most from Hardcover's average in `direction`.
+    /// differs most from Hardcover's average in `direction`, or with a `match`, from the other
+    /// reader's rating (`TasteMatch.hotTakes(in:direction:)`). Taste Match draws the match's
+    /// agreements and fights when it has a score, and Book Swap its picks for each reader;
+    /// without a `match`, they draw nothing.
     func books(
         from library: [CloudBook], in frame: TimeFrame, bookID: Int? = nil,
-        direction: HotTakeDirection = .lovedMore
+        direction: HotTakeDirection = .lovedMore, match: TasteMatch? = nil
     ) -> [CloudBook] {
+        switch self {
+        case .hotTakes where match != nil:
+            return match?.hotTakes(in: frame, direction: direction).map(\.book) ?? []
+        case .tasteMatch:
+            guard let match, match.score != nil else { return [] }
+            return (match.agreements + match.fights).map(\.book)
+        case .bookSwap:
+            return (match?.forThem ?? []) + (match?.forMe ?? [])
+        default:
+            break
+        }
         if isSingleBook {
             let choices = choices(from: library, in: frame)
             let chosen = (self == .justFinished ? library : choices).first { $0.id == bookID }
@@ -117,6 +139,38 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
             rhs.rating ?? 0, rhs.finished ?? "", rhs.id
         )
     }
+}
+
+/// Which templates the studio offers: the reader's own reading, or comparisons with another
+/// Hardcover reader. Hot Takes is in both, comparing with Hardcover's readers or with the
+/// chosen reader.
+enum ShareMode: String, CaseIterable, Identifiable {
+    case mine, friends
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .mine: "My reading"
+        case .friends: "With friends"
+        }
+    }
+
+    var templates: [ShareTemplate] {
+        switch self {
+        case .mine: ShareTemplate.allCases.filter { !$0.isSocial }
+        case .friends: [.tasteMatch, .hotTakes, .bookSwap]
+        }
+    }
+}
+
+/// The two readers a social card compares, and their comparison.
+struct ShareSocial {
+    let owner: ReaderProfile
+    let reader: ReaderProfile
+    let match: TasteMatch
+    /// Profile photos by reader ID. A reader without one shows their initials.
+    var avatars: [Int: UIImage] = [:]
 }
 
 /// Which disagreements with Hardcover's readers Hot Takes shows.
@@ -206,6 +260,9 @@ struct ShareInput {
     var coverStyle = ShareCoverStyle.threeD
     var direction = HotTakeDirection.lovedMore
     var showsRatings = true
+    /// The readers a social card compares; Hot Takes compares with Hardcover's readers without
+    /// it.
+    var social: ShareSocial?
     /// Varies tilts, offsets, and lengths.
     var seed: UInt64 = 0
     /// The page to draw, from 0, when the card spans several images (`pageCount`).
@@ -264,6 +321,8 @@ struct ShareCanvas: View {
             case .pile: EmptyView()
             case .justFinished, .currentlyReading: FeaturedBookCard(input: input)
             case .review: ReviewCard(input: input)
+            case .tasteMatch: TasteMatchCard(input: input)
+            case .bookSwap: BookSwapCard(input: input)
             }
         }
         .frame(width: input.aspect.size.width, height: input.aspect.size.height)

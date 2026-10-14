@@ -150,7 +150,7 @@ final class SocialModel {
                 following: following, active: active, lookedUp: snapshot?.lookedUp ?? [])
             var failed = 0
             var isFirst = true
-            for id in targets where isStale(id) {
+            for id in targets where isStale(id) && !loadingReaders.contains(id) {
                 if !isFirst { try await Task.sleep(for: pause) }
                 isFirst = false
                 guard generation == self.generation else { return }
@@ -429,11 +429,11 @@ final class SocialModel {
             let rated = mine.filter { ($0.rating ?? 0) >= 0.5 }
             let readers: [(ReaderProfile, Int, (Double, Int) -> Double)] = [
                 (
-                    ReaderProfile(id: -2, username: "robinvale", name: "Robin Vale"), 40,
+                    ReaderProfile(id: -2, username: "robinvale", name: "Robin Vale"), 18,
                     { rating, id in rating + [0, 0, 0.5, -0.5, 0][abs(id) % 5] }
                 ),
                 (
-                    ReaderProfile(id: -3, username: "samokafor", name: "Sam Okafor"), 30,
+                    ReaderProfile(id: -3, username: "samokafor", name: "Sam Okafor"), 22,
                     { rating, id in id % 3 == 0 ? rating : 5.5 - rating }
                 ),
                 (

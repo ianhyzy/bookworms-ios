@@ -190,6 +190,18 @@ final class AppModel {
         }
     }
 
+    /// Whether the Share tab can compare with other readers: signed in to Hardcover on this
+    /// iPhone outside preview mode, or showing Debug builds' fictional readers.
+    var canCompare: Bool {
+        #if DEBUG
+            if SocialSamples.isEnabled { return true }
+        #endif
+        return canLookUpReaders
+    }
+
+    /// Whether this iPhone can ask Hardcover about other readers.
+    var canLookUpReaders: Bool { account.isSignedIn && !isPreview }
+
     /// Refreshes the readers the Share tab compares with when signed in to Hardcover on this
     /// iPhone: when their data is a day old, or at once with `force`, such as a pull to
     /// refresh. Preview mode and a rejected login skip it.
