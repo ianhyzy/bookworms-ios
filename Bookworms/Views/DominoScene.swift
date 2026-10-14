@@ -207,18 +207,23 @@ enum DominoLayout {
     /// day stand in ID order, so the order of `books` does not matter. Past `maximumBooks`, only
     /// the most recent books stand. The last book's days are 0.
     static func chain(_ books: [CloudBook]) -> [(book: CloudBook, days: Int)] {
+        // `finishedDate` parses a string, so each book's is read once rather than per
+        // comparison: a scene of every book sorts hundreds in a frame.
         let ordered = Array(
-            books.sorted {
-                ($0.finishedDate ?? .distantFuture, $0.id) < (
-                    $1.finishedDate ?? .distantFuture, $1.id
-                )
-            }
-            .suffix(maximumBooks))
+            books.map { (book: $0, date: $0.finishedDate) }
+                .sorted {
+                    ($0.date ?? .distantFuture, $0.book.id) < (
+                        $1.date ?? .distantFuture, $1.book.id
+                    )
+                }
+                .suffix(maximumBooks))
         return ordered.indices.map { index in
-            guard index + 1 < ordered.count, let date = ordered[index].finishedDate,
-                let next = ordered[index + 1].finishedDate
-            else { return (ordered[index], 0) }
-            return (ordered[index], max(0, Int((next.timeIntervalSince(date) / 86_400).rounded())))
+            guard index + 1 < ordered.count, let date = ordered[index].date,
+                let next = ordered[index + 1].date
+            else { return (ordered[index].book, 0) }
+            return (
+                ordered[index].book, max(0, Int((next.timeIntervalSince(date) / 86_400).rounded()))
+            )
         }
     }
 
