@@ -5,7 +5,7 @@ import SwiftUI
     import UIKit
 #endif
 
-/// The **Spines** tab: design coverage, generator progress, the Private Cloud Compute quota,
+/// The **Spines** tab: design coverage, generator progress, the designing model and its quota,
 /// the charging preference, and where the library comes from. The toolbar opens the Hardcover
 /// account sheet.
 struct GenerationView: View {
@@ -26,7 +26,7 @@ struct GenerationView: View {
             Form {
                 summary
                 progress
-                privateCloudCompute
+                designModel
                 Section {
                     Toggle(Self.chargingLabel, isOn: $generation.generatesWhileCharging)
                 } footer: {
@@ -143,23 +143,33 @@ struct GenerationView: View {
         }
     }
 
-    private var privateCloudCompute: some View {
+    /// The designing model: Private Cloud Compute with its daily limit, or the third-party
+    /// provider chosen in the Mac's Settings.
+    private var designModel: some View {
         let status = generation.status.model
+        let usesDailyLimit = status?.usesDailyLimit ?? true
         return Section {
             LabeledContent("Availability") {
                 Text(
                     status.map { $0.isAvailable ? "Available" : $0.unavailableReason ?? "" }
                         ?? "Checking")
             }
-            LabeledContent("Daily limit", value: status.map(Self.quotaText) ?? "Checking")
-            if let suggestion = status?.limitIncreaseSuggestion {
-                Button("Increase limit") { suggestion.show() }
+            if usesDailyLimit {
+                LabeledContent("Daily limit", value: status.map(Self.quotaText) ?? "Checking")
+                if let suggestion = status?.limitIncreaseSuggestion {
+                    Button("Increase limit") { suggestion.show() }
+                }
             }
+            #if os(macOS)
+                SettingsLink { Text("Choose Model…") }
+            #endif
         } header: {
-            Text("Private Cloud Compute")
+            Text(status?.designerName ?? "Private Cloud Compute")
         } footer: {
             Text(
-                "Most new designs use two or three requests from your daily limit. Books in a series often reuse a design without a request."
+                usesDailyLimit
+                    ? "Most new designs use two or three requests from your daily limit. Books in a series often reuse a design without a request."
+                    : "Most new designs use two or three requests to this provider, billed to your API account. Books in a series often reuse a design without a request."
             )
         }
     }

@@ -1,6 +1,6 @@
 # Bookworms for iPhone
 
-Bookworms for iPhone is a companion to the [Bookworms Apple TV app](../tvos/README.md). It designs book spines with Apple's Private Cloud Compute model and shares them with the Apple TV through iCloud, shows your spines in a stack or a bookcase and your books in 3D scenes on a desk, and makes share images and videos for social media. It never asks for a Hardcover or AI API key.
+Bookworms for iPhone is a companion to the [Bookworms Apple TV app](../tvos/README.md). It designs book spines with Apple's Private Cloud Compute model and shares them with the Apple TV through iCloud, shows your spines in a stack or a bookcase and your books in 3D scenes on a desk, and makes share images and videos for social media. It never asks for a Hardcover API key, and on the iPhone it needs no AI API key.
 
 The app targets iOS 27 on iPhone and macOS 27 on Apple silicon Macs (see [On the Mac](#on-the-mac)). It gets your library in one of two ways:
 
@@ -80,6 +80,9 @@ The Mac app is a native macOS build of the same target and source, so it reads t
 - Forms use the grouped style, toasts show at the top of the main window, the color picker is the system color well, and Hardcover's approval page opens in the default browser.
 - The Desk scenes take mouse input. Tilt and shaking need device motion, which the Mac lacks, so they are off.
 - Text that names the device says "Mac", including the export credit "Created with Bookworms for Mac".
+- **Settings > Spine design model** chooses who designs spines: Apple's Private Cloud Compute (the default), Anthropic, OpenAI, Google Gemini, or any OpenAI-compatible endpoint with its base URL. Each preset starts with a default model name (`claude-opus-5-5`, `gpt-5`, or `gemini-2.5-flash`) that you can replace. The API key is saved in this Mac's Keychain when you press Return, is never synced, and shows only as **Remove Key** afterward. The provider receives each cover, its title and author, and the colors and font families to choose from, and bills your API account.
+
+The third-party providers plug into Apple's FoundationModels framework as `LanguageModel` implementations (`Bookworms/Services/SpineDesigner.swift`), so `BookAnalyzer` asks them the same questions, with the same image and JSON schemas, as Private Cloud Compute. Each request goes to Anthropic's Messages API with structured outputs, OpenAI's or the custom endpoint's chat completions with a JSON schema response format, or Gemini's `generateContent` with a response JSON schema; the schema is also stated in the system prompt for endpoints that ignore it. Their designs keep the shared generator version, so the iPhone does not replace them, and record the model in `provenance`, such as `model:anthropic/claude-opus-5-5`. A rejected key, unknown model, or bad request stops the run with the provider's message; a rate limit or outage stops it until a later run.
 
 The Mac menu bar companion in `../macos` is a separate app that designs spines with the on-device model.
 

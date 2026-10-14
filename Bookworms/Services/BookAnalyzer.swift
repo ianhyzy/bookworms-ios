@@ -3,7 +3,8 @@ import Foundation
 import FoundationModels
 import Vision
 
-/// Private Cloud Compute's availability and the user's daily quota, as the Spines tab shows them.
+/// The spine designer's availability and, for Private Cloud Compute, the user's daily quota, as
+/// the Spines tab shows them.
 struct ModelStatus: Sendable {
     enum Quota: Sendable, Equatable {
         case belowLimit, approachingLimit, limitReached
@@ -11,7 +12,11 @@ struct ModelStatus: Sendable {
 
     /// Which model answers the cover-lettering question, which needs image input.
     enum CoverReader: Sendable {
-        case privateCloudCompute, onDevice, none
+        /// The designing model reads the cover itself.
+        case designModel
+        /// The on-device model reads the cover for a designing model without image input.
+        case onDevice
+        case none
     }
 
     var isAvailable: Bool
@@ -24,6 +29,10 @@ struct ModelStatus: Sendable {
     /// The system flow that raises the limit, such as an iCloud+ upgrade, when one exists.
     var limitIncreaseSuggestion:
         PrivateCloudComputeLanguageModel.QuotaUsage.LimitIncreaseSuggestion?
+    /// The designing model's provider, as the Spines tab names it.
+    var designerName = "Private Cloud Compute"
+    /// Whether requests count against Private Cloud Compute's daily limit.
+    var usesDailyLimit = true
 }
 
 /// Designs a spine from a cover with local OCR, sampled cover colors, Apple's Private Cloud
@@ -85,8 +94,17 @@ actor BookAnalyzer {
         ("regular", 400), ("medium", 500), ("semibold", 600), ("bold", 700),
     ]
 
-    /// Reads Private Cloud Compute's availability and quota, creating the model on first use.
+    /// Reads the designer's availability: a third-party provider's settings, or Private Cloud
+    /// Compute's availability and quota, creating the model on first use.
     func status() -> ModelStatus {
+        let designer = SpineDesigner.current
+        guard designer.provider == .apple else {
+            return ModelStatus(
+                isAvailable: designer.problem == nil, unavailableReason: designer.problem,
+                coverReader: .designModel, quota: .belowLimit, quotaResetDate: nil,
+                limitIncreaseSuggestion: nil, designerName: designer.provider.name,
+                usesDailyLimit: false)
+        }
         #if NO_PCC
             return ModelStatus(
                 isAvailable: false,
@@ -120,7 +138,7 @@ actor BookAnalyzer {
         let onDevice = SystemLanguageModel.default
         let reader: ModelStatus.CoverReader =
             if model.capabilities.contains(.vision) {
-                .privateCloudCompute
+                .designModel
             } else if onDevice.isAvailable, onDevice.capabilities.contains(.vision) {
                 .onDevice
             } else {
@@ -167,25 +185,33 @@ actor BookAnalyzer {
     private func makeDesign(
         book: CloudBook, accountID: String, workItemHash: String, cover: CoverImage
     ) async throws -> SpineDesignV1 {
-        #if NO_PCC
-            // Device builds without the managed entitlement must never create the model.
-            throw CompanionError.modelUnavailable
-        #endif
-        let pcc = pccModel()
-        guard pcc.isAvailable else { throw CompanionError.modelUnavailable }
-        let usage = pcc.quotaUsage
-        if usage.isLimitReached { throw CompanionError.quotaReached(usage.resetDate) }
+        let designer = SpineDesigner.current
+        let model: any LanguageModel
+        if designer.provider == .apple {
+            #if NO_PCC
+                // Device builds without the managed entitlement must never create the model.
+                throw CompanionError.modelUnavailable
+            #endif
+            let pcc = pccModel()
+            guard pcc.isAvailable else { throw CompanionError.modelUnavailable }
+            let usage = pcc.quotaUsage
+            if usage.isLimitReached { throw CompanionError.quotaReached(usage.resetDate) }
+            model = pcc
+        } else {
+            if let problem = designer.problem { throw CompanionError.providerRejected(problem) }
+            model = ProviderModel(designer: designer)
+        }
         let palette = try CoverPalette.sample(cover.image)
         let inks = CoverPalette.inkCandidates(for: palette)
         let observedText = String(try recognizeText(in: cover.image).prefix(500))
-        let session = LanguageModelSession(model: pcc, instructions: Self.instructions)
+        let session = LanguageModelSession(model: model, instructions: Self.instructions)
         // Guided generation favors the first listed choice when the model has no preference, so
         // each book sees the styles, then its style's families, in a reproducible order of its own.
         var generator = SeededGenerator(seed: UInt64(bitPattern: Int64(book.id)))
         let styles = SpineFontStyle.allCases.shuffled(using: &generator)
         let style: SpineFontStyle
         switch status().coverReader {
-        case .privateCloudCompute:
+        case .designModel:
             style = try await Self.chooseStyle(
                 cover: cover.image, styles: styles, session: session,
                 contextOptions: ContextOptions(includeSchemaInPrompt: true, reasoningLevel: .light))
@@ -231,7 +257,7 @@ actor BookAnalyzer {
                             choice: choice, style: style, font: (family, font),
                             uppercase: uppercase, palette: palette, book: book,
                             accountID: accountID, workItemHash: workItemHash,
-                            coverHash: cover.hash)
+                            coverHash: cover.hash, provenance: designer.provenance)
                     }
                     missingGlyphs = true
                 } else {
@@ -246,7 +272,8 @@ actor BookAnalyzer {
         guard missingGlyphs, !unavailable else { throw CompanionError.invalidDesign }
         return try Self.design(
             choice: choice, style: style, font: nil, uppercase: uppercase, palette: palette,
-            book: book, accountID: accountID, workItemHash: workItemHash, coverHash: cover.hash)
+            book: book, accountID: accountID, workItemHash: workItemHash, coverHash: cover.hash,
+            provenance: designer.provenance)
     }
 
     /// Maps a model framework error to the companion's error, or returns `nil` for other errors.
@@ -265,6 +292,13 @@ actor BookAnalyzer {
             case .timeout: return .modelBusy(nil)
             default: return .invalidDesign
             }
+        case let error as ProviderError:
+            // A rejected key, model name, or request repeats for every book, so it stops the run.
+            if error.isTransient { return .modelBusy(error.retryAfter) }
+            if error.isAuthorization || [400, 404].contains(error.status) {
+                return .providerRejected(error.localizedDescription)
+            }
+            return .invalidDesign
         case is GeneratedContent.ParsingError: return .invalidDesign
         case is SystemLanguageModel.Error: return .modelUnavailable
         default: return nil
@@ -523,7 +557,7 @@ actor BookAnalyzer {
         choice: DesignChoice, style: SpineFontStyle,
         font: (family: SpineFamily, instance: DownloadedFont)?, uppercase: Bool,
         palette: [ColorValue], book: CloudBook, accountID: String, workItemHash: String,
-        coverHash: String
+        coverHash: String, provenance: String? = nil
     ) throws -> SpineDesignV1 {
         // The background may move in lightness when the ink alone cannot reach the target.
         let (foreground, background) = SpineContrast.resolve(
@@ -538,7 +572,7 @@ actor BookAnalyzer {
             accentHex: accent.hex, typeface: style.fallbackTypeface,
             weight: choice.weight, uppercase: uppercase,
             fontFamily: font?.family.rawValue, fontPostScriptName: font?.instance.postScriptName,
-            instanceWeight: font?.instance.weight)
+            instanceWeight: font?.instance.weight, provenance: provenance)
         try design.validate()
         return design
     }

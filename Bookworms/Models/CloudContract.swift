@@ -347,6 +347,8 @@ enum CompanionError: LocalizedError, Sendable {
     /// iCloud holds another design than the one the reader recolored, such as a redesign from
     /// another device.
     case designChanged
+    /// A third-party spine designer rejected the request or is not set up, with its reason.
+    case providerRejected(String)
 
     var errorDescription: String? {
         switch self {
@@ -374,6 +376,7 @@ enum CompanionError: LocalizedError, Sendable {
         case .cloudConflict: "A concurrent iCloud update prevented saving."
         case .designChanged:
             "The spine was redesigned on another device, so these colors were not saved."
+        case .providerRejected(let reason): reason
         }
     }
 }

@@ -46,7 +46,7 @@ final class HardcoverAccount {
     private(set) var libraryRevision = 0
     @ObservationIgnored var onLibraryChange: (() -> Void)?
 
-    @ObservationIgnored private let tokens: HardcoverTokenStore
+    @ObservationIgnored private let tokens: KeychainSecret
     @ObservationIgnored private let client: HardcoverClient
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let libraryURL: URL
@@ -67,7 +67,7 @@ final class HardcoverAccount {
 
     /// Tests pass their own token service, user defaults, and library file.
     init(
-        tokens: HardcoverTokenStore = HardcoverTokenStore(), client: HardcoverClient? = nil,
+        tokens: KeychainSecret = KeychainSecret(), client: HardcoverClient? = nil,
         defaults: UserDefaults = .standard, libraryURL: URL = PhoneLibrary.url
     ) {
         self.tokens = tokens
@@ -120,7 +120,7 @@ final class HardcoverAccount {
                 signIn = .connecting
                 let user = try await client.account(token: token)
                 try Task.checkCancellation()
-                try tokens.save(token)
+                do { try tokens.save(token) } catch { throw HardcoverError.credentialNotSaved }
                 let accountID = String(user.id)
                 if summary?.accountID != accountID { PhoneLibrary.delete(at: libraryURL) }
                 save(Summary(accountID: accountID, username: user.username))
@@ -255,18 +255,23 @@ struct PhoneLibrary: Codable, Equatable, Sendable {
     }
 }
 
-/// Keeps the Hardcover access token in this device's Keychain.
+/// Keeps one secret, such as the Hardcover access token or an AI provider's API key, in this
+/// device's Keychain.
 ///
 /// The item is readable after the first unlock, never synchronizable, and does not move to
 /// another device through a backup. Tests pass their own service name.
-struct HardcoverTokenStore: Sendable {
+struct KeychainSecret: Sendable {
+    /// The Keychain refused to save the secret.
+    struct NotSaved: Error {}
+
     var service = "gay.ian.Bookworms.iOS.hardcover"
+    var account = "access-token"
 
     private var query: [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: "access-token",
+            kSecAttrAccount as String: account,
             kSecAttrSynchronizable as String: false,
         ]
     }
@@ -291,7 +296,7 @@ struct HardcoverTokenStore: Sendable {
         if status == errSecItemNotFound {
             status = SecItemAdd(query.merging(attributes) { $1 } as CFDictionary, nil)
         }
-        guard status == errSecSuccess else { throw HardcoverError.credentialNotSaved }
+        guard status == errSecSuccess else { throw NotSaved() }
     }
 
     func delete() {
