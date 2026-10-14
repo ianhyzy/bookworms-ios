@@ -95,8 +95,14 @@ struct GenerationView: View {
                 ProgressView(value: Double(done), total: Double(max(done + status.queue, 1))) {
                     Text(status.phase)
                 } currentValueLabel: {
-                    Text(status.currentTitle ?? "\(done) of \(done + status.queue)")
-                        .lineLimit(1)
+                    Group {
+                        if let book = status.currentBook {
+                            BookText(book.title, of: book)
+                        } else {
+                            Text("\(done) of \(done + status.queue)")
+                        }
+                    }
+                    .lineLimit(1)
                 }
             } else {
                 LabeledContent("Status", value: status.phase)

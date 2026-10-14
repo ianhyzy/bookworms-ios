@@ -348,7 +348,7 @@ private struct ShelfCaption: View {
                     .foregroundStyle(ShelfPalette.paper.opacity(0.6))
                     .accessibilityHidden(true)
             }
-            Text(book.title)
+            BookText(book.title, of: book)
                 .font(.title3.weight(.semibold))
                 .fontDesign(.serif)
                 .lineLimit(2)

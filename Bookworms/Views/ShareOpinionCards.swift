@@ -45,7 +45,7 @@ struct ReviewCard: View {
                         ShareStyle.label("My review").foregroundStyle(ShareStyle.gold)
                         ShareFittingText(
                             forms: ShareStyle.titles(book), size: aspect == .square ? 52 : 60,
-                            minimumScale: 0.6, lines: 3
+                            minimumScale: 0.6, lines: 3, book: book
                         ) {
                             ShareStyle.serif($0, .semibold)
                         }
@@ -60,7 +60,7 @@ struct ReviewCard: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                quote(review)
+                quote(review, of: book)
             }
             .foregroundStyle(ShareStyle.cream.color)
             .padding(aspect.insets)
@@ -69,7 +69,7 @@ struct ReviewCard: View {
 
     /// The review beside a gold rule, at the largest size whose full text fits. Past the
     /// smallest size, the text truncates at the bottom.
-    private func quote(_ review: String) -> some View {
+    private func quote(_ review: String, of book: CloudBook) -> some View {
         let (limit, sizes): (Int, [CGFloat]) =
             switch input.aspect {
             case .story: (720, [72, 60, 52, 46, 40, 36])
@@ -79,7 +79,7 @@ struct ReviewCard: View {
         let excerpt = ShareStyle.excerpt(review, limit: limit)
         return ViewThatFits(in: .vertical) {
             ForEach(sizes, id: \.self) { size in
-                Text(excerpt)
+                BookText(excerpt, of: book)
                     .font(ShareStyle.serif(size))
                     .lineSpacing(size * 0.18)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -171,7 +171,7 @@ struct HotTakesCard: View {
         let details = VStack(alignment: isSquare ? .leading : .center, spacing: 12) {
             ShareFittingText(
                 forms: ShareStyle.titles(book), size: isSquare ? 52 : 60, minimumScale: 0.6,
-                lines: 2
+                lines: 2, book: book
             ) {
                 ShareStyle.serif($0, .semibold)
             }
@@ -223,7 +223,7 @@ struct HotTakesCard: View {
             VStack(alignment: .leading, spacing: 10) {
                 ShareFittingText(
                     forms: ShareStyle.titles(book), size: isSquare ? 38 : 42, minimumScale: 0.8,
-                    lines: isSquare ? 1 : 2
+                    lines: isSquare ? 1 : 2, book: book
                 ) {
                     ShareStyle.serif($0, .semibold)
                 }

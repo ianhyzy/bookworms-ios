@@ -24,7 +24,8 @@ struct WorkerSnapshot: Sendable, Codable {
     var queue = 0
     var completed = 0
     var failed = 0
-    var currentTitle: String?
+    /// The book being designed.
+    var currentBook: CloudBook?
     var error: String?
     var model: ModelStatus?
     /// When a stopped run should resume: the quota reset or a service's retry delay.
@@ -131,7 +132,7 @@ actor SpineWorker {
         // The work kept changing. The books left in `queue` keep the charging task scheduled.
         if changed { snapshot.phase = "Ready to continue" }
         snapshot.isRunning = false
-        snapshot.currentTitle = nil
+        snapshot.currentBook = nil
         snapshot.lastRunAt = Date()
         isRunning = false
         publish()
@@ -186,7 +187,7 @@ actor SpineWorker {
             for book in queue {
                 try Task.checkCancellation()
                 snapshot.phase = "Designing spines"
-                snapshot.currentTitle = book.title
+                snapshot.currentBook = book
                 publish()
                 let workHash = CloudContract.workItemHash(accountID: accountID, book: book)
                 let recordName = Self.recordName(accountID, book)

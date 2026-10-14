@@ -139,7 +139,7 @@ struct BookDetailView: View {
 
     private var header: some View {
         VStack(spacing: 6) {
-            Text(book.title)
+            BookText(book.title, of: book)
                 .font(.title2.weight(.semibold))
                 .fontDesign(.serif)
                 .accessibilityAddTraits(.isHeader)
@@ -161,7 +161,7 @@ struct BookDetailView: View {
             VStack(spacing: 24) {
                 Button("Change cover", systemImage: "photo.on.rectangle") { choosesCover = true }
                     .buttonStyle(.bordered)
-                CardGrid(cards: DetailCard.details(of: book, about: about))
+                CardGrid(cards: DetailCard.details(of: book, about: about), book: book)
             }
         case .journal:
             journal
@@ -178,7 +178,7 @@ struct BookDetailView: View {
     @ViewBuilder private var journal: some View {
         let cards = DetailCard.journal(of: book)
         VStack(spacing: 24) {
-            CardGrid(cards: cards)
+            CardGrid(cards: cards, book: book)
             if !cards.contains(where: { if case .review = $0 { true } else { false } }) {
                 Text(
                     cards.isEmpty
@@ -605,6 +605,8 @@ private func caption(_ title: String, systemImage: String) -> some View {
 /// accessibility text sizes. Each row is as tall as its tallest card.
 private struct CardGrid: View {
     let cards: [DetailCard]
+    /// The book the cards describe, whose own text the cards letter with `BookText`.
+    let book: CloudBook
 
     @Environment(\.dynamicTypeSize) private var typeSize
 
@@ -614,7 +616,9 @@ private struct CardGrid: View {
                 DetailCard.rows(cards, oneColumn: typeSize.isAccessibilitySize), id: \.self
             ) { row in
                 HStack(alignment: .top, spacing: 12) {
-                    ForEach(row, id: \.self) { DetailCardView(card: $0, fillsRow: row.count == 1) }
+                    ForEach(row, id: \.self) {
+                        DetailCardView(card: $0, book: book, fillsRow: row.count == 1)
+                    }
                 }
                 // Measures the row at its tallest card's height, then offers every card that
                 // height.
@@ -627,12 +631,13 @@ private struct CardGrid: View {
 /// One card of a `CardGrid`. VoiceOver reads each card as one element.
 private struct DetailCardView: View {
     let card: DetailCard
+    let book: CloudBook
     let fillsRow: Bool
 
     var body: some View {
         switch card {
         case .about(let text):
-            AboutCard(text: text)
+            AboutCard(text: text, book: book)
         case .rating(let average, let count, let counts, let yours):
             RatingCard(
                 average: average, count: count, counts: counts, yours: yours, isWide: fillsRow)
@@ -670,7 +675,7 @@ private struct DetailCardView: View {
         case .review(let review):
             Card {
                 caption("Your review", systemImage: "text.quote")
-                Text(review)
+                BookText(review, of: book)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
@@ -704,6 +709,7 @@ private struct FactCard: View {
 /// longer. A hidden copy at full height detects whether the six lines cut it off.
 private struct AboutCard: View {
     let text: String
+    let book: CloudBook
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isExpanded = false
@@ -713,7 +719,7 @@ private struct AboutCard: View {
     var body: some View {
         Card {
             caption("About", systemImage: "text.alignleft")
-            Text(text)
+            BookText(text, of: book)
                 .lineLimit(isExpanded ? nil : 6)
                 .textSelection(.enabled)
                 .onGeometryChange(for: CGFloat.self) {

@@ -434,8 +434,11 @@ struct ShareSpine: View {
         }
         .frame(width: length, height: thickness)
         .overlay(alignment: .leading) {
-            Self.lettering(spine.titles, look: look, width: box.width, thickness: thickness)
-                .padding(.leading, box.leading)
+            Self.lettering(
+                spine.titles, of: count > 1 ? nil : spine.book, look: look, width: box.width,
+                thickness: thickness
+            )
+            .padding(.leading, box.leading)
         }
         .overlay {
             if count > 1 { Tie(length: length, thickness: thickness, count: count) }
@@ -566,14 +569,15 @@ struct ShareSpine: View {
     /// spine thick enough for two lines at `wrappedLettering`, on two balanced lines. Two lines
     /// take a smaller size than one. So a long title wraps on a thick spine before a subtitle
     /// goes, and a subtitle goes before the lettering shrinks. When nothing fits, the last form
-    /// truncates at `minimumLettering`.
-    static func lettering(_ forms: [String], look: SpineLook, width: CGFloat, thickness: CGFloat)
-        -> some View
-    {
+    /// truncates at `minimumLettering`. Forms of `book`'s own title letter its "house" in blue
+    /// (`BookText`); a bundle's series name passes no book.
+    static func lettering(
+        _ forms: [String], of book: CloudBook?, look: SpineLook, width: CGFloat, thickness: CGFloat
+    ) -> some View {
         let options = options(forms.map(look.text), thickness: thickness)
         return ViewThatFits(in: [.horizontal, .vertical]) {
             ForEach(options.indices, id: \.self) { index in
-                Text(options[index].text)
+                BookText(options[index].text, of: book, on: look)
                     .font(look.font(size: options[index].size))
                     .lineLimit(options[index].lines)
             }
@@ -940,7 +944,7 @@ struct FeaturedBookCard: View {
             }
             ShareFittingText(
                 forms: ShareStyle.titles(book), size: isSquare ? 64 : 80, minimumScale: 0.5,
-                lines: isSquare ? 4 : 3
+                lines: isSquare ? 4 : 3, book: book
             ) {
                 ShareStyle.serif($0, .semibold)
             }
@@ -1077,7 +1081,9 @@ struct TopFiveCard: View {
                 .foregroundStyle(ShareStyle.gold)
                 .frame(width: 44)
             VStack(alignment: .leading, spacing: 0) {
-                ShareFittingText(forms: ShareStyle.titles(book), size: 38, minimumScale: 0.8) {
+                ShareFittingText(
+                    forms: ShareStyle.titles(book), size: 38, minimumScale: 0.8, book: book
+                ) {
                     ShareStyle.serif($0, .semibold)
                 }
                 if showsAuthor {

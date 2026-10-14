@@ -58,7 +58,7 @@ struct SpineView: View {
         let inset = max(14, length * 0.035) + max(2, thickness * 0.07) + thickness * 0.18
         let titleSize = thickness * 0.5
         return HStack(spacing: thickness * 0.3) {
-            Text(look.text(book.spineTitle))
+            BookText(look.text(book.spineTitle), of: book, on: look)
                 .font(look.font(size: titleSize))
                 .lineLimit(thickness >= 64 ? 2 : 1)
                 .minimumScaleFactor(0.3)

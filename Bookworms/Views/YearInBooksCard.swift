@@ -379,7 +379,7 @@ struct YearInBooksCard: View {
                     ForEach(entries, id: \.book.id) { entry in
                         ShareFittingText(
                             forms: ShareStyle.titles(entry.book), size: 34,
-                            minimumScale: 30 / 34, lines: 2
+                            minimumScale: 30 / 34, lines: 2, book: entry.book
                         ) {
                             ShareStyle.serif($0, .semibold)
                         }
