@@ -8,7 +8,7 @@ import UIKit
 /// lighting the covers, spines, and page edges that face the camera, and the table falls off
 /// into the dark room outside the pool, which also hides the repeats of the table's texture.
 /// An image-based light, a dim room drawn in code with the lamp's glow in it, lights the
-/// shadows and gives glossy jackets something to reflect. Each lit entity receives it through
+/// shadows and gives the jackets' sheen something to reflect. Each lit entity receives it through
 /// `light(_:)`. Dust motes drift through the beam while `setDust(true)`.
 ///
 /// Scene units are decimeters, but RealityKit treats them as meters, so the lamp's intensity
@@ -111,7 +111,7 @@ final class DeskStage {
     }
 
     /// Waits until the room's light reaches the scene, as a still image needs before it
-    /// renders.
+    /// renders. `build(pool:radius:)` starts the light; before it, this returns at once.
     func lit() async { await environment?.value }
 
     /// Lets `entity` reflect the room and be lit by it.
@@ -160,8 +160,9 @@ final class DeskStage {
     ///
     /// It hangs high above the pool, toward the camera and a little to its right, about 61
     /// degrees up: it lights the faces that turn toward the camera, its shadows fall up and to
-    /// the left of the books, where the camera sees them, and flat glossy covers reflect it
-    /// away from the camera. Over the pile's pool it hangs above the camera, so above every book
+    /// the left of the books, where the camera sees them, and flat covers reflect it away from
+    /// the camera, though covers that tilt toward the camera reflect it into view (see
+    /// `BookFactory.finish`). Over the pile's pool it hangs above the camera, so above every book
     /// in view. It aims at the pool's middle. Full light spans the middle of the pool and fades
     /// out past its edge. Angles are the cone's full angles, in degrees.
     nonisolated static func lampPlacement(pool: SIMD3<Float>, radius: Float) -> (
