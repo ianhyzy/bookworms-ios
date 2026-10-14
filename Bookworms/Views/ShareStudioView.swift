@@ -177,6 +177,9 @@ struct ShareStudioView: View {
                     .padding(24)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     Form { settings(hasNoBooks: hasNoBooks) }
+                        // One background behind the preview and the settings, under one
+                        // toolbar.
+                        .scrollContentBackground(.hidden)
                         .frame(width: 400)
                 }
             } else {

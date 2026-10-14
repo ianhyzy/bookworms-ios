@@ -72,7 +72,9 @@ The sheet stays open when the library arrives. Preview mode ignores the sign-in,
 
 The Mac app is a native macOS build of the same target and source, so it reads the same library and saves designs the Apple TV picks up. `Bookworms/Support/AppKitBridge.swift` names AppKit's image, color, and font types after UIKit's and adds the UIKit members the shared drawing code uses. Its differences from the iPhone:
 
-- It stays running in the menu bar after its window closes. The **Bookworms** menu bar item shows design progress and offers **Generate Now** or **Stop**, **Open Bookworms**, **Launch at Login**, and **Quit Bookworms**.
+- The sections (**Share**, **Library**, **Desk**, and **Spines**) are in a sidebar. The **Go** menu switches them with Command-1 through Command-4, and the **Spines** menu offers **Generate Now** or **Stop Generating** (Shift-Command-G).
+- **Bookworms > Settings…** (Command-comma) holds **Generate while idle**, **Launch at Login**, and the Hardcover account.
+- It stays running in the menu bar after its window closes. The **Bookworms** menu bar item shows design progress and offers **Generate Now** or **Stop Generating**, **Open Bookworms**, **Launch at Login**, **Settings…**, and **Quit Bookworms**.
 - **Generate while idle** replaces **Generate while charging**. It schedules the same background run with `NSBackgroundActivityScheduler`, which macOS starts when the Mac is idle, with or without a window open. A **Generate now** run keeps going behind other windows.
 - In a regular-width window, **Share** shows the preview beside a 400-point column of settings, and the page dots choose a crowded Year Stack's page. **Share** opens the macOS sharing picker.
 - Forms use the grouped style, toasts show at the top of the main window, the color picker is the system color well, and Hardcover's approval page opens in the default browser.

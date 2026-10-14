@@ -117,6 +117,12 @@ struct BookwormsApp: App {
                     .frame(minWidth: 760, minHeight: 560)
             }
             .defaultSize(width: 1180, height: 820)
+            .commands { BookwormsCommands(model: model, generation: generation) }
+            Settings {
+                MacSettingsView()
+                    .environment(model)
+                    .environment(generation)
+            }
             MenuBarExtra("Bookworms", systemImage: "books.vertical") {
                 BookwormsMenu()
                     .environment(model)
@@ -155,6 +161,10 @@ struct RootView: View {
             Tab("Desk", systemImage: "lamp.desk", value: .desk) { DeskView().tint(.accentColor) }
             Tab("Spines", systemImage: "wand.and.sparkles", value: .spines) { GenerationView() }
         }
+        #if os(macOS)
+            // A Mac app lists its sections in a Liquid Glass sidebar rather than a tab bar.
+            .tabViewStyle(.sidebarAdaptable)
+        #endif
         // In light appearance, the bar over Library's and Desk's dark wall leaves the default
         // blue with almost no contrast, so their lamp marks the selected tab.
         .tint([.library, .desk].contains(model.selectedTab) ? ShelfPalette.lamp : nil)
