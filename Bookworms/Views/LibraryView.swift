@@ -14,7 +14,6 @@ struct LibraryView: View {
     @Environment(AppModel.self) private var model
     @AppStorage("BookwormsShelfMode") private var mode = ShelfMode.stack
     @AppStorage("BookwormsShelfSort") private var sort = ShelfSort.finished
-    @AppStorage("BookwormsShelfDesignedOnly") private var designedOnly = false
     @AppStorage("BookwormsLibraryTime") private var time = LibraryTime.last12Months
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The centered book, shared by both modes so switching keeps the reader's place.
@@ -27,15 +26,15 @@ struct LibraryView: View {
 
     var body: some View {
         let read = readBooks
-        let books = model.library.map { shownBooks(of: read, in: $0) } ?? []
+        let books = model.library == nil ? [] : shownBooks(of: read)
         NavigationStack(path: $path) {
             content(read: read, books: books)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background { ShelfPalette.wall.ignoresSafeArea() }
                 .modifier(
                     LibraryBar(
-                        pullOut: pullOut, mode: $mode, sort: $sort, designedOnly: $designedOnly,
-                        time: $time, years: LibraryTime.years(in: read),
+                        pullOut: pullOut, mode: $mode, sort: $sort, time: $time,
+                        years: LibraryTime.years(in: read),
                         count: read.isEmpty ? nil : books.count)
                 )
                 .navigationDestination(for: Int.self) { id in
@@ -51,7 +50,6 @@ struct LibraryView: View {
         // empty state.
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
         .onChange(of: sort) { recenter() }
-        .onChange(of: designedOnly) { recenter() }
         .onChange(of: time) { recenter() }
         // The shelf's controls return as a pulled-out book flies back, and a book can only
         // return to a spine that is still where it left it.
@@ -75,16 +73,10 @@ struct LibraryView: View {
             // Scrolls so that at accessibility sizes the actions stay above the tab bar.
             ScrollView {
                 ContentUnavailableView {
-                    Label(emptyTitle, systemImage: designedOnly ? "wand.and.sparkles" : "calendar")
+                    Label("No books in \(time.title)", systemImage: "calendar")
                 } description: {
-                    Text(
-                        designedOnly
-                            ? "Spines appear here once they are designed."
-                            : "Books you finish in this time appear here.")
+                    Text("Books you finish in this time appear here.")
                 } actions: {
-                    if designedOnly {
-                        Button("Show all books") { designedOnly = false }
-                    }
                     if time != .allTime {
                         Button("Show All Time") { time = .allTime }
                     }
@@ -123,15 +115,6 @@ struct LibraryView: View {
         }
     }
 
-    /// The empty state's title when the time or **Designed only** leaves no books.
-    private var emptyTitle: String {
-        switch (designedOnly, time) {
-        case (true, .allTime): "No designed spines yet"
-        case (true, _): "No designed spines in \(time.title)"
-        case (false, _): "No books in \(time.title)"
-        }
-    }
-
     private func centerPulledBook() {
         guard mode == .stack, !pullOut.upright, let id = pullOut.book?.id,
             pullOut.showsText || pullOut.isReturning
@@ -143,10 +126,9 @@ struct LibraryView: View {
     /// and other unread shelves stay off.
     private var readBooks: [CloudBook] { model.books.filter(\.hasBeenRead) }
 
-    /// The books of `read` in the chosen time, order, and filter.
-    private func shownBooks(of read: [CloudBook], in library: LibrarySnapshot) -> [CloudBook] {
+    /// The books of `read` in the chosen time and order.
+    private func shownBooks(of read: [CloudBook]) -> [CloudBook] {
         var books = sort.sorted(time.books(in: read))
-        if designedOnly { books = books.filter { library.designs[$0.id] != nil } }
         #if DEBUG
             // `-BookwormsShareSamples <n>` adds fictional reviews for the details' Journal.
             books = ShareDebug.samples(books)
@@ -154,11 +136,11 @@ struct LibraryView: View {
         return books
     }
 
-    /// Returns to the first book after the time, order, or filter changes.
+    /// Returns to the first book after the time or order changes.
     private func recenter() {
         pullOut.close()
-        guard let library = model.library else { return }
-        centeredID = shownBooks(of: readBooks, in: library).first?.id
+        guard model.library != nil else { return }
+        centeredID = shownBooks(of: readBooks).first?.id
     }
 
     #if DEBUG
@@ -167,8 +149,8 @@ struct LibraryView: View {
         /// `-BookwormsOpenBook <bookID>` centers that book and, two seconds later, pulls it out
         /// to its details, or pushes them with Reduce Motion on.
         private func applyDebugArguments() {
-            guard let library = model.library else { return }
-            let books = shownBooks(of: readBooks, in: library)
+            guard model.library != nil else { return }
+            let books = shownBooks(of: readBooks)
             let defaults = UserDefaults.standard
             if let index = defaults.string(forKey: "BookwormsShelfScrollTo").flatMap(Int.init),
                 books.indices.contains(index)
@@ -195,9 +177,8 @@ struct LibraryView: View {
 /// Library's title, subtitle, and **View options** menu, or, while a book's details show over
 /// the shelf, **Back** and the book's **Share**.
 ///
-/// The menu follows Photos: **View as**, **3D Books** for Stack, **Time**, **Sort by**,
-/// **Designed only**, and **Remove Filters** while the time or **Designed only** differs from
-/// its default. Its symbol fills meanwhile, as Mail's filter button does.
+/// The menu follows Photos: **View as**, **3D Books** for Stack, **Time**, **Sort by**, and
+/// **Remove Filters** while the time differs from its default. Its symbol fills meanwhile, as Mail's filter button does.
 ///
 /// A modifier of its own, so a book's pull-out and return update only the bar, not the
 /// library's body, which sorts the library.
@@ -205,7 +186,6 @@ private struct LibraryBar: ViewModifier {
     let pullOut: ShelfPullOut
     @Binding var mode: ShelfMode
     @Binding var sort: ShelfSort
-    @Binding var designedOnly: Bool
     @Binding var time: LibraryTime
     /// The years with read books, newest first, for **Year**.
     let years: [Int]
@@ -216,8 +196,8 @@ private struct LibraryBar: ViewModifier {
     /// How **Stack** draws its books, which `SpineCarousel` reads.
     @AppStorage("BookwormsStackStyle") private var stackStyle = StackStyle.flat
 
-    /// Whether the time or **Designed only** differs from its default.
-    private var isFiltered: Bool { time != .last12Months || designedOnly }
+    /// Whether the time differs from its default.
+    private var isFiltered: Bool { time != .last12Months }
 
     func body(content: Content) -> some View {
         content
@@ -296,14 +276,10 @@ private struct LibraryBar: ViewModifier {
                 ForEach(ShelfSort.allCases) { Text($0.title).tag($0) }
             }
             .pickerStyle(.menu)
-            Toggle("Designed only", isOn: $designedOnly)
         }
         if isFiltered {
             Section {
-                Button("Remove Filters", systemImage: "xmark.circle") {
-                    time = .last12Months
-                    designedOnly = false
-                }
+                Button("Remove Filters", systemImage: "xmark.circle") { time = .last12Months }
             }
         }
     }

@@ -14,7 +14,6 @@ struct DeskView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("BookwormsShelfSort") private var sort = ShelfSort.finished
-    @AppStorage("BookwormsShelfDesignedOnly") private var designedOnly = false
     /// Whether the pile drops period by period, which **Back to desk** hands on.
     @AppStorage("BookwormsPileByPeriod") private var dropsByPeriod = false
     /// The scenes' time frame as `TimeFrame.setting` writes it; empty for every book.
@@ -28,7 +27,7 @@ struct DeskView: View {
 
     /// The books the desk shows, and the bar's time frame button for them.
     private struct Shelf {
-        /// The time frame's books, in the desk's order and filter.
+        /// The time frame's books, in the desk's order.
         let books: [CloudBook]
         /// The books the Desk scene drops, which also stand as the dominoes.
         let dropped: [CloudBook]
@@ -45,8 +44,7 @@ struct DeskView: View {
                 .modifier(
                     DeskBar(
                         liftedDetails: liftedDetails, desk: desk, chip: shelf.chip, frame: frame,
-                        sort: $sort, designedOnly: $designedOnly,
-                        canSetUp: !shelf.dropped.isEmpty
+                        sort: $sort, canSetUp: !shelf.dropped.isEmpty
                     ) {
                         switch desk.mode {
                         case .desk:
@@ -73,27 +71,6 @@ struct DeskView: View {
         if let library = model.library {
             if !library.books.contains(where: \.hasBeenRead) {
                 NoBooksYetView()
-            } else if shelf.books.isEmpty {
-                // Only Designed only empties a scene: a time frame always has books.
-                // Scrolls so that at accessibility sizes the actions stay above the tab bar.
-                ScrollView {
-                    ContentUnavailableView {
-                        Label(
-                            frame.map { "No designed spines in \($0.title)" }
-                                ?? "No designed spines yet", systemImage: "wand.and.sparkles")
-                    } description: {
-                        Text("Spines appear here once they are designed.")
-                    } actions: {
-                        if let frame {
-                            Button("Show all books from \(frame.title)") { designedOnly = false }
-                        }
-                        Button("Show all books") {
-                            designedOnly = false
-                            if frame != nil { frameSetting = "" }
-                        }
-                    }
-                }
-                .defaultScrollAnchor(.center, for: .alignment)
             } else {
                 let title = frame?.title ?? Self.years(of: shelf.books)
                 ZStack {
@@ -143,7 +120,7 @@ struct DeskView: View {
         guard let library = model.library, library.books.contains(where: \.hasBeenRead) else {
             return Shelf(books: [], dropped: [], chip: nil)
         }
-        let books = shownBooks(in: library, frame: frame)
+        let books = shownBooks(frame: frame)
         let dropped = Array(PileLayout.dropped(books, count: BookPileView.maximumBooks))
         let title = frame?.title ?? Self.years(of: books.isEmpty ? model.books : books)
         return Shelf(
@@ -151,12 +128,11 @@ struct DeskView: View {
             chip: DeskBar.Chip(title: title, shown: dropped.count, total: books.count))
     }
 
-    /// The books in the chosen order and filter, and in `frame` when it is set.
-    private func shownBooks(in library: LibrarySnapshot, frame: TimeFrame?) -> [CloudBook] {
+    /// The books in the chosen order, and in `frame` when it is set.
+    private func shownBooks(frame: TimeFrame?) -> [CloudBook] {
         // The read books, as in Library, and current reads, which **All books** marks with
         // ribbons. Want to Read and other unread shelves stay off.
         var books = sort.sorted(model.books.filter { $0.hasBeenRead || $0.isReading == true })
-        if designedOnly { books = books.filter { library.designs[$0.id] != nil } }
         if let frame { books = books.filter(frame.contains) }
         #if DEBUG
             // `-BookwormsShareSamples <n>` also marks current reads here, for the pile's ribbons.
@@ -187,7 +163,6 @@ private struct DeskBar: ViewModifier {
     /// The scenes' time frame, or `nil` for every book, which names the drop by period.
     let frame: TimeFrame?
     @Binding var sort: ShelfSort
-    @Binding var designedOnly: Bool
     /// Whether the desk has books to set up.
     let canSetUp: Bool
     /// **Set up dominoes** or **Back to desk**, for the scene that shows.
@@ -223,7 +198,7 @@ private struct DeskBar: ViewModifier {
 
     private var isDominoes: Bool { desk.mode == .dominoes }
 
-    /// The scene's options, and the order and filter where they change the scene's books:
+    /// The scene's options, and the order where it changes the scene's books:
     /// Dominoes stand in finish order whatever the sort (`DominoLayout.chain(_:)`).
     private var options: some View {
         Menu("Desk options", systemImage: "ellipsis") {
@@ -263,7 +238,6 @@ private struct DeskBar: ViewModifier {
                     }
                     .pickerStyle(.menu)
                 }
-                Toggle("Designed only", isOn: $designedOnly)
             }
         }
     }

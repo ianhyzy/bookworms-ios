@@ -855,9 +855,9 @@ final class BookPileScene {
     /// any. Call it before `fill` to learn at once whether the plan kept the lifted book.
     ///
     /// With `periods` set, the books drop period by period through that frame (see
-    /// `PileLayout.periods`). Otherwise, books added to a dropped list, such as a newly
-    /// designed book under **Designed only**, join the books still waiting, when the list keeps
-    /// the earlier books in their order. Any other change starts a new pile, which removes
+    /// `PileLayout.periods`). Otherwise, books added to a dropped list, such as a book a library
+    /// update adds, join the books still waiting, when the list keeps the earlier books in their
+    /// order. Any other change starts a new pile, which removes
     /// every book, the lifted one too.
     func planDrop(
         _ books: [CloudBook], tidy: Bool, periods: TimeFrame? = nil, generation: Int,
