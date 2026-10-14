@@ -508,6 +508,42 @@ final class ShareRenderTests: XCTestCase {
         XCTAssertLessThan(long[0].slices[1].size.height, spines[1].slices[1].size.height)
     }
 
+    /// A bundle's slices wear the first book's cloth with at most a faint step in tone, and the
+    /// step never brings the cloth closer to the series name's ink.
+    func testBundleClothStepsFaintlyAwayFromTheInk() {
+        let pairs: [(cloth: String, ink: String)] = [
+            ("#1F3A5F", "#F5EBD7"), ("#EFE3C3", "#2A1E12"), ("#B0182A", "#FFFFFF"),
+            ("#777777", "#000000"), ("#000000", "#FFFFFF"), ("#FFFFFF", "#000000"),
+        ]
+        for pair in pairs {
+            var look = SpineLook(
+                book: CloudBook(
+                    id: 1, title: "Book", author: "Author", coverURL: nil, detailCoverURL: nil),
+                design: nil, face: nil)
+            look.background = ColorValue(hex: pair.cloth)!
+            look.foreground = ColorValue(hex: pair.ink)!
+            let own = look.background.contrast(with: look.foreground)
+            let cloths = (1...40)
+                .map { id in
+                    ShareSpine.cloth(
+                        look,
+                        book: CloudBook(
+                            id: id, title: "Book", author: "Author", coverURL: nil,
+                            detailCoverURL: nil))
+                }
+            for cloth in cloths {
+                XCTAssertGreaterThanOrEqual(cloth.contrast(with: look.foreground), own, pair.cloth)
+                XCTAssertLessThanOrEqual(
+                    abs(SpineContrast.lab(cloth).l - SpineContrast.lab(look.background).l),
+                    ShareSpine.clothStep + 0.01, pair.cloth)
+            }
+            // Black can't darken and white can't lighten; other cloths step a little.
+            if !["#000000", "#FFFFFF"].contains(pair.cloth) {
+                XCTAssertGreaterThan(Set(cloths).count, 1, pair.cloth)
+            }
+        }
+    }
+
     /// Spines keep the Library's Stack proportions at every scale, in one column.
     func testStackSpinesKeepStackProportionsInOneColumn() {
         let books = [100, 180, 320, 480, 760, 1200].enumerated()
@@ -612,9 +648,9 @@ final class ShareRenderTests: XCTestCase {
         XCTAssertGreaterThan(
             StackLayout.minimumScale([thin, ordinary]), StackLayout.minimumScale([ordinary]))
 
-        // Fourteen 400-page books need more than a story's height at the scale a 100-page book
+        // Fourteen 400-page books need more than this area's height at the scale a 100-page book
         // needs, but fit at their own.
-        let area = YearStackCard.area(.story)
+        let area = CGSize(width: 952, height: 1046)
         let fourteen = StackSpine.spines((1...14).map { book($0, pages: 400) })
         XCTAssertGreaterThan(
             StackLayout.thickness(fourteen) * StackLayout.minimumScale([thin]), area.height)
@@ -642,6 +678,32 @@ final class ShareRenderTests: XCTestCase {
             ShareSpine.minimumThickness(short.pages[0][0])
                 / short.pages[0][0].size.height, accuracy: 1e-9)
         XCTAssertGreaterThan(long.pages[0][0].minimumScale, shortScale)
+    }
+
+    /// A long book and a spine whose title needs a larger scale than the long book leaves room
+    /// for never share a page, so neither page draws smaller than its spines allow.
+    func testStackPagesKeepALongBookFromCappingATitlesScale() throws {
+        func book(_ id: Int, pages: Int) -> CloudBook {
+            CloudBook(
+                id: id, title: "Book \(id)", author: "Author", coverURL: nil, detailCoverURL: nil,
+                pages: pages, finished: "2025-01-01")
+        }
+        let area = CGSize(width: 952, height: 1046)
+        let longID = try XCTUnwrap(
+            (1...200).first { StackSpine.shape(of: book($0, pages: 1400)).width >= 2.79 })
+        let long = StackSpine(books: [book(longID, pages: 1400)])
+        var titled = StackSpine(books: [book(1000, pages: 100)])
+        titled.minimumScale = StackLayout.maximumScale([long], area: area) * 1.1
+        XCTAssertTrue(StackLayout.fits([long], area: area))
+        XCTAssertTrue(StackLayout.fits([titled], area: area))
+        XCTAssertFalse(StackLayout.fits([long, titled], area: area))
+
+        let pages = StackPages(spines: [long, titled], area: area).pages
+        XCTAssertEqual(pages.map { $0.map(\.id) }, [[long.id], [titled.id]])
+        for page in pages {
+            let layout = StackLayout(spines: page, area: area, seed: 1)
+            XCTAssertGreaterThanOrEqual(layout.scale, StackLayout.minimumScale(page))
+        }
     }
 
     /// Titles and series names as long and as wide as those the owner reviewed in a 2026 story
@@ -724,6 +786,50 @@ final class ShareRenderTests: XCTestCase {
             XCTAssertEqual(image.width, 1080)
             XCTAssertEqual(image.height, 1080)
         }
+    }
+
+    /// The Year Stack's shelf runs along the image's bottom edge, from side to side, in every
+    /// size.
+    @MainActor
+    func testYearStackShelfMeetsTheBottomEdge() throws {
+        let books = ShareTemplate.yearStack.books(from: Self.books, in: .year(2025))
+        // The bottom of the board's front edge.
+        let wood = (red: 61, green: 38, blue: 23)
+        for aspect in ShareAspect.allCases {
+            let input = ShareInput(
+                template: .yearStack, aspect: aspect, books: books, looks: Self.looks,
+                frame: .year(2025), seed: 3)
+            let image = try XCTUnwrap(input.render()?.cgImage, "\(aspect)")
+            for x in [2, image.width / 2, image.width - 3] {
+                let pixel = try color(of: image, x: x, y: image.height - 1)
+                XCTAssertEqual(pixel.red, wood.red, accuracy: 6, "\(aspect) at \(x)")
+                XCTAssertEqual(pixel.green, wood.green, accuracy: 6, "\(aspect) at \(x)")
+                XCTAssertEqual(pixel.blue, wood.blue, accuracy: 6, "\(aspect) at \(x)")
+            }
+        }
+    }
+
+    /// The sRGB color of one pixel, counting `y` from the top.
+    private func color(of image: CGImage, x: Int, y: Int) throws -> (
+        red: Int, green: Int, blue: Int
+    ) {
+        var pixel = [UInt8](repeating: 0, count: 4)
+        let drawn = pixel.withUnsafeMutableBytes { buffer -> Bool in
+            guard
+                let context = CGContext(
+                    data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                    bytesPerRow: 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return false }
+            // Moves the pixel to the context's origin, which is at its bottom left.
+            context.draw(
+                image,
+                in: CGRect(
+                    x: -x, y: y - image.height + 1, width: image.width, height: image.height))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return (Int(pixel[0]), Int(pixel[1]), Int(pixel[2]))
     }
 
     /// The largest difference in any color channel between two renders of the same size.

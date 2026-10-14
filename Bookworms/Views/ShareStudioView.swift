@@ -30,6 +30,8 @@ struct ShareStudioView: View {
     /// The rendered pages in order: one image, or a Year Stack's pages. Empty before the first
     /// render, without books, or after a failed render.
     @State private var images: [ShareImage] = []
+    /// The index of the page the preview shows.
+    @State private var shownPage = 0
     /// The request that drew `images`. While it differs from the current request, newer images
     /// are on their way, so the preview shows progress and sharing waits.
     @State private var renderedRequest: RenderRequest?
@@ -259,7 +261,6 @@ struct ShareStudioView: View {
 
     @ViewBuilder
     private func preview(isPending: Bool, hasNoBooks: Bool) -> some View {
-        let size = aspect.size
         // Messages sit outside the image's box, which would clip them at large text sizes.
         if images.isEmpty && hasNoBooks && !model.isLoading {
             let empty = emptyState
@@ -288,44 +289,75 @@ struct ShareStudioView: View {
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
         } else {
-            ZStack {
-                // Sizes the box as the image does, before there is one.
-                Color.clear.frame(idealWidth: size.width, idealHeight: size.height)
-                if images.count > 1 {
-                    // Swipes through the pages, with the system's page dots over their dark
-                    // backdrops.
-                    TabView {
-                        ForEach(images.indices, id: \.self) { index in
-                            page(images[index])
-                        }
-                    }
-                    .tabViewStyle(.page(indexDisplayMode: .always))
-                    // A new page count starts again at page 1, so the selection never points
-                    // past the last page.
-                    .id(images.count)
-                } else if let image = images.first {
-                    page(image)
-                }
-                if template == .pile && isPending {
-                    // A pile takes seconds to load its covers and lay its books out.
-                    ProgressView("Dropping books")
-                        .padding()
-                        .background(.regularMaterial, in: .rect(cornerRadius: 12))
-                } else if images.isEmpty {
-                    ProgressView()
-                } else if isPending {
-                    ProgressView()
-                        .padding(12)
-                        .background(.regularMaterial, in: .circle)
-                        .accessibilityLabel("Updating preview")
-                }
+            VStack(spacing: 10) {
+                box(isPending: isPending)
+                if images.count > 1 { pageDots }
             }
-            .aspectRatio(size.width / size.height, contentMode: .fit)
-            .background(.quaternary)
-            .clipShape(.rect(cornerRadius: 12))
-            .frame(maxWidth: .infinity, maxHeight: 380)
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
+        }
+    }
+
+    /// The preview's image, or its pages, in a box shaped like the image, with the render's
+    /// progress over it.
+    private func box(isPending: Bool) -> some View {
+        let size = aspect.size
+        return ZStack {
+            // Sizes the box as the image does, before there is one.
+            Color.clear.frame(idealWidth: size.width, idealHeight: size.height)
+            if images.count > 1 {
+                // Swipes through the pages. Their dots sit below the box, since the system's
+                // would cover the Year Stack's bottom spine.
+                TabView(selection: $shownPage) {
+                    ForEach(images.indices, id: \.self) { index in
+                        page(images[index]).tag(index)
+                    }
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                // A new page count starts again at page 1 (see `render(_:)`).
+                .id(images.count)
+            } else if let image = images.first {
+                page(image)
+            }
+            if template == .pile && isPending {
+                // A pile takes seconds to load its covers and lay its books out.
+                ProgressView("Dropping books")
+                    .padding()
+                    .background(.regularMaterial, in: .rect(cornerRadius: 12))
+            } else if images.isEmpty {
+                ProgressView()
+            } else if isPending {
+                ProgressView()
+                    .padding(12)
+                    .background(.regularMaterial, in: .circle)
+                    .accessibilityLabel("Updating preview")
+            }
+        }
+        .aspectRatio(size.width / size.height, contentMode: .fit)
+        .background(.quaternary)
+        .clipShape(.rect(cornerRadius: 12))
+        .frame(maxWidth: .infinity, maxHeight: 380)
+    }
+
+    /// A dot for each page, the shown page's filled, which VoiceOver reads and adjusts as one
+    /// control.
+    private var pageDots: some View {
+        HStack(spacing: 8) {
+            ForEach(images.indices, id: \.self) { index in
+                Circle()
+                    .fill(index == shownPage ? .primary : .tertiary)
+                    .frame(width: 7, height: 7)
+            }
+        }
+        .accessibilityElement()
+        .accessibilityLabel("Page")
+        .accessibilityValue("\(shownPage + 1) of \(images.count)")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: shownPage = min(shownPage + 1, images.count - 1)
+            case .decrement: shownPage = max(shownPage - 1, 0)
+            @unknown default: break
+            }
         }
     }
 
@@ -626,6 +658,8 @@ struct ShareStudioView: View {
         // Without new images, the old ones must not stay to be shared.
         var name = template.title
         if !template.isSingleBook { name += " " + input.period }
+        // So the preview's selection never points past the last page.
+        if rendered.count != images.count { shownPage = 0 }
         images = rendered.enumerated()
             .map { page, image in
                 ShareImage(

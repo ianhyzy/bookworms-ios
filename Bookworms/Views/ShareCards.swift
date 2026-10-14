@@ -2,22 +2,35 @@ import SwiftUI
 
 /// The time frame's books as spines stacked on a shelf, with the frame and its totals.
 ///
-/// Two or more books of a series with a known name share one place in the stack as a tied
-/// bundle (`StackSpine`). When the spines don't fit one image at a legible size, the card spans
-/// several pages (`StackPages`), and `ShareInput.page` chooses the one to draw.
+/// The header sits a little below the image's top edge, and the shelf runs across the bottom
+/// edge, so the stack takes all the height between them. Two or more books of a series with a
+/// known name share one place in the stack as a tied bundle (`StackSpine`). When the spines
+/// don't fit one image at a legible size, the card spans several pages (`StackPages`), and
+/// `ShareInput.page` chooses the one to draw.
 struct YearStackCard: View {
     let input: ShareInput
 
-    private nonisolated static let plankHeight: CGFloat = 60
+    /// The least room between the header and the top of the stack.
     private nonisolated static let spacing: CGFloat = 32
+
+    /// The margin above the header's text. Feed posts need only a little. A story's keeps the
+    /// heading below the progress bars and profile row that Instagram draws over a story's top
+    /// 140 or so pixels.
+    private nonisolated static func top(_ aspect: ShareAspect) -> CGFloat {
+        aspect == .story ? 136 : 32
+    }
+
+    /// The header's height: the heading's and the totals' lines and the space between them.
+    private nonisolated static func headerHeight(_ aspect: ShareAspect) -> CGFloat {
+        aspect == .square ? 178 : 230
+    }
 
     /// The space the spines stack in, between the header and the shelf.
     nonisolated static func area(_ aspect: ShareAspect) -> CGSize {
-        let headerHeight: CGFloat = aspect == .square ? 170 : 250
-        return CGSize(
+        CGSize(
             width: aspect.size.width - aspect.insets.leading - aspect.insets.trailing,
-            height: aspect.size.height - aspect.insets.top - aspect.insets.bottom - headerHeight
-                - plankHeight - 2 * spacing)
+            height: aspect.size.height - top(aspect) - headerHeight(aspect) - spacing
+                - ShelfPlank.base)
     }
 
     /// The input's books as spines, split into the card's pages.
@@ -35,17 +48,26 @@ struct YearStackCard: View {
         let page = min(max(0, input.page), count - 1)
         let layout = StackLayout(spines: pages.pages[page], area: area, seed: input.seed)
         let theme = input.theme
-        ZStack {
+        ZStack(alignment: .bottom) {
             RadialGradient(
                 colors: [theme.backdropLight.color, theme.backdropDark.color],
                 center: UnitPoint(x: 0.5, y: 0.3), startRadius: 0,
                 endRadius: aspect.size.height * 0.8)
-            VStack(spacing: Self.spacing) {
+            ShelfPlank(
+                page: count > 1 ? "\(page + 1) of \(count)" : nil,
+                note: page == count - 1 && pages.hiddenCount > 0
+                    ? "+\(pages.hiddenCount) more" : nil,
+                inset: aspect.insets.leading)
+            // The stack comes after the shelf so its bottom spine covers the back of the board's
+            // top, where it rests.
+            VStack(spacing: 0) {
                 header(isSquare: aspect == .square)
+                    .frame(height: Self.headerHeight(aspect), alignment: .top)
+                Spacer(minLength: Self.spacing)
                 ZStack(alignment: .topLeading) {
                     ForEach(layout.slabs) { slab in
                         ShareSpine(
-                            spine: slab.spine, looks: slab.spine.books.map(input.look(for:)),
+                            spine: slab.spine, look: input.look(for: slab.spine.book),
                             scale: layout.scale
                         )
                         // Turned as Stack turns a flat spine, so it faces a little left or right
@@ -59,14 +81,9 @@ struct YearStackCard: View {
                     }
                 }
                 .frame(width: area.width, height: layout.height)
-                ShelfPlank(
-                    page: count > 1 ? "\(page + 1) of \(count)" : nil,
-                    note: page == count - 1 && pages.hiddenCount > 0
-                        ? "+\(pages.hiddenCount) more" : nil
-                )
-                .frame(height: Self.plankHeight)
             }
-            .padding(aspect.insets)
+            .padding(.top, Self.top(aspect))
+            .padding(.bottom, ShelfPlank.base)
         }
     }
 
@@ -187,8 +204,9 @@ struct StackSpine: Identifiable {
 /// Spines fill as few pages as hold them, up to `maximumPages`, in order, so page 1 holds the
 /// earliest books. Each page's run of spines must fit the page at its own smallest legible scale
 /// (`StackLayout.fits(_:area:)`): the scale at which its thinnest spine letters at the minimum
-/// size and every spine whose title can fit has room to letter it in full. The pages share the spines as evenly as
-/// that allows, so each draws at a similar size. Only spines that 20 pages cannot hold are left out,
+/// size and every spine whose title can fit has room to letter it in full, which the page's
+/// longest spine must leave room for. The pages share the spines as evenly as that allows, so
+/// each draws at a similar size. Only spines that 20 pages cannot hold are left out,
 /// lowest-ranked first.
 struct StackPages {
     /// Instagram's carousel limit.
@@ -335,9 +353,13 @@ struct StackLayout {
         return area.width * (1 - 2 * StackArrangement.maximumShift) / longest
     }
 
-    /// Whether `spines` fit one page of `area` at their own `minimumScale(_:)`.
+    /// Whether `spines` fit one page of `area` at their own `minimumScale(_:)`: they stack no
+    /// taller than the area, and the longest of them leaves room for that scale. A long book can
+    /// keep a page from the scale that another spine's title needs to letter in full.
     static func fits(_ spines: [StackSpine], area: CGSize) -> Bool {
-        thickness(spines) * minimumScale(spines) <= area.height
+        let scale = minimumScale(spines)
+        return thickness(spines) * scale <= area.height
+            && scale <= maximumScale(spines, area: area)
     }
 
     static func thickness(_ spines: [StackSpine]) -> CGFloat {
@@ -386,42 +408,89 @@ struct ShareSpine: View {
     /// The smallest size two-line lettering starts at. Only spines thick enough for it wrap a
     /// title, so a wrapped title stays about as large as one line on an ordinary spine.
     nonisolated static let wrappedLettering: CGFloat = 36
+    /// The largest step in OKLab lightness between a bundle slice's cloth and its design's.
+    nonisolated static let clothStep = 0.04
 
     let spine: StackSpine
-    /// The looks of `spine.books`, in order.
-    let looks: [SpineLook]
+    /// The look of `spine.book`. A bundle's slices all wear its design.
+    let look: SpineLook
     let scale: CGFloat
 
     var body: some View {
         let length = spine.size.width * scale
         let thickness = spine.size.height * scale
         let count = spine.books.count
-        let looks = Self.sliceLooks(spine, looks: looks)
         let box = Self.letteringBox(spine, scale: scale)
-        VStack(spacing: 0) {
-            ForEach(spine.slices.indices, id: \.self) { index in
-                let slice = spine.slices[index]
+        Group {
+            if count > 1 {
+                bundle(length: length)
+            } else {
                 SpineView(
                     book: CloudBook(
-                        id: slice.book.id, title: "", author: "", coverURL: nil,
+                        id: spine.book.id, title: "", author: "", coverURL: nil,
                         detailCoverURL: nil),
-                    look: looks[index]
-                )
-                .frame(width: slice.size.width * scale, height: slice.size.height * scale)
-                // Tied slices lie a little off true, up to 1 percent of the length either way.
-                .offset(
-                    x: count > 1 ? (ShareStyle.unit(0, slice.book.id, 80) - 0.5) * length * 0.02 : 0
-                )
+                    look: look)
             }
         }
         .frame(width: length, height: thickness)
         .overlay(alignment: .leading) {
-            Self.lettering(spine.titles, look: looks[0], width: box.width, thickness: thickness)
+            Self.lettering(spine.titles, look: look, width: box.width, thickness: thickness)
                 .padding(.leading, box.leading)
         }
         .overlay {
             if count > 1 { Tie(length: length, thickness: thickness, count: count) }
         }
+    }
+
+    /// A bundle's slices as one edition of the series, bound alike in `look`'s design, so the
+    /// series name reads as one run across them, as on a boxed set's spines.
+    ///
+    /// Each slice's cloth differs from the next only by a faint step in tone (`cloth(_:book:)`),
+    /// and the seams are hairline grooves. The accent bands run in line across every slice. The
+    /// slices lie square, as twine pulls a bundle, within a fraction of a percent.
+    private func bundle(length: CGFloat) -> some View {
+        let band = max(2, spine.slices[0].size.height * scale * 0.07)
+        return VStack(spacing: 0) {
+            ForEach(spine.slices.indices, id: \.self) { index in
+                let slice = spine.slices[index]
+                Self.cloth(look, book: slice.book).color
+                    .overlay {
+                        HStack(spacing: 0) {
+                            Rectangle().fill(look.accent.color).frame(width: band)
+                            Spacer(minLength: 0)
+                            Rectangle().fill(look.accent.color).frame(width: band)
+                        }
+                        .padding(.horizontal, max(6, length * 0.035))
+                    }
+                    // A groove: the crease between two spines, lit along the lower one's edge.
+                    .overlay(alignment: .top) {
+                        if index > 0 {
+                            VStack(spacing: 0) {
+                                Color.black.opacity(0.3).frame(height: 1.5)
+                                Color.white.opacity(0.1).frame(height: 1)
+                            }
+                        }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 2))
+                    .frame(height: slice.size.height * scale)
+                    .offset(x: (ShareStyle.unit(0, slice.book.id, 80) - 0.5) * length * 0.006)
+            }
+        }
+    }
+
+    /// The cloth of `book`'s slice in a bundle that wears `look`'s design: the design's own,
+    /// stepped by up to `clothStep` in OKLab lightness, as `book` decides, away from the ink.
+    ///
+    /// The step only widens the gap between the cloth and the lettering, so the series name reads
+    /// on every slice at least as well as on the design's own cloth. Where the gamut would
+    /// narrow it instead, the slice keeps the design's cloth.
+    nonisolated static func cloth(_ look: SpineLook, book: CloudBook) -> ColorValue {
+        var lab = SpineContrast.lab(look.background)
+        let away: Double = SpineContrast.lab(look.foreground).l > lab.l ? -1 : 1
+        lab.l = min(1, max(0, lab.l + away * clothStep * ShareStyle.unit(0, book.id, 81)))
+        let stepped = SpineContrast.color(lab)
+        let own = look.background.contrast(with: look.foreground)
+        return stepped.contrast(with: look.foreground) >= own ? stepped : look.background
     }
 
     /// The thinnest, in pixels, that `spine` can be drawn and stay legible: thick enough for one
@@ -430,17 +499,6 @@ struct ShareSpine: View {
         let lettering = minimumLettering / letteringRatio
         guard spine.books.count > 1 else { return lettering }
         return max(lettering, minimumLettering / (Tie.tagShare * SeriesTag.countShare))
-    }
-
-    /// The slices' looks: each book's own, unless the first book's lettering, which runs across
-    /// every slice, would lack contrast on one of them. Then every slice takes the first book's
-    /// look, as a series in one edition would.
-    static func sliceLooks(_ spine: StackSpine, looks: [SpineLook]) -> [SpineLook] {
-        let shown = Array(looks.prefix(spine.slices.count))
-        let isReadable = shown.allSatisfy {
-            $0.background.contrast(with: shown[0].foreground) >= 3
-        }
-        return isReadable ? shown : shown.map { _ in shown[0] }
     }
 
     /// The fewest pixels per decimeter, up to `limit`, at which `spine` letters one of its titles
@@ -751,11 +809,24 @@ private struct TagShape: Shape {
     }
 }
 
-/// A wooden shelf board seen from the front, with optional notes on its edge: the page, such as
-/// "1 of 3", at the left, and a note, such as "+12 more", at the right.
+/// A wooden shelf board seen from a little above, across the bottom of a Year Stack image, with
+/// optional notes on its front edge: the page, such as "1 of 3", at the left, and a note, such as
+/// "+12 more", at the right.
+///
+/// The front edge holds the credit that sharing adds at the image's bottom edge (`ShareCredit`),
+/// centered between the notes.
 struct ShelfPlank: View {
+    /// The board's top, as it shows from a little above.
+    nonisolated static let surface: CGFloat = 12
+    /// The board's front edge: the credit's strip, with room to spare.
+    nonisolated static let front: CGFloat = ShareCredit.height + 8
+    /// How far above the board's bottom the books rest: halfway back on its top.
+    nonisolated static let base: CGFloat = front + surface / 2
+
     var page: String? = nil
     var note: String? = nil
+    /// The notes' distance from the board's ends.
+    let inset: CGFloat
 
     var body: some View {
         VStack(spacing: 0) {
@@ -766,7 +837,7 @@ struct ShelfPlank: View {
                 ],
                 startPoint: .top, endPoint: .bottom
             )
-            .frame(height: 12)
+            .frame(height: Self.surface)
             LinearGradient(
                 colors: [
                     Color(red: 0.37, green: 0.24, blue: 0.15),
@@ -774,6 +845,7 @@ struct ShelfPlank: View {
                 ],
                 startPoint: .top, endPoint: .bottom
             )
+            .frame(height: Self.front)
             .overlay {
                 HStack {
                     if let page { Text(page) }
@@ -782,11 +854,9 @@ struct ShelfPlank: View {
                 }
                 .font(ShareStyle.serif(32, .semibold))
                 .foregroundStyle(ShareStyle.cream.color.opacity(0.9))
-                .padding(.horizontal, 28)
+                .padding(.horizontal, inset)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .shadow(color: .black.opacity(0.5), radius: 20, y: 16)
     }
 }
 
