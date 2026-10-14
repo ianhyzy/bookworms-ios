@@ -1461,16 +1461,18 @@ final class DominoScene {
         factory.parts[slots[index].book.id]?.shape.size ?? slots[index].size
     }
 
-    /// Moves the setup on by `deltaTime`: starts the next books whose turn has come and whose way
-    /// is clear (`DominoSetup.Schedule`), each from where it lies then, moves the books under way,
-    /// and lands each in its place with a soft knock, fading in the cobweb in front of it over
-    /// `DominoLayout.webFade`. A book whose way stays blocked for `DominoSetup.hold(at:)` goes
-    /// regardless, so the setup's time stays capped. Moving books are kinematic, and the books
-    /// still lying are rigid bodies, so they settle as the books under them leave and a book
-    /// that turns up among them shoves them aside.
+    /// Moves the setup on by `deltaTime`, at most `DominoSetup.longestFrame`: starts the next
+    /// books whose turn has come and whose way is clear (`DominoSetup.Schedule`), each from where
+    /// it lies then, moves the books under way, and lands each in its place with a soft knock,
+    /// fading in the cobweb in front of it over `DominoLayout.webFade`. A blocked book's way is
+    /// checked again every `DominoSetup.retryStep`, and once it has been blocked for
+    /// `DominoSetup.hold(at:)`, it goes regardless, so the setup's time stays capped; the books
+    /// after it keep their pace from then (`DominoSetup.nextStart(after:startedAt:step:)`).
+    /// Moving books are kinematic, and the books still lying are rigid bodies, so they settle as
+    /// the books under them leave and a book that turns up among them shoves them aside.
     private func arrange(by deltaTime: TimeInterval) {
         guard var arrangement, var time = arrangement.time else { return }
-        time += Float(deltaTime)
+        time += min(Float(deltaTime), DominoSetup.longestFrame)
         arrangement.time = time
         while arrangement.next < books.count, time >= arrangement.nextStart {
             #if DEBUG
@@ -1488,7 +1490,17 @@ final class DominoScene {
             if move == nil {
                 let held = arrangement.heldSince ?? time
                 arrangement.heldSince = held
-                guard time - held >= DominoSetup.hold(at: time) else { break }
+                guard time - held >= DominoSetup.hold(at: time) else {
+                    #if DEBUG
+                        arrangement.log.append(
+                            String(
+                                format: "%d,%.3f,%.3f,%.2f,,%.2f", index, arrangement.nextStart,
+                                time, time - held, (ContinuousClock.now - began) / .milliseconds(1)
+                            ))
+                    #endif
+                    arrangement.nextStart = time + DominoSetup.retryStep
+                    break
+                }
                 let upright =
                     DominoSetup.Move(
                         start: time, from: books[index].transform, size: size, to: place,
@@ -1501,20 +1513,18 @@ final class DominoScene {
             }
             guard let move else { break }
             #if DEBUG
-                let planned = (ContinuousClock.now - began).components.attoseconds
                 arrangement.log.append(
                     String(
                         format: "%d,%.3f,%.3f,%.2f,%.3f,%.2f", index, arrangement.nextStart, time,
                         time - (arrangement.heldSince ?? time), move.lift,
-                        Double(planned) / 1e15))
+                        (ContinuousClock.now - began) / .milliseconds(1)))
             #endif
             arrangement.schedule.commit(move)
             arrangement.moves[index] = move
             arrangement.heldSince = nil
             arrangement.next += 1
-            // The books keep their pace, several in a frame when frames come slowly, and the
-            // books after one held back go as soon as their ways are clear.
-            arrangement.nextStart += arrangement.step
+            arrangement.nextStart = DominoSetup.nextStart(
+                after: arrangement.nextStart, startedAt: time, step: arrangement.step)
             books[index].components[PhysicsBodyComponent.self]?.mode = .kinematic
             books[index].components.set(PhysicsMotionComponent())
         }
@@ -2538,7 +2548,8 @@ final class DominoScene {
         /// from the desk to `Library/Caches/Bookworms/domino-setup.csv` once every book stands:
         /// its index in the chain, when it was due and when it started, in seconds of the setup,
         /// how long its way was blocked, its arc's lift, and the milliseconds its start took to
-        /// plan in the frame it started, and, last, when the last book landed.
+        /// plan in the frame it started, and, last, when the last book landed. A row without a
+        /// lift is a check that found the book's way blocked, with the milliseconds it took.
         private func logSetup(_ arrangement: Arrangement) {
             guard UserDefaults.standard.bool(forKey: "BookwormsSetupLog") else { return }
             let lines =

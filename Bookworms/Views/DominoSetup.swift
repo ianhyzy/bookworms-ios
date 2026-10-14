@@ -9,9 +9,10 @@ import simd
 /// slot lies clear of the books that are still lying when its book lands there.
 ///
 /// The books then go one after another in finish order, `step(count:)` apart, so a large frame
-/// sets up within a few seconds. Each book's move (`Move`) starts from where the book lies at
-/// that moment, since the books still lying are rigid bodies that settle as books under them
-/// leave:
+/// sets up within a few seconds, and never many in one frame
+/// (`nextStart(after:startedAt:step:)`). Each book's move (`Move`) starts from where the book
+/// lies at that moment, since the books still lying are rigid bodies that settle as books under
+/// them leave:
 ///
 /// 1. The book rights itself where it lies: it turns up onto its tail edge, about that edge's
 ///    lowest point, until it stands upright on its tail, as a book stands on a shelf.
@@ -45,10 +46,16 @@ enum DominoSetup {
     static let spread: Float = 3.5
     /// The time step at which `Schedule` checks a move against the others, in seconds.
     static let checkStep: Float = 1.0 / 30
-    /// The longest a book is held back while its way is blocked, in seconds, and the latest a
-    /// book starts after the first, held back or not, so a setup's time stays capped.
+    /// The longest a book is held back while its way is blocked, in seconds, and how far into
+    /// the setup books may still be held back, so a setup's time stays capped.
     static let longestHold: Float = 1
     static let latestStart: Float = spread + 1.5
+    /// How long a book whose way is blocked waits before its way is checked again, in seconds,
+    /// so a held book costs a frame no planning while it waits.
+    static let retryStep: Float = 0.1
+    /// The longest time step a setup takes in one frame, in seconds, so a stalled frame slows
+    /// the moves rather than skipping them.
+    static let longestFrame: Float = 1.0 / 20
 
     /// How long a book whose way is blocked waits `time` seconds into the setup before it goes
     /// regardless: `longestHold`, and none once the setup has run past `latestStart`.
@@ -58,9 +65,18 @@ enum DominoSetup {
 
     /// The seconds from one book's start to the next in a setup of `count` books: `longestStep`,
     /// or less for a long chain, so every book starts within `spread` of the first unless one
-    /// is held back.
+    /// is held back or frames come slowly.
     static func step(count: Int) -> Float {
         min(longestStep, spread / Float(max(count - 1, 1)))
+    }
+
+    /// When the next book is due after a book due at `due` starts at `time`: `step` after `due`,
+    /// or, for a book that started more than a step late, held back or slowed by a slow frame,
+    /// `step` after `time - step`. The books keep their pace while frames come faster than
+    /// they are due, but lag at most one step, so a late book never leaves a backlog that would
+    /// start many books in one frame: a frame starts at most two books more than are due in it.
+    static func nextStart(after due: Float, startedAt time: Float, step: Float) -> Float {
+        max(due, time - step) + step
     }
 
     // MARK: Placement
@@ -294,10 +310,20 @@ enum DominoSetup {
         from upright: Transform, to: Transform, size: SIMD3<Float>, over obstacles: [Box]
     ) -> Float {
         let start = Footprint(Box(upright, size: size))
+        let first = SIMD2(upright.translation.x, upright.translation.z)
+        let last = SIMD2(to.translation.x, to.translation.z)
+        // The book turns only about the vertical, so its footprint stays within half its
+        // diagonal across the table of the line between its ends. Books farther from that
+        // line cannot lie under it, which leaves out most of a large pile at once.
+        let reach = simd_length(SIMD2(size.x, size.z)) / 2
         let crossed = obstacles.compactMap { box -> (footprint: Footprint, top: Float)? in
+            let middle = SIMD2(box.center.x, box.center.z)
+            guard distance(from: middle, toSegment: first, last) < reach + simd_length(box.half)
+            else { return nil }
             let footprint = Footprint(box)
             return start.overlaps(footprint) ? nil : (footprint, box.bounds.high.y)
         }
+        guard !crossed.isEmpty else { return lifts.lowerBound }
         let low = upright.translation.y - size.y / 2
         let end = to.translation.y - size.y / 2
         // A sample every 0.2 units of the way, at least, so the footprints overlap from one to
@@ -324,6 +350,16 @@ enum DominoSetup {
         return min(lift, lifts.upperBound)
     }
 
+    /// The distance from `point` to the segment from `start` to `end`.
+    static func distance(
+        from point: SIMD2<Float>, toSegment start: SIMD2<Float>, _ end: SIMD2<Float>
+    ) -> Float {
+        let line = end - start
+        let length = simd_length_squared(line)
+        let share = length > 1e-8 ? min(max(simd_dot(point - start, line) / length, 0), 1) : 0
+        return simd_distance(point, start + line * share)
+    }
+
     /// The progress at which smootherstep reaches `value`, by bisection.
     static func inverseEase(_ value: Float) -> Float {
         var (low, high): (Float, Float) = (0, 1)
@@ -348,8 +384,9 @@ enum DominoSetup {
     /// checks each new move against.
     struct Schedule: Sendable {
         private(set) var moves: [Move] = []
-        /// Each move's book standing in its slot.
+        /// Each move's book standing in its slot, and its bounds.
         private var standing: [Box] = []
+        private var standingBounds: [Bounds] = []
 
         init() {}
 
@@ -373,7 +410,8 @@ enum DominoSetup {
                 case .moving: return nil
                 case .standing:
                     guard lift < lifts.upperBound else { return nil }
-                    lift = min(lift + 0.75, lifts.upperBound)
+                    // Half again as high, at least 0.75 higher, so few checks reach the top.
+                    lift = min(lift + max(0.75, lift / 2), lifts.upperBound)
                 }
             }
         }
@@ -381,7 +419,9 @@ enum DominoSetup {
         /// Adds `move`, which later moves then keep clear of.
         mutating func commit(_ move: Move) {
             moves.append(move)
-            standing.append(Box(move.to, size: move.size))
+            let box = Box(move.to, size: move.size)
+            standing.append(box)
+            standingBounds.append(box.bounds)
         }
 
         private enum Conflict {
@@ -390,7 +430,8 @@ enum DominoSetup {
 
         /// Whether `move` crosses an earlier book, while that book moves or once it stands,
         /// sampled every `checkStep` until every book it can meet stands. Boxes shrink by a
-        /// hair, so books that touch, as neighbors on a turn nearly do, do not count.
+        /// hair, so books that touch, as neighbors on a turn nearly do, do not count. At each
+        /// sample, a book whose whole way lies clear of the moving book's bounds costs no pose.
         private func conflict(_ move: Move) -> Conflict? {
             let near = moves.indices.filter { moves[$0].sweep.overlaps(move.sweep) }
             guard !near.isEmpty else { return nil }
@@ -401,13 +442,15 @@ enum DominoSetup {
                 let bounds = box.bounds
                 for index in near {
                     let other = moves[index]
-                    let stands = time >= other.end
-                    let book =
-                        stands
-                        ? standing[index] : Box(other.pose(at: time), size: other.size, grow: -0.01)
-                    if book.bounds.overlaps(bounds), book.overlaps(box) {
-                        return stands ? .standing : .moving
+                    guard other.sweep.overlaps(bounds) else { continue }
+                    if time >= other.end {
+                        if standingBounds[index].overlaps(bounds), standing[index].overlaps(box) {
+                            return .standing
+                        }
+                        continue
                     }
+                    let book = Box(other.pose(at: time), size: other.size, grow: -0.01)
+                    if book.bounds.overlaps(bounds), book.overlaps(box) { return .moving }
                 }
                 guard time < last else { return nil }
                 time = min(time + checkStep, last)

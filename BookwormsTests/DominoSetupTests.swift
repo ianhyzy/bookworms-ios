@@ -269,6 +269,37 @@ final class DominoSetupTests: XCTestCase {
         }
     }
 
+    func testALateStartLeavesNoBacklog() {
+        let step = DominoSetup.step(count: 267)
+        // The first book, due at once, starts five seconds late, as a held book does.
+        var due = DominoSetup.nextStart(after: 0, startedAt: 5, step: step)
+        var time: Float = 5
+        var started = 1
+        // Frames come every 60th of a second, and then three come at the longest step.
+        var frames: [Float] = Array(repeating: 1.0 / 60, count: 120)
+        frames.insert(contentsOf: Array(repeating: DominoSetup.longestFrame, count: 3), at: 30)
+        for frame in frames {
+            time += frame
+            var starts = 0
+            while time >= due {
+                due = DominoSetup.nextStart(after: due, startedAt: time, step: step)
+                starts += 1
+            }
+            XCTAssertLessThanOrEqual(starts, 2, "\(time)")
+            started += starts
+        }
+        // The books keep their pace while frames come faster than they are due.
+        let elapsed = frames.reduce(0, +)
+        let slowed = 3 * (DominoSetup.longestFrame - 2 * step)
+        XCTAssertEqual(Float(started - 1) * step, elapsed - slowed, accuracy: 3 * step)
+    }
+
+    func testTheDistanceToASegment() {
+        XCTAssertEqual(DominoSetup.distance(from: [1, 1], toSegment: [0, 0], [2, 0]), 1)
+        XCTAssertEqual(DominoSetup.distance(from: [3, 0], toSegment: [0, 0], [2, 0]), 1)
+        XCTAssertEqual(DominoSetup.distance(from: [0, 2], toSegment: [0, 0], [0, 0]), 2)
+    }
+
     func testBoxesOverlapOnlyWhenTheyMeet() {
         let size = SIMD3<Float>(1, 2, 0.3)
         let standing = Transform(
