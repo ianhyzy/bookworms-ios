@@ -143,8 +143,8 @@ struct GenerationView: View {
         }
     }
 
-    /// The designing model: Private Cloud Compute with its daily limit, or the third-party
-    /// provider chosen in the Mac's Settings.
+    /// The designing model: Private Cloud Compute with its daily limit, or the chosen
+    /// third-party provider.
     private var designModel: some View {
         let status = generation.status.model
         let usesDailyLimit = status?.usesDailyLimit ?? true
@@ -162,6 +162,12 @@ struct GenerationView: View {
             }
             #if os(macOS)
                 SettingsLink { Text("Choose Model…") }
+            #else
+                NavigationLink("Choose Model") {
+                    Form { SpineDesignerSettings() }
+                        .navigationTitle("Spine Design Model")
+                        .navigationBarTitleDisplayMode(.inline)
+                }
             #endif
         } header: {
             Text(status?.designerName ?? "Private Cloud Compute")

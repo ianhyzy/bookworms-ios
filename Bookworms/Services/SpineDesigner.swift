@@ -5,7 +5,7 @@ import ImageIO
 import UniformTypeIdentifiers
 
 /// Which model designs spines: Apple's Private Cloud Compute, or a third-party provider the
-/// reader chose in the Mac's Settings.
+/// reader chose in Settings on the Mac or from the Spines tab on the iPhone.
 ///
 /// The choice and model name live in `UserDefaults`; each provider's API key lives in this
 /// device's Keychain (`KeychainSecret`), never synced. Third-party providers answer through
@@ -62,19 +62,14 @@ struct SpineDesigner: Hashable, Sendable {
     private static let modelKey = "SpineDesignerModel"
     private static let baseURLKey = "SpineDesignerBaseURL"
 
-    /// The saved choice. The iPhone always uses Apple's model.
+    /// The saved choice, or Apple's model.
     static var current: SpineDesigner {
-        #if os(macOS)
-            let defaults = UserDefaults.standard
-            let provider =
-                defaults.string(forKey: providerKey).flatMap(Provider.init) ?? .apple
-            return SpineDesigner(
-                provider: provider,
-                model: defaults.string(forKey: modelKey) ?? provider.defaultModel,
-                baseURL: defaults.string(forKey: baseURLKey) ?? provider.defaultBaseURL)
-        #else
-            return SpineDesigner(provider: .apple, model: "", baseURL: "")
-        #endif
+        let defaults = UserDefaults.standard
+        let provider = defaults.string(forKey: providerKey).flatMap(Provider.init) ?? .apple
+        return SpineDesigner(
+            provider: provider,
+            model: defaults.string(forKey: modelKey) ?? provider.defaultModel,
+            baseURL: defaults.string(forKey: baseURLKey) ?? provider.defaultBaseURL)
     }
 
     func save() {
