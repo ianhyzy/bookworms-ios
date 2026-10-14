@@ -5,7 +5,7 @@ import SwiftUI
 ///
 /// Mark Z. Danielewski's novel prints the word "house" in blue. For that book alone
 /// (`HouseOfLeaves.isNovel(_:)`), this view letters each "house" in the novel's blue, fitted to
-/// the ground behind it (`HouseOfLeaves.lettering(on:ink:highlight:)`). Any other book's text,
+/// the ground behind it (`HouseOfLeaves.lettering(on:ink:)`). Any other book's text,
 /// including a title with "house" in it, is plain text. VoiceOver reads the text unchanged.
 ///
 /// Pass the spine design when the text is lettered on a spine or a coverless front, so the blue
@@ -49,9 +49,7 @@ private struct HouseOfLeavesText: View {
     var body: some View {
         let lettering =
             if let look {
-                HouseOfLeaves.lettering(
-                    on: look.background, ink: look.foreground,
-                    highlight: SpineView.relief(on: look.background).highlight)
+                HouseOfLeaves.lettering(on: look.background, ink: look.foreground)
             } else {
                 HouseOfLeaves.lettering(
                     on: ground
@@ -71,7 +69,6 @@ enum HouseOfLeaves {
     static let glowOpacity = 0.35
     /// The glow's radius as a share of the line's height.
     static let glowRadius = 0.15
-    private static let white = ColorValue(red: 255, green: 255, blue: 255)
 
     /// The lightest ground that dark-scheme text sits on by default: a dark grouped list's
     /// raised cell, as in a sheet. Its luminance is above the walnut wall's lighter end
@@ -129,20 +126,17 @@ enum HouseOfLeaves {
     /// that adds contrast, so the word glows, and the blue already passes without the glow.
     /// Behind a blue lighter than its ground, a glow would cost contrast, so the word has none.
     ///
-    /// `highlight` is the share of white that lightens the ground over part of the lettering,
-    /// such as a spine's relief (`SpineView.relief(on:)`). A blue lighter than its ground must
-    /// pass there too. On a ground that no lightness of the blue reaches, such as a mid-blue
-    /// cloth, the word takes `ink`.
-    static func lettering(on ground: ColorValue, ink: ColorValue? = nil, highlight: Double = 0)
+    /// On a ground that no lightness of the blue reaches, such as a mid-blue cloth, the word
+    /// takes `ink`.
+    static func lettering(on ground: ColorValue, ink: ColorValue? = nil)
         -> (blue: ColorValue, glows: Bool)
     {
         let ink = ink ?? CoverPalette.readableForeground(for: ground)
         let lightens = SpineContrast.lab(ink).l > SpineContrast.lab(ground).l
-        let grounds = lightens ? [ground, ground.mixed(with: white, highlight)] : [ground]
         var lab = SpineContrast.lab(novelBlue)
         while (0...1).contains(lab.l) {
             let color = SpineContrast.color(lab)
-            if grounds.allSatisfy({ passes(color, on: $0) }) { return (color, !lightens) }
+            if passes(color, on: ground) { return (color, !lightens) }
             lab.l += lightens ? 0.01 : -0.01
         }
         return (ink, !lightens)

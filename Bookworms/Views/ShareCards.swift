@@ -426,11 +426,7 @@ struct ShareSpine: View {
             if count > 1 {
                 bundle(length: length)
             } else {
-                SpineView(
-                    book: CloudBook(
-                        id: spine.book.id, title: "", author: "", coverURL: nil,
-                        detailCoverURL: nil),
-                    look: look)
+                SpineView(book: Self.unlettered(spine.book), look: look)
             }
         }
         .frame(width: length, height: thickness)
@@ -451,25 +447,35 @@ struct ShareSpine: View {
         }
     }
 
+    /// `book` without its title and author, which `ShareSpine` letters itself, for `SpineView`.
+    private static func unlettered(_ book: CloudBook) -> CloudBook {
+        var blank = CloudBook(
+            id: book.id, title: "", author: "", coverURL: nil, detailCoverURL: nil)
+        // `SpineView.stamps(_:)` reads the thickness from the page count.
+        blank.pages = book.pages
+        return blank
+    }
+
     /// A bundle's slices as one edition of the series, bound alike in `look`'s design, as on a
     /// boxed set's spines.
     ///
     /// Each slice's cloth differs from the next only by a faint step in tone (`cloth(_:book:)`),
-    /// and the seams are hairline grooves. The accent bands run in line across every slice. The
-    /// slices lie square, as twine pulls a bundle, within a fraction of a percent.
+    /// and the seams are hairline grooves. A bundle whose books together are as thick as a book
+    /// that `SpineView` blind-stamps has the same bands, in line across every slice. The slices lie square, as
+    /// twine pulls a bundle, within a fraction of a percent.
     private func bundle(length: CGFloat) -> some View {
-        let band = max(2, spine.slices[0].size.height * scale * 0.07)
+        let thickness = spine.slices[0].size.height * scale
+        let books = spine.books.map { BookShape(of: $0, coverAspect: 2 / 3).size.z }
+        let stamped = books.reduce(0, +) >= SpineView.stampedThickness
         return VStack(spacing: 0) {
             ForEach(spine.slices.indices, id: \.self) { index in
                 let slice = spine.slices[index]
-                Self.cloth(look, book: slice.book).color
+                let cloth = Self.cloth(look, book: slice.book)
+                cloth.color
                     .overlay {
-                        HStack(spacing: 0) {
-                            Rectangle().fill(look.accent.color).frame(width: band)
-                            Spacer(minLength: 0)
-                            Rectangle().fill(look.accent.color).frame(width: band)
+                        if stamped {
+                            SpineView.stampedBands(on: cloth, length: length, thickness: thickness)
                         }
-                        .padding(.horizontal, max(6, length * 0.035))
                     }
                     // A groove: the crease between two spines, lit along the lower one's edge.
                     .overlay(alignment: .top) {
@@ -594,7 +600,7 @@ struct ShareSpine: View {
     }
 
     /// Where the lettering starts, from the spine's head, and how wide it is, at `scale` pixels
-    /// per decimeter: clear of `SpineView`'s accent bands, and on a bundle, inside its label.
+    /// per decimeter: clear of `SpineView`'s bands, and on a bundle, inside its label.
     nonisolated static func letteringBox(_ spine: StackSpine, scale: CGFloat) -> (
         leading: CGFloat, width: CGFloat
     ) {
