@@ -1,7 +1,10 @@
 import ObjectiveC
 import SwiftUI
-import UIKit
 import simd
+
+#if canImport(UIKit)
+    import UIKit
+#endif
 
 /// A book drawn as `Book3DView` draws its box, from the same camera and light, with the parts
 /// of a bound book: boards as thick as `BookShape` makes them, which overhang the page block on
