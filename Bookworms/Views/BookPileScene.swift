@@ -1748,17 +1748,16 @@ final class BookPileScene {
 extension BookPileScene: LiftingScene {}
 
 extension BookPileScene {
-    /// Builds every book of `books`, giving covers up to 10 seconds, waits for the room's light,
-    /// and lays the books out as a share image's spread (`PileSpread`), framed in `rect` of an
-    /// image of `size`. The scene then looks through the spread's camera, with the lamp's pool
-    /// over the spread; `place(_:mode:)` adds the books.
+    /// Builds every book of `books`, giving covers up to 10 seconds, and lays the books out as a
+    /// share image's spread (`PileSpread`), framed in `rect` of an image of `size`. The scene
+    /// then looks through the spread's camera, with the lamp's pool over the spread, and the
+    /// room's light has reached it; `place(_:mode:)` adds the books.
     ///
     /// The layout runs away from the main actor. A book that RealityKit cannot build is left out.
     func prepareSpread(
         _ books: [CloudBook], in rect: CGRect, of size: CGSize, seed: UInt64, model: AppModel
     ) async -> PileSpread {
         await factory.prepare(books, prefetching: [], coverWait: .seconds(10), model: model)
-        await stage.lit()
         let shaped = books.compactMap { book in factory.parts[book.id].map { (book, $0.shape) } }
         let spread = await Self.layOut(shaped, in: rect, of: size, seed: seed)
         let reach = zip(spread.slots, spread.shapes)
@@ -1775,6 +1774,8 @@ extension BookPileScene {
                 nearHalfWidth: side))
         aspect = Float(size.width / size.height)
         look(through: spread.camera)
+        // Building the tray builds the stage, which starts the room's light.
+        await stage.lit()
         return spread
     }
 
@@ -1789,8 +1790,34 @@ extension BookPileScene {
     /// Adds the books of `slots` at their poses, in order, and returns them.
     @discardableResult
     func place(_ slots: [PileSlot], mode: PhysicsBodyMode) -> [ModelEntity] {
-        slots.compactMap { spawn($0, mode: mode) }
+        let books = slots.compactMap { spawn($0, mode: mode) }
+        #if DEBUG
+            if UserDefaults.standard.bool(forKey: "BookwormsPileShareGlare") { faceGlare(books) }
+        #endif
+        return books
     }
+
+    #if DEBUG
+        /// Simulator hook: `-BookwormsPileShareGlare YES` turns each book of a share image
+        /// about its middle so that its front faces halfway between the lamp and the camera,
+        /// where it mirrors the lamp most brightly, and lifts it clear of the table. Books can
+        /// pass through one another; the image shows how the covers' finish takes that glare.
+        private func faceGlare(_ books: [ModelEntity]) {
+            let lamp = DeskStage.lampPlacement(pool: stage.pool.center, radius: stage.pool.radius)
+            let eye = camera.position(relativeTo: root)
+            for book in books {
+                let middle = book.position(relativeTo: root)
+                let glare = simd_normalize(
+                    simd_normalize(lamp.position - middle) + simd_normalize(eye - middle))
+                let front = book.orientation(relativeTo: root).act([0, 0, 1])
+                book.setOrientation(
+                    simd_quatf(from: front, to: glare) * book.orientation(relativeTo: root),
+                    relativeTo: root)
+                let length = bookIDs[book.id].flatMap { factory.parts[$0]?.shape.size.y } ?? 0
+                book.position.y += length / 2 + 0.4
+            }
+        }
+    #endif
 
     /// Plays the knock of `book` landing at `speed` units a second, panned to where it shows,
     /// for a video that moves its books itself, so that no collision reports the landing.

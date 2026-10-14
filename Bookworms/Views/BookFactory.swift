@@ -343,24 +343,27 @@ final class BookFactory {
         return pages
     }
 
-    /// A cover or spine: a glossy jacket on a hardcover, matte card on a paperback.
+    /// A cover or spine: a satin jacket on a hardcover, matte card on a paperback.
     private static func jacket(_ texture: TextureResource, binding: BookBinding)
         -> PhysicallyBasedMaterial
     {
-        finish(surface(texture, roughness: 0.5, specular: 0.25), binding: binding)
+        finish(surface(texture, roughness: 0.6, specular: 0.12), binding: binding)
     }
 
-    /// `material` with a hardcover jacket's glossy clear coat, or a paperback's matte card.
+    /// `material` with a hardcover jacket's faint satin coat, or a paperback's matte card.
+    ///
+    /// The lamp hangs almost behind the camera, so a book that tilts toward the camera, as one
+    /// resting on another often does, mirrors the lamp across its whole front. A glossier
+    /// jacket, or a sharper or stronger coat, turns that sheen into a pale veil that lifts the
+    /// cover's dark ink to gray. This finish keeps the ink dark.
     private static func finish(_ material: PhysicallyBasedMaterial, binding: BookBinding)
         -> PhysicallyBasedMaterial
     {
         var material = material
         switch binding {
         case .hardcover:
-            // A satin gloss: a sharper or stronger coat mirrors the lamp as a white patch that
-            // hides the cover's art.
-            material.clearcoat = .init(floatLiteral: 0.5)
-            material.clearcoatRoughness = .init(floatLiteral: 0.35)
+            material.clearcoat = .init(floatLiteral: 0.1)
+            material.clearcoatRoughness = .init(floatLiteral: 0.7)
         case .paperback:
             material.roughness = .init(floatLiteral: 0.74)
             material.specular = .init(floatLiteral: 0.12)
