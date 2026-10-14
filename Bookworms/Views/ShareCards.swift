@@ -394,8 +394,8 @@ struct StackLayout {
 }
 
 /// A Year Stack spine at `scale` pixels per decimeter: a book's `SpineView` lettered for a share
-/// image, or a series' slices tied with twine, with the series name lettered across them and the
-/// book count on a paper tag.
+/// image, or a series' slices tied with twine, with the series name on a paper label across them
+/// and the book count on a paper tag.
 ///
 /// `SpineView` sizes its lettering from the thickness and shrinks long titles, which leaves
 /// stacked spines with text too small to read on a phone. This view draws the spines blank and
@@ -434,16 +434,21 @@ struct ShareSpine: View {
         }
         .frame(width: length, height: thickness)
         .overlay(alignment: .leading) {
-            Self.lettering(spine.titles, look: look, width: box.width, thickness: thickness)
-                .padding(.leading, box.leading)
+            if count > 1 {
+                label(box: box, length: length, thickness: thickness)
+            } else {
+                Self.lettering(spine.titles, look: look, width: box.width, thickness: thickness)
+                    .padding(.leading, box.leading)
+            }
         }
+        // The twine and tag go over the label, so the head twine holds it.
         .overlay {
             if count > 1 { Tie(length: length, thickness: thickness, count: count) }
         }
     }
 
-    /// A bundle's slices as one edition of the series, bound alike in `look`'s design, so the
-    /// series name reads as one run across them, as on a boxed set's spines.
+    /// A bundle's slices as one edition of the series, bound alike in `look`'s design, as on a
+    /// boxed set's spines.
     ///
     /// Each slice's cloth differs from the next only by a faint step in tone (`cloth(_:book:)`),
     /// and the seams are hairline grooves. The accent bands run in line across every slice. The
@@ -479,11 +484,12 @@ struct ShareSpine: View {
     }
 
     /// The cloth of `book`'s slice in a bundle that wears `look`'s design: the design's own,
-    /// stepped by up to `clothStep` in OKLab lightness, as `book` decides, away from the ink.
+    /// stepped by up to `clothStep` in OKLab lightness, as `book` decides, away from the design's
+    /// ink.
     ///
-    /// The step only widens the gap between the cloth and the lettering, so the series name reads
-    /// on every slice at least as well as on the design's own cloth. Where the gamut would
-    /// narrow it instead, the slice keeps the design's cloth.
+    /// The step only widens the gap between the cloth and the ink, so a dark design stays dark
+    /// and a light one light. Where the gamut would narrow it instead, the slice keeps the
+    /// design's cloth.
     nonisolated static func cloth(_ look: SpineLook, book: CloudBook) -> ColorValue {
         var lab = SpineContrast.lab(look.background)
         let away: Double = SpineContrast.lab(look.foreground).l > lab.l ? -1 : 1
@@ -493,23 +499,66 @@ struct ShareSpine: View {
         return stepped.contrast(with: look.foreground) >= own ? stepped : look.background
     }
 
+    /// A bundle's series name on a paper label pasted flat across its face (`PaperLabel`), sized
+    /// to the name.
+    ///
+    /// The label starts under the head twine, which holds it, and its lettering starts where
+    /// `box` does. It ends a little past its lettering, short of the tag.
+    private func label(box: (leading: CGFloat, width: CGFloat), length: CGFloat, thickness: CGFloat)
+        -> some View
+    {
+        let tie = Tie(length: length, thickness: thickness, count: spine.books.count)
+        let height = thickness * PaperLabel.share
+        return HStack(spacing: 0) {
+            Self.fittedLettering(
+                spine.titles, look: Self.letteringLook(spine, look: look).look, thickness: height
+            )
+            .frame(maxHeight: height * 0.84)
+            .padding(.leading, box.leading - tie.labelStart)
+            .padding(.trailing, tie.labelPadding)
+            .frame(height: height)
+            .background { PaperLabel() }
+            Spacer(minLength: 0)
+        }
+        .frame(width: box.leading + box.width + tie.labelPadding - tie.labelStart)
+        .padding(.leading, tie.labelStart)
+    }
+
     /// The thinnest, in pixels, that `spine` can be drawn and stay legible: thick enough for one
-    /// line of lettering at `minimumLettering` and, for a bundle, for its tag's count at that size.
+    /// line of lettering at `minimumLettering`, on a bundle's label, and for a bundle's tag's
+    /// count at that size.
     nonisolated static func minimumThickness(_ spine: StackSpine) -> CGFloat {
         let lettering = minimumLettering / letteringRatio
         guard spine.books.count > 1 else { return lettering }
-        return max(lettering, minimumLettering / (Tie.tagShare * SeriesTag.countShare))
+        return max(
+            lettering / PaperLabel.share,
+            minimumLettering / (Tie.tagShare * SeriesTag.countShare))
+    }
+
+    /// The look `spine` letters in, and the share of its thickness the lettering sizes to: a
+    /// book's own look across its whole thickness, or for a bundle, its label's dark ink in a
+    /// plain serif across the label.
+    nonisolated static func letteringLook(_ spine: StackSpine, look: SpineLook) -> (
+        look: SpineLook, share: CGFloat
+    ) {
+        guard spine.books.count > 1 else { return (look, 1) }
+        var ink = look
+        ink.foreground = PaperLabel.ink
+        ink.face = nil
+        (ink.typeface, ink.weight, ink.uppercase, ink.isCondensed) = ("serif", 600, false, false)
+        return (ink, PaperLabel.share)
     }
 
     /// The fewest pixels per decimeter, up to `limit`, at which `spine` letters one of its titles
-    /// in full at `minimumLettering`, on one line or, when thick enough, two, in `look`'s font; or
-    /// `nil` when none fits even at `limit`.
+    /// in full at `minimumLettering`, on one line or, when thick enough, two, as drawn
+    /// (`letteringLook(_:look:)`); or `nil` when none fits even at `limit`.
     ///
     /// The lettering measures 2 percent wider than `NSString` reports, in case SwiftUI sets it a
     /// little wider.
     nonisolated static func letteringScale(_ spine: StackSpine, look: SpineLook, limit: CGFloat)
         -> CGFloat?
     {
+        let (look, share) = letteringLook(spine, look: look)
         let font = look.uiFont(size: minimumLettering)
         func width(_ text: String) -> CGFloat {
             let lines = text.split(separator: "\n")
@@ -521,14 +570,13 @@ struct ShareSpine: View {
         let forms = spine.titles.map(look.text)
         let oneLine = forms.map(width).min() ?? 0
         let twoLines = forms.compactMap(balanced).map(width).min()
-        // `lettering(_:look:width:thickness:)` centers its lines in 84 percent of the thickness.
+        // The lettering centers its lines in 84 percent of the thickness it sizes to.
         func fits(_ scale: CGFloat) -> Bool {
             let box = letteringBox(spine, scale: scale).width
-            let height = spine.size.height * scale * 0.84
+            let thickness = spine.size.height * scale * share
+            let height = thickness * 0.84
             if oneLine <= box, font.lineHeight <= height { return true }
-            guard let twoLines, spine.size.height * scale * 0.32 >= wrappedLettering else {
-                return false
-            }
+            guard let twoLines, thickness * 0.32 >= wrappedLettering else { return false }
             return twoLines <= box && 2 * font.lineHeight <= height
         }
         guard fits(limit) else { return nil }
@@ -541,7 +589,7 @@ struct ShareSpine: View {
     }
 
     /// Where the lettering starts, from the spine's head, and how wide it is, at `scale` pixels
-    /// per decimeter: clear of `SpineView`'s accent bands and of a bundle's twine and tag.
+    /// per decimeter: clear of `SpineView`'s accent bands, and on a bundle, inside its label.
     nonisolated static func letteringBox(_ spine: StackSpine, scale: CGFloat) -> (
         leading: CGFloat, width: CGFloat
     ) {
@@ -570,6 +618,15 @@ struct ShareSpine: View {
     static func lettering(_ forms: [String], look: SpineLook, width: CGFloat, thickness: CGFloat)
         -> some View
     {
+        fittedLettering(forms, look: look, thickness: thickness)
+            .frame(width: width, height: thickness * 0.84, alignment: .leading)
+    }
+
+    /// The lettering `lettering(_:look:width:thickness:)` chooses within the proposed size, at
+    /// its own size, so a label can fit it.
+    static func fittedLettering(_ forms: [String], look: SpineLook, thickness: CGFloat)
+        -> some View
+    {
         let options = options(forms.map(look.text), thickness: thickness)
         return ViewThatFits(in: [.horizontal, .vertical]) {
             ForEach(options.indices, id: \.self) { index in
@@ -579,7 +636,6 @@ struct ShareSpine: View {
             }
         }
         .foregroundStyle(look.foreground.color)
-        .frame(width: width, height: thickness * 0.84, alignment: .leading)
     }
 
     /// The lettering options in the order `lettering(_:look:width:thickness:)` tries them.
@@ -623,9 +679,9 @@ struct ShareSpine: View {
 /// with a bow on the tail's twine and a paper tag that hangs from the bow and counts the series'
 /// books.
 ///
-/// The series name runs between the two. The bow and tag sit on the face, not on top, so the
-/// bundle still lies flat under the book above it, and the tag hangs straight down from the bow
-/// inside the bundle's face.
+/// The series' paper label runs between the two, held under the head's twine. The bow and tag
+/// sit on the face, not on top, so the bundle still lies flat under the book above it, and the
+/// tag hangs straight down from the bow inside the bundle's face.
 private struct Tie: View {
     let length: CGFloat
     let thickness: CGFloat
@@ -652,11 +708,19 @@ private struct Tie: View {
     nonisolated static let tagShare: CGFloat = 0.74
     nonisolated var tagHeight: CGFloat { min(thickness * Self.tagShare, 150) }
     nonisolated var tagTop: CGFloat { knot + thickness * 0.05 }
-    /// The room between the lettering and the twine or tag.
+    /// The room between the twine and the label's edge or lettering.
     private nonisolated var gap: CGFloat { max(12, thickness * 0.06) }
-    /// Where lettering on the face can start and must end, from the head.
+    /// Where the label starts, from the head: a gap before the head twine, which crosses it.
+    nonisolated var labelStart: CGFloat { head - width / 2 - gap }
+    /// The paper between the label's lettering and its tail end: its ruled border, and a gap
+    /// inside it.
+    nonisolated var labelPadding: CGFloat { thickness * PaperLabel.share * PaperLabel.border + gap }
+    /// Where the label's lettering can start and must end, from the head: a gap past the head
+    /// twine, and far enough from the tag that the label ends half a gap short of it.
     nonisolated var letteringStart: CGFloat { head + width / 2 + gap }
-    nonisolated var letteringEnd: CGFloat { tail - SeriesTag.width(height: tagHeight) / 2 - gap }
+    nonisolated var letteringEnd: CGFloat {
+        tail - SeriesTag.width(height: tagHeight) / 2 - gap / 2 - labelPadding
+    }
 
     var body: some View {
         let hole = tagTop + tagHeight * SeriesTag.hole
@@ -770,7 +834,7 @@ private struct SeriesTag: View {
                 .position(x: width / 2, y: height * Self.hole)
             Text(count.formatted())
                 .font(ShareStyle.serif(height * Self.countShare, .semibold))
-                .foregroundStyle(Color(red: 0.24, green: 0.16, blue: 0.09))
+                .foregroundStyle(PaperLabel.ink.color)
                 .lineLimit(1)
                 .minimumScaleFactor(0.5)
                 .padding(.horizontal, width * 0.1)
@@ -785,6 +849,40 @@ private struct SeriesTag: View {
         .compositingGroup()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(count) books")
+    }
+}
+
+/// A cream library label with a ruled border, pasted flat across a bundle's face.
+struct PaperLabel: View {
+    /// The label's height as a share of the bundle's thickness: as tall as the face allows,
+    /// with a little cloth showing above and below.
+    nonisolated static let share: CGFloat = 0.88
+    /// The ruled border's inner edge, inset from the label's edges, as a share of its height.
+    nonisolated static let border: CGFloat = 0.08
+    /// The paper's color at its top and bottom edges.
+    nonisolated static let paper = [
+        ColorValue(red: 250, green: 242, blue: 222), ColorValue(red: 237, green: 224, blue: 194),
+    ]
+    /// The lettering's dark ink, which the tag's count shares.
+    nonisolated static let ink = ColorValue(red: 61, green: 41, blue: 23)
+
+    var body: some View {
+        GeometryReader { proxy in
+            let height = proxy.size.height
+            let rule = max(1, height * 0.02)
+            RoundedRectangle(cornerRadius: height * 0.05)
+                .fill(
+                    LinearGradient(
+                        colors: Self.paper.map(\.color), startPoint: .top, endPoint: .bottom)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: height * 0.03)
+                        .strokeBorder(Color(red: 0.6, green: 0.45, blue: 0.32), lineWidth: rule)
+                        .padding(height * Self.border - rule)
+                }
+                // Pasted flat, the paper shows only its edge.
+                .shadow(color: .black.opacity(0.35), radius: 1)
+        }
     }
 }
 
