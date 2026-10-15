@@ -80,9 +80,10 @@ actor SpineWorker {
     private let backgroundCovers = CoverDownloader(allowsExpensiveNetwork: false)
     private var snapshot: WorkerSnapshot
     private var isRunning = false
-    // Series designs found or made during the current pass, so siblings are looked up once.
-    private var seriesDesigns: [Int: SpineDesignV1] = [:]
-    private var searchedSeries = Set<Int>()
+    // Saved designs of series books, looked up at most once per pass, and designs the pass
+    // made.
+    private var bookDesigns: [Int: SpineDesignV1] = [:]
+    private var checkedBooks = Set<Int>()
 
     static let busyRetryDelay: TimeInterval = 15 * 60
     /// How long a stop waits when its cause needs the user, such as a full iCloud storage plan
@@ -145,8 +146,8 @@ actor SpineWorker {
         snapshot.queue = 0
         snapshot.completed = 0
         snapshot.failed = 0
-        seriesDesigns = [:]
-        searchedSeries = []
+        bookDesigns = [:]
+        checkedBooks = []
         publish()
         do {
             guard let context = try await store.loadWork() else {
@@ -171,6 +172,7 @@ actor SpineWorker {
                     queue.append(book)
                 }
             }
+            queue = SeriesDesigns.sourceFirst(queue)
             snapshot.queue = queue.count
             guard !queue.isEmpty else {
                 snapshot.phase = "All spines are up to date"
@@ -202,9 +204,8 @@ actor SpineWorker {
                         }
                         try await store.save(design)
                         continuation.yield(.saved(design))
-                        if let seriesID = book.seriesID, seriesDesigns[seriesID] == nil {
-                            seriesDesigns[seriesID] = design
-                        }
+                        bookDesigns[book.id] = design
+                        checkedBooks.insert(book.id)
                         generationLog.info(
                             "Book \(book.id, privacy: .private(mask: .hash)) designed in \(start.duration(to: .now), privacy: .public)"
                         )
@@ -272,32 +273,37 @@ actor SpineWorker {
         case .redesign: break
         }
         // Books in one series share a design so their spines match on the shelf.
-        if let seriesID = book.seriesID {
-            if seriesDesigns[seriesID] == nil, searchedSeries.insert(seriesID).inserted {
-                seriesDesigns[seriesID] = try await storedSeriesDesign(
-                    seriesID: seriesID, excluding: book.id, context: context)
-            }
-            if let source = seriesDesigns[seriesID],
-                let reused = try await analyzer.seriesDesign(
-                    from: source, book: book, accountID: context.accountID,
-                    workItemHash: workHash, coverHash: cover.hash)
-            {
-                return reused
-            }
+        if let source = try await storedSeriesDesign(for: book, context: context),
+            let reused = try await analyzer.seriesDesign(
+                from: source, book: book, accountID: context.accountID,
+                workItemHash: workHash, coverHash: cover.hash)
+        {
+            return reused
         }
         return try await analyzer.design(
             book: book, accountID: context.accountID, workItemHash: workHash, cover: cover)
     }
 
-    /// Returns the first saved design from this generator for another book in the series, if
-    /// any.
+    /// Returns the usable saved design from this generator of the best-ranked series-mate that
+    /// ranks before `book` as the series' design source (see `SeriesDesigns`), if any.
+    ///
+    /// The series' source itself has no such mate, so it is always designed from its own
+    /// cover: a redesign from a new cover, or a newly read first book, changes the series.
     private func storedSeriesDesign(
-        seriesID: Int, excluding bookID: Int, context: WorkContext
+        for book: CloudBook, context: WorkContext
     ) async throws -> SpineDesignV1? {
-        for sibling in context.books where sibling.seriesID == seriesID && sibling.id != bookID {
-            if let design = try await store.savedDesign(
-                accountID: context.accountID, bookID: sibling.id),
-                design.generatorVersion == CloudContract.generatorVersion
+        let mates = context.books.filter {
+            $0.id != book.id && SeriesDesigns.matches(book, $0)
+                && SeriesDesigns.ranksBefore($0, book)
+        }
+        for mate in mates.sorted(by: SeriesDesigns.ranksBefore) {
+            if checkedBooks.insert(mate.id).inserted {
+                bookDesigns[mate.id] = try await store.savedDesign(
+                    accountID: context.accountID, bookID: mate.id)
+            }
+            if let design = bookDesigns[mate.id],
+                design.generatorVersion == CloudContract.generatorVersion,
+                SeriesDesigns.isUsableSource(design)
             {
                 return design
             }

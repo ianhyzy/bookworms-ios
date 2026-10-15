@@ -1,11 +1,12 @@
+import CoreText
 import Foundation
 import XCTest
 
 @testable import Bookworms
 
 /// Covers the reader's spine colors: the provenance record that Reset restores from, the
-/// contrast gate, which saved designs a generation run keeps, series reuse, and the preview
-/// store's save.
+/// contrast gate, which saved designs a generation run keeps, series reuse and alignment, and
+/// the preview store's save.
 final class SpineColorsTests: XCTestCase {
     private let work = String(repeating: "a", count: 64)
     private let cover = String(repeating: "b", count: 64)
@@ -154,6 +155,121 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertEqual(reused?.colors, generated.colors)
         XCTAssertNil(reused?.generatedColors)
         XCTAssertEqual(reused?.provenance, "series-reuse:7")
+    }
+
+    private func seriesBook(
+        _ id: Int, by author: String = "Ann Author", series: Int? = 5, position: Double? = nil,
+        finished: String? = nil, title: String = "Fictional Volume"
+    ) -> CloudBook {
+        CloudBook(
+            id: id, title: title, author: author, coverURL: nil, detailCoverURL: nil,
+            seriesID: series, seriesPosition: position, finished: finished)
+    }
+
+    private func design(for bookID: Int, background: String = "#000000", family: String? = nil)
+        -> SpineDesignV1
+    {
+        SpineDesignV1(
+            version: 1, accountID: "42", bookID: bookID, workItemHash: work, coverHash: cover,
+            generatorVersion: CloudContract.generatorVersion,
+            generatedAt: Date(timeIntervalSince1970: 1_000_000), backgroundHex: background,
+            foregroundHex: "#FFFFFF", accentHex: "#FF0000", typeface: "serif", weight: 600,
+            uppercase: false, fontFamily: family)
+    }
+
+    func testSeriesMembershipNeedsTheSameSeriesAndASharedAuthor() {
+        let first = seriesBook(1, by: "José Saramago")
+        XCTAssertTrue(SeriesDesigns.matches(first, seriesBook(2, by: "jose saramago")))
+        XCTAssertFalse(SeriesDesigns.matches(first, seriesBook(3, by: "Another Writer")))
+        XCTAssertTrue(
+            SeriesDesigns.matches(seriesBook(4, by: "Co Writer, Ann Author"), seriesBook(5)))
+        XCTAssertFalse(SeriesDesigns.matches(seriesBook(6), seriesBook(7, series: 9)))
+        XCTAssertFalse(
+            SeriesDesigns.matches(seriesBook(8, series: nil), seriesBook(9, series: nil)))
+    }
+
+    func testSeriesSourceRanksPositionThenFinishThenID() {
+        // Book 1 ranks first but has no design; book 2's Impact design is not usable.
+        let books = [
+            seriesBook(1, position: 1), seriesBook(2, position: 2),
+            seriesBook(3, position: 3, finished: "2024-05-01"),
+            seriesBook(4, position: 3, finished: "2023-05-01"), seriesBook(5),
+            seriesBook(6, finished: "2020-01-01"), seriesBook(7, by: "Another Writer", position: 0),
+        ]
+        var designs = [2: design(for: 2, family: "Impact")]
+        for id in 3...7 { designs[id] = design(for: id) }
+        let sources = SeriesDesigns.sources(books: books, designs: designs)
+        // Book 4 finished before book 3 at the same position; book 7 has another author.
+        XCTAssertEqual(sources, [1: 4, 2: 4, 3: 4, 4: 4, 5: 4, 6: 4])
+
+        // Without positions, the earliest finish leads, and a missing finish ranks last.
+        let unnumbered = [seriesBook(10), seriesBook(11, finished: "2021-01-01"), seriesBook(9)]
+        let unnumberedSources = SeriesDesigns.sources(
+            books: unnumbered,
+            designs: [9: design(for: 9), 10: design(for: 10), 11: design(for: 11)])
+        XCTAssertEqual(unnumberedSources, [9: 11, 10: 11, 11: 11])
+        XCTAssertEqual(
+            SeriesDesigns.sourceFirst(unnumbered + [seriesBook(12, series: nil)]).map(\.id),
+            [11, 9, 10, 12])
+    }
+
+    func testSeriesBookKeepsItsOwnDesignWhenTheSourceFontLacksGlyphs() throws {
+        let face = FontFace(
+            descriptor: CTFontDescriptorCreateWithNameAndSize("Helvetica" as CFString, 12),
+            postScriptName: "Helvetica")
+        let books = [
+            seriesBook(1, position: 1), seriesBook(2, position: 2),
+            seriesBook(3, position: 3, title: "東京物語"),
+        ]
+        let designs = [1: design(for: 1), 2: design(for: 2), 3: design(for: 3)]
+        let sources = SeriesDesigns.sources(books: books, designs: designs) { book, design in
+            face.covers(SeriesDesigns.lettering(of: book, uppercase: design.uppercase))
+        }
+        XCTAssertEqual(sources, [1: 1, 2: 1])
+    }
+
+    @MainActor
+    func testRecoloringASeriesBookRecolorsTheSeriesSource() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appending(path: "bookworms-series-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let first = seriesBook(1, position: 1)
+        let second = seriesBook(2, position: 2)
+        let archive: [String: Any] = [
+            "version": 1,
+            "sources": [
+                [
+                    "source": "hardcover", "accountID": "42", "syncedAt": 1_000,
+                    "books": try JSONSerialization.jsonObject(
+                        with: JSONEncoder().encode([first, second])),
+                ]
+            ],
+        ]
+        try JSONSerialization.data(withJSONObject: archive)
+            .write(to: folder.appending(path: "library-v1.json"))
+        let saved = [design(for: 1, background: "#202020"), design(for: 2, background: "#404040")]
+        try JSONEncoder()
+            .encode(
+                Dictionary(
+                    uniqueKeysWithValues: saved.map {
+                        (CloudContract.designRecordName(accountID: "42", bookID: $0.bookID), $0)
+                    })
+            )
+            .write(to: folder.appending(path: "spine-designs-v1.json"))
+
+        let model = AppModel(previewFolder: folder)
+        await model.reload()
+        XCTAssertEqual(model.design(for: second)?.bookID, 1)
+        XCTAssertEqual(model.designSource(for: second).id, 1)
+
+        try await model.recolor(second, to: reader)
+        let store = LocalSpineStore(folder: folder)
+        let source = try await store.savedDesign(accountID: "42", bookID: 1)
+        let own = try await store.savedDesign(accountID: "42", bookID: 2)
+        XCTAssertEqual(source?.colors, reader)
+        XCTAssertEqual(own?.backgroundHex, "#404040")
+        XCTAssertEqual(model.look(for: second).background, reader.background)
     }
 
     func testPreviewStoreReplacesOnlyTheRecoloredDesign() async throws {
