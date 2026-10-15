@@ -51,37 +51,48 @@ enum SeriesDesigns {
         design.fontFamily.map(BookAnalyzer.allowsFamily) ?? true
     }
 
-    /// Maps each book that shares a series design to the book whose design it draws with. A
-    /// source maps to itself; books that draw their own design are absent.
+    /// Maps each book that draws another book's spine design to that book, its source; a
+    /// source maps to itself, and a book that draws its own design and lends it to no one is
+    /// absent.
     ///
-    /// A book's source is the best-ranked book among it and its matching series-mates whose
-    /// design is usable. `canLetter` tells whether a source design can letter a book; a book it
-    /// rejects, such as one whose title the source's font lacks glyphs for, keeps its own
-    /// design.
+    /// Only a root lends its design: a book that draws its own. Each series is decided in
+    /// `ranksBefore` order. A book takes the best-ranked earlier root that matches it, can lend
+    /// (`lends`), and can letter it (`canLetter`); otherwise it is a root itself. Matching isn't
+    /// transitive, since book 2 can share an author with books 1 and 3 that share none, so this
+    /// keeps a book from drawing a design another book borrowed: book 3 then draws its own.
+    /// Recolor, **Change cover**, and **Redesign spine** on a book act on its source, which
+    /// always designs from its own cover. The result doesn't depend on the order of `books`.
+    static func sources(
+        of books: [CloudBook], lends: (CloudBook) -> Bool,
+        canLetter: (_ book: CloudBook, _ source: CloudBook) -> Bool = { _, _ in true }
+    ) -> [Int: Int] {
+        var sources: [Int: Int] = [:]
+        let series = Dictionary(grouping: books.filter { $0.seriesID != nil }, by: \.seriesID)
+        for books in series.values {
+            var roots: [CloudBook] = []
+            for book in books.sorted(by: ranksBefore) {
+                if let root = roots.first(where: {
+                    matches(book, $0) && lends($0) && canLetter(book, $0)
+                }) {
+                    sources[book.id] = root.id
+                    sources[root.id] = root.id
+                } else {
+                    roots.append(book)
+                }
+            }
+        }
+        return sources
+    }
+
+    /// `sources(of:lends:canLetter:)` for books with saved `designs`: a book lends its design
+    /// when it has a usable one (`isUsableSource`).
     static func sources(
         books: [CloudBook], designs: [Int: SpineDesignV1],
         canLetter: (CloudBook, SpineDesignV1) -> Bool = { _, _ in true }
     ) -> [Int: Int] {
-        let candidates = Dictionary(
-            grouping: books.filter {
-                $0.seriesID != nil && designs[$0.id].map(isUsableSource) == true
-            },
-            by: { $0.seriesID })
-        var sources: [Int: Int] = [:]
-        for book in books {
-            guard
-                let source = candidates[book.seriesID]?
-                    .filter({ $0.id == book.id || matches(book, $0) }).min(by: ranksBefore),
-                source.id != book.id, let design = designs[source.id], canLetter(book, design)
-            else { continue }
-            sources[book.id] = source.id
-        }
-        // Each source draws its own design unless it has a source of its own, so the result
-        // doesn't depend on the order of `books`.
-        for source in Set(sources.values) where sources[source] == nil {
-            sources[source] = source
-        }
-        return sources
+        sources(
+            of: books, lends: { designs[$0.id].map(isUsableSource) == true },
+            canLetter: { book, source in designs[source.id].map { canLetter(book, $0) } ?? false })
     }
 
     /// Returns `queue` with each series' books in source order, in the places the series'
