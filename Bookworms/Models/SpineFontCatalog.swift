@@ -1,4 +1,7 @@
-/// The Google Fonts families the model may choose for a spine title, grouped by letterform style.
+/// The Google Fonts families a spine title may use, grouped by letterform style.
+///
+/// After changing the catalog, run `script/spine-font-descriptors.sh` so `TitleLettering` can
+/// rank the new families.
 ///
 /// Every family is open source and was checked against the Google Fonts catalog. Raw values are
 /// exact catalog names, which `GoogleFonts` uses to download the family.
@@ -173,7 +176,6 @@ enum SpineFamily: String, CaseIterable {
 
 /// A letterform style group, with the system typeface class that approximates it.
 enum SpineFontStyle: String, CaseIterable {
-    // `BookAnalyzer` shuffles these per book, so case order does not bias the model.
     case bookSerif, humanistSans, geometricSans, condensedSans, slab, didone, classicalCaps, script,
         rounded, decorative, monospace, blackletter
 
