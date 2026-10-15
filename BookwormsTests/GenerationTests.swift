@@ -327,7 +327,9 @@ final class GenerationTests: XCTestCase {
         // The gap collapses to a twelfth of the 40-pixel band: (10 + 3 + 10) / 40, rounded to
         // the 48-pixel grid.
         XCTAssertEqual(profile.aspect, Double(23 * 48 / 40) / 48, accuracy: 0.001)
-        XCTAssertEqual(profile.strokeSpread, 0, accuracy: 0.001)
+        // Box filtering leaves one partial column at each letter edge, so even strokes vary
+        // by a pixel.
+        XCTAssertLessThan(profile.strokeSpread, 0.2)
         XCTAssertEqual(profile.shape.count, 320 * 48)
     }
 
