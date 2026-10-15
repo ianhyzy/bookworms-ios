@@ -284,31 +284,35 @@ actor SpineWorker {
             book: book, accountID: context.accountID, workItemHash: workHash, cover: cover)
     }
 
-    /// Returns the usable saved design from this generator of the best-ranked series-mate that
-    /// ranks before `book` as the series' design source (see `SeriesDesigns`), if any.
+    /// Returns the saved design of `book`'s series source, by the rule the app draws with
+    /// (`SeriesDesigns.sources(of:lends:canLetter:)`), when that source is another book with a
+    /// usable saved design from this generator.
     ///
-    /// The series' source itself has no such mate, so it is always designed from its own
+    /// A source ranks before the books that draw with it and is always designed from its own
     /// cover: a redesign from a new cover, or a newly read first book, changes the series.
     private func storedSeriesDesign(
         for book: CloudBook, context: WorkContext
     ) async throws -> SpineDesignV1? {
-        let mates = context.books.filter {
-            $0.id != book.id && SeriesDesigns.matches(book, $0)
+        // Every earlier book in the series, matching or not, decides which of them are roots.
+        let earlier = context.books.filter {
+            $0.id != book.id && $0.seriesID != nil && $0.seriesID == book.seriesID
                 && SeriesDesigns.ranksBefore($0, book)
         }
-        for mate in mates.sorted(by: SeriesDesigns.ranksBefore) {
-            if checkedBooks.insert(mate.id).inserted {
-                bookDesigns[mate.id] = try await store.savedDesign(
-                    accountID: context.accountID, bookID: mate.id)
-            }
+        guard !earlier.isEmpty else { return nil }
+        for mate in earlier where checkedBooks.insert(mate.id).inserted {
+            bookDesigns[mate.id] = try await store.savedDesign(
+                accountID: context.accountID, bookID: mate.id)
+        }
+        let designs = earlier.reduce(into: [Int: SpineDesignV1]()) { designs, mate in
             if let design = bookDesigns[mate.id],
                 design.generatorVersion == CloudContract.generatorVersion,
                 SeriesDesigns.isUsableSource(design)
             {
-                return design
+                designs[mate.id] = design
             }
         }
-        return nil
+        let source = SeriesDesigns.sources(of: earlier + [book]) { designs[$0.id] != nil }[book.id]
+        return source.flatMap { designs[$0] }
     }
 
     /// Reads the model status and stops the run when it should send no more requests.

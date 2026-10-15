@@ -219,8 +219,10 @@ final class SpineColorsTests: XCTestCase {
         var designs = [2: design(for: 2, family: "Impact")]
         for id in 3...7 { designs[id] = design(for: id) }
         let sources = SeriesDesigns.sources(books: books, designs: designs)
-        // Book 4 finished before book 3 at the same position; book 7 has another author.
-        XCTAssertEqual(sources, [1: 4, 2: 4, 3: 4, 4: 4, 5: 4, 6: 4])
+        // Book 4 finished before book 3 at the same position, so it lends its design to the
+        // books after it; book 7 has another author. Books 1 and 2 rank before book 4, so they
+        // draw their own designs: book 1 once it has one, and book 2 in its remapped face.
+        XCTAssertEqual(sources, [3: 4, 4: 4, 5: 4, 6: 4])
 
         // Without positions, the earliest finish leads, and a missing finish ranks last.
         let unnumbered = [seriesBook(10), seriesBook(11, finished: "2021-01-01"), seriesBook(9)]
@@ -231,6 +233,22 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertEqual(
             SeriesDesigns.sourceFirst(unnumbered + [seriesBook(12, series: nil)]).map(\.id),
             [11, 9, 10, 12])
+    }
+
+    func testSeriesSourcesLendOnlyOwnDesignsInAnyBookOrder() {
+        // Book 2 shares an author with books 1 and 3, which share none. Book 2 draws book 1's
+        // design; book 3 may not draw the design book 2 borrowed, so it draws its own.
+        let books = [
+            seriesBook(1, by: "Ann Author", position: 1),
+            seriesBook(2, by: "Ann Author, Co Writer", position: 2),
+            seriesBook(3, by: "Co Writer", position: 3),
+        ]
+        let designs = [1: design(for: 1), 2: design(for: 2), 3: design(for: 3)]
+        for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+            XCTAssertEqual(
+                SeriesDesigns.sources(books: order.map { books[$0] }, designs: designs),
+                [1: 1, 2: 1], "\(order)")
+        }
     }
 
     func testSeriesBookKeepsItsOwnDesignWhenTheSourceFontLacksGlyphs() throws {
@@ -248,38 +266,62 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertEqual(sources, [1: 1, 2: 1])
     }
 
+    /// A model reading a preview folder that holds `books` and their saved `designs`; the
+    /// folder is removed when the test ends.
     @MainActor
-    func testRecoloringASeriesBookRecolorsTheSeriesSource() async throws {
+    private func previewModel(books: [CloudBook], designs: [SpineDesignV1]) async throws
+        -> (model: AppModel, folder: URL)
+    {
         let folder = FileManager.default.temporaryDirectory
             .appending(path: "bookworms-series-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: folder) }
-        let first = seriesBook(1, position: 1)
-        let second = seriesBook(2, position: 2)
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
         let archive: [String: Any] = [
             "version": 1,
             "sources": [
                 [
                     "source": "hardcover", "accountID": "42", "syncedAt": 1_000,
                     "books": try JSONSerialization.jsonObject(
-                        with: JSONEncoder().encode([first, second])),
+                        with: JSONEncoder().encode(books)),
                 ]
             ],
         ]
         try JSONSerialization.data(withJSONObject: archive)
             .write(to: folder.appending(path: "library-v1.json"))
-        let saved = [design(for: 1, background: "#202020"), design(for: 2, background: "#404040")]
         try JSONEncoder()
             .encode(
                 Dictionary(
-                    uniqueKeysWithValues: saved.map {
+                    uniqueKeysWithValues: designs.map {
                         (CloudContract.designRecordName(accountID: "42", bookID: $0.bookID), $0)
                     })
             )
             .write(to: folder.appending(path: "spine-designs-v1.json"))
-
         let model = AppModel(previewFolder: folder)
         await model.reload()
+        return (model, folder)
+    }
+
+    @MainActor
+    func testSeriesActionsActOnASourceThatDesignsFromItsOwnCover() async throws {
+        let books = [
+            seriesBook(1, by: "Ann Author", position: 1),
+            seriesBook(2, by: "Ann Author, Co Writer", position: 2),
+            seriesBook(3, by: "Co Writer", position: 3),
+        ]
+        let (model, _) = try await previewModel(
+            books: books, designs: [1, 2, 3].map { design(for: $0) })
+        // Change cover and Redesign spine act on `designSource(for:)`.
+        XCTAssertEqual(model.designSource(for: books[1]).id, 1, "Book 2 changes book 1")
+        XCTAssertEqual(model.designSource(for: books[2]).id, 3, "Book 3 changes itself")
+        XCTAssertEqual(model.design(for: books[2])?.bookID, 3)
+    }
+
+    @MainActor
+    func testRecoloringASeriesBookRecolorsTheSeriesSource() async throws {
+        let first = seriesBook(1, position: 1)
+        let second = seriesBook(2, position: 2)
+        let saved = [design(for: 1, background: "#202020"), design(for: 2, background: "#404040")]
+        let (model, folder) = try await previewModel(books: [first, second], designs: saved)
         XCTAssertEqual(model.design(for: second)?.bookID, 1)
         XCTAssertEqual(model.designSource(for: second).id, 1)
 

@@ -67,6 +67,8 @@ final class SpineFonts {
     @ObservationIgnored private var loads: [String: Task<Void, Never>] = [:]
     /// Faces whose family or file is unusable. Network failures are not listed, so they retry.
     @ObservationIgnored private var unusable = Set<String>()
+    /// Called on the main actor after each face loads, whichever caller started the load.
+    @ObservationIgnored var onFaceLoaded: (() -> Void)?
 
     func face(for design: SpineDesignV1?) -> FontFace? {
         guard let design, let key = Self.key(design) else { return nil }
@@ -113,6 +115,7 @@ final class SpineFonts {
                         descriptor: descriptor,
                         postScriptName: GoogleFonts.postScriptName(of: descriptor)
                             ?? font.postScriptName)
+                    onFaceLoaded?()
                 } else {
                     unusable.insert(key)
                 }

@@ -18,7 +18,7 @@ final class AppModel {
     /// The library's books, most recently finished first, then unfinished books by title.
     private(set) var books: [CloudBook] = []
     /// Maps each book that shares a series design to the book whose design it draws with
-    /// (`SeriesDesigns.sources`). Recomputed when the library changes or a face loads.
+    /// (`SeriesDesigns.sources`). Recomputed when the library changes or any face loads.
     private(set) var seriesSources: [Int: Int] = [:]
     private(set) var isLoading = false
     private(set) var loadError: String?
@@ -78,6 +78,8 @@ final class AppModel {
             }
         }
         account.onLibraryChange = { [unowned self] in self.accountLibraryChanged() }
+        // A face that any screen loads can change which books its source's font can letter.
+        fonts.onFaceLoaded = { [unowned self] in self.alignSeries() }
     }
 
     /// Opens the Share tab with `book` as the featured book.
@@ -174,7 +176,6 @@ final class AppModel {
         // Fonts load after `isLoading` clears, so a slow download never blocks the next reload.
         if let designs = library?.designs.values {
             await fonts.load(Array(designs))
-            alignSeries()
         }
     }
 
@@ -220,10 +221,7 @@ final class AppModel {
             guard !Task.isCancelled else { return }
             persist()
         }
-        Task {
-            await fonts.load([design])
-            alignSeries()
-        }
+        Task { await fonts.load([design]) }
     }
 
     /// Shows `colors` on the spine `book` draws and saves them to that design as the reader's
