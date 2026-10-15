@@ -77,6 +77,8 @@ struct SpineCarousel: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
     @AppStorage("BookwormsStackStyle") private var style = StackStyle.flat
+    /// Each stack column's last centered book, for columns that do not hold `centeredID`.
+    @State private var columnCenters: [Int: Int] = [:]
 
     /// Shelved books nearly touch, so their spines read as separate books.
     private static let shelfSpacing: CGFloat = 1
@@ -110,7 +112,42 @@ struct SpineCarousel: View {
         }
     }
 
-    private func stack(in size: CGSize) -> some View {
+    /// Stack, in as many side-by-side stacks as the width holds at full scale, such as in a wide
+    /// Mac window. Each column holds the next run of books in order and scrolls on its own; the
+    /// caption names the book centered in the column scrolled last.
+    @ViewBuilder private func stack(in size: CGSize) -> some View {
+        let columns = StackArrangement.columns(in: size.width, books: books.count)
+        if columns == 1 {
+            stackColumn(books, in: size, centeredID: $centeredID)
+        } else {
+            let perColumn = (books.count + columns - 1) / columns
+            let width = size.width / CGFloat(columns)
+            HStack(spacing: 0) {
+                ForEach(0..<columns, id: \.self) { column in
+                    let chunk = Array(books.dropFirst(column * perColumn).prefix(perColumn))
+                    stackColumn(
+                        chunk, in: CGSize(width: width, height: size.height),
+                        centeredID: columnBinding(column, ids: chunk.map(\.id)))
+                }
+            }
+        }
+    }
+
+    /// `centeredID` when the column holds it, and otherwise the column's own last centered book,
+    /// so scrolling one column never moves the others.
+    private func columnBinding(_ column: Int, ids: [Int]) -> Binding<Int?> {
+        Binding {
+            if let id = centeredID, ids.contains(id) { return id }
+            return columnCenters[column]
+        } set: { id in
+            columnCenters[column] = id
+            centeredID = id
+        }
+    }
+
+    private func stackColumn(
+        _ books: [CloudBook], in size: CGSize, centeredID: Binding<Int?>
+    ) -> some View {
         let arrangement = StackArrangement(width: size.width)
         let track = arrangement.track(of: books)
         // A lazy stack builds only the pages within its scroll view's bounds. A spine overhangs
@@ -158,7 +195,7 @@ struct SpineCarousel: View {
         }
         .modifier(
             CenterTracking(
-                track: track, axis: .vertical, viewport: size.height, centeredID: $centeredID)
+                track: track, axis: .vertical, viewport: size.height, centeredID: centeredID)
         )
         // Fades the stack as one image, so a fading 3D book never shows the book under it through
         // its spine. The mask also hides the top boards that would rise under the bar.
@@ -665,10 +702,25 @@ struct StackArrangement {
     /// Points per decimeter of book, up to the shelf's largest.
     let scale: CGFloat
 
+    /// How many stacks fit side by side in `width` with every book at least at `columnScale`,
+    /// at most one per three books, so a short list stays one stack.
+    static func columns(in width: CGFloat, books: Int) -> Int {
+        let needed = CGFloat(BookShape.longest) * columnScale / (1 - 2 * maximumShift) + 2 * margin
+        return max(1, min(Int(width / (needed + columnGap)), books / 3))
+    }
+
+    /// The smallest scale a stack takes to make room for another stack beside it.
+    static let columnScale: CGFloat = 130
+
+    /// The largest scale, in points per decimeter of book.
+    static let maximumScale: CGFloat = 170
+    /// Extra room between side-by-side stacks.
+    static let columnGap: CGFloat = 48
+
     init(width: CGFloat) {
         self.width = width
         let room = width * (1 - 2 * Self.maximumShift) - 2 * Self.margin
-        scale = min(170, max(1, room / CGFloat(BookShape.longest)))
+        scale = min(Self.maximumScale, max(1, room / CGFloat(BookShape.longest)))
     }
 
     /// The spine lying on its side: its length by its thickness. Stack's spines are thicker

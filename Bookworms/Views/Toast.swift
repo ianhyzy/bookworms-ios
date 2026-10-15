@@ -1,5 +1,10 @@
 import SwiftUI
-import UIKit
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 /// A short confirmation, such as "Saved to Photos", in a pill near the top of the screen.
 struct Toast: Equatable, Identifiable {
@@ -41,63 +46,65 @@ final class ToastCenter {
     }
 }
 
-/// Shows `ToastCenter`'s toasts in a window above the app's own.
-///
-/// A sheet or the share sheet covers the whole tab view, so an overlay on the tab view would
-/// hide a toast behind it. A window above the app's window shows over both. The window spans
-/// the screen's width just below the status bar, so it never takes over the status bar's
-/// style, and it ignores touches, which reach the app below.
-struct ToastWindow: UIViewRepresentable {
-    let toasts: ToastCenter
+#if os(iOS)
+    /// Shows `ToastCenter`'s toasts in a window above the app's own.
+    ///
+    /// A sheet or the share sheet covers the whole tab view, so an overlay on the tab view would
+    /// hide a toast behind it. A window above the app's window shows over both. The window spans
+    /// the screen's width just below the status bar, so it never takes over the status bar's
+    /// style, and it ignores touches, which reach the app below.
+    struct ToastWindow: UIViewRepresentable {
+        let toasts: ToastCenter
 
-    func makeUIView(context: Context) -> Anchor { Anchor(toasts: toasts) }
+        func makeUIView(context: Context) -> Anchor { Anchor(toasts: toasts) }
 
-    func updateUIView(_ view: Anchor, context: Context) {}
+        func updateUIView(_ view: Anchor, context: Context) {}
 
-    /// Creates the toast window once it joins a window scene, and keeps it for its lifetime.
-    final class Anchor: UIView {
-        private let toasts: ToastCenter
-        private var overlay: UIWindow?
+        /// Creates the toast window once it joins a window scene, and keeps it for its lifetime.
+        final class Anchor: UIView {
+            private let toasts: ToastCenter
+            private var overlay: UIWindow?
 
-        init(toasts: ToastCenter) {
-            self.toasts = toasts
-            super.init(frame: .zero)
-            isUserInteractionEnabled = false
-        }
+            init(toasts: ToastCenter) {
+                self.toasts = toasts
+                super.init(frame: .zero)
+                isUserInteractionEnabled = false
+            }
 
-        required init?(coder: NSCoder) { return nil }
+            required init?(coder: NSCoder) { return nil }
 
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
-            guard overlay == nil, let scene = window?.windowScene else { return }
-            let overlay = UIWindow(windowScene: scene)
-            overlay.windowLevel = UIWindow.Level(rawValue: UIWindow.Level.normal.rawValue + 1)
-            overlay.isUserInteractionEnabled = false
-            let host = UIHostingController(rootView: ToastOverlay(toasts: toasts))
-            host.view.backgroundColor = .clear
-            overlay.rootViewController = host
-            overlay.isHidden = false
-            self.overlay = overlay
-            placeOverlay()
-        }
+            override func didMoveToWindow() {
+                super.didMoveToWindow()
+                guard overlay == nil, let scene = window?.windowScene else { return }
+                let overlay = UIWindow(windowScene: scene)
+                overlay.windowLevel = UIWindow.Level(rawValue: UIWindow.Level.normal.rawValue + 1)
+                overlay.isUserInteractionEnabled = false
+                let host = UIHostingController(rootView: ToastOverlay(toasts: toasts))
+                host.view.backgroundColor = .clear
+                overlay.rootViewController = host
+                overlay.isHidden = false
+                self.overlay = overlay
+                placeOverlay()
+            }
 
-        override func safeAreaInsetsDidChange() {
-            super.safeAreaInsetsDidChange()
-            placeOverlay()
-        }
+            override func safeAreaInsetsDidChange() {
+                super.safeAreaInsetsDidChange()
+                placeOverlay()
+            }
 
-        /// Places the window under the status bar, tall enough for a toast of two large lines.
-        private func placeOverlay() {
-            guard let window, let overlay else { return }
-            overlay.frame = CGRect(
-                x: 0, y: window.safeAreaInsets.top, width: window.bounds.width, height: 160)
+            /// Places the window under the status bar, tall enough for a toast of two large lines.
+            private func placeOverlay() {
+                guard let window, let overlay else { return }
+                overlay.frame = CGRect(
+                    x: 0, y: window.safeAreaInsets.top, width: window.bounds.width, height: 160)
+            }
         }
     }
-}
+#endif
 
-/// The current toast, centered at the top of the toast window. It slides down from under the
-/// status bar, or fades with Reduce Motion.
-private struct ToastOverlay: View {
+/// The current toast, centered at the top of the toast window, or of the Mac's window. It slides
+/// down from the top, or fades with Reduce Motion.
+struct ToastOverlay: View {
     let toasts: ToastCenter
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 

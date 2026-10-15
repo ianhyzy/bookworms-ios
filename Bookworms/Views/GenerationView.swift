@@ -1,8 +1,11 @@
 import FoundationModels
 import SwiftUI
-import UIKit
 
-/// The **Spines** tab: design coverage, generator progress, the Private Cloud Compute quota,
+#if os(iOS)
+    import UIKit
+#endif
+
+/// The **Spines** tab: design coverage, generator progress, the designing model and its quota,
 /// the charging preference, and where the library comes from. The toolbar opens the Hardcover
 /// account sheet.
 struct GenerationView: View {
@@ -10,9 +13,12 @@ struct GenerationView: View {
     @Environment(GenerationController.self) private var generation
     @Environment(\.scenePhase) private var scenePhase
     @State private var showsAccount = false
-    /// This app's Background App Refresh status. iOS refuses the charging task while it is off,
-    /// so the view rereads it on appearance, on return to the foreground, and when it changes.
-    @State private var backgroundRefresh = UIBackgroundRefreshStatus.available
+    #if os(iOS)
+        /// This app's Background App Refresh status. iOS refuses the charging task while it is
+        /// off, so the view rereads it on appearance, on return to the foreground, and when it
+        /// changes.
+        @State private var backgroundRefresh = UIBackgroundRefreshStatus.available
+    #endif
 
     var body: some View {
         @Bindable var generation = generation
@@ -20,16 +26,14 @@ struct GenerationView: View {
             Form {
                 summary
                 progress
-                privateCloudCompute
+                designModel
                 Section {
-                    Toggle("Generate while charging", isOn: $generation.generatesWhileCharging)
+                    Toggle(Self.chargingLabel, isOn: $generation.generatesWhileCharging)
                 } footer: {
                     if generation.generatesWhileCharging, let warning = backgroundRefreshWarning {
                         Text(warning)
                     } else {
-                        Text(
-                            "iOS runs generation when this iPhone is charging and idle on a network, typically overnight. The Apple TV picks up new designs through iCloud."
-                        )
+                        Text(Self.chargingFooter)
                     }
                 }
                 librarySource
@@ -39,21 +43,21 @@ struct GenerationView: View {
                 Button("Hardcover account", systemImage: accountSymbol) { showsAccount = true }
             }
             .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
-            .task {
-                backgroundRefresh = UIApplication.shared.backgroundRefreshStatus
-                await generation.refreshModelStatus()
-            }
-            .onChange(of: scenePhase) { _, phase in
-                if phase == .active {
+            .task { await generation.refreshModelStatus() }
+            #if os(iOS)
+                .task { backgroundRefresh = UIApplication.shared.backgroundRefreshStatus }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active {
+                        backgroundRefresh = UIApplication.shared.backgroundRefreshStatus
+                    }
+                }
+                .onReceive(
+                    NotificationCenter.default.publisher(
+                        for: UIApplication.backgroundRefreshStatusDidChangeNotification)
+                ) { _ in
                     backgroundRefresh = UIApplication.shared.backgroundRefreshStatus
                 }
-            }
-            .onReceive(
-                NotificationCenter.default.publisher(
-                    for: UIApplication.backgroundRefreshStatusDidChangeNotification)
-            ) { _ in
-                backgroundRefresh = UIApplication.shared.backgroundRefreshStatus
-            }
+            #endif
             #if DEBUG
                 // `-BookwormsShowAccount YES` opens the account sheet for Simulator checks.
                 .onAppear {
@@ -76,15 +80,30 @@ struct GenerationView: View {
         }
     }
 
-    /// Why the charging task cannot run, when Background App Refresh is off for this app.
+    #if os(macOS)
+        private static let chargingLabel = "Generate while idle"
+        private static let chargingFooter =
+            "macOS runs generation when this Mac is idle, even with no Bookworms window open. The Apple TV picks up new designs through iCloud."
+    #else
+        private static let chargingLabel = "Generate while charging"
+        private static let chargingFooter =
+            "iOS runs generation when this iPhone is charging and idle on a network, typically overnight. The Apple TV picks up new designs through iCloud."
+    #endif
+
+    /// Why the charging task cannot run, when Background App Refresh is off for this app. The
+    /// Mac has no such setting.
     private var backgroundRefreshWarning: String? {
-        switch backgroundRefresh {
-        case .denied:
-            "Turn on Background App Refresh for Bookworms in Settings to generate while charging."
-        case .restricted:
-            "Background App Refresh is restricted on this iPhone, so Bookworms generates spines only when you tap Generate now."
-        default: nil
-        }
+        #if os(iOS)
+            switch backgroundRefresh {
+            case .denied:
+                "Turn on Background App Refresh for Bookworms in Settings to generate while charging."
+            case .restricted:
+                "Background App Refresh is restricted on this iPhone, so Bookworms generates spines only when you tap Generate now."
+            default: nil
+            }
+        #else
+            nil
+        #endif
     }
 
     private var progress: some View {
@@ -124,23 +143,39 @@ struct GenerationView: View {
         }
     }
 
-    private var privateCloudCompute: some View {
+    /// The designing model: Private Cloud Compute with its daily limit, or the chosen
+    /// third-party provider.
+    private var designModel: some View {
         let status = generation.status.model
+        let usesDailyLimit = status?.usesDailyLimit ?? true
         return Section {
             LabeledContent("Availability") {
                 Text(
                     status.map { $0.isAvailable ? "Available" : $0.unavailableReason ?? "" }
                         ?? "Checking")
             }
-            LabeledContent("Daily limit", value: status.map(Self.quotaText) ?? "Checking")
-            if let suggestion = status?.limitIncreaseSuggestion {
-                Button("Increase limit") { suggestion.show() }
+            if usesDailyLimit {
+                LabeledContent("Daily limit", value: status.map(Self.quotaText) ?? "Checking")
+                if let suggestion = status?.limitIncreaseSuggestion {
+                    Button("Increase limit") { suggestion.show() }
+                }
             }
+            #if os(macOS)
+                SettingsLink { Text("Choose Model…") }
+            #else
+                NavigationLink("Choose Model") {
+                    Form { SpineDesignerSettings() }
+                        .navigationTitle("Spine Design Model")
+                        .navigationBarTitleDisplayMode(.inline)
+                }
+            #endif
         } header: {
-            Text("Private Cloud Compute")
+            Text(status?.designerName ?? "Private Cloud Compute")
         } footer: {
             Text(
-                "Most new designs use two or three requests from your daily limit. Books in a series often reuse a design without a request."
+                usesDailyLimit
+                    ? "Most new designs use two or three requests from your daily limit. Books in a series often reuse a design without a request."
+                    : "Most new designs use two or three requests to this provider, billed to your API account. Books in a series often reuse a design without a request."
             )
         }
     }
@@ -187,10 +222,10 @@ struct GenerationView: View {
             Text(fromHardcover ? "Hardcover" : "Apple TV")
         } footer: {
             if model.isPreview {
-                Text("Preview mode reads a local library. Designs stay on this iPhone.")
+                Text("Preview mode reads a local library. Designs stay on this \(ThisDevice.name).")
             } else if fromHardcover {
                 Text(
-                    "Your books come from your Hardcover account on this iPhone. When your Apple TV lists books to design, Bookworms designs those instead."
+                    "Your books come from your Hardcover account on this \(ThisDevice.name). When your Apple TV lists books to design, Bookworms designs those instead."
                 )
             }
         }

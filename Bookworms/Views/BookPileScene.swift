@@ -1,8 +1,15 @@
 import Combine
-import CoreMotion
 import RealityKit
 import SwiftUI
-import UIKit
+
+#if os(iOS)
+    import CoreMotion
+#endif
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 /// The pile's camera, and how points on the screen map onto the table.
 ///
@@ -560,13 +567,17 @@ final class BookPileScene {
     /// Whether a drop still has books to drop, kept apart from the scene so that views update
     /// only when it changes.
     let status = PileStatus()
-    /// Whether the device reports motion, which tilt and shaking need. The Simulator does not,
-    /// unless a Debug build fakes it with `-BookwormsPileGravity`.
+    /// Whether the device reports motion, which tilt and shaking need. The Simulator and the
+    /// Mac do not, unless a Debug build fakes it with `-BookwormsPileGravity`.
     static let canTilt: Bool = {
         #if DEBUG
             if debugGravity != nil { return true }
         #endif
-        return CMMotionManager().isDeviceMotionAvailable
+        #if os(iOS)
+            return CMMotionManager().isDeviceMotionAvailable
+        #else
+            return false
+        #endif
     }()
 
     private static let coverWait = Duration.seconds(1.5)
@@ -583,7 +594,9 @@ final class BookPileScene {
     private let stage: DeskStage
     private let shelf = Entity()
     private let walls = Entity()
-    private lazy var motion = CMMotionManager()
+    #if os(iOS)
+        private lazy var motion = CMMotionManager()
+    #endif
     private var view = PileCamera()
     /// The view the camera rests at, from which it zooms in and to which a lifted book's flight
     /// takes it, keeping the reader's turn: the default camera, or, for books the dominoes
@@ -1461,13 +1474,15 @@ final class BookPileScene {
         self.tilt = tilt
         if tracking != tracksMotion {
             tracksMotion = tracking
-            if tracking {
-                // Shakes peak for a few hundredths of a second.
-                motion.deviceMotionUpdateInterval = 1 / 60
-                motion.startDeviceMotionUpdates()
-            } else {
-                motion.stopDeviceMotionUpdates()
-            }
+            #if os(iOS)
+                if tracking {
+                    // Shakes peak for a few hundredths of a second.
+                    motion.deviceMotionUpdateInterval = 1 / 60
+                    motion.startDeviceMotionUpdates()
+                } else {
+                    motion.stopDeviceMotionUpdates()
+                }
+            #endif
         }
         // In `.box`, the next update gives the box's gravity once the box is closed.
         let keepsGravity =
@@ -1480,12 +1495,17 @@ final class BookPileScene {
     /// while motion is sampled.
     private func motionReading() -> (gravity: SIMD3<Double>, acceleration: SIMD3<Double>)? {
         guard tracksMotion else { return nil }
-        if let sample = motion.deviceMotion {
-            return (
-                [sample.gravity.x, sample.gravity.y, sample.gravity.z],
-                [sample.userAcceleration.x, sample.userAcceleration.y, sample.userAcceleration.z]
-            )
-        }
+        #if os(iOS)
+            if let sample = motion.deviceMotion {
+                return (
+                    [sample.gravity.x, sample.gravity.y, sample.gravity.z],
+                    [
+                        sample.userAcceleration.x, sample.userAcceleration.y,
+                        sample.userAcceleration.z,
+                    ]
+                )
+            }
+        #endif
         #if DEBUG
             if let gravity = Self.debugGravity { return (gravity, .zero) }
         #endif

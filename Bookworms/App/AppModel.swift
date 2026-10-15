@@ -221,7 +221,7 @@ final class AppModel {
             if CoverPickerDebug.stubsExpiredLogin { throw HardcoverError.invalidToken }
             if CoverPickerDebug.stubsCovers { return CoverPickerDebug.covers(for: book) }
         #endif
-        guard account.isSignedIn, let token = HardcoverTokenStore().read() else {
+        guard account.isSignedIn, let token = KeychainSecret().read() else {
             throw HardcoverError.invalidToken
         }
         return try await HardcoverClient().editionCovers(bookID: book.id, token: token)

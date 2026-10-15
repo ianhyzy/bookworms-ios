@@ -2,7 +2,12 @@ import Combine
 import CoreMedia
 import RealityKit
 import SwiftUI
-import UIKit
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 /// A book's place in the domino chain.
 struct DominoSlot {
@@ -1551,8 +1556,15 @@ final class DominoScene {
                 // lets the physics push aside the lying books it meets, rather than throw them
                 // out of a book that jumps into them.
                 if move.isHopping(at: time) {
+                    // In the air it touches nothing, so it follows its arc exactly. Velocity
+                    // steering would overshoot and correct whenever the physics steps at
+                    // another rate than the frames, as on a 120 Hz Mac display, which shows
+                    // as jitter.
                     book.components[CollisionComponent.self]?.filter = CollisionFilter(
                         group: [], mask: [])
+                    book.components.set(PhysicsMotionComponent())
+                    book.transform = move.pose(at: time)
+                    continue
                 }
                 let goal = move.pose(at: time + step)
                 let current = book.transform

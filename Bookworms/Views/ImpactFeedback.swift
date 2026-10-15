@@ -433,15 +433,18 @@ actor ImpactAudio {
             let format = AVAudioFormat(
                 standardFormatWithSampleRate: ImpactSound.sampleRate, channels: 1)
         else { return }
-        let session = AVAudioSession.sharedInstance()
-        do {
-            try session.setCategory(.ambient)
-            try session.setActive(true)
-            activatedSession = true
-        } catch {
-            Self.log.error("The audio session did not activate: \(error)")
-            return
-        }
+        // The Mac has no audio session; the engine plays through the default output.
+        #if os(iOS)
+            let session = AVAudioSession.sharedInstance()
+            do {
+                try session.setCategory(.ambient)
+                try session.setActive(true)
+                activatedSession = true
+            } catch {
+                Self.log.error("The audio session did not activate: \(error)")
+                return
+            }
+        #endif
         let engine = AVAudioEngine()
         do {
             voices = try (0..<Self.voiceCount)
@@ -466,12 +469,15 @@ actor ImpactAudio {
         observers = [
             center.addObserver(
                 forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
-            ) { [weak self] _ in Task { await self?.rebuild() } },
-            center.addObserver(
-                forName: AVAudioSession.mediaServicesWereResetNotification, object: session,
-                queue: nil
-            ) { [weak self] _ in Task { await self?.rebuild() } },
+            ) { [weak self] _ in Task { await self?.rebuild() } }
         ]
+        #if os(iOS)
+            observers.append(
+                center.addObserver(
+                    forName: AVAudioSession.mediaServicesWereResetNotification, object: session,
+                    queue: nil
+                ) { [weak self] _ in Task { await self?.rebuild() } })
+        #endif
     }
 
     /// Builds a new engine, keeping the session active.
@@ -490,8 +496,10 @@ actor ImpactAudio {
         nextVoice = 0
         guard releasingSession, activatedSession else { return }
         activatedSession = false
-        try? AVAudioSession.sharedInstance()
-            .setActive(false, options: .notifyOthersOnDeactivation)
+        #if os(iOS)
+            try? AVAudioSession.sharedInstance()
+                .setActive(false, options: .notifyOthersOnDeactivation)
+        #endif
     }
 
     private static func buffer(_ samples: [Float], format: AVAudioFormat) -> AVAudioPCMBuffer? {

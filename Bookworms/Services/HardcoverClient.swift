@@ -31,7 +31,8 @@ enum HardcoverError: LocalizedError, Equatable {
             "Hardcover did not accept the sign-in code. Get a new code to try again."
         case .deviceFlowDenied: "The sign-in was declined on Hardcover."
         case .deviceFlowExpired: "The code expired before it was approved. Get a new code."
-        case .credentialNotSaved: "Bookworms could not save your Hardcover login on this iPhone."
+        case .credentialNotSaved:
+            "Bookworms could not save your Hardcover login on this \(ThisDevice.name)."
         }
     }
 }

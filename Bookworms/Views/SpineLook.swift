@@ -1,7 +1,12 @@
 import CoreText
 import Observation
 import SwiftUI
-import UIKit
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 extension ColorValue {
     var color: Color {
@@ -199,7 +204,11 @@ struct SpineLook: Equatable, Sendable {
         guard let design, let descriptor = font.fontDescriptor.withDesign(design) else {
             return font
         }
-        return UIFont(descriptor: descriptor, size: size)
+        #if os(macOS)
+            return UIFont(descriptor: descriptor, size: size) ?? font
+        #else
+            return UIFont(descriptor: descriptor, size: size)
+        #endif
     }
 
     func text(_ value: String) -> String { uppercase ? value.uppercased() : value }

@@ -1,6 +1,11 @@
 import RealityKit
-import UIKit
 import simd
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 /// The threads of a cobweb strung across the gap between two standing books' top edges, built
 /// without RealityKit so they can be tested.
