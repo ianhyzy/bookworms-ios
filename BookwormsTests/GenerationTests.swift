@@ -272,7 +272,9 @@ final class GenerationTests: XCTestCase {
 
     func testLetteringAnswersNarrowTheFamiliesAndNeverOfferSlantedFaces() {
         func styles(_ reading: BookAnalyzer.LetteringReading?) -> Set<SpineFontStyle> {
-            Set(BookAnalyzer.families(for: reading).compactMap { SpineFamily(rawValue: $0)?.style })
+            Set(
+                BookAnalyzer.families(for: reading, playful: true)
+                    .compactMap { SpineFamily(rawValue: $0)?.style })
         }
         XCTAssertEqual(
             styles(.init(handDrawn: false, serifs: true, treatment: "plain")),
@@ -290,14 +292,19 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(
             BookAnalyzer.families(
                 for: .init(
-                    handDrawn: false, serifs: false, treatment: "outlined or multi-line neon")
+                    handDrawn: false, serifs: false, treatment: "outlined or multi-line neon"),
+                playful: false
             )
             .first, "Monoton")
+        // Rounded faces need a playful book.
+        let serious = BookAnalyzer.families(
+            for: .init(handDrawn: false, serifs: false, treatment: "plain"), playful: false)
+        XCTAssertFalse(serious.contains { SpineFamily(rawValue: $0)?.style == .rounded })
 
         let script = BookAnalyzer.families(
-            for: .init(handDrawn: true, serifs: true, treatment: "plain"))
+            for: .init(handDrawn: true, serifs: true, treatment: "plain"), playful: true)
         XCTAssertTrue(script.contains("Caveat"))
-        let everything = BookAnalyzer.families(for: nil)
+        let everything = BookAnalyzer.families(for: nil, playful: true)
         for slanted in ["Dancing Script", "Pacifico", "Great Vibes", "Lobster", "Bangers"] {
             XCTAssertFalse(script.contains(slanted) || everything.contains(slanted), slanted)
         }
@@ -315,11 +322,12 @@ final class GenerationTests: XCTestCase {
             for x in 50..<60 { pixels[y * 100 + x] = 1 }
         }
         for x in 0..<100 { pixels[2 * 100 + x] = 1 }
-        let measured = try XCTUnwrap(
-            Mask.lettering(Mask(width: 100, height: 60, pixels: pixels)))
-        // The gap collapses to a twelfth of the 40-pixel band: (10 + 3 + 10) / 40.
-        XCTAssertEqual(measured.aspect, 23.0 / 40.0, accuracy: 0.001)
-        XCTAssertEqual(measured.strokeSpread, 0, accuracy: 0.001)
+        let profile = try XCTUnwrap(Mask(width: 100, height: 60, pixels: pixels).profile())
+        // The gap collapses to a twelfth of the 40-pixel band: (10 + 3 + 10) / 40, rounded to
+        // the 48-pixel grid.
+        XCTAssertEqual(profile.aspect, Double(23 * 48 / 40) / 48, accuracy: 0.001)
+        XCTAssertEqual(profile.strokeSpread, 0, accuracy: 0.001)
+        XCTAssertEqual(profile.shape.count, 320 * 48)
     }
 
     func testTitleSplitTakesTheGroundFromTheBorder() throws {
@@ -342,25 +350,24 @@ final class GenerationTests: XCTestCase {
         XCTAssertLessThan(SpineContrast.lab(split.ground).l, 0.4)
     }
 
-    func testNarrowLetteringRanksCondensedFamiliesFirst() throws {
-        let catalog = try XCTUnwrap(FontDescriptors.shared)
-        XCTAssertEqual(catalog.fonts.count, SpineFamily.allCases.count)
+    func testRankingPicksTheFamilyTheLetteringWasSetIn() throws {
+        let atlas = try XCTUnwrap(FontAtlas.shared)
+        XCTAssertEqual(Set(atlas.fonts.map(\.family)).count, SpineFamily.allCases.count)
         let image = try XCTUnwrap(
             CGContext(
                 data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 0,
                 space: CGColorSpace(name: CGColorSpace.sRGB)!,
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?
                 .makeImage())
-        func best(aspect: Double) -> SpineFontStyle? {
+        // Lettering composed from the atlas itself must rank its own family first.
+        for family in ["Oswald", "EB Garamond", "Josefin Sans"] {
+            let font = try XCTUnwrap(atlas.fonts.first { $0.family == family && $0.weight == 400 })
+            let profile = try XCTUnwrap(font.compose("KINDRED")?.profile())
             let measurement = TitleLettering.Measurement(
-                text: "KINDRED", crop: image, aspect: aspect, strokeSpread: 0.7,
+                text: "KINDRED", crop: image, profile: profile,
                 ink: ColorValue(hex: "#FFFFFF")!, ground: ColorValue(hex: "#000000")!)
-            let sans = BookAnalyzer.families(
-                for: .init(handDrawn: false, serifs: false, treatment: "plain"))
-            return TitleLettering.rank(sans, for: measurement).first
-                .flatMap { SpineFamily(rawValue: $0.family)?.style }
+            let ranked = TitleLettering.rank(SpineFamily.allCases.map(\.rawValue), for: measurement)
+            XCTAssertEqual(ranked.first?.family, family)
         }
-        XCTAssertEqual(best(aspect: 2.6), .condensedSans)
-        XCTAssertNotEqual(best(aspect: 7), .condensedSans)
     }
 }

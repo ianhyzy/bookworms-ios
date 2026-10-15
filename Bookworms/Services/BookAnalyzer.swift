@@ -41,8 +41,9 @@ struct ModelStatus: Sendable {
 /// The model answers three coarse questions about the title lettering, which even the on-device
 /// model answers reliably: whether it is hand-drawn, whether it has serifs, and any special
 /// treatment. `TitleLettering` then ranks the families those answers allow by measuring the
-/// lettering itself. A book costs one Private Cloud Compute request, which counts against the
-/// user's daily quota.
+/// lettering itself. The on-device model also judges, from the book's text, whether the book is
+/// playful enough for rounded faces. A book costs one Private Cloud Compute request, which
+/// counts against the user's daily quota.
 actor BookAnalyzer {
     private let fonts = GoogleFonts()
     /// Created on first use rather than at launch, because creating the model without the
@@ -182,7 +183,7 @@ actor BookAnalyzer {
         case .none:
             throw CompanionError.modelUnavailable
         }
-        let families = Self.families(for: reading)
+        let families = Self.families(for: reading, playful: await Self.isPlayful(book))
         var candidates = lettering.map { TitleLettering.rank(families, for: $0) } ?? []
         if candidates.isEmpty {
             // No measurable title line: the allowed families in this book's reproducible order.
@@ -289,8 +290,9 @@ actor BookAnalyzer {
 
     /// The families a reading allows, or every allowed family without one. A special treatment
     /// limits the choice to families that show it; "dripping or distressed" does not, because
-    /// textured cover art often draws that answer for plain lettering.
-    static func families(for reading: LetteringReading?) -> [String] {
+    /// textured cover art often draws that answer for plain lettering. Rounded faces read as
+    /// cheerful, so only a playful book may use them.
+    static func families(for reading: LetteringReading?, playful: Bool) -> [String] {
         let all = SpineFamily.allCases
         var chosen = all
         if let reading {
@@ -313,7 +315,51 @@ actor BookAnalyzer {
                     }
                 }
         }
+        if !playful { chosen.removeAll { $0.style == .rounded } }
         return chosen.map(\.rawValue).filter(allowsFamily)
+    }
+
+    static let moods = [
+        "serious", "dark or suspenseful", "literary or classic", "playful or humorous",
+        "for young children",
+    ]
+
+    /// Asks the on-device model whether the book is playful, from its text alone. The answer
+    /// costs no Private Cloud Compute quota. Any failure, such as a guardrail rejecting the
+    /// description or an unavailable model, counts as not playful, the safer choice of type.
+    private static func isPlayful(_ book: CloudBook) async -> Bool {
+        let model = SystemLanguageModel.default
+        guard model.isAvailable else { return false }
+        var lines = [
+            "Title: " + String(book.title.prefix(250)),
+            "Author: " + String(book.author.prefix(250)),
+        ]
+        if let genres = book.genres?.prefix(6).map({ String($0.prefix(40)) }), !genres.isEmpty {
+            lines.append("Genres: " + genres.joined(separator: ", "))
+        }
+        if let description = book.description, !description.isEmpty {
+            lines.append("Description: " + String(description.prefix(500)))
+        }
+        lines.append("Which mood fits this book best?")
+        let root = DynamicGenerationSchema(
+            name: "BookMood",
+            properties: [
+                .init(
+                    name: "mood", description: "The book's overall mood",
+                    schema: DynamicGenerationSchema(name: "mood", anyOf: moods))
+            ])
+        let session = LanguageModelSession(model: model, instructions: instructions)
+        do {
+            let content =
+                try await session.respond(
+                    schema: GenerationSchema(root: root, dependencies: []), options: options,
+                    contextOptions: ContextOptions(includeSchemaInPrompt: true)
+                ) { lines.joined(separator: "\n") }
+                .content
+            return moods.suffix(2).contains(try content.value(String.self, forProperty: "mood"))
+        } catch {
+            return false
+        }
     }
 
     /// The owner's standing type rules, enforced in code: never Impact, and never an italic,

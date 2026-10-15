@@ -5,12 +5,12 @@ import Foundation
 /// language model.
 ///
 /// The title line comes from OCR. Its crop is split into ink and ground with two-means in OKLab;
-/// the ground is the cluster that touches the crop's border most. The ink mask gives two
-/// measurements that small vision models judge poorly: how wide the letters are for their
-/// height, with letter spacing removed, and how much stroke thickness varies. Each catalog
-/// family's predicted measurements for the same text come from `SpineFontDescriptors.json`,
-/// which `script/spine-font-descriptors.swift` generates from the Google Fonts files, so ranking
-/// needs no font downloads.
+/// the ground is the cluster that touches the crop's border most. Every catalog family's version
+/// of the same text is composed from `SpineFontAtlas.lzfse`, small glyph images that
+/// `script/spine-font-atlas.swift` renders from the Google Fonts files, so ranking needs no font
+/// downloads. Families are compared on three measurements that small vision models judge
+/// poorly: letter shapes, letter width for their height with letter spacing removed, and how
+/// much stroke thickness varies.
 enum TitleLettering {
     /// An OCR line with its normalized Vision bounding box (origin at the bottom left).
     struct Line: Sendable {
@@ -24,10 +24,7 @@ enum TitleLettering {
         let text: String
         /// The crop of the line, which the model reads for the coarse lettering questions.
         let crop: CGImage
-        /// The letters' ink width over ink height, with gaps between letters collapsed.
-        let aspect: Double
-        /// The spread of horizontal stroke widths relative to their median.
-        let strokeSpread: Double
+        let profile: Mask.Profile
         let ink: ColorValue
         let ground: ColorValue
     }
@@ -56,54 +53,53 @@ enum TitleLettering {
             rect.insetBy(dx: -rect.height * 0.12, dy: -rect.height * 0.12)
             .intersection(CGRect(x: 0, y: 0, width: width, height: height)).integral
         guard let crop = image.cropping(to: rect), let split = split(crop),
-            let letters = Mask.lettering(split.mask)
+            let profile = split.mask.profile()
         else { return nil }
         return Measurement(
-            text: line.text.trimmingCharacters(in: .whitespaces), crop: crop,
-            aspect: letters.aspect, strokeSpread: letters.strokeSpread, ink: split.ink,
-            ground: split.ground)
+            text: line.text.trimmingCharacters(in: .whitespaces), crop: crop, profile: profile,
+            ink: split.ink, ground: split.ground)
     }
 
-    /// Ranks `families` at regular and bold weight by how closely their predicted measurements
-    /// for the title text match the cover's. Scores are z-scored across the whole catalog, so a
-    /// subset ranks the same way it would within the catalog. Families without descriptors or
-    /// glyphs for the text are left out.
+    /// Ranks `families` at regular and bold weight by how closely the measured lettering
+    /// matches the same text composed from each family's glyphs. Each measurement is z-scored
+    /// across the whole catalog, so a subset ranks the same way it would within the catalog.
+    /// Families without glyphs for the text are left out.
     static func rank(
-        _ families: [String], for measurement: Measurement,
-        catalog: FontDescriptors? = .shared
+        _ families: [String], for measurement: Measurement, atlas: FontAtlas? = .shared
     ) -> [Match] {
-        guard let catalog else { return [] }
-        let isCapitals = measurement.text.filter(\.isLetter).allSatisfy(\.isUppercase)
-        var rows: [(match: Match, aspect: Double, contrast: Double)] = []
-        for (family, weights) in catalog.fonts {
-            for (weight, font) in weights {
-                guard let predicted = font.aspect(of: measurement.text) else { continue }
-                let spread = isCapitals ? font.spreadCapitals : font.spreadMixed
-                rows.append(
-                    (
-                        Match(family: family, weight: weight),
-                        abs(log(predicted / measurement.aspect)),
-                        abs(spread - measurement.strokeSpread)
-                    ))
-            }
+        guard let atlas else { return [] }
+        let cover = measurement.profile
+        var rows: [(match: Match, values: [Double])] = []
+        for font in atlas.fonts {
+            guard let profile = font.compose(measurement.text)?.profile() else { continue }
+            rows.append(
+                (
+                    Match(family: font.family, weight: font.weight),
+                    [
+                        profile.shapeDifference(from: cover),
+                        abs(log(profile.aspect / cover.aspect)),
+                        abs(profile.strokeSpread - cover.strokeSpread),
+                    ]
+                ))
         }
         guard rows.count > 1 else { return rows.map(\.match) }
-        func standardized(_ values: [Double]) -> [Double] {
+        // Width carries most of the signal; shape and stroke contrast separate similar widths.
+        let weights = [0.5, 2, 0.5]
+        var scores = [Double](repeating: 0, count: rows.count)
+        for k in weights.indices {
+            let values = rows.map { $0.values[k] }
             let mean = values.reduce(0, +) / Double(values.count)
             let deviation =
                 (values.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(values.count))
                 .squareRoot()
-            return values.map { ($0 - mean) / (deviation > 0 ? deviation : 1) }
+            for index in rows.indices {
+                scores[index] += weights[k] * (values[index] - mean) / max(deviation, 1e-9)
+            }
         }
-        // Width carries most of the signal; stroke contrast separates serif families.
-        let aspect = standardized(rows.map(\.aspect))
-        let contrast = standardized(rows.map(\.contrast))
         let allowed = Set(families)
         return rows.indices.filter { allowed.contains(rows[$0].match.family) }
             .sorted { lhs, rhs in
-                let left = 2 * aspect[lhs] + 0.5 * contrast[lhs]
-                let right = 2 * aspect[rhs] + 0.5 * contrast[rhs]
-                if left != right { return left < right }
+                if scores[lhs] != scores[rhs] { return scores[lhs] < scores[rhs] }
                 let (a, b) = (rows[lhs].match, rows[rhs].match)
                 return a.family != b.family ? a.family < b.family : a.weight < b.weight
             }
@@ -181,18 +177,40 @@ enum TitleLettering {
 }
 
 /// A grayscale ink mask, 1 for ink, with rows stored top to bottom.
-struct Mask {
+struct Mask: Sendable {
     var width: Int
     var height: Int
     var pixels: [Float]
 
-    /// The letters' measurements: the band of rows that holds the most ink, so neighboring
-    /// lines drop out, with each run of empty columns collapsed to a twelfth of the band's
-    /// height so letter spacing does not count as letter width. `script/spine-font-descriptors`
-    /// measures rendered fonts the same way.
-    static func lettering(_ mask: Mask) -> (aspect: Double, strokeSpread: Double)? {
-        guard let letters = mask.band()?.collapsingGaps() else { return nil }
-        return (Double(letters.width) / Double(letters.height), letters.strokeSpread)
+    /// A line of lettering normalized for comparison.
+    struct Profile: Sendable {
+        /// The letters' width over their height, with gaps between letters collapsed.
+        var aspect: Double
+        /// The spread of horizontal ink runs, (90th − 10th percentile) / median: near 0 for
+        /// even strokes, larger for thick-and-thin faces.
+        var strokeSpread: Double
+        /// The letters stretched to a fixed 320 × 48 grid, for shape comparison.
+        var shape: [Float]
+
+        /// The mean absolute difference between the two shape grids.
+        func shapeDifference(from other: Profile) -> Double {
+            var total: Float = 0
+            for index in shape.indices { total += abs(shape[index] - other.shape[index]) }
+            return Double(total) / Double(shape.count)
+        }
+    }
+
+    /// Measures the band of rows that holds the most ink, so neighboring lines drop out, with
+    /// each run of empty columns collapsed to a twelfth of the band's height so letter spacing
+    /// does not count as letter width. Covers and composed fonts are measured the same way.
+    func profile() -> Profile? {
+        guard let letters = band()?.collapsingGaps()?.trimmed() else { return nil }
+        let natural = letters.resampled(
+            width: max(4, letters.width * 48 / letters.height), height: 48)
+        return Profile(
+            aspect: Double(natural.width) / Double(natural.height),
+            strokeSpread: natural.strokeSpread,
+            shape: letters.resampled(width: 320, height: 48).pixels)
     }
 
     func band() -> Mask? {
@@ -250,25 +268,53 @@ struct Mask {
         return Mask(width: columns.count, height: height, pixels: out)
     }
 
-    /// The spread of horizontal ink-run lengths, (90th − 10th percentile) / median, after
-    /// box-filtering the mask to a 48-pixel height: near 0 for even strokes, larger for
-    /// thick-and-thin faces. Box filtering drops hairlines thinner than a sample, at every size.
-    var strokeSpread: Double {
-        let targetHeight = 48
-        let targetWidth = max(4, width * targetHeight / max(1, height))
-        var runs: [Double] = []
+    /// Crops to the columns with ink and the rows with more than speck-level ink.
+    func trimmed() -> Mask? {
+        var columnInk = [Float](repeating: 0, count: width)
+        var rowInk = [Float](repeating: 0, count: height)
+        for y in 0..<height {
+            for x in 0..<width {
+                columnInk[x] += pixels[y * width + x]
+                rowInk[y] += pixels[y * width + x]
+            }
+        }
+        let rowThreshold = max(1, Float(width) * 0.004)
+        guard let minX = columnInk.firstIndex(where: { $0 >= 1 }),
+            let maxX = columnInk.lastIndex(where: { $0 >= 1 }),
+            let minY = rowInk.firstIndex(where: { $0 >= rowThreshold }),
+            let maxY = rowInk.lastIndex(where: { $0 >= rowThreshold }), maxX > minX, maxY > minY
+        else { return nil }
+        var out: [Float] = []
+        out.reserveCapacity((maxX - minX + 1) * (maxY - minY + 1))
+        for y in minY...maxY { out += pixels[(y * width + minX)...(y * width + maxX)] }
+        return Mask(width: maxX - minX + 1, height: maxY - minY + 1, pixels: out)
+    }
+
+    /// Box-filters the mask to `targetWidth` × `targetHeight`.
+    func resampled(width targetWidth: Int, height targetHeight: Int) -> Mask {
+        var out = [Float](repeating: 0, count: targetWidth * targetHeight)
         for ty in 0..<targetHeight {
             let y0 = ty * height / targetHeight
             let y1 = max(y0 + 1, (ty + 1) * height / targetHeight)
-            var run = 0
             for tx in 0..<targetWidth {
                 let x0 = tx * width / targetWidth
                 let x1 = max(x0 + 1, (tx + 1) * width / targetWidth)
-                var ink: Float = 0
+                var sum: Float = 0
                 for y in y0..<min(y1, height) {
-                    for x in x0..<min(x1, width) { ink += pixels[y * width + x] }
+                    for x in x0..<min(x1, width) { sum += pixels[y * width + x] }
                 }
-                if ink / Float((y1 - y0) * (x1 - x0)) > 0.5 {
+                out[ty * targetWidth + tx] = sum / Float((y1 - y0) * (x1 - x0))
+            }
+        }
+        return Mask(width: targetWidth, height: targetHeight, pixels: out)
+    }
+
+    private var strokeSpread: Double {
+        var runs: [Double] = []
+        for y in 0..<height {
+            var run = 0
+            for x in 0..<width {
+                if pixels[y * width + x] > 0.5 {
                     run += 1
                 } else if run > 0 {
                     runs.append(Double(run))
@@ -284,80 +330,123 @@ struct Mask {
     }
 }
 
-/// Per-family measurements generated by `script/spine-font-descriptors.swift`.
-struct FontDescriptors: Decodable, Sendable {
-    struct Font: Decodable, Sendable {
-        /// Per character of `characters`: ink width, ink top, ink bottom, left bearing, and
-        /// right bearing, in cap heights from the baseline; `nil` for a missing glyph.
-        let glyphs: [[Double]?]
-        let spreadCapitals: Double
-        let spreadMixed: Double
-        /// Filled after decoding from the file's character list.
-        var index: [Character: [Double]] = [:]
+/// Every catalog family's glyphs at regular and bold weight, generated by
+/// `script/spine-font-atlas.swift`.
+///
+/// The file is LZFSE-compressed. Decompressed, it holds little-endian fields: the magic
+/// `BWA1`, the glyph height, and the UTF-8 character list; then, per font, its family name,
+/// CSS weight, and, per character, the glyph's ink origin from the pen position, its advance,
+/// its ink width, and its pixels at 4 bits each, row by row from the top.
+struct FontAtlas: Sendable {
+    struct Glyph: Sendable {
+        var origin: Int
+        var advance: Int
+        var width: Int
+        var pixels: [Float]
+    }
 
-        enum CodingKeys: String, CodingKey { case glyphs, spreadCapitals, spreadMixed }
+    struct Font: Sendable {
+        let family: String
+        let weight: Int
+        let height: Int
+        let glyphs: [Character: Glyph]
 
-        /// The predicted ink width over ink height of `text`, measured as `Mask.lettering`
-        /// measures a cover: gaps between letters count up to a twelfth of the height.
-        func aspect(of text: String) -> Double? {
-            let characters = Array(text)
-            let known = characters.compactMap { index[$0] }
-            guard known.count >= 2 else { return nil }
-            let top = known.map { $0[1] }.max()!
-            // Descenders rarely carry enough ink rows to join the measured band.
-            let bottom = max(0, known.map { $0[2] }.min()!)
-            let height = top - bottom
-            guard height > 0 else { return nil }
-            var width = known.map { $0[0] }.reduce(0, +)
-            for (left, right) in zip(characters, characters.dropFirst()) {
-                guard let a = index[left], let b = index[right] else {
-                    width += height / 12
-                    continue
+        /// `text` laid out by advances, without kerning; `nil` when fewer than two of its
+        /// characters have glyphs.
+        func compose(_ text: String) -> Mask? {
+            let parts = text.compactMap { glyphs[$0] }
+            guard parts.filter({ $0.width > 0 }).count >= 2 else { return nil }
+            let margin = height
+            let width = parts.reduce(0) { $0 + $1.advance } + margin * 2
+            var pixels = [Float](repeating: 0, count: width * height)
+            var pen = margin
+            for glyph in parts {
+                for y in 0..<height {
+                    for i in 0..<glyph.width {
+                        let x = pen + glyph.origin + i
+                        guard x >= 0, x < width else { continue }
+                        pixels[y * width + x] = max(
+                            pixels[y * width + x], glyph.pixels[y * glyph.width + i])
+                    }
                 }
-                width += min(max(0, a[4] + b[3]), height / 12)
+                pen += glyph.advance
             }
-            return width / height
+            return Mask(width: width, height: height, pixels: pixels)
         }
     }
 
-    let characters: String
-    /// Family name to CSS weight to measurements.
-    var fonts: [String: [Int: Font]]
+    let fonts: [Font]
 
-    static let shared: FontDescriptors? = {
-        guard let url = Bundle.main.url(forResource: "SpineFontDescriptors", withExtension: "json"),
-            let data = try? Data(contentsOf: url)
+    static let shared: FontAtlas? = Bundle.main
+        .url(forResource: "SpineFontAtlas", withExtension: "lzfse")
+        .flatMap { try? Data(contentsOf: $0) }.flatMap { FontAtlas(compressed: $0) }
+
+    init?(compressed: Data) {
+        guard let data = try? (compressed as NSData).decompressed(using: .lzfse) as Data else {
+            return nil
+        }
+        var reader = Reader(bytes: [UInt8](data))
+        guard reader.string(count: 4) == "BWA1", let height = reader.uint16(),
+            let characterCount = reader.uint16(),
+            let characters = reader.string(count: characterCount).map(Array.init)
         else { return nil }
-        return try? JSONDecoder().decode(FontDescriptors.self, from: data).indexed()
-    }()
-
-    func indexed() -> FontDescriptors {
-        let characters = Array(self.characters)
-        var copy = self
-        copy.fonts = fonts.mapValues { weights in
-            weights.mapValues { font in
-                var font = font
-                for (character, glyph) in zip(characters, font.glyphs) {
-                    if let glyph { font.index[character] = glyph }
-                }
-                return font
+        var fonts: [Font] = []
+        while !reader.isAtEnd {
+            guard let nameLength = reader.uint8(), let family = reader.string(count: nameLength),
+                let weight = reader.uint16()
+            else { return nil }
+            var glyphs: [Character: Glyph] = [:]
+            for character in characters {
+                guard let origin = reader.int16(), let advance = reader.uint16(),
+                    let width = reader.uint16(),
+                    let pixels = reader.nibbles(count: width * height)
+                else { return nil }
+                glyphs[character] = Glyph(
+                    origin: origin, advance: advance, width: width, pixels: pixels)
             }
+            fonts.append(Font(family: family, weight: weight, height: height, glyphs: glyphs))
         }
-        return copy
+        self.fonts = fonts
     }
 
-    enum CodingKeys: String, CodingKey { case characters, fonts }
+    private struct Reader {
+        let bytes: [UInt8]
+        var offset = 0
+        var isAtEnd: Bool { offset >= bytes.count }
 
-    init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        characters = try container.decode(String.self, forKey: .characters)
-        // JSON object keys are strings; weights are integers.
-        let raw = try container.decode([String: [String: Font]].self, forKey: .fonts)
-        fonts = raw.mapValues { weights in
-            Dictionary(
-                uniqueKeysWithValues: weights.compactMap { key, font in
-                    Int(key).map { ($0, font) }
-                })
+        mutating func uint8() -> Int? {
+            guard offset < bytes.count else { return nil }
+            defer { offset += 1 }
+            return Int(bytes[offset])
+        }
+
+        mutating func uint16() -> Int? {
+            guard let low = uint8(), let high = uint8() else { return nil }
+            return low | high << 8
+        }
+
+        mutating func int16() -> Int? {
+            uint16().map { Int(Int16(truncatingIfNeeded: $0)) }
+        }
+
+        mutating func string(count: Int) -> String? {
+            guard offset + count <= bytes.count else { return nil }
+            defer { offset += count }
+            return String(bytes: bytes[offset..<(offset + count)], encoding: .utf8)
+        }
+
+        /// `count` 4-bit values, two per byte, high nibble first, padded to a whole byte.
+        mutating func nibbles(count: Int) -> [Float]? {
+            let byteCount = (count + 1) / 2
+            guard offset + byteCount <= bytes.count else { return nil }
+            var values: [Float] = []
+            values.reserveCapacity(count)
+            for index in 0..<count {
+                let byte = bytes[offset + index / 2]
+                values.append(Float(index % 2 == 0 ? byte >> 4 : byte & 15) / 15)
+            }
+            offset += byteCount
+            return values
         }
     }
 }

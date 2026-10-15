@@ -1,7 +1,7 @@
 /// The Google Fonts families a spine title may use, grouped by letterform style.
 ///
-/// After changing the catalog, run `script/spine-font-descriptors.sh` so `TitleLettering` can
-/// rank the new families.
+/// After changing the catalog, run `script/spine-font-atlas.sh` so `TitleLettering` can rank
+/// the new families.
 ///
 /// Every family is open source and was checked against the Google Fonts catalog. Raw values are
 /// exact catalog names, which `GoogleFonts` uses to download the family.
