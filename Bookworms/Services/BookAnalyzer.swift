@@ -363,15 +363,22 @@ actor BookAnalyzer {
     }
 
     /// The owner's standing type rules, enforced in code: never Impact, and never an italic,
-    /// oblique, or slanted family. `GoogleFonts` skips faces with the italic trait; the listed
-    /// display and script faces slant by design without declaring it.
+    /// oblique, or slanted face.
+    ///
+    /// Checks a family or PostScript name, in any case and with or without spaces. A PostScript
+    /// style that ends in "It", such as "Lora-BoldIt", counts as italic. `GoogleFonts` also
+    /// skips faces with the italic trait or a slant; the listed display and script faces slant
+    /// by design without declaring it.
     static func allowsFamily(_ name: String) -> Bool {
-        let name = name.lowercased()
+        let lowered = name.lowercased().filter { !$0.isWhitespace }
         let blocked = [
-            "impact", "italic", "oblique", "bangers", "shrikhand", "dancing script", "pacifico",
-            "satisfy", "great vibes", "lobster", "courgette", "homemade apple", "rock salt",
+            "impact", "italic", "oblique", "slanted", "bangers", "shrikhand", "dancingscript",
+            "pacifico", "satisfy", "greatvibes", "lobster", "courgette", "homemadeapple",
+            "rocksalt",
         ]
-        return !blocked.contains { name.contains($0) }
+        let postScriptStyle = name.split(separator: "-").dropFirst().last
+        return !blocked.contains { lowered.contains($0) }
+            && postScriptStyle?.hasSuffix("It") != true
     }
 
     /// SplitMix64: a reproducible order per book without Foundation's unseeded generator.
