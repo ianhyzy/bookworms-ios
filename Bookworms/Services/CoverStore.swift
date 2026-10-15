@@ -35,6 +35,8 @@ actor CoverStore {
             let cgImage = CoverDownloader.image(from: data, maximumPixelSize: maximumPixelSize)
         else { return nil }
         let image = UIImage(cgImage: cgImage)
+        // Here, off the main actor, so drawing the cover's fold onto a book never samples it.
+        _ = image.spineEdgeColors
         memory.setObject(image, forKey: cacheKey, cost: cgImage.bytesPerRow * cgImage.height)
         return image
     }

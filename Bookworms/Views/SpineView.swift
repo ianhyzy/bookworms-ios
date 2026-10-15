@@ -13,7 +13,7 @@ struct SpineView: View {
         GeometryReader { proxy in
             let length = proxy.size.width
             let thickness = proxy.size.height
-            let corner = min(4, thickness * 0.08)
+            let corner = Self.cornerRadius(thickness: thickness)
             ZStack {
                 // Flat, because `SpineContrast` checks the lettering against this color alone.
                 RoundedRectangle(cornerRadius: corner)
@@ -27,38 +27,71 @@ struct SpineView: View {
         .accessibilityLabel("\(book.title), by \(book.author)")
     }
 
-    /// Shading across the thickness so the flat face reads as a rounded cloth spine.
+    /// The corner radius of a spine `thickness` tall: nearly square, as a flat cloth spine's
+    /// corners are. `Book3DView` starts a book pulled off the shelf from the same radius, so the
+    /// hand-off from this spine does not jump.
+    nonisolated static func cornerRadius(thickness: CGFloat) -> CGFloat {
+        min(1, thickness * 0.025)
+    }
+
+    /// Shading across the thickness: the long edges darken where the cloth turns onto the
+    /// boards, with no highlight between them, so the face reads as a flat spine.
     private var relief: some View {
-        let relief = Self.relief(on: look.background)
+        let shade = Self.relief(on: look.background)
         return LinearGradient(
             stops: [
-                .init(color: .black.opacity(relief.shade), location: 0),
-                .init(color: .clear, location: 0.08),
-                .init(color: .white.opacity(relief.highlight), location: 0.14),
-                .init(color: .clear, location: 0.25),
-                .init(color: .clear, location: 0.9),
-                .init(color: .black.opacity(relief.shade * 0.65), location: 1),
+                .init(color: .black.opacity(shade), location: 0),
+                .init(color: .clear, location: 0.05),
+                .init(color: .clear, location: 0.95),
+                .init(color: .black.opacity(shade * 0.65), location: 1),
             ], startPoint: .top, endPoint: .bottom)
     }
 
-    /// The relief's opacities on `cloth`: black `shade` at the top edge, and white `highlight`
-    /// just below it, which lightens the top of the lettering. Darker cloth takes more of both.
-    nonisolated static func relief(on cloth: ColorValue) -> (shade: Double, highlight: Double) {
-        let shade = 0.025 + 0.12 * (1 - cloth.relativeLuminance)
-        return (shade, shade * 0.55)
+    /// The relief's black opacity at the top edge on `cloth`. Darker cloth takes more.
+    nonisolated static func relief(on cloth: ColorValue) -> Double {
+        0.025 + 0.12 * (1 - cloth.relativeLuminance)
     }
 
-    /// Accent bands near the head and tail, as on the Apple TV Book Wall.
+    /// The thinnest book, as `BookShape` measures it (decimeters, back to front), whose spine
+    /// has blind-stamped bands: 3.2 cm, about 700 pages. A thinner spine draws them too small
+    /// to read.
+    nonisolated static let stampedThickness: Float = 0.32
+
+    /// Whether `book`'s spine has blind-stamped bands. It depends on the book alone, so a
+    /// spine and the 3D book pulled from it agree whatever size each is drawn at.
+    nonisolated static func stamps(_ book: CloudBook) -> Bool {
+        BookShape(of: book, coverAspect: 2 / 3).size.z >= stampedThickness
+    }
+
+    /// Blind-stamped bands near the head and tail of a thick book.
+    @ViewBuilder
     private func bands(length: CGFloat, thickness: CGFloat) -> some View {
-        let width = max(2, thickness * 0.07)
-        let inset = max(6, length * 0.035)
-        return HStack(spacing: 0) {
-            Rectangle().fill(look.accent.color).frame(width: width)
-            Spacer(minLength: 0)
-            Rectangle().fill(look.accent.color).frame(width: width)
+        if Self.stamps(book) {
+            Self.stampedBands(on: look.background, length: length, thickness: thickness)
+                .padding(.vertical, thickness * 0.1)
         }
-        .padding(.horizontal, inset)
-        .padding(.vertical, thickness * 0.1)
+    }
+
+    /// Bands pressed into `cloth` near the head and tail of a spine `length` long, with no
+    /// ink: each line is shadowed on its head side, away from the light, and caught by the
+    /// light on its tail side. A white highlight barely shows on light cloth, so the shadow
+    /// deepens with the cloth's lightness to keep the line readable there.
+    static func stampedBands(on cloth: ColorValue, length: CGFloat, thickness: CGFloat)
+        -> some View
+    {
+        let stamp = max(1.2, thickness * 0.03)
+        let light = cloth.relativeLuminance
+        let band = HStack(spacing: 0) {
+            Color.black.opacity(0.22 + 0.22 * light).frame(width: stamp)
+            Color.white.opacity(0.15 * (1 - light)).frame(width: stamp)
+        }
+        .frame(width: max(2, thickness * 0.07))
+        return HStack(spacing: 0) {
+            band
+            Spacer(minLength: 0)
+            band
+        }
+        .padding(.horizontal, max(3, length * 0.0175))
     }
 
     private func lettering(length: CGFloat, thickness: CGFloat) -> some View {

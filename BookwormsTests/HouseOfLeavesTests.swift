@@ -76,13 +76,9 @@ final class HouseOfLeavesTests: XCTestCase {
             (ColorValue(red: 220, green: 180, blue: 60), black),  // A yellow cloth.
         ]
         for (ground, ink) in cases {
-            let highlight = SpineView.relief(on: ground).highlight
-            let lettering = HouseOfLeaves.lettering(on: ground, ink: ink, highlight: highlight)
+            let lettering = HouseOfLeaves.lettering(on: ground, ink: ink)
             let blue = lettering.blue
-            let lit = ground.mixed(with: white, highlight)
-            // Legible on the bare ground and under a spine's highlight.
             XCTAssertTrue(HouseOfLeaves.passes(blue, on: ground), ground.hex)
-            XCTAssertTrue(HouseOfLeaves.passes(blue, on: lit), ground.hex)
             // Still blue: the blue channel leads.
             XCTAssertGreaterThan(blue.blue, max(blue.red, blue.green), ground.hex)
             // Only a blue darker than its ground glows, where the glow adds contrast.
@@ -92,9 +88,7 @@ final class HouseOfLeavesTests: XCTestCase {
             var lab = SpineContrast.lab(blue)
             lab.l += darker ? 0.015 : -0.015
             let weaker = SpineContrast.color(lab)
-            XCTAssertFalse(
-                HouseOfLeaves.passes(weaker, on: ground) && HouseOfLeaves.passes(weaker, on: lit),
-                ground.hex)
+            XCTAssertFalse(HouseOfLeaves.passes(weaker, on: ground), ground.hex)
         }
     }
 

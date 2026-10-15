@@ -1,7 +1,8 @@
 import SwiftUI
 import simd
 
-/// A book drawn as a lit box in perspective, built from ordinary SwiftUI faces.
+/// A book drawn as a lit box in perspective, built from ordinary SwiftUI faces, or as a bound
+/// book with boards, joint, and rounded edges (`BoundBook`).
 ///
 /// Each visible face is a flat view (cover image, `SpineView`, page edges) mapped onto the
 /// screen with the homography that a pinhole camera gives that face. Faces share one camera, so
@@ -25,13 +26,31 @@ struct Book3DView: View {
     /// How much of the light's shading the faces show, from 0, every face evenly lit as a flat
     /// spine on the shelf is, to 1. A book pulled off the shelf starts unshaded, as its spine.
     var lighting: Double = 1
+    /// Whether the book draws its binding (`BoundBook`). **Stack**, which draws many books at
+    /// once while it scrolls, draws plain boxes, which cost about half as much, except for the
+    /// book being pulled out.
+    var bound = true
 
     var body: some View {
+        Group {
+            if bound {
+                BoundBook(
+                    book: book, look: look, cover: cover, height: height, yaw: yaw, pitch: pitch,
+                    thicknessRatio: thicknessRatio, lighting: lighting)
+            } else {
+                box
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(book.title), by \(book.author)")
+    }
+
+    private var box: some View {
         let projection = BookProjection(
             width: height * coverAspect, height: height,
             thickness: height * (thicknessRatio ?? Self.thicknessRatio(of: book, cover: cover)),
             yaw: yaw, pitch: pitch)
-        ZStack(alignment: .topLeading) {
+        return ZStack(alignment: .topLeading) {
             ForEach(projection.visibleFaces) { face in
                 content(for: face.kind, size: face.size)
                     .frame(width: face.size.width, height: face.size.height)
@@ -43,8 +62,6 @@ struct Book3DView: View {
             width: projection.bounds.width, height: projection.bounds.height,
             alignment: .topLeading
         )
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(book.title), by \(book.author)")
     }
 
     private var coverAspect: CGFloat { Self.aspect(of: cover) }
