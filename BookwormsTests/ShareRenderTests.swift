@@ -453,119 +453,25 @@ final class ShareRenderTests: XCTestCase {
         XCTAssertEqual(titles(": Colon First"), [": Colon First"])
     }
 
-    func testStackSpinesBundleNamedSeriesAtTheirFirstBook() {
-        func book(_ id: Int, series: Int? = nil, name: String? = nil, rating: Double? = nil)
-            -> CloudBook
-        {
-            CloudBook(
-                id: id, title: "Book \(id)", author: "Author", coverURL: nil, detailCoverURL: nil,
-                seriesID: series, seriesName: name, pages: 400, finished: "2025-01-0\(id)",
-                rating: rating)
-        }
-        // Series 8 has no name, as in the Apple TV's archive, and series 9 has one book here.
-        let books = [
-            book(1, rating: 4), book(2, series: 7, name: "Tide Saga", rating: 2),
-            book(3, series: 8), book(4, series: 7, name: "Tide Saga", rating: 5),
-            book(5, series: 8), book(6, series: 9, name: "Lone Series"),
-            book(7, series: 7, name: "Tide Saga"),
-        ]
-        let spines = StackSpine.spines(books)
-        XCTAssertEqual(spines.map { $0.books.map(\.id) }, [[1], [2, 4, 7], [3], [5], [6]])
-        XCTAssertEqual(spines[1].titles, ["Tide Saga"], "The tag carries the count")
-        XCTAssertEqual(spines[0].titles, ["Book 1"])
-        XCTAssertEqual(spines[1].slices.map(\.book.id), [2, 4, 7])
-        XCTAssertGreaterThan(spines[1].size.height, spines[0].size.height)
-        // A group ranks as its best-rated book.
-        XCTAssertTrue(StackSpine.isRankedHigher(spines[1], spines[0]))
-
-        // A big series draws a capped number of thin slices in a book-shaped bundle.
-        let long = StackSpine.spines((1...9).map { book($0, series: 7, name: "Tide Saga") })
-        XCTAssertEqual(long.count, 1)
-        XCTAssertEqual(long[0].books.count, 9)
-        XCTAssertEqual(long[0].slices.count, StackSpine.maximumSlices)
-        let thickest =
-            (1...200)
+    /// Every book is its own spine, also in a series, in finish order, lettered with its own
+    /// title less its series tag.
+    func testStackGivesEachBookOfASeriesItsOwnSpine() {
+        let books = (1...9)
             .map { id in
-                StackSpine.shape(
-                    of: CloudBook(
-                        id: id, title: "Book", author: "Author", coverURL: nil,
-                        detailCoverURL: nil, pages: 1400)
-                )
-                .height
+                CloudBook(
+                    id: id, title: "Tide Book \(id) (Tide Saga, #\(id))", author: "Author",
+                    coverURL: nil, detailCoverURL: nil, seriesID: id == 5 ? nil : 7,
+                    seriesName: id == 5 ? nil : "Tide Saga", pages: 400,
+                    finished: "2025-01-0\(id)")
             }
-            .max() ?? 0
-        for bundle in [spines[1], long[0]] {
-            let slices = bundle.slices
-            XCTAssertEqual(
-                slices.reduce(0) { $0 + $1.size.height }, bundle.size.height, accuracy: 1e-9,
-                "Slices touch, with no gaps")
-            XCTAssertTrue(slices.allSatisfy { $0.size.width == bundle.size.width })
-            XCTAssertLessThanOrEqual(
-                bundle.size.height, bundle.size.width * StackSpine.bundleRatio + 1e-9)
-            XCTAssertLessThanOrEqual(
-                bundle.size.height, thickest * 1.1, "No thicker than a thick book, plus a little")
-        }
-        XCTAssertLessThan(long[0].slices[1].size.height, spines[1].slices[1].size.height)
-    }
-
-    /// A bundle's slices wear the first book's cloth with at most a faint step in tone, and the
-    /// step never brings the cloth closer to the design's ink.
-    func testBundleClothStepsFaintlyAwayFromTheInk() {
-        let pairs: [(cloth: String, ink: String)] = [
-            ("#1F3A5F", "#F5EBD7"), ("#EFE3C3", "#2A1E12"), ("#B0182A", "#FFFFFF"),
-            ("#777777", "#000000"), ("#000000", "#FFFFFF"), ("#FFFFFF", "#000000"),
-        ]
-        for pair in pairs {
-            var look = SpineLook(
-                book: CloudBook(
-                    id: 1, title: "Book", author: "Author", coverURL: nil, detailCoverURL: nil),
-                design: nil, face: nil)
-            look.background = ColorValue(hex: pair.cloth)!
-            look.foreground = ColorValue(hex: pair.ink)!
-            let own = look.background.contrast(with: look.foreground)
-            let cloths = (1...40)
-                .map { id in
-                    ShareSpine.cloth(
-                        look,
-                        book: CloudBook(
-                            id: id, title: "Book", author: "Author", coverURL: nil,
-                            detailCoverURL: nil))
-                }
-            for cloth in cloths {
-                XCTAssertGreaterThanOrEqual(cloth.contrast(with: look.foreground), own, pair.cloth)
-                XCTAssertLessThanOrEqual(
-                    abs(SpineContrast.lab(cloth).l - SpineContrast.lab(look.background).l),
-                    ShareSpine.clothStep + 0.01, pair.cloth)
-            }
-            // Black can't darken and white can't lighten; other cloths step a little.
-            if !["#000000", "#FFFFFF"].contains(pair.cloth) {
-                XCTAssertGreaterThan(Set(cloths).count, 1, pair.cloth)
-            }
-        }
-    }
-
-    /// A bundle letters its series name on its paper label, in dark ink that reads on the cream
-    /// paper whatever the design, sized to the label. A book letters in its own look across its
-    /// whole thickness.
-    func testBundleLettersOnAPaperLabel() {
-        func book(_ id: Int) -> CloudBook {
-            CloudBook(
-                id: id, title: "Book \(id)", author: "Author", coverURL: nil, detailCoverURL: nil,
-                seriesID: 7, seriesName: "Tide Saga", pages: 300)
-        }
-        var look = SpineLook(book: book(1), design: nil, face: nil)
-        (look.foreground, look.uppercase) = (ColorValue(hex: "#F5EBD7")!, true)
-        let single = ShareSpine.letteringLook(StackSpine(books: [book(1)]), look: look)
-        XCTAssertEqual(single.look, look)
-        XCTAssertEqual(single.share, 1)
-
-        let bundle = ShareSpine.letteringLook(StackSpine(books: [book(1), book(2)]), look: look)
-        XCTAssertEqual(bundle.share, PaperLabel.share)
-        XCTAssertLessThan(bundle.share, 1, "Some cloth shows above and below the label")
-        XCTAssertEqual(bundle.look.foreground, PaperLabel.ink)
-        XCTAssertFalse(bundle.look.uppercase)
-        for paper in PaperLabel.paper {
-            XCTAssertGreaterThanOrEqual(paper.contrast(with: bundle.look.foreground), 7)
+        let input = ShareInput(
+            template: .yearStack, aspect: .story, books: books, frame: .year(2025))
+        let spines = YearStackCard.pages(for: input).pages.joined()
+        XCTAssertEqual(spines.map(\.book.id), books.map(\.id))
+        XCTAssertEqual(spines.map(\.titles), books.map { [ShareStyle.titles($0)[0]] })
+        XCTAssertEqual(spines.first?.titles, ["Tide Book 1"])
+        for spine in spines {
+            XCTAssertEqual(spine.size, StackSpine.shape(of: spine.book))
         }
     }
 
@@ -579,14 +485,14 @@ final class ShareRenderTests: XCTestCase {
             }
         let stack = StackArrangement(width: 402)
         for book in books {
-            let shape = StackSpine(books: [book]).size
+            let shape = StackSpine(book: book).size
             let spine = stack.spine(of: book)
             XCTAssertEqual(shape.width / shape.height, spine.width / spine.height, accuracy: 1e-9)
             XCTAssertGreaterThanOrEqual(
                 shape.width / shape.height, 4, "Book-shaped, never box-shaped: \(shape)")
         }
 
-        let spines = StackSpine.spines(books)
+        let spines = books.map(StackSpine.init)
         for aspect in ShareAspect.allCases {
             let area = YearStackCard.area(aspect)
             XCTAssertTrue(StackLayout.fits(spines, area: area), "\(aspect)")
@@ -613,14 +519,14 @@ final class ShareRenderTests: XCTestCase {
 
     func testStackPagesSplitEvenlyInFinishOrderUpToTwentyPages() {
         func spines(_ count: Int) -> [StackSpine] {
-            StackSpine.spines(
-                (1...count)
-                    .map { index in
-                        CloudBook(
+            (1...count)
+                .map { index in
+                    StackSpine(
+                        book: CloudBook(
                             id: index, title: "Book \(index)", author: "Author", coverURL: nil,
                             detailCoverURL: nil, pages: 400, finished: "2025-01-01",
-                            rating: Double(index % 5) + 1)
-                    })
+                            rating: Double(index % 5) + 1))
+                }
         }
         let area = CGSize(width: 952, height: 700)
         let few = spines(6)
@@ -665,25 +571,25 @@ final class ShareRenderTests: XCTestCase {
                 id: id, title: title ?? "Book \(id)", author: "Author", coverURL: nil,
                 detailCoverURL: nil, pages: pages, finished: "2026-01-01")
         }
-        let thin = StackSpine(books: [book(1, pages: 100)])
-        let ordinary = StackSpine(books: [book(2, pages: 400)])
+        let thin = StackSpine(book: book(1, pages: 100))
+        let ordinary = StackSpine(book: book(2, pages: 400))
         XCTAssertEqual(
             StackLayout.minimumScale([thin]),
-            ShareSpine.minimumThickness(thin) / thin.size.height, accuracy: 1e-9)
+            ShareSpine.minimumThickness / thin.size.height, accuracy: 1e-9)
         XCTAssertGreaterThan(
             StackLayout.minimumScale([thin, ordinary]), StackLayout.minimumScale([ordinary]))
 
         // Fourteen 400-page books need more than this area's height at the scale a 100-page book
         // needs, but fit at their own.
         let area = CGSize(width: 952, height: 1046)
-        let fourteen = StackSpine.spines((1...14).map { book($0, pages: 400) })
+        let fourteen = (1...14).map { StackSpine(book: book($0, pages: 400)) }
         XCTAssertGreaterThan(
             StackLayout.thickness(fourteen) * StackLayout.minimumScale([thin]), area.height)
         let one = StackPages(spines: fourteen, area: area)
         XCTAssertEqual(one.pages.count, 1)
         // Twice as many need a second page.
         let two = StackPages(
-            spines: StackSpine.spines((1...28).map { book($0, pages: 400) }), area: area)
+            spines: (1...28).map { StackSpine(book: book($0, pages: 400)) }, area: area)
         XCTAssertEqual(two.pages.count, 2)
         for page in one.pages + two.pages {
             let layout = StackLayout(spines: page, area: area, seed: 1)
@@ -691,16 +597,15 @@ final class ShareRenderTests: XCTestCase {
         }
 
         // A long title asks for room to letter it in full; a short one asks for none.
-        let short = StackPages(spines: [StackSpine(books: [book(30, pages: 300)])], area: area)
+        let short = StackPages(spines: [StackSpine(book: book(30, pages: 300))], area: area)
         let long = StackPages(
             spines: [
-                StackSpine(
-                    books: [book(30, pages: 300, title: "An Unusually Long Fictional Title")])
+                StackSpine(book: book(30, pages: 300, title: "An Unusually Long Fictional Title"))
             ], area: area)
         let shortScale = short.pages[0][0].minimumScale
         XCTAssertEqual(
             shortScale,
-            ShareSpine.minimumThickness(short.pages[0][0])
+            ShareSpine.minimumThickness
                 / short.pages[0][0].size.height, accuracy: 1e-9)
         XCTAssertGreaterThan(long.pages[0][0].minimumScale, shortScale)
     }
@@ -716,8 +621,8 @@ final class ShareRenderTests: XCTestCase {
         let area = CGSize(width: 952, height: 1046)
         let longID = try XCTUnwrap(
             (1...200).first { StackSpine.shape(of: book($0, pages: 1400)).width >= 2.79 })
-        let long = StackSpine(books: [book(longID, pages: 1400)])
-        var titled = StackSpine(books: [book(1000, pages: 100)])
+        let long = StackSpine(book: book(longID, pages: 1400))
+        var titled = StackSpine(book: book(1000, pages: 100))
         titled.minimumScale = StackLayout.maximumScale([long], area: area) * 1.1
         XCTAssertTrue(StackLayout.fits([long], area: area))
         XCTAssertTrue(StackLayout.fits([titled], area: area))
@@ -731,27 +636,23 @@ final class ShareRenderTests: XCTestCase {
         }
     }
 
-    /// Titles and series names as long and as wide as those the owner reviewed in a 2026 story
-    /// image, in the same capitalization, ask for a scale that letters them in full, on one line
-    /// or two, and have room for it, in wide system faces.
+    /// Titles as long and as wide as those the owner reviewed in a 2026 story image, in the
+    /// same capitalization, ask for a scale that letters them in full, on one line or two, and
+    /// have room for it, in wide system faces.
     @MainActor
     func testStackLettersLongTitlesWithoutTruncating() throws {
-        func books(_ title: String, _ ids: ClosedRange<Int>, pages: Int) -> [CloudBook] {
-            ids.map { id in
-                CloudBook(
-                    id: id, title: title, author: "Author", coverURL: nil, detailCoverURL: nil,
-                    seriesID: ids.count > 1 ? ids.lowerBound : nil,
-                    seriesName: ids.count > 1 ? title : nil, pages: pages,
-                    finished: "2026-02-01")
+        let titles: [(title: String, pages: Int)] = [
+            ("THE LAST GATE OF NORTHWIND", 300), ("We Who Have Never Seen Rain", 200),
+            ("THE MOONWELL TRILOGY", 400), ("Mona and Daisy Mysteries", 300),
+            ("MOUNTAIN WANDERER NED", 450),
+        ]
+        let spines = titles.enumerated()
+            .map { index, entry in
+                StackSpine(
+                    book: CloudBook(
+                        id: index + 1, title: entry.title, author: "Author", coverURL: nil,
+                        detailCoverURL: nil, pages: entry.pages, finished: "2026-02-01"))
             }
-        }
-        let library =
-            books("THE LAST GATE OF NORTHWIND", 1...1, pages: 300)
-            + books("We Who Have Never Seen Rain", 2...2, pages: 200)
-            + books("THE MOONWELL TRILOGY", 3...5, pages: 400)
-            + books("Mona and Daisy Mysteries", 6...8, pages: 300)
-            + books("MOUNTAIN WANDERER NED", 9...16, pages: 450)
-        let spines = StackSpine.spines(library)
         XCTAssertEqual(spines.count, 5)
         let area = YearStackCard.area(.story)
         for typeface in ["sans", "serif"] {
@@ -770,14 +671,13 @@ final class ShareRenderTests: XCTestCase {
                     XCTAssertLessThan(
                         scale, StackLayout.maximumScale([spine], area: area), "\(label) has room")
                     // At that scale, the first option that fits, as `ViewThatFits` takes it,
-                    // letters the title in full, in the look and thickness it's drawn in: a
-                    // bundle's on its label.
-                    let lettering = ShareSpine.letteringLook(spine, look: look(spine.book))
-                    let thickness = spine.size.height * scale * lettering.share
+                    // letters the title in full, in the look and thickness it's drawn in.
+                    let lettering = look(spine.book)
+                    let thickness = spine.size.height * scale
                     let box = ShareSpine.letteringBox(spine, scale: scale)
                     let fits = ShareSpine.options([title], thickness: thickness)
                         .contains { option in
-                            let font = lettering.look.uiFont(size: option.size)
+                            let font = lettering.uiFont(size: option.size)
                             let width =
                                 option.text.split(separator: "\n")
                                 .map {
