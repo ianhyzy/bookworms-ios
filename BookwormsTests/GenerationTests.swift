@@ -1,4 +1,5 @@
 import CloudKit
+import CoreText
 import Foundation
 import FoundationModels
 import XCTest
@@ -316,6 +317,110 @@ final class GenerationTests: XCTestCase {
         XCTAssertTrue(BookAnalyzer.allowsFamily("EB Garamond"))
     }
 
+    /// The owner's standing rule: no spine ever uses Impact, in any spelling, from any source.
+    func testImpactCanNeverBeChosenOrRendered() throws {
+        for name in [
+            "Impact", "impact", "IMPACT", "Impact-Regular", "Impact Bold", "ImpactMT", " Impact ",
+        ] {
+            XCTAssertFalse(BookAnalyzer.allowsFamily(name), name)
+        }
+        let catalog = SpineFamily.allCases.map { $0.rawValue.lowercased() }
+        XCTAssertFalse(catalog.contains { $0.contains("impact") })
+        var generator = BookAnalyzer.SeededGenerator(seed: 1)
+        let offered = SpineFontStyle.allCases.flatMap {
+            BookAnalyzer.candidateFamilies(for: $0, generator: &generator)
+        }
+        XCTAssertFalse(offered.contains { $0.lowercased().contains("impact") })
+        XCTAssertTrue(BookAnalyzer.allowsFamily(SpineFamily.impactReplacement.rawValue))
+        XCTAssertEqual(SpineFamily.impactReplacement.style, .condensedSans)
+
+        // A design saved elsewhere that names Impact loads as the replacement.
+        let saved = Data(
+            """
+            {"version":1,"accountID":"account","bookID":5,"workItemHash":"\(String(repeating: "a", count: 64))",
+            "coverHash":"\(String(repeating: "b", count: 64))","generatorVersion":"tv-v1","generatedAt":0,
+            "backgroundHex":"#101010","foregroundHex":"#F4EEE2","accentHex":"#7A1F1F",
+            "typeface":"sans","weight":700,"uppercase":true,"fontFamily":"Impact",
+            "fontPostScriptName":"Impact","instanceWeight":400}
+            """
+            .utf8)
+        let design = try JSONDecoder().decode(SpineDesignV1.self, from: saved)
+        let book = CloudBook(
+            id: 5, title: "A Title", author: "An Author", coverURL: nil, detailCoverURL: nil,
+            genres: nil)
+        let loaded = try XCTUnwrap(
+            LibrarySnapshot.latestDesigns([design], accountID: "account", books: [book])[5])
+        XCTAssertEqual(loaded.fontFamily, "Bebas Neue")
+        XCTAssertNil(loaded.fontPostScriptName)
+        XCTAssertNil(loaded.instanceWeight)
+        XCTAssertEqual(loaded.backgroundHex, design.backgroundHex)
+        XCTAssertNoThrow(try loaded.validate())
+        let postScriptOnly = design.withFontFamily("Anton", postScriptName: "Impact-Regular")
+        XCTAssertEqual(postScriptOnly.withAllowedFont.fontFamily, "Bebas Neue")
+        let allowed = design.withFontFamily("Anton", postScriptName: "Anton-Regular")
+        XCTAssertEqual(allowed.withAllowedFont, allowed)
+    }
+
+    /// The owner's standing rule: no italics. Saved designs in a slanted or italic face load in
+    /// an allowed upright one; the stored record is untouched.
+    func testBlockedOrItalicSavedFontsLoadUpright() throws {
+        let base = SpineDesignV1(
+            version: 1, accountID: "account", bookID: 5,
+            workItemHash: String(repeating: "a", count: 64),
+            coverHash: String(repeating: "b", count: 64), generatorVersion: "tv-v1",
+            generatedAt: Date(), backgroundHex: "#101010", foregroundHex: "#F4EEE2",
+            accentHex: "#7A1F1F", typeface: "sans", weight: 700, uppercase: true,
+            instanceWeight: 400)
+        func loaded(_ family: String?, _ postScriptName: String?) -> SpineDesignV1 {
+            var design = base
+            design.fontFamily = family
+            design.fontPostScriptName = postScriptName
+            return design.withAllowedFont
+        }
+        let expected: [(String?, String?, String?)] = [
+            ("Impact", "Impact", "Bebas Neue"),
+            ("Bangers", "Bangers-Regular", "Bungee"),
+            ("Shrikhand", "Shrikhand-Regular", "Changa One"),
+            ("Bangers Italic", nil, "Bungee"),
+            ("Lora Italic", "Lora-Italic", "Lora"),
+            ("eb garamond oblique", nil, "EB Garamond"),
+            ("EB Garamond", "EBGaramond-Italic", "EB Garamond"),
+            ("Lora", "Lora-BoldIt", "Lora"),
+            ("Italic", nil, nil),
+        ]
+        for (family, postScriptName, replacement) in expected {
+            let design = loaded(family, postScriptName)
+            XCTAssertEqual(design.fontFamily, replacement, "\(family ?? "-")")
+            XCTAssertNil(design.fontPostScriptName)
+            XCTAssertNil(design.instanceWeight)
+            XCTAssertTrue(design.fontFamily.map(BookAnalyzer.allowsFamily) ?? true)
+            XCTAssertNoThrow(try design.validate())
+        }
+        XCTAssertEqual(loaded("Lora", "Lora-Bold"), loaded("Lora", "Lora-Bold").withAllowedFont)
+        XCTAssertEqual(loaded("Lora", "Lora-Bold").fontPostScriptName, "Lora-Bold")
+        for replacement in SpineFamily.slantedReplacements.values {
+            XCTAssertTrue(BookAnalyzer.allowsFamily(replacement.rawValue))
+            XCTAssertEqual(replacement.style, .decorative)
+        }
+
+        // A loaded face with the italic trait is passed over for an upright one, whatever the
+        // saved PostScript name asks for.
+        func face(_ name: String) throws -> CTFontDescriptor {
+            let font = CTFontCreateWithName(name as CFString, 24, nil)
+            XCTAssertEqual(CTFontCopyPostScriptName(font) as String, name)
+            return CTFontCopyFontDescriptor(font)
+        }
+        let italic = try face("Georgia-Italic")
+        let upright = try face("Georgia")
+        XCTAssertFalse(GoogleFonts.isUpright(italic))
+        XCTAssertTrue(GoogleFonts.isUpright(upright))
+        let chosen = try XCTUnwrap(
+            GoogleFonts.uprightDescriptor(
+                preferring: ["Georgia-Italic", nil], in: [italic, upright]))
+        XCTAssertEqual(GoogleFonts.postScriptName(of: chosen), "Georgia")
+        XCTAssertNil(GoogleFonts.uprightDescriptor(preferring: ["Georgia-Italic"], in: [italic]))
+    }
+
     func testDesignPromptCarriesBookDataButNotTheFontCatalog() {
         let book = CloudBook(
             id: 9, title: String(repeating: "T", count: 400), author: "An Author",
@@ -343,5 +448,14 @@ final class GenerationTests: XCTestCase {
         var generator = BookAnalyzer.SeededGenerator(seed: 1)
         let offered = BookAnalyzer.candidateFamilies(for: .decorative, generator: &generator)
         XCTAssertFalse(offered.contains("Shrikhand") || offered.contains("Bangers"))
+    }
+}
+
+extension SpineDesignV1 {
+    fileprivate func withFontFamily(_ family: String, postScriptName: String) -> SpineDesignV1 {
+        var design = self
+        design.fontFamily = family
+        design.fontPostScriptName = postScriptName
+        return design
     }
 }

@@ -1,6 +1,6 @@
-# Bookworms for iPhone
+# Bookworms for iPhone and Mac
 
-Bookworms for iPhone is a companion to the [Bookworms Apple TV app](../tvos/README.md). It designs book spines with Apple's Private Cloud Compute model and shares them with the Apple TV through iCloud, shows your spines in a stack or a bookcase and your books in 3D scenes on a desk, and makes share images and videos for social media. It never asks for a Hardcover API key, and needs an AI API key only if you choose a third-party model.
+Bookworms for iPhone and Mac is a companion to the [Bookworms Apple TV app](../tvos/README.md). It designs book spines with Apple's Private Cloud Compute model and shares them with the Apple TV through iCloud, shows your spines in a stack or a bookcase and your books in 3D scenes on a desk, and makes share images and videos for social media. It never asks for a Hardcover API key, and needs an AI API key only if you choose a third-party model.
 
 The app targets iOS 27 on iPhone and macOS 27 on Apple silicon Macs (see [On the Mac](#on-the-mac)). It gets your library in one of two ways:
 
@@ -96,7 +96,7 @@ The Mac app is a native macOS build of the same target and source, so it reads t
 - The Desk scenes take mouse input. Tilt and shaking need device motion, which the Mac lacks, so they are off.
 - Text that names the device says "Mac", including the export credit "Created with Bookworms for Mac".
 
-The Mac menu bar companion in `../macos` is a separate app that designs spines with the on-device model.
+The Mac app replaces Bookworms Spines, the retired menu bar companion from the archived `bookworms-macos` repository.
 
 ### Tabs
 
@@ -378,11 +378,11 @@ The 3D views share their RealityKit pieces. `BookGeometry` builds each book's me
 2. Set up signing for `gay.ian.Bookworms.iOS` with the `iCloud.gay.ian.Bookworms` container, push notifications, and the managed Private Cloud Compute capability (`com.apple.developer.private-cloud-compute`). Request that capability for the team before signing a device build; Apple grants it to members of the App Store Small Business Program.
 3. Run `script/build_and_run.sh` to build, install, and launch on a Simulator.
 
-To test the Mac app with your iCloud library, run `script/run_mac.sh`. It builds an optimized app, signs it with the team's Apple Development certificate and the existing Xcode-managed "Mac Team Provisioning Profile: gay.ian.Bookworms.Mac", installs it as `~/Applications/Bookworms.app`, and opens it; Xcode's account is not needed. The profile grants the shared iCloud container and push but not the managed Private Cloud Compute capability, so the script uses `config/NoPCC-macOS.entitlements` and `NO_PCC`, as `script/install_on_device.sh` does for the iPhone: Apple's model reports itself unavailable, and a third-party model chosen in Settings designs spines. The Mac build uses the bundle ID `gay.ian.Bookworms.Mac`, so it replaces the menu bar companion from `../macos`. `script/run_mac.sh --preview` copies the private preview library into the app's container and reads it instead of iCloud.
+To test the Mac app with your iCloud library, run `script/run_mac.sh`. It builds an optimized app, signs it with the team's Apple Development certificate and the existing Xcode-managed "Mac Team Provisioning Profile: gay.ian.Bookworms.Mac", installs it as `~/Applications/Bookworms.app`, and opens it; Xcode's account is not needed. The profile grants the shared iCloud container and push but not the managed Private Cloud Compute capability, so the script uses `config/NoPCC-macOS.entitlements` and `NO_PCC`, as `script/install_on_device.sh` does for the iPhone: Apple's model reports itself unavailable, and a third-party model chosen in Settings designs spines. The Mac build uses the bundle ID `gay.ian.Bookworms.Mac`, so it replaces an installed Bookworms Spines menu bar companion. `script/run_mac.sh --preview` copies the private preview library into the app's container and reads it instead of iCloud.
 
 The Mac's icon is `Bookworms/AppIconMac.icon`, an Icon Composer icon with the bookworms on one glass layer over a cream gradient; the iPhone keeps `AppIcon` in the asset catalog.
 
-To test on an iPhone before Apple grants the Private Cloud Compute capability, run `script/install_on_device.sh`. It signs an optimized build with `config/NoPCC.entitlements`, compiles it with `NO_PCC` so the app never creates the model, registers the iPhone with the team if needed, and installs it. Generation then reports Private Cloud Compute as unavailable; the Share, Library, and Desk tabs work with the iCloud or Hardcover library. A development-signed build reads the CloudKit Development environment, the same one development builds of the Apple TV app and the Mac companion use.
+To test on an iPhone before Apple grants the Private Cloud Compute capability, run `script/install_on_device.sh`. It signs an optimized build with `config/NoPCC.entitlements`, compiles it with `NO_PCC` so the app never creates the model, registers the iPhone with the team if needed, and installs it. Generation then reports Private Cloud Compute as unavailable; the Share, Library, and Desk tabs work with the iCloud or Hardcover library. A development-signed build reads the CloudKit Development environment, the same one development builds of the Apple TV app use.
 
 The app shows the library it loaded last while it reloads. It reloads when it becomes active, at most every five minutes after a load succeeds. After a failed load, it tries again the next time it becomes active or a generation run ends. It also reloads after a generation run that saved designs for books it had not loaded. Without a Hardcover sign-in, signing out of iCloud, or switching to an account without a library, clears the shown and cached library. Signing out of Hardcover, or signing in to another Hardcover account, also clears it before the reload.
 
@@ -524,7 +524,7 @@ To check **Reconnect**, revoke Bookworms in Hardcover's account settings, then t
 
 ## iCloud contract
 
-The Apple TV app owns the `library-v1` archive and, from builds that include the spine companion work, the `SpineWorklistV1` record. This app writes one `SpineDesignV1` record per book. Record names and JSON fields are defined in `Bookworms/Models/CloudContract.swift`, and the tests pin the same digests as the Apple TV and Mac companion tests. Designs add optional `fontFamily`, `fontPostScriptName`, `instanceWeight`, and `provenance` fields; older readers ignore them.
+The Apple TV app owns the `library-v1` archive and, from builds that include the spine companion work, the `SpineWorklistV1` record. This app writes one `SpineDesignV1` record per book. Record names and JSON fields are defined in `Bookworms/Models/CloudContract.swift`, and the tests pin the same digests as the Apple TV tests. Designs add optional `fontFamily`, `fontPostScriptName`, `instanceWeight`, and `provenance` fields; older readers ignore them. The app never shows Impact or a slanted face. A saved design whose family or PostScript name the type rules block shows in an allowed upright family instead: Impact in Bebas Neue, Bangers in Bungee, Shrikhand in Changa One, and an italic, oblique, or slanted variant, such as Lora Italic or `Lora-BoldIt`, in its upright family. Any other blocked family uses the design's system typeface. A downloaded face with the italic trait or a slant never renders. The stored record stays unchanged (`SpineFamily.uprightReplacement(for:)`, `SpineDesignV1.withAllowedFont`).
 
 `provenance` records how a design was made when not by a model request, in space-separated tokens of at most 80 characters in all. `series-reuse:<book ID>` marks a design copied from another book in the series when the run saved it; the app draws a series with its current source's design either way (see [Series designs](#series-designs)). `generated-colors:<background>,<text>,<accent>` marks colors the reader chose (see [Spine colors](#spine-colors)) and holds the generator's colors, each as six uppercase hexadecimal digits, such as `series-reuse:12 generated-colors:1A2B3C,F4E9D0,C08040`; when both tokens would exceed 80 characters, only the colors token is kept. Readers validate `provenance` only as a single line of 1 to 80 characters.
 
@@ -543,7 +543,6 @@ This app also writes one `CoverChoiceV1` record for each book whose cover the re
 Current limits:
 
 - Only the Apple TV's `spine-companion` branch, which is not merged or released, caches companion designs, draws them on Book Wall, and shows chosen covers. Other Apple TV builds ignore designs and `CoverChoiceV1` records and show the default covers.
-- This app replaces a Mac companion design once, when it rechecks the book, unless you recolored it. The Mac companion does not read the `generated-colors` token: it keeps a recolored design while the work-item and cover hashes match, but redesigns it, without your colors, if it rechecks the book after a metadata change before this app moves the design to the new hash. Mac companion builds that include macos commit `f2eed75` read `CoverChoiceV1`, design from the chosen cover first, and keep an iPhone design while its work-item and cover hashes match the Mac's own, so the two companions settle on the iPhone's design. Older Mac builds replace iPhone designs whenever they recheck a book, so the two companions keep overwriting each other and spend model requests each time.
 - A development-signed build uses the CloudKit Development environment. It does not see data that App Store or TestFlight Apple TV builds write to Production.
 - The [release workflow](docs/RELEASING.md) lists the production schema, capability, and App Review steps that remain before shipping.
 

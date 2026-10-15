@@ -106,13 +106,15 @@ final class SpineFonts {
         let task = Task { [downloader] in
             do {
                 let font = try await downloader.download(family: family, weight: design.weight)
-                let name = design.fontPostScriptName ?? font.postScriptName
-                let descriptors = GoogleFonts.descriptors(at: font.fileURL)
-                if let descriptor =
-                    descriptors.first(where: { GoogleFonts.postScriptName(of: $0) == name })
-                    ?? descriptors.first
+                // A face with the italic trait or a slant never renders, whatever its name says.
+                if let descriptor = GoogleFonts.uprightDescriptor(
+                    preferring: [design.fontPostScriptName, font.postScriptName],
+                    in: GoogleFonts.descriptors(at: font.fileURL))
                 {
-                    faces[key] = FontFace(descriptor: descriptor, postScriptName: name)
+                    faces[key] = FontFace(
+                        descriptor: descriptor,
+                        postScriptName: GoogleFonts.postScriptName(of: descriptor)
+                            ?? font.postScriptName)
                     onFaceLoaded?()
                 } else {
                     unusable.insert(key)
