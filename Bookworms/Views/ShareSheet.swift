@@ -109,7 +109,8 @@ extension View {
 }
 
 #if os(macOS)
-    /// Shows the sharing service picker from this view's bounds whenever `files` is set.
+    /// Shows the sharing service picker below the toolbar's share button whenever `files` is
+    /// set.
     private struct ShareSheetPresenter: NSViewRepresentable {
         @Binding var files: SharedFiles?
         let onComplete: @MainActor (ShareOutcome) -> Void
@@ -171,7 +172,10 @@ extension View {
             }
             let picker = NSSharingServicePicker(items: files.urls)
             picker.delegate = context.coordinator
-            picker.show(relativeTo: host.bounds, of: host, preferredEdge: .minY)
+            // The share buttons sit at the toolbar's trailing end, above this view's top
+            // trailing corner, so the picker drops down from there.
+            let anchor = CGRect(x: host.bounds.maxX - 44, y: host.bounds.maxY - 2, width: 28, height: 2)
+            picker.show(relativeTo: anchor, of: host, preferredEdge: .minY)
         }
     }
 #else

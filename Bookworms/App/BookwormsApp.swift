@@ -142,11 +142,14 @@ struct BookwormsApp: App {
 }
 
 struct RootView: View {
+    /// `-BookwormsOfferedHardcover YES` skips the launch's Hardcover sheet for checks.
+    private static let skipsHardcoverPrompt =
+        (UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)[
+            "BookwormsOfferedHardcover"] as? String).map { ($0 as NSString).boolValue } ?? false
+
     @Environment(AppModel.self) private var model
     @Environment(GenerationController.self) private var generation
     @Environment(\.scenePhase) private var scenePhase
-    /// Set once the first launch outside preview mode has offered the Hardcover sheet.
-    @AppStorage("BookwormsOfferedHardcover") private var offeredHardcover = false
     @State private var showsAccount = false
 
     var body: some View {
@@ -168,8 +171,9 @@ struct RootView: View {
         // In light appearance, the bar over Library's and Desk's dark wall leaves the default
         // blue with almost no contrast, so their lamp marks the selected tab.
         .tint([.library, .desk].contains(model.selectedTab) ? ShelfPalette.lamp : nil)
-        // Hardcover is the library's own source, so the first launch offers it once, over
-        // whichever tab opens. Outside the tint, so the sheet follows the system appearance.
+        // Hardcover is the library's own source, so each launch without a working sign-in, and
+        // a sign-in that stops working, offers it over whichever tab shows. Outside the tint,
+        // so the sheet follows the system appearance.
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
         #if os(macOS)
             // Grouped forms match the iPhone's inset sections instead of the Mac's columns.
@@ -180,9 +184,11 @@ struct RootView: View {
             .background(ToastWindow(toasts: model.toasts))
         #endif
         .task {
-            guard !offeredHardcover, !model.isPreview else { return }
-            offeredHardcover = true
-            if !model.account.isSignedIn { showsAccount = true }
+            guard !model.isPreview, !Self.skipsHardcoverPrompt else { return }
+            if !model.account.isSignedIn || model.account.needsReconnect { showsAccount = true }
+        }
+        .onChange(of: model.account.needsReconnect) { _, broken in
+            if broken && !model.isPreview { showsAccount = true }
         }
         .task { await model.reload() }
         .onChange(of: scenePhase) { _, phase in

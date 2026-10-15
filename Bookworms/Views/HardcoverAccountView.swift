@@ -38,6 +38,11 @@ struct HardcoverAccountView: View {
             }
             .navigationTitle("Hardcover")
             .navigationBarTitleDisplayMode(.inline)
+            #if os(macOS)
+                // A Mac sheet is its own window, outside the main window's grouped style.
+                .formStyle(.grouped)
+                .frame(minWidth: 480, minHeight: 440)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button(account.isSignedIn || account.signIn != nil ? "Done" : "Not now") {
