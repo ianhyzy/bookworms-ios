@@ -5,6 +5,9 @@ import SwiftUI
 /// cards), **Journal** (the reader's reading dates, progress, format, and review, on the same
 /// cards), and **Style** (**Change cover**, then the spine's design and colors).
 ///
+/// A book that shares its series' spine design (`AppModel.designSource(for:)`) changes the
+/// series source's cover, colors, and design under **Style**, so the whole series changes.
+///
 /// With a `HostedBook`, the details draw no book, backdrop, or **Share** button of their own: a
 /// transparent stand-in takes the book's place and turns as it would, the host draws the book
 /// there behind the details, such as the Pile's RealityKit book or the shelf's pulled-out book,
@@ -22,7 +25,7 @@ struct BookDetailView: View {
     /// When the reader last changed the cover here.
     @State private var coverChangedAt: Date?
     /// The chosen cover the shown spine design comes from, as far as this screen knows: the
-    /// cover when the details opened, then the cover when a new design arrives.
+    /// design source's cover when the details opened, then when a new design arrives.
     @State private var designedCover: URL?
     @State private var tab = DetailTab.details
     /// The scroll view's visible height, which every tab's content fills at least, so switching
@@ -35,7 +38,8 @@ struct BookDetailView: View {
     init(book: CloudBook, hostedBook: HostedBook? = nil) {
         opened = book
         self.hostedBook = hostedBook
-        _designedCover = State(initialValue: book.chosenCoverURL)
+        _designedCover = State(
+            initialValue: AppModel.shared.designSource(for: book).chosenCoverURL)
         #if DEBUG
             // `-BookwormsDetailTab <details|journal|style>` opens that tab, for Simulator checks.
             let debugTab = UserDefaults.standard.string(forKey: "BookwormsDetailTab")
@@ -50,7 +54,7 @@ struct BookDetailView: View {
     var body: some View {
         let book = book
         let look = model.look(for: book)
-        let design = model.library?.designs[book.id]
+        let design = model.design(for: book)
         ScrollView {
             VStack(spacing: 24) {
                 TurningBook(book: book, look: look, cover: cover, host: hostedBook)
@@ -90,12 +94,15 @@ struct BookDetailView: View {
             let text = await Self.plainText(book.description)
             if !Task.isCancelled { about = text }
         }
-        .onChange(of: design?.generatedAt) { designedCover = book.chosenCoverURL }
+        .onChange(of: design?.generatedAt) {
+            designedCover = model.designSource(for: book).chosenCoverURL
+        }
         .sheet(isPresented: $choosesCover) {
             // The shelf sets a dark scheme for its walnut backdrop, which the sheet's content
             // inherits; the sheet's own background must match it to keep text readable.
             // A new cover can call for a new spine, which **Style** offers below the button.
-            CoverPickerView(book: book) { coverChangedAt = .now }
+            // A series that shares a design takes its spine from its source's cover.
+            CoverPickerView(book: model.designSource(for: book)) { coverChangedAt = .now }
                 .preferredColorScheme(.dark)
         }
         #if DEBUG
@@ -105,16 +112,22 @@ struct BookDetailView: View {
 
     /// Offers a run that redesigns the spine from the new cover. The ledger rechecks a book
     /// whose chosen cover changed, so the next run includes this book.
-    private var redesignCard: some View {
+    private func redesignCard(series: Bool) -> some View {
         Card {
-            Text("Redesign the spine?").font(.headline)
-            Text("The spine was designed from the previous cover.")
-                .font(.footnote)
-                .foregroundStyle(cardNote)
+            Text(series ? "Redesign the series' spines?" : "Redesign the spine?").font(.headline)
+            Text(
+                series
+                    ? "The series' spines were designed from the previous cover."
+                    : "The spine was designed from the previous cover."
+            )
+            .font(.footnote)
+            .foregroundStyle(cardNote)
             if generation.status.isRunning {
                 LabeledContent("Designing spines") { ProgressView() }
             } else {
-                Button("Redesign spine", systemImage: "wand.and.sparkles") {
+                Button(
+                    series ? "Redesign spines" : "Redesign spine", systemImage: "wand.and.sparkles"
+                ) {
                     generation.generateNow()
                 }
                 .buttonStyle(.bordered)
@@ -124,7 +137,10 @@ struct BookDetailView: View {
                     lastRunAt > coverChangedAt
                 {
                     Label(
-                        generation.status.error ?? "The last run did not redesign this spine.",
+                        generation.status.error
+                            ?? (series
+                                ? "The last run did not redesign these spines."
+                                : "The last run did not redesign this spine."),
                         systemImage: "exclamationmark.triangle"
                     )
                     .font(.footnote)
@@ -159,10 +175,16 @@ struct BookDetailView: View {
         case .journal:
             journal
         case .style:
+            let series = model.sharesSeriesDesign(book)
             VStack(spacing: 24) {
-                Button("Change cover", systemImage: "photo.on.rectangle") { choosesCover = true }
-                    .buttonStyle(.bordered)
-                if design != nil, book.chosenCoverURL != designedCover { redesignCard }
+                Button(
+                    series ? "Change series cover" : "Change cover",
+                    systemImage: "photo.on.rectangle"
+                ) { choosesCover = true }
+                .buttonStyle(.bordered)
+                if design != nil, model.designSource(for: book).chosenCoverURL != designedCover {
+                    redesignCard(series: series)
+                }
                 designCard(look: look, design: design)
             }
         }
@@ -192,7 +214,9 @@ struct BookDetailView: View {
     }
 
     private func designCard(look: SpineLook, design: SpineDesignV1?) -> some View {
-        SpineDesignCard(book: book, look: look, design: design)
+        SpineDesignCard(
+            book: book, look: look, design: design,
+            series: model.sharesSeriesDesign(book) ? model.designSource(for: book) : nil)
     }
 }
 
@@ -867,6 +891,8 @@ private struct SpineDesignCard: View {
     /// The look of the saved design, as the rest of the app shows it.
     let look: SpineLook
     let design: SpineDesignV1?
+    /// The series source whose design `book` shares, or `nil` when the design is its own.
+    let series: CloudBook?
 
     @Environment(AppModel.self) private var model
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -960,7 +986,13 @@ private struct SpineDesignCard: View {
                     if let saveError {
                         note(saveError, systemImage: "exclamationmark.icloud")
                     } else {
-                        Text("Tap a color to change it.").font(.footnote).foregroundStyle(cardNote)
+                        Text(
+                            series == nil
+                                ? "Tap a color to change it."
+                                : "Tap a color to change it for the whole series."
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(cardNote)
                     }
                 }
                 if let generated = design.generatedColors ?? design.colors, shown != generated {
@@ -973,6 +1005,15 @@ private struct SpineDesignCard: View {
                 Divider()
             }
             if let design {
+                if let series {
+                    Text(
+                        series.id == book.id
+                            ? "Other books in this series share this design."
+                            : "Books in this series share the design of \(series.spineTitle)."
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(cardNote)
+                }
                 Text("Created \(design.generatedAt, format: .dateTime.year().month().day())")
                     .font(.footnote)
                     .foregroundStyle(cardNote)

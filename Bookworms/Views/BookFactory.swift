@@ -137,7 +137,7 @@ final class BookFactory {
             return built.look != look || built.wear != Wear(book, accent: look.accent)
         }
         guard !missing.isEmpty else { return }
-        await model.fonts.load(missing.compactMap { model.library?.designs[$0.id] })
+        await model.fonts.load(missing.compactMap { model.design(for: $0) })
         guard !Task.isCancelled else { return }
         let covers = model.covers
         let (arrivals, delivery) = AsyncStream.makeStream(of: (Int, UIImage?).self)

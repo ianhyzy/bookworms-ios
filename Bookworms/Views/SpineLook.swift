@@ -40,6 +40,18 @@ struct FontFace: @unchecked Sendable, Equatable {
     }
 
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.postScriptName == rhs.postScriptName }
+
+    /// Returns whether the face has a glyph for every non-whitespace character in `text`, which
+    /// callers pass as it renders.
+    func covers(_ text: String) -> Bool {
+        let characters = Array(
+            String(text.precomposedStringWithCanonicalMapping.filter { !$0.isWhitespace }).utf16)
+        guard !characters.isEmpty else { return true }
+        var glyphs = [CGGlyph](repeating: 0, count: characters.count)
+        return CTFontGetGlyphsForCharacters(
+            CTFontCreateWithFontDescriptor(descriptor, 32, nil), characters, &glyphs,
+            characters.count)
+    }
 }
 
 /// Loads the Google Fonts faces that saved designs name, so spines render in their chosen type.
