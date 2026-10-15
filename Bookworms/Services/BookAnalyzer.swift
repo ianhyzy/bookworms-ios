@@ -118,9 +118,9 @@ actor BookAnalyzer {
     ///
     /// The model reads only the crop of the title line, so cover art and book data do not
     /// anchor its answers. Up to six families, best match first, are downloaded and
-    /// glyph-checked in order. When every checked family downloaded but lacks a glyph, as for a
-    /// title in a script no family covers, the design uses the best match's system typeface
-    /// instead of a Google Fonts family.
+    /// glyph-checked in order. When none of them covers the title and author and at least one
+    /// lacks a glyph, as for a title in a script no family covers, the design uses the best
+    /// match's system typeface instead of a Google Fonts family.
     ///
     /// Throws `CompanionError.quotaReached`, `.modelBusy`, or `.fontServiceUnavailable`, or an
     /// offline `URLError`, when the run should stop; `.modelUnavailable` when no model can read
@@ -199,7 +199,6 @@ actor BookAnalyzer {
         let text = Self.renderedText(of: book, uppercase: uppercase)
         var tried = Set<String>()
         var missingGlyphs = false
-        var unavailable = false
         for candidate in candidates where tried.count < 6 && tried.insert(candidate.family).inserted
         {
             guard let family = SpineFamily(rawValue: candidate.family) else { continue }
@@ -213,12 +212,12 @@ actor BookAnalyzer {
                         provenance: designer.provenance)
                 }
                 missingGlyphs = true
-            } else {
-                unavailable = true
             }
         }
-        // Glyph coverage never changes, so a retry would fail again; a failed download may not.
-        guard missingGlyphs, !unavailable else { throw CompanionError.invalidDesign }
+        // Glyph coverage never changes, so a retry would fail again. Network failures have
+        // already thrown; a family Google Fonts lacks stays missing, so it does not block the
+        // fallback either.
+        guard missingGlyphs else { throw CompanionError.invalidDesign }
         return try Self.design(
             choice: Self.choice(lettering, palette: palette, weight: best.weight),
             style: bestFamily.style, font: nil, uppercase: uppercase, palette: palette, book: book,
