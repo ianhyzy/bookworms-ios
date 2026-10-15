@@ -372,13 +372,18 @@ actor BookAnalyzer {
     }
 
     /// The owner's standing type rules, enforced in code as well as in the prompt: never
-    /// Impact, and never an italic or oblique family. `GoogleFonts` skips faces with the italic
-    /// trait; Bangers and Shrikhand are slanted by design without declaring it, so they are
-    /// listed by name.
+    /// Impact, and never an italic, oblique, or slanted face.
+    ///
+    /// Checks a family or PostScript name, in any case. A PostScript style that ends in "It",
+    /// such as "Lora-BoldIt", counts as italic. `GoogleFonts` also skips faces with the italic
+    /// trait or a slant; Bangers and Shrikhand are slanted by design without declaring it, so
+    /// they are listed by name.
     static func allowsFamily(_ name: String) -> Bool {
-        let name = name.lowercased()
-        let blocked = ["impact", "italic", "oblique", "bangers", "shrikhand"]
-        return !blocked.contains { name.contains($0) }
+        let lowered = name.lowercased()
+        let blocked = ["impact", "italic", "oblique", "slanted", "bangers", "shrikhand"]
+        let postScriptStyle = name.split(separator: "-").dropFirst().last
+        return !blocked.contains { lowered.contains($0) }
+            && postScriptStyle?.hasSuffix("It") != true
     }
 
     /// What decorative families look like. Their names alone lead the model to strongly themed
