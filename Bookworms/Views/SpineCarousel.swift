@@ -347,9 +347,12 @@ private struct StackedBook: View {
     var body: some View {
         let (scale, drawn) = Self.fit(
             spine: spine, aspect: Book3DView.aspect(of: cover), rest: rest)
+        // Plain boxes keep scrolling cheap. The pulled book is bound from the tap on, as the
+        // flight and the details draw it, so the flight takes over from it without a change.
         Book3DView(
             book: book, look: look, cover: cover, height: spine.width, yaw: .pi / 2 + rest.yaw,
-            pitch: rest.pitch, thicknessRatio: spine.height / spine.width, lighting: rest.lighting
+            pitch: rest.pitch, thicknessRatio: spine.height / spine.width, lighting: rest.lighting,
+            bound: pullOut.book?.id == book.id
         )
         .scaleEffect(scale)
         .rotationEffect(.radians(-.pi / 2))

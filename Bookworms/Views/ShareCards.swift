@@ -364,23 +364,28 @@ struct ShareSpine: View {
         let length = spine.size.width * scale
         let thickness = spine.size.height * scale
         let box = Self.letteringBox(spine, scale: scale)
-        SpineView(
-            book: CloudBook(
-                id: spine.book.id, title: "", author: "", coverURL: nil, detailCoverURL: nil),
-            look: look
-        )
-        .frame(width: length, height: thickness)
-        .overlay(alignment: .leading) {
-            Self.lettering(
-                spine.titles, of: spine.book, look: look, width: box.width, thickness: thickness
-            )
-            .padding(.leading, box.leading)
-        }
+        SpineView(book: Self.unlettered(spine.book), look: look)
+            .frame(width: length, height: thickness)
+            .overlay(alignment: .leading) {
+                Self.lettering(
+                    spine.titles, of: spine.book, look: look, width: box.width, thickness: thickness
+                )
+                .padding(.leading, box.leading)
+            }
+    }
+
+    /// `book` without its title and author, which `ShareSpine` letters itself, for `SpineView`.
+    private static func unlettered(_ book: CloudBook) -> CloudBook {
+        var blank = CloudBook(
+            id: book.id, title: "", author: "", coverURL: nil, detailCoverURL: nil)
+        // `SpineView.stamps(_:)` reads the thickness from the page count.
+        blank.pages = book.pages
+        return blank
     }
 
     /// The fewest pixels per decimeter, up to `limit`, at which `spine` letters one of its titles
-    /// in full at `minimumLettering`, on one line or, when thick enough, two, as drawn
-    /// (`letteringLook(_:look:)`); or `nil` when none fits even at `limit`.
+    /// in full at `minimumLettering`, on one line or, when thick enough, two, as drawn; or `nil`
+    /// when none fits even at `limit`.
     ///
     /// The lettering measures 2 percent wider than `NSString` reports, in case SwiftUI sets it a
     /// little wider.
@@ -417,7 +422,7 @@ struct ShareSpine: View {
     }
 
     /// Where the lettering starts, from the spine's head, and how wide it is, at `scale` pixels
-    /// per decimeter: clear of `SpineView`'s accent bands.
+    /// per decimeter: clear of `SpineView`'s bands.
     nonisolated static func letteringBox(_ spine: StackSpine, scale: CGFloat) -> (
         leading: CGFloat, width: CGFloat
     ) {
