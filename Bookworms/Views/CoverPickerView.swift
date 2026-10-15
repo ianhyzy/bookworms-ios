@@ -1,5 +1,10 @@
 import SwiftUI
-import UIKit
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 /// Lets the reader choose `book`'s cover from the covers of its Hardcover editions, or return to
 /// the default cover.

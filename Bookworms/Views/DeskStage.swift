@@ -1,6 +1,11 @@
 import RealityKit
 import SwiftUI
-import UIKit
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 /// The setting every 3D view shares: a wooden desk at night under a warm lamp.
 ///

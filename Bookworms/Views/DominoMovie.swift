@@ -3,8 +3,13 @@ import Metal
 import RealityKit
 import SwiftUI
 import Synchronization
-import UIKit
 import os
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 /// The heading over a dominoes finale, in the share images' style: the time frame, and the
 /// books and their pages, such as "39 books · 18,683 pages". `scale` sizes it from the

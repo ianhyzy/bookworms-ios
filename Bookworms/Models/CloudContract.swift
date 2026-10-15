@@ -347,21 +347,23 @@ enum CompanionError: LocalizedError, Sendable {
     /// iCloud holds another design than the one the reader recolored, such as a redesign from
     /// another device.
     case designChanged
+    /// A third-party spine designer rejected the request or is not set up, with its reason.
+    case providerRejected(String)
 
     var errorDescription: String? {
         switch self {
-        case .noICloudAccount: "Sign in to iCloud on this iPhone."
-        case .iCloudRestricted: "iCloud access is restricted on this iPhone."
+        case .noICloudAccount: "Sign in to iCloud on this \(ThisDevice.name)."
+        case .iCloudRestricted: "iCloud access is restricted on this \(ThisDevice.name)."
         case .iCloudUnavailable: "iCloud is temporarily unavailable."
         case .invalidCloudData: "Bookworms iCloud data could not be read."
         case .unsupportedCloudData: "Update this app to read the iCloud data."
         case .waitingForLibrary: "Waiting for the Apple TV to upload its library to iCloud."
         case .noHardcoverLibrary:
-            "The Apple TV library has no Hardcover books. Connect Hardcover on the Apple TV or on this iPhone to design spines."
+            "The Apple TV library has no Hardcover books. Connect Hardcover on the Apple TV or on this \(ThisDevice.name) to design spines."
         case .bookNotInLibrary: "This book is not in the library Bookworms shows now."
         case .invalidCover: "A book cover could not be read securely."
         case .coverTooLarge: "A book cover exceeds the image limit."
-        case .modelUnavailable: "Private Cloud Compute is unavailable on this iPhone."
+        case .modelUnavailable: "Private Cloud Compute is unavailable on this \(ThisDevice.name)."
         case .quotaReached(let date):
             if let date {
                 "Today's Private Cloud Compute limit is reached. It resets at \(date.formatted(date: .omitted, time: .shortened))."
@@ -374,6 +376,7 @@ enum CompanionError: LocalizedError, Sendable {
         case .cloudConflict: "A concurrent iCloud update prevented saving."
         case .designChanged:
             "The spine was redesigned on another device, so these colors were not saved."
+        case .providerRejected(let reason): reason
         }
     }
 }

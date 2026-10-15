@@ -1,6 +1,11 @@
 import SwiftUI
-import UIKit
 import os
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 /// Files to offer in the system share sheet, such as share images or a video.
 ///
@@ -57,22 +62,24 @@ enum ShareOutcome: Equatable {
     /// The activity failed; the message says so in a few words.
     case failed(String)
 
-    /// The outcome of `UIActivityViewController`'s completion handler. An error that reports a
-    /// cancel counts as a cancel.
-    init(activity: UIActivity.ActivityType?, completed: Bool, error: (any Error)?) {
-        if let error, (error as? CocoaError)?.code != .userCancelled {
-            self = .failed(
-                activity == .saveToCameraRoll ? "Couldn't save to Photos" : "Couldn't share")
-        } else if !completed {
-            self = .cancelled
-        } else if activity == .saveToCameraRoll {
-            self = .savedToPhotos
-        } else if activity == .copyToPasteboard {
-            self = .copied
-        } else {
-            self = .shared
+    #if os(iOS)
+        /// The outcome of `UIActivityViewController`'s completion handler. An error that reports a
+        /// cancel counts as a cancel.
+        init(activity: UIActivity.ActivityType?, completed: Bool, error: (any Error)?) {
+            if let error, (error as? CocoaError)?.code != .userCancelled {
+                self = .failed(
+                    activity == .saveToCameraRoll ? "Couldn't save to Photos" : "Couldn't share")
+            } else if !completed {
+                self = .cancelled
+            } else if activity == .saveToCameraRoll {
+                self = .savedToPhotos
+            } else if activity == .copyToPasteboard {
+                self = .copied
+            } else {
+                self = .shared
+            }
         }
-    }
+    #endif
 
     /// The toast that reports the outcome, or `nil` for a cancel.
     var toast: Toast? {
@@ -101,39 +108,113 @@ extension View {
     }
 }
 
-private struct ShareSheetPresenter: UIViewControllerRepresentable {
-    @Binding var files: SharedFiles?
-    let onComplete: @MainActor (ShareOutcome) -> Void
-    @Environment(AppModel.self) private var model
+#if os(macOS)
+    /// Shows the sharing service picker below the toolbar's share button whenever `files` is
+    /// set.
+    private struct ShareSheetPresenter: NSViewRepresentable {
+        @Binding var files: SharedFiles?
+        let onComplete: @MainActor (ShareOutcome) -> Void
+        @Environment(AppModel.self) private var model
 
-    private static let log = Logger(subsystem: "gay.ian.Bookworms.iOS", category: "share")
+        private static let log = Logger(subsystem: "gay.ian.Bookworms.iOS", category: "share")
 
-    final class Coordinator {
-        /// The files the share sheet last opened with, so an update opens it once for them.
-        var presented: SharedFiles.ID?
-    }
+        @MainActor
+        final class Coordinator: NSObject, NSSharingServicePickerDelegate,
+            NSSharingServiceDelegate
+        {
+            /// The files the picker last opened with, so an update opens it once for them.
+            var presented: SharedFiles.ID?
+            var finish: (ShareOutcome) -> Void = { _ in }
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+            nonisolated func sharingServicePicker(
+                _ picker: NSSharingServicePicker, delegateFor service: NSSharingService
+            ) -> (any NSSharingServiceDelegate)? { self }
 
-    func makeUIViewController(context: Context) -> UIViewController { UIViewController() }
+            nonisolated func sharingServicePicker(
+                _ picker: NSSharingServicePicker, didChoose service: NSSharingService?
+            ) {
+                guard service == nil else { return }
+                MainActor.assumeIsolated { finish(.cancelled) }
+            }
 
-    func updateUIViewController(_ host: UIViewController, context: Context) {
-        guard let files, context.coordinator.presented != files.id else { return }
-        context.coordinator.presented = files.id
-        let sheet = UIActivityViewController(activityItems: files.urls, applicationActivities: nil)
-        sheet.popoverPresentationController?.sourceView = host.view
-        let binding = $files
-        let toasts = model.toasts
-        let onComplete = onComplete
-        sheet.completionWithItemsHandler = { activity, completed, _, error in
-            if let error { Self.log.error("Sharing failed: \(error)") }
-            let outcome = ShareOutcome(activity: activity, completed: completed, error: error)
-            MainActor.assumeIsolated {
+            nonisolated func sharingService(
+                _ service: NSSharingService, didShareItems items: [Any]
+            ) {
+                MainActor.assumeIsolated { finish(.shared) }
+            }
+
+            nonisolated func sharingService(
+                _ service: NSSharingService, didFailToShareItems items: [Any], error: any Error
+            ) {
+                Logger(subsystem: "gay.ian.Bookworms.iOS", category: "share")
+                    .error("Sharing failed: \(error)")
+                let outcome: ShareOutcome =
+                    (error as? CocoaError)?.code == .userCancelled
+                    ? .cancelled : .failed("Couldn't share")
+                MainActor.assumeIsolated { finish(outcome) }
+            }
+        }
+
+        func makeCoordinator() -> Coordinator { Coordinator() }
+
+        func makeNSView(context: Context) -> NSView { NSView() }
+
+        func updateNSView(_ host: NSView, context: Context) {
+            guard let files, context.coordinator.presented != files.id else { return }
+            context.coordinator.presented = files.id
+            let binding = $files
+            let toasts = model.toasts
+            let onComplete = onComplete
+            context.coordinator.finish = { outcome in
                 if let toast = outcome.toast { toasts.show(toast) }
                 binding.wrappedValue = nil
                 onComplete(outcome)
             }
+            let picker = NSSharingServicePicker(items: files.urls)
+            picker.delegate = context.coordinator
+            // The share buttons sit at the toolbar's trailing end, above this view's top
+            // trailing corner, so the picker drops down from there.
+            let anchor = CGRect(
+                x: host.bounds.maxX - 44, y: host.bounds.maxY - 2, width: 28, height: 2)
+            picker.show(relativeTo: anchor, of: host, preferredEdge: .minY)
         }
-        host.present(sheet, animated: true)
     }
-}
+#else
+    private struct ShareSheetPresenter: UIViewControllerRepresentable {
+        @Binding var files: SharedFiles?
+        let onComplete: @MainActor (ShareOutcome) -> Void
+        @Environment(AppModel.self) private var model
+
+        private static let log = Logger(subsystem: "gay.ian.Bookworms.iOS", category: "share")
+
+        final class Coordinator {
+            /// The files the share sheet last opened with, so an update opens it once for them.
+            var presented: SharedFiles.ID?
+        }
+
+        func makeCoordinator() -> Coordinator { Coordinator() }
+
+        func makeUIViewController(context: Context) -> UIViewController { UIViewController() }
+
+        func updateUIViewController(_ host: UIViewController, context: Context) {
+            guard let files, context.coordinator.presented != files.id else { return }
+            context.coordinator.presented = files.id
+            let sheet = UIActivityViewController(
+                activityItems: files.urls, applicationActivities: nil)
+            sheet.popoverPresentationController?.sourceView = host.view
+            let binding = $files
+            let toasts = model.toasts
+            let onComplete = onComplete
+            sheet.completionWithItemsHandler = { activity, completed, _, error in
+                if let error { Self.log.error("Sharing failed: \(error)") }
+                let outcome = ShareOutcome(activity: activity, completed: completed, error: error)
+                MainActor.assumeIsolated {
+                    if let toast = outcome.toast { toasts.show(toast) }
+                    binding.wrappedValue = nil
+                    onComplete(outcome)
+                }
+            }
+            host.present(sheet, animated: true)
+        }
+    }
+#endif

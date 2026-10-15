@@ -1,5 +1,10 @@
 import Foundation
-import UIKit
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 /// Serves cover images for display, from memory, then disk, then the network.
 ///

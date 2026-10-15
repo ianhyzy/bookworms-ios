@@ -308,7 +308,7 @@ final class HardcoverTests: XCTestCase {
     // MARK: - Keychain
 
     func testTokenStoreKeepsOneDeviceOnlyItem() throws {
-        let store = HardcoverTokenStore(service: "gay.ian.Bookworms.iOS.tests.\(UUID().uuidString)")
+        let store = KeychainSecret(service: "gay.ian.Bookworms.iOS.tests.\(UUID().uuidString)")
         defer { store.delete() }
         XCTAssertNil(store.read())
         try store.save("first-token")
@@ -346,8 +346,8 @@ final class HardcoverTests: XCTestCase {
     /// that only these tests use, and a library file path of the test's own, so no test touches
     /// the host app's cached library.
     @MainActor
-    private static func signedInStores() throws -> (HardcoverTokenStore, UserDefaults, URL) {
-        let tokens = HardcoverTokenStore(
+    private static func signedInStores() throws -> (KeychainSecret, UserDefaults, URL) {
+        let tokens = KeychainSecret(
             service: "gay.ian.Bookworms.iOS.tests.\(UUID().uuidString)")
         try tokens.save("fictional-token")
         let suite = "gay.ian.Bookworms.iOS.tests.HardcoverAccount"

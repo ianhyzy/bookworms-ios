@@ -1,6 +1,11 @@
 import NaturalLanguage
 import SwiftUI
-import UIKit
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 /// A share image layout.
 enum ShareTemplate: String, CaseIterable, Identifiable {
@@ -278,7 +283,7 @@ struct ShareCredit: View {
     nonisolated static let height: CGFloat = 40
 
     var body: some View {
-        Text("Created with Bookworms for iPhone")
+        Text("Created with Bookworms for \(ThisDevice.name)")
             .font(.system(size: 22, weight: .medium))
             .foregroundStyle(ShareStyle.cream.color.opacity(0.5))
             .shadow(color: .black.opacity(0.35), radius: 3)

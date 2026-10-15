@@ -75,8 +75,10 @@ enum LibraryStatus: Equatable {
                 note.map { "Apple TV library: \($0)" },
             ]
             .compactMap(\.self).joined(separator: "\n\n")
-        case .reconnect(let error): error ?? "Hardcover no longer accepts this iPhone's login."
-        case .failed(let error): error ?? "Your Hardcover library isn't on this iPhone yet."
+        case .reconnect(let error):
+            error ?? "Hardcover no longer accepts this \(ThisDevice.name)'s login."
+        case .failed(let error):
+            error ?? "Your Hardcover library isn't on this \(ThisDevice.name) yet."
         }
     }
 }

@@ -1,6 +1,11 @@
 import RealityKit
 import SwiftUI
-import UIKit
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
 
 /// The Bookworm's RealityKit content: the desk and its lamp (`DeskStage`), a block of books
 /// (`BookFactory`) laid out by `BookwormLayout`, and a cartoon worm that eats through them.

@@ -10,6 +10,41 @@ import XCTest
 final class GenerationTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_000_000)
 
+    func testProviderSchemaDropsKeysProvidersReject() throws {
+        let family = DynamicGenerationSchema(name: "family", anyOf: ["Lora", "EB Garamond"])
+        let root = DynamicGenerationSchema(
+            name: "Ranking",
+            properties: [
+                .init(
+                    name: "ranked",
+                    schema: DynamicGenerationSchema(
+                        arrayOf: family, minimumElements: 2, maximumElements: 2))
+            ])
+        let schema = try ProviderConversation.jsonSchema(
+            GenerationSchema(root: root, dependencies: []))
+        XCTAssertNil(schema["x-order"])
+        XCTAssertNil(schema["title"])
+        let ranked = try XCTUnwrap(
+            (schema["properties"] as? [String: Any])?["ranked"] as? [String: Any])
+        XCTAssertNil(ranked["maxItems"])
+        XCTAssertEqual(ranked["minItems"] as? Int, 1)
+        XCTAssertEqual(schema["required"] as? [String], ["ranked"])
+    }
+
+    func testProviderErrorsStopTheRunWhenEveryBookWouldFail() {
+        func failure(_ status: Int) -> CompanionError? {
+            BookAnalyzer.modelFailure(
+                ProviderError(provider: .anthropic, status: status, retryAfter: nil, message: "x"))
+        }
+        guard case .providerRejected = failure(401), case .providerRejected = failure(404),
+            case .modelBusy = failure(429), case .modelBusy = failure(503)
+        else { return XCTFail("Provider errors map to the wrong dispositions") }
+        guard
+            case .invalidDesign = BookAnalyzer.modelFailure(
+                ProviderError(provider: .openAI, status: nil, retryAfter: nil, message: "x"))
+        else { return XCTFail("An empty answer fails only the book") }
+    }
+
     func testModelErrorsMapToRunStopsOrBookFailures() {
         let reset = now.addingTimeInterval(3_600)
         let quota = PrivateCloudComputeLanguageModel.Error.quotaLimitReached(
@@ -186,7 +221,7 @@ final class GenerationTests: XCTestCase {
 
     func testBackgroundRunsLeaveQuotaHeadroomAndForegroundRunsUseIt() {
         func status(
-            available: Bool = true, reader: ModelStatus.CoverReader = .privateCloudCompute,
+            available: Bool = true, reader: ModelStatus.CoverReader = .designModel,
             quota: ModelStatus.Quota
         ) -> ModelStatus {
             ModelStatus(
