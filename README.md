@@ -369,14 +369,9 @@ The 3D views share their RealityKit pieces. `BookGeometry` builds each book's me
 2. Set up signing for `gay.ian.Bookworms.iOS` with the `iCloud.gay.ian.Bookworms` container, push notifications, and the managed Private Cloud Compute capability (`com.apple.developer.private-cloud-compute`). Request that capability for the team before signing a device build; Apple grants it to members of the App Store Small Business Program.
 3. Run `script/build_and_run.sh` to build, install, and launch on a Simulator.
 
-To build for the Mac, use the macOS destination. Signing a Mac build needs a macOS development profile for `gay.ian.Bookworms.iOS` with the same iCloud container and capabilities; the Mac uses `Bookworms/Bookworms-macOS.entitlements`, which adds the App Sandbox and outgoing connections:
+To test the Mac app with your iCloud library, run `script/run_mac.sh`. It builds an optimized app, signs it with the team's Apple Development certificate and the existing Xcode-managed "Mac Team Provisioning Profile: gay.ian.Bookworms.Mac", installs it as `~/Applications/Bookworms.app`, and opens it; Xcode's account is not needed. The profile grants the shared iCloud container and push but not the managed Private Cloud Compute capability, so the script uses `config/NoPCC-macOS.entitlements` and `NO_PCC`, as `script/install_on_device.sh` does for the iPhone: Apple's model reports itself unavailable, and a third-party model chosen in Settings designs spines. The Mac build uses the bundle ID `gay.ian.Bookworms.Mac`, so it replaces the menu bar companion from `../macos`. `script/run_mac.sh --preview` copies the private preview library into the app's container and reads it instead of iCloud.
 
-```sh
-xcodebuild -project Bookworms.xcodeproj -scheme Bookworms -derivedDataPath DerivedData \
-  -destination 'platform=macOS,arch=arm64' OTHER_SWIFT_FLAGS='-disable-sandbox' build
-```
-
-An unsigned Mac build cannot use iCloud. To check layouts without signing, add `CODE_SIGNING_ALLOWED=NO`, sign the app ad hoc with `codesign -s - --force`, and open it with `--args -BookwormsPreviewFolder <absolute path>`. Copy the preview folder outside `~/Documents` first, or macOS asks the unsigned app for access to Documents.
+The Mac's icon is `Bookworms/AppIconMac.icon`, an Icon Composer icon with the bookworms on one glass layer over a cream gradient; the iPhone keeps `AppIcon` in the asset catalog.
 
 To test on an iPhone before Apple grants the Private Cloud Compute capability, run `script/install_on_device.sh`. It signs an optimized build with `config/NoPCC.entitlements`, compiles it with `NO_PCC` so the app never creates the model, registers the iPhone with the team if needed, and installs it. Generation then reports Private Cloud Compute as unavailable; the Share, Library, and Desk tabs work with the iCloud or Hardcover library. A development-signed build reads the CloudKit Development environment, the same one development builds of the Apple TV app and the Mac companion use.
 

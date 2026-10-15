@@ -55,6 +55,8 @@ targets:
         CODE_SIGN_ENTITLEMENTS[sdk=macosx*]: Bookworms/Bookworms-macOS.entitlements
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.books
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # The Mac uses an Icon Composer icon, which macOS renders with Liquid Glass.
+        ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]: AppIconMac
   BookwormsTests:
     type: bundle.unit-test
     platform: iOS
