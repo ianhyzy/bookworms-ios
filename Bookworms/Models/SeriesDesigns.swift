@@ -43,6 +43,10 @@ enum SeriesDesigns {
 
     /// Returns whether another book may draw with `design`: never a blocked family, such as
     /// Impact or an italic.
+    ///
+    /// The check stands on its own and does not rely on library designs being remapped to
+    /// allowed faces when they load: the spine worker passes saved designs exactly as stored
+    /// (`SpineStore.savedDesign`), and the library views may run before that remapping exists.
     static func isUsableSource(_ design: SpineDesignV1) -> Bool {
         design.fontFamily.map(BookAnalyzer.allowsFamily) ?? true
     }
