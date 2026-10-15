@@ -145,7 +145,8 @@ struct RootView: View {
     /// `-BookwormsOfferedHardcover YES` skips the launch's Hardcover sheet for checks.
     private static let skipsHardcoverPrompt =
         (UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)[
-            "BookwormsOfferedHardcover"] as? String).map { ($0 as NSString).boolValue } ?? false
+            "BookwormsOfferedHardcover"] as? String)
+        .map { ($0 as NSString).boolValue } ?? false
 
     @Environment(AppModel.self) private var model
     @Environment(GenerationController.self) private var generation
