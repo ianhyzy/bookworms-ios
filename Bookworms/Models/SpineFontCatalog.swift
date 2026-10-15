@@ -187,3 +187,28 @@ enum SpineFontStyle: String, CaseIterable {
         }
     }
 }
+
+extension SpineFamily {
+    /// The family that replaces Impact in a saved design.
+    ///
+    /// Bebas Neue is a heavy condensed sans in Impact's role. Google Fonts serves it, and tvOS
+    /// ships it as a system font, so every Bookworms app uses the same replacement.
+    static let impactReplacement = SpineFamily.bebasNeue
+}
+
+extension SpineDesignV1 {
+    /// The design as readers show it: a family or PostScript name that the owner's type rules
+    /// block (`BookAnalyzer.allowsFamily`), such as Impact in a design another app saved, becomes
+    /// `SpineFamily.impactReplacement`.
+    ///
+    /// Only the in-memory copy changes, so the stored record and its wire format stay as written.
+    var withAllowedFont: SpineDesignV1 {
+        let names = [fontFamily, fontPostScriptName].compactMap { $0 }
+        guard !names.allSatisfy(BookAnalyzer.allowsFamily) else { return self }
+        var design = self
+        design.fontFamily = SpineFamily.impactReplacement.rawValue
+        design.fontPostScriptName = nil
+        design.instanceWeight = nil
+        return design
+    }
+}

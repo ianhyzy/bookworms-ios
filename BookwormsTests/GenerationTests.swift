@@ -316,6 +316,50 @@ final class GenerationTests: XCTestCase {
         XCTAssertTrue(BookAnalyzer.allowsFamily("EB Garamond"))
     }
 
+    /// The owner's standing rule: no spine ever uses Impact, in any spelling, from any source.
+    func testImpactCanNeverBeChosenOrRendered() throws {
+        for name in [
+            "Impact", "impact", "IMPACT", "Impact-Regular", "Impact Bold", "ImpactMT", " Impact ",
+        ] {
+            XCTAssertFalse(BookAnalyzer.allowsFamily(name), name)
+        }
+        let catalog = SpineFamily.allCases.map { $0.rawValue.lowercased() }
+        XCTAssertFalse(catalog.contains { $0.contains("impact") })
+        var generator = BookAnalyzer.SeededGenerator(seed: 1)
+        let offered = SpineFontStyle.allCases.flatMap {
+            BookAnalyzer.candidateFamilies(for: $0, generator: &generator)
+        }
+        XCTAssertFalse(offered.contains { $0.lowercased().contains("impact") })
+        XCTAssertTrue(BookAnalyzer.allowsFamily(SpineFamily.impactReplacement.rawValue))
+        XCTAssertEqual(SpineFamily.impactReplacement.style, .condensedSans)
+
+        // A design saved elsewhere that names Impact loads as the replacement.
+        let saved = Data(
+            """
+            {"version":1,"accountID":"account","bookID":5,"workItemHash":"\(String(repeating: "a", count: 64))",
+            "coverHash":"\(String(repeating: "b", count: 64))","generatorVersion":"tv-v1","generatedAt":0,
+            "backgroundHex":"#101010","foregroundHex":"#F4EEE2","accentHex":"#7A1F1F",
+            "typeface":"sans","weight":700,"uppercase":true,"fontFamily":"Impact",
+            "fontPostScriptName":"Impact","instanceWeight":400}
+            """
+            .utf8)
+        let design = try JSONDecoder().decode(SpineDesignV1.self, from: saved)
+        let book = CloudBook(
+            id: 5, title: "A Title", author: "An Author", coverURL: nil, detailCoverURL: nil,
+            genres: nil)
+        let loaded = try XCTUnwrap(
+            LibrarySnapshot.latestDesigns([design], accountID: "account", books: [book])[5])
+        XCTAssertEqual(loaded.fontFamily, "Bebas Neue")
+        XCTAssertNil(loaded.fontPostScriptName)
+        XCTAssertNil(loaded.instanceWeight)
+        XCTAssertEqual(loaded.backgroundHex, design.backgroundHex)
+        XCTAssertNoThrow(try loaded.validate())
+        let postScriptOnly = design.withFontFamily("Anton", postScriptName: "Impact-Regular")
+        XCTAssertEqual(postScriptOnly.withAllowedFont.fontFamily, "Bebas Neue")
+        let allowed = design.withFontFamily("Anton", postScriptName: "Anton-Regular")
+        XCTAssertEqual(allowed.withAllowedFont, allowed)
+    }
+
     func testDesignPromptCarriesBookDataButNotTheFontCatalog() {
         let book = CloudBook(
             id: 9, title: String(repeating: "T", count: 400), author: "An Author",
@@ -343,5 +387,14 @@ final class GenerationTests: XCTestCase {
         var generator = BookAnalyzer.SeededGenerator(seed: 1)
         let offered = BookAnalyzer.candidateFamilies(for: .decorative, generator: &generator)
         XCTAssertFalse(offered.contains("Shrikhand") || offered.contains("Bangers"))
+    }
+}
+
+extension SpineDesignV1 {
+    fileprivate func withFontFamily(_ family: String, postScriptName: String) -> SpineDesignV1 {
+        var design = self
+        design.fontFamily = family
+        design.fontPostScriptName = postScriptName
+        return design
     }
 }
