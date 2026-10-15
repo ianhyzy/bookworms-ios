@@ -17,7 +17,67 @@ enum SeriesDesigns {
     /// so a book in several series matches only through that one.
     static func matches(_ book: CloudBook, _ other: CloudBook) -> Bool {
         guard let series = book.seriesID, series == other.seriesID else { return false }
+        if let groups = subseries[series] {
+            // A book in no group, or a group of its own, keeps its own design.
+            guard let group = groups[titleKey(book.title)], group == groups[titleKey(other.title)]
+            else { return false }
+        }
         return !authors(of: book).isDisjoint(with: authors(of: other))
+    }
+
+    /// Groups within long series that Hardcover does not record, keyed by Hardcover series ID
+    /// and then by `titleKey(_:)`: each group shares a design instead of the whole series.
+    /// Books of a listed series that no group names keep their own designs.
+    ///
+    /// Discworld (series 1018) follows the owner's choice of the common reading-order groups.
+    /// The grouping is loose; adjust it here, and in the Apple TV app's copy of this table.
+    static let subseries: [Int: [String: String]] = [
+        1018: groups([
+            "Rincewind": [
+                "The Colour of Magic", "The Color of Magic", "The Light Fantastic", "Sourcery",
+                "Eric", "Faust Eric", "Interesting Times", "The Last Continent", "The Last Hero",
+                "Unseen Academicals",
+            ],
+            "Industrial Revolution": [
+                "Moving Pictures", "The Truth", "Monstrous Regiment", "Going Postal",
+                "Making Money", "Raising Steam",
+            ],
+            "City Watch": [
+                "Guards! Guards!", "Men at Arms", "Feet of Clay", "Jingo", "The Fifth Elephant",
+                "Night Watch", "Thud!", "Snuff", "Where's My Cow?", "The World of Poo",
+            ],
+            "Death": ["Mort", "Reaper Man", "Soul Music", "Hogfather", "Thief of Time"],
+            "Ancient Civilizations": ["Pyramids", "Small Gods"],
+            "Witches": [
+                "Equal Rites", "Wyrd Sisters", "Witches Abroad", "Lords and Ladies", "Maskerade",
+                "Carpe Jugulum", "Nanny Ogg's Cookbook",
+            ],
+            "Tiffany Aching": [
+                "The Wee Free Men", "A Hat Full of Sky", "Wintersmith", "I Shall Wear Midnight",
+                "The Shepherd's Crown",
+            ],
+            "Science of Discworld": [
+                "The Science of Discworld", "The Science of Discworld II",
+                "The Science of Discworld III", "The Science of Discworld IV",
+            ],
+        ])
+    ]
+
+    private static func groups(_ titles: [String: [String]]) -> [String: String] {
+        var keyed: [String: String] = [:]
+        for (group, members) in titles {
+            for title in members { keyed[titleKey(title)] = group }
+        }
+        return keyed
+    }
+
+    /// A title compared without case, diacritics, punctuation, or a subtitle after a colon, so
+    /// "Thud!" matches "THUD" and "The Science of Discworld II: The Globe" matches its group.
+    static func titleKey(_ title: String) -> String {
+        let main = title.split(separator: ":", maxSplits: 1).first.map(String.init) ?? title
+        return main.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .filter { $0.isLetter || $0.isNumber || $0 == " " }
+            .split(separator: " ").joined(separator: " ")
     }
 
     /// The book's authors, compared without case, diacritics, spaces, or punctuation. Libraries

@@ -188,6 +188,26 @@ final class SpineColorsTests: XCTestCase {
             SeriesDesigns.matches(seriesBook(8, series: nil), seriesBook(9, series: nil)))
     }
 
+    func testDiscworldBooksShareADesignOnlyWithinTheirGroup() {
+        func discworld(_ id: Int, _ title: String) -> CloudBook {
+            seriesBook(id, by: "Terry Pratchett", series: 1018, title: title)
+        }
+        let guards = discworld(1, "Guards! Guards!")
+        XCTAssertTrue(SeriesDesigns.matches(guards, discworld(2, "THUD")))
+        XCTAssertTrue(SeriesDesigns.matches(guards, discworld(3, "Night Watch: A Discworld Novel")))
+        XCTAssertFalse(SeriesDesigns.matches(guards, discworld(4, "Mort")))
+        XCTAssertTrue(
+            SeriesDesigns.matches(
+                discworld(5, "The Science of Discworld II: The Globe"),
+                discworld(6, "The Science of Discworld")))
+        // A book no group names keeps its own design.
+        let maurice = discworld(7, "The Amazing Maurice and His Educated Rodents")
+        XCTAssertFalse(SeriesDesigns.matches(maurice, discworld(8, "The Amazing Maurice")))
+        // Other series still match as a whole.
+        XCTAssertTrue(
+            SeriesDesigns.matches(seriesBook(9, title: "One"), seriesBook(10, title: "Two")))
+    }
+
     func testSeriesSourceRanksPositionThenFinishThenID() {
         // Book 1 ranks first but has no design; book 2's Impact design is not usable.
         let books = [
