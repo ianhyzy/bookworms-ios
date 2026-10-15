@@ -173,7 +173,7 @@ final class SocialTests: XCTestCase {
 
     @MainActor
     func testRefreshDropsUnfollowedAndBlockedReadersAndKeepsSnapshotOnFailure() async throws {
-        let url = Self.temporaryURL()
+        let url = temporaryURL()
         var saved = SocialSnapshot(owner: Self.owner)
         let gone = ReaderProfile(id: 99, username: "unfollowed_reader")
         saved.following = [gone]
@@ -198,7 +198,7 @@ final class SocialTests: XCTestCase {
 
         // A temporary failure keeps the snapshot; a denied login clears it. Each model reads its
         // own copy, since the first one writes its file in the background.
-        let failingURL = Self.temporaryURL()
+        let failingURL = temporaryURL()
         try JSONEncoder().encode(snapshot).write(to: failingURL)
         let failing = SocialModel(
             client: HardcoverClient(transport: { request in
@@ -208,7 +208,7 @@ final class SocialTests: XCTestCase {
         await failing.sync(token: "fictional", accountID: "1")
         XCTAssertEqual(failing.snapshot?.following.map(\.id), [11, 12])
         XCTAssertNotNil(failing.failure)
-        let deniedURL = Self.temporaryURL()
+        let deniedURL = temporaryURL()
         try JSONEncoder().encode(snapshot).write(to: deniedURL)
         let denied = SocialModel(
             client: HardcoverClient(transport: { request in
@@ -244,7 +244,7 @@ final class SocialTests: XCTestCase {
         // Reader 30 has no ratings; reader 40 has the fixture library.
         let model = SocialModel(
             client: HardcoverClient(transport: Self.router(replies, emptyLibraryFor: 30)),
-            cacheURL: Self.temporaryURL(), pause: .zero)
+            cacheURL: temporaryURL(), pause: .zero)
         let cases: [(String, ReaderLookupError)] = [
             ("not a name", .invalidUsername), ("@owner_reader", .yourself),
             ("nobody_here", .notFound("nobody_here")),
@@ -337,9 +337,11 @@ final class SocialTests: XCTestCase {
         }
     }
 
-    /// A file in the temporary folder that no other test uses.
-    private static func temporaryURL() -> URL {
-        URL.temporaryDirectory.appending(path: "social-\(UUID().uuidString).json")
+    /// A file in the temporary folder that no other test uses, removed when the test ends.
+    private func temporaryURL() -> URL {
+        let url = URL.temporaryDirectory.appending(path: "social-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
     }
 
     private static func respond(_ status: Int, _ body: String, to request: URLRequest)
