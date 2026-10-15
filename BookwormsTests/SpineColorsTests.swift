@@ -213,6 +213,22 @@ final class SpineColorsTests: XCTestCase {
             [11, 9, 10, 12])
     }
 
+    func testSeriesSourcesDoNotDependOnBookOrder() {
+        // Book 2 shares an author with books 1 and 3, which share none: book 3 draws book 2's
+        // design while book 2 draws book 1's, in any order.
+        let books = [
+            seriesBook(1, by: "Ann Author", position: 1),
+            seriesBook(2, by: "Ann Author, Co Writer", position: 2),
+            seriesBook(3, by: "Co Writer", position: 3),
+        ]
+        let designs = [1: design(for: 1), 2: design(for: 2), 3: design(for: 3)]
+        for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+            XCTAssertEqual(
+                SeriesDesigns.sources(books: order.map { books[$0] }, designs: designs),
+                [1: 1, 2: 1, 3: 2], "\(order)")
+        }
+    }
+
     func testSeriesBookKeepsItsOwnDesignWhenTheSourceFontLacksGlyphs() throws {
         let face = FontFace(
             descriptor: CTFontDescriptorCreateWithNameAndSize("Helvetica" as CFString, 12),
