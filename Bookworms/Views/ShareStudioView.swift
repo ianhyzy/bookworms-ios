@@ -216,8 +216,8 @@ struct ShareStudioView: View {
 
     /// The preview above the settings in a compact width; in a regular width, such as on the
     /// Mac, the preview fills the window beside a column of settings. The image's size and cover
-    /// style sit right below the preview, then the choice of templates, above everything it
-    /// changes.
+    /// style sit right below the preview, then **My reading** / **With friends**, which chooses
+    /// the templates listed below it.
     @ViewBuilder
     private func form(isPending: Bool, hasNoBooks: Bool) -> some View {
         Group {
@@ -243,7 +243,9 @@ struct ShareStudioView: View {
                         imageRow
                             .listRowBackground(Color.clear)
                             .listRowSeparator(.hidden)
-                        modePicker.listRowBackground(Color.clear)
+                        modePicker
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
                     }
                     settings(hasNoBooks: hasNoBooks)
                 }
@@ -274,9 +276,13 @@ struct ShareStudioView: View {
         .pickerStyle(.segmented)
     }
 
-    /// The image's size, and beside it whether covers draw as 3D books or flat.
+    /// The image's size, and beside it whether covers draw as 3D books or flat. At accessibility
+    /// text sizes the button moves below the picker, which then keeps the row's whole width.
     private var imageRow: some View {
-        HStack(spacing: 12) {
+        let layout =
+            dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(spacing: 12)) : AnyLayout(HStackLayout(spacing: 12))
+        return layout {
             Picker("Size", selection: $aspect) {
                 ForEach(ShareAspect.allCases) { Text($0.title).tag($0) }
             }
@@ -293,10 +299,15 @@ struct ShareStudioView: View {
         } set: {
             coverStyle = $0 ? .threeD : .flat
         }
+        // Year in Books draws covers only for its records, which appear when they fit.
+        let help =
+            template == .yearInBooks
+            ? "Draws the records' covers as 3D books when they fit" : "Draws covers as 3D books"
         return Toggle("3D books", systemImage: "view.3d", isOn: isOn)
             .toggleStyle(.button)
             .labelStyle(.iconOnly)
-            .help("Draw covers as 3D books")
+            .help(help)
+            .accessibilityHint(help)
             .disabled(!template.hasCoverStyle || (template == .yearInBooks && aspect == .square))
     }
 
@@ -579,8 +590,11 @@ struct ShareStudioView: View {
     }
 
     private var templateGrid: some View {
-        LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 6
+        // Rows of three, or of four where three would leave a template alone on the last row.
+        let columns = mode.templates.count % 3 == 1 ? 4 : 3
+        return LazyVGrid(
+            columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: columns),
+            spacing: 6
         ) {
             ForEach(mode.templates) { option in
                 let isSelected = option == template
