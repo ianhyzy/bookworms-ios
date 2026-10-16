@@ -407,6 +407,11 @@ final class GenerationTests: XCTestCase {
             ("Dancing Script", "DancingScript-Bold", "Kalam"),
             ("Great Vibes", "GreatVibes-Regular", "Caveat"),
             ("Pacifico", nil, "Permanent Marker"),
+            // A PostScript name alone, as an Apple TV look saves it, shows its family's stand-in.
+            (nil, "DancingScript-Bold", "Kalam"),
+            (nil, "GreatVibes-Regular", "Caveat"),
+            (nil, "EBGaramond-Italic", "EB Garamond"),
+            (nil, "Georgia-Italic", nil),
         ]
         for (family, postScriptName, replacement) in expected {
             let design = loaded(family, postScriptName)
