@@ -7,7 +7,7 @@ The app targets iOS 27 on iPhone and macOS 27 on Apple silicon Macs (see [On the
 - **From Hardcover.** Sign in to Hardcover on the iPhone, and the app reads your Hardcover library, including your reviews. It works without an Apple TV, and it saves the library to your private iCloud database, so your Apple devices download it from Hardcover about once a day between them. See [Hardcover sign-in](#hardcover-sign-in).
 - **From iCloud.** Without a sign-in, the app reads the newest Hardcover library that your Apple devices saved to the private iCloud container `iCloud.gay.ian.Bookworms`: a signed-in iPhone's or Mac's, or the Apple TV app's, which needs **iCloud storage** turned on in the Apple TV app.
 
-Either way, designs are saved to that iCloud container, where the Apple TV picks them up. Until there is a library, the **Share**, **Library**, and **Desk** tabs explain both ways to get one and offer **Connect Hardcover** (see [No library yet](#no-library-yet)).
+Either way, designs are saved to that iCloud container, where the Apple TV picks them up. Until there is a library, the **Share**, **Library**, and **Desk** tabs explain how to get one and offer **Connect Hardcover** (see [No library yet](#no-library-yet)).
 
 ## Features
 
@@ -92,12 +92,12 @@ While signed in:
 
 Without a library, the **Share**, **Library**, and **Desk** tabs say why, from the Hardcover sign-in and the last load (`LibraryStatus`):
 
-- **Signed out:** **No library yet** explains both ways to get one: connect Hardcover on this iPhone, or turn on **iCloud storage** in the Bookworms app on the Apple TV. Below them, it shows any error from loading the Apple TV's library, such as a missing iCloud account, after **Apple TV library:**. It offers **Connect Hardcover**, which opens the Hardcover sheet, and **Try again**, which reloads.
+- **Signed out:** **No library yet** explains how to get one: connect Hardcover on this iPhone or on another of your Apple devices, or turn on **iCloud storage** in the Bookworms app on the Apple TV. Below them, it shows any error from loading the iCloud library, such as a missing iCloud account, after **iCloud library:**. It offers **Connect Hardcover**, which opens the Hardcover sheet, and **Try again**, which reloads.
 - **Signed in, downloading:** a progress indicator says the Hardcover library is downloading.
 - **Signed in, download failed:** the error, such as Hardcover being unavailable, with **Try again**.
 - **Signed in, login rejected:** **Reconnect Hardcover** with the error and **Reconnect**, which opens the Hardcover sheet and starts a sign-in, or shows the code of a sign-in already in progress.
 
-The sheet stays open when the library arrives. Preview mode ignores the sign-in, so it offers only **Try again**. A library without books says that books appear after the Apple TV's next sync, or after the next sync with Hardcover when signed in.
+The sheet stays open when the library arrives. Preview mode ignores the sign-in, so it offers only **Try again**. A library without books says that books appear after one of your Apple devices next syncs with Hardcover, or after the next sync with Hardcover when signed in.
 
 ### Spine design model
 
@@ -408,7 +408,7 @@ The **Share** tab renders 1080-pixel-wide PNGs in Story (9:16), Portrait (4:5), 
 | Spine Spectrum | Every book finished in the frame as a stripe of its spine color, in reading order. A lifetime marks where each year starts. It shows no titles. |
 | Desk | The frame's finished books spread front cover up on the wooden table under the frame's name and book count, drawn as in [Share the desk](#share-the-desk). Up to 150 books show. The preview shows **Dropping books** while covers load and the books are laid out, which takes a few seconds. **Video** in its options films the same books falling into place (see [Desk video](#desk-video)). |
 | Just Finished | One book with your rating and its format, finish date, and length. |
-| Review | Your review of one book under its cover, title, and rating. A long review shows as an excerpt that ends with an ellipsis, and the text takes the largest size that fits. Only books with a review are offered. The Apple TV library carries no reviews, so without the iPhone's own Hardcover sign-in the template says so and offers **Connect Hardcover**. |
+| Review | Your review of one book under its cover, title, and rating. A long review shows as an excerpt that ends with an ellipsis, and the text takes the largest size that fits. Only books with a review are offered. Without the iPhone's own Hardcover sign-in, the template uses the reviews in the iCloud library, which a signed-in iPhone or Mac, or a current Apple TV build, saves there. When that library has none, the template says so and offers **Connect Hardcover**. |
 | Currently Reading | A book you are reading, with its progress and its start date when known. A reread shows its new start date, not its last finish. |
 | Taste Match | **With friends** only. Both readers' Hardcover photos (or initials), first names, the match score with a playful name for it (from "Reading twins" at 90 or more down to "Opposite shelves" below 35), how many books you both rated, up to three books you both rated 4 stars or more no more than half a star apart, and the books whose ratings are at least 1.5 stars apart, widest first, each with both ratings and a label such as "Friendship on the line" for 3 stars or more: two on Story, one on Portrait and Square. Without such books, it says "Not a single fight. Suspicious." It has no time frame. |
 | Book Swap | **With friends** only. "Read this next" picks both ways: up to three books you rated 4 stars or more that the other reader never shelved, with your stars, and up to three they rated 4 stars or more that you never shelved, with theirs, highest rated first, then most recently finished. A side without picks says so. It has no time frame. |

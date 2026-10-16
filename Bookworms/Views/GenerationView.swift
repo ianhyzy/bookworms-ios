@@ -222,9 +222,9 @@ struct GenerationView: View {
         return account.isSignedIn ? "person.crop.circle.fill" : "person.crop.circle"
     }
 
-    /// The library's source: this iPhone's Hardcover sign-in, or the Apple TV's iCloud upload.
+    /// The library's source: this iPhone's Hardcover sign-in, or the archive's library in iCloud.
     ///
-    /// A signed-in iPhone never shows the Apple TV's library (see `CloudSpineStore`), so the
+    /// A signed-in iPhone never shows the archive's library (see `CloudSpineStore`), so the
     /// sign-in decides the label. Load and sync errors show even while an older copy is shown.
     @ViewBuilder private var librarySource: some View {
         let account = model.account
@@ -238,7 +238,7 @@ struct GenerationView: View {
                 Text(
                     fromHardcover
                         ? "Loading your Hardcover library."
-                        : "Waiting for the Apple TV to upload its library to iCloud.")
+                        : "Waiting for one of your Apple devices to save a library to iCloud.")
             }
             if let error = model.loadError {
                 Label(error, systemImage: "exclamationmark.triangle")
@@ -254,7 +254,7 @@ struct GenerationView: View {
                 Button("Connect Hardcover instead") { showsAccount = true }
             }
         } header: {
-            Text(fromHardcover ? "Hardcover" : "Apple TV")
+            Text(fromHardcover ? "Hardcover" : "iCloud")
         } footer: {
             if model.isPreview {
                 Text("Preview mode reads a local library. Designs stay on this \(ThisDevice.name).")

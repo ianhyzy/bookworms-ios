@@ -387,8 +387,8 @@ struct ShareStudioView: View {
             } description: {
                 Text(empty.message)
             } actions: {
-                // The Apple TV's library has no reviews and no friends; the iPhone's Hardcover
-                // sign-in adds both.
+                // The iCloud library may carry no reviews and never carries friends; the device's
+                // own Hardcover sign-in adds both.
                 let needsHardcover =
                     mode == .friends ? !model.canCompare : template == .review && !usesHardcover
                 if needsHardcover && !model.isPreview {
@@ -508,14 +508,16 @@ struct ShareStudioView: View {
         let frame = shownFrame
         let suffix = frame == .lifetime ? "" : " in \(frame.title)"
         let nextSync =
-            usesHardcover ? "after the next sync with Hardcover" : "after the Apple TV syncs"
+            usesHardcover
+            ? "after the next sync with Hardcover"
+            : "after one of your Apple devices syncs with Hardcover"
         switch template {
         case .review where !library.contains { $0.reviewText != nil }:
             return (
                 "No reviews yet",
                 usesHardcover
                     ? "Reviews you write on Hardcover appear here \(nextSync)."
-                    : "The Apple TV's library has no reviews. Connect Hardcover on this \(ThisDevice.name) to share yours."
+                    : "This iCloud library has no reviews. Connect Hardcover on this \(ThisDevice.name) to share yours."
             )
         case .review:
             return ("No reviews\(suffix)", "Choose another time frame to share a review.")

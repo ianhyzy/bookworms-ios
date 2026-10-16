@@ -77,8 +77,8 @@ final class HardcoverAccount {
     /// The signed-in account's ID, or `nil` when signed out. Readable from any isolation.
     ///
     /// `CloudSpineStore` chooses the library source from this rather than from the library
-    /// cache, which iOS may evict, so a signed-in iPhone never falls back to the Apple TV
-    /// archive, which may belong to another account.
+    /// cache, which iOS may evict, so a signed-in iPhone never falls back to the iCloud
+    /// archive's newest library, which may belong to another account.
     nonisolated static var signedInAccountID: String? {
         UserDefaults.standard.data(forKey: summaryKey)
             .flatMap { try? JSONDecoder().decode(Summary.self, from: $0) }?

@@ -193,7 +193,7 @@ final class AppModel {
     /// When signed in to Hardcover, first brings the account's library up to date from iCloud or
     /// Hardcover (`HardcoverAccount.syncIfStale()`); a failed download keeps the copy on this
     /// device and is reported.
-    /// No library (an iCloud account without an Apple TV upload, or a sign-in without a
+    /// No library (an iCloud account without a saved library, or a sign-in without a
     /// downloaded copy) clears the shown and cached library, and so does a missing iCloud
     /// account when signed out, so another account's reading history never stays visible.
     /// Other errors keep the shown library and report the error. When signed in without that
@@ -244,7 +244,7 @@ final class AppModel {
             }
         } catch CompanionError.noICloudAccount, CompanionError.iCloudRestricted {
             clearLibrary()
-            loadError = "Sign in to iCloud with the account your Apple TV uses."
+            loadError = "Sign in to iCloud with the account your other Apple devices use."
             lastReload = .now
             needsReload = false
         } catch {
