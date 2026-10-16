@@ -260,7 +260,7 @@ struct GenerationView: View {
                 Text("Preview mode reads a local library. Designs stay on this \(ThisDevice.name).")
             } else if fromHardcover {
                 Text(
-                    "Your books come from your Hardcover account on this \(ThisDevice.name). When your Apple TV lists books to design, Bookworms designs those instead."
+                    "Your books come from your Hardcover account on this \(ThisDevice.name). When your Apple TV lists books of another Hardcover account to design, Bookworms designs those instead."
                 )
             }
         }
