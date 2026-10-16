@@ -421,7 +421,10 @@ enum ShareStyle {
     /// " — ". When the text before it is the series name, the form drops that prefix instead,
     /// so "Star Wars: Thrawn" in the series "Star Wars" becomes "Thrawn".
     static func titles(_ book: CloudBook) -> [String] {
-        let series = book.seriesName?.lowercased()
+        // An Apple TV archive can carry an empty or padded name, and an empty
+        // prefix would match every parenthetical.
+        let series = book.seriesName.map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            .flatMap { $0.isEmpty ? nil : $0 }
         var title = book.title.trimmingCharacters(in: .whitespaces)
         if let tag = title.firstMatch(of: /\s*\(([^()]*)\)$/),
             tag.range.lowerBound > title.startIndex

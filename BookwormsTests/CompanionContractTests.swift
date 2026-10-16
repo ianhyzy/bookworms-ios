@@ -183,7 +183,7 @@ final class CompanionContractTests: XCTestCase {
         XCTAssertEqual(
             CloudContract.workItemHash(accountID: "42", book: book),
             "386ce6995b77bb7377a199ec8f0b506e04fb5d0c14b995b6e8287b5bd65ff6ee")
-        // The iPhone's series name is not part of the shared contract.
+        // The series name is not part of the work-item hash.
         var named = book
         named.seriesName = "Dune Saga"
         XCTAssertEqual(
