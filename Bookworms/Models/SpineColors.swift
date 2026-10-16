@@ -104,7 +104,9 @@ extension SpineDesignV1 {
     /// `generatedAt`. A design with the generator's colors is kept while both hashes match and it
     /// comes from this generator or the book draws a series look. A look can come from another
     /// generator, such as the Apple TV's, and redesigning a book that draws it changes nothing on
-    /// the shelf.
+    /// the shelf. A build with Private Cloud Compute also redesigns a design the on-device model
+    /// made in a `NO_PCC` test build (`isOnDeviceDesign`), so it doesn't keep the weaker model's
+    /// choices once the stronger one is available.
     func action(
         workItemHash: String, coverHash: String, readerChoseCover: Bool,
         drawsSeriesLook: Bool = false
@@ -118,8 +120,21 @@ extension SpineDesignV1 {
                     workItemHash: workItemHash, coverHash: coverHash, colors: colors,
                     provenance: provenance))
         }
-        let isKept = generatorVersion == CloudContract.generatorVersion || drawsSeriesLook
+        #if NO_PCC
+            let replacesOnDeviceDesign = false
+        #else
+            let replacesOnDeviceDesign = isOnDeviceDesign
+        #endif
+        let isKept =
+            (generatorVersion == CloudContract.generatorVersion && !replacesOnDeviceDesign)
+            || drawsSeriesLook
         return isCurrent && isKept ? .keep : .redesign
+    }
+
+    /// Whether the on-device model made this design, in a `NO_PCC` test build: its provenance
+    /// has the `model:apple/on-device` token.
+    var isOnDeviceDesign: Bool {
+        provenance?.split(separator: " ").contains("model:apple/on-device") == true
     }
 
     private func rebuilt(
