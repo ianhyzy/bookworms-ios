@@ -10,7 +10,8 @@ import SwiftUI
 #endif
 
 /// The Hardcover account sheet: why to connect, the device-code sign-in, and the signed-in
-/// account with **Sync now** and **Sign out**.
+/// account with **Sync now** and **Sign out**. It is the one place that shows when the library
+/// last synced and why it failed to load, from Hardcover or, without a sign-in, from the Apple TV.
 ///
 /// Hardcover's approval page opens in Safari over this sheet, with the code already copied, and
 /// closes when polling sees the approval. The device flow has no redirect back to the app, which is
@@ -34,6 +35,10 @@ struct HardcoverAccountView: View {
                     signedIn
                 } else {
                     signedOut
+                }
+                // Preview mode ignores the sign-in.
+                if model.isPreview || (account.signIn == nil && !account.isSignedIn) {
+                    libraryWithoutSignIn
                 }
             }
             .navigationTitle("Hardcover")
@@ -106,6 +111,30 @@ struct HardcoverAccountView: View {
             Text(
                 "Your Hardcover login stays in this \(ThisDevice.name)'s keychain. Bookworms sends it only to Hardcover and never syncs it."
             )
+        }
+    }
+
+    /// The library shown without a Hardcover sign-in: the Apple TV's iCloud upload, or in
+    /// preview mode the local folder. Load errors show even while an older copy shows.
+    private var libraryWithoutSignIn: some View {
+        Section {
+            if let library = model.library {
+                LabeledContent(
+                    "Last synced",
+                    value: library.syncedAt.formatted(.relative(presentation: .named)))
+            } else if model.loadError == nil, !model.isPreview {
+                Text("Waiting for the Apple TV to upload its library to iCloud.")
+            }
+            if let error = model.loadError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text(model.isPreview ? "Preview library" : "Apple TV library")
+        } footer: {
+            if model.isPreview {
+                Text("Preview mode reads a local library. Designs stay on this \(ThisDevice.name).")
+            }
         }
     }
 
@@ -183,7 +212,8 @@ struct HardcoverAccountView: View {
                             ?? "Not yet")
                 }
             }
-            if let error = account.syncError {
+            // A design load from iCloud can fail while the Hardcover sync works.
+            if let error = account.syncError ?? model.loadError {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.secondary)
             }
