@@ -96,16 +96,15 @@ actor CloudSpineStore: SpineStore {
             && worklist.bookIDs.contains(bookID)
     }
 
-    func save(_ design: SpineDesignV1) async throws {
+    func save(_ design: SpineDesignV1, replacing: Bool) async throws {
         try await write(design) { existing in
-            // Another run already saved this work from this generator, no earlier than this
-            // design. A newer design of the same work, such as a redesign the reader asked
-            // for, replaces it.
+            // Another run already saved this work from this generator, so the first design
+            // saved stays; only a newer redesign the reader asked for replaces it.
             if let existing, existing.accountID == design.accountID,
                 existing.bookID == design.bookID, existing.workItemHash == design.workItemHash,
                 existing.coverHash == design.coverHash,
                 existing.generatorVersion == design.generatorVersion,
-                existing.generatedAt >= design.generatedAt
+                !replacing || existing.generatedAt >= design.generatedAt
             {
                 return nil
             }

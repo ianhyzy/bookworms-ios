@@ -18,8 +18,10 @@ protocol SpineStore: Sendable {
     /// so a stale result is not saved after the Apple TV changed accounts or removed the book, or
     /// the reader picked another cover.
     func isStillCurrent(_ context: WorkContext, book: CloudBook) async throws -> Bool
-    /// Saves `design` unless an equal or newer design for the same work already exists.
-    func save(_ design: SpineDesignV1) async throws
+    /// Saves `design` unless a design of the same work from the same generator already exists,
+    /// such as one another device's run saved first. With `replacing`, for a redesign the reader
+    /// asked for, `design` replaces such a design unless that design is no older.
+    func save(_ design: SpineDesignV1, replacing: Bool) async throws
     /// Saves `design`'s colors to the saved design that it recolors (see
     /// `SpineDesignV1.isSameDesign(as:)`), keeping the saved font and every other field. Throws
     /// `CompanionError.designChanged` when the saved design is another one.
@@ -50,6 +52,13 @@ protocol SpineStore: Sendable {
     func loadLibrary() async throws -> LibrarySnapshot?
     /// Subscribes to worklist changes so a silent push can schedule generation.
     func installWorklistSubscription() async throws
+}
+
+extension SpineStore {
+    /// Saves `design` unless a design of the same work from the same generator already exists.
+    func save(_ design: SpineDesignV1) async throws {
+        try await save(design, replacing: false)
+    }
 }
 
 /// Where a generation run finds its account and books.
@@ -126,7 +135,7 @@ actor LocalSpineStore: SpineStore {
             && current.chosenCoverURL == book.chosenCoverURL
     }
 
-    func save(_ design: SpineDesignV1) async throws {
+    func save(_ design: SpineDesignV1, replacing: Bool) async throws {
         try design.validate()
         // Simulator runs exercise the real generator against a local folder; keep the newest.
         var all = try designs()

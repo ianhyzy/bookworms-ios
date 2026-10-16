@@ -227,7 +227,7 @@ actor SpineWorker {
                         guard try await store.isStillCurrent(context, book: book) else {
                             return true
                         }
-                        try await store.save(made.design)
+                        try await store.save(made.design, replacing: redesigned != nil)
                         continuation.yield(.saved(made.design))
                         bookDesigns[book.id] = made.design
                         checkedBooks.insert(book.id)
