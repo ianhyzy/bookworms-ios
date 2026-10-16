@@ -117,8 +117,9 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
     var format: String? = nil
     var seriesID: Int? = nil
     var seriesPosition: Double? = nil
-    /// The name of the `seriesID` series. The iPhone's own Hardcover download carries it; the
-    /// Apple TV archive does not, so its books have none.
+    /// The name of the `seriesID` series, from the iPhone's own Hardcover download or the Apple
+    /// TV archive. An archive the Apple TV saved before it fetched series names leaves it out
+    /// until the TV syncs again.
     var seriesName: String? = nil
     var pages: Int? = nil
     /// The finish date as `yyyy-MM-dd`.
