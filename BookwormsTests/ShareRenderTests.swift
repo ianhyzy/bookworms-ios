@@ -162,6 +162,39 @@ final class ShareRenderTests: XCTestCase {
         }
     }
 
+    /// Top Five's fan reaches as far above its middle as below it, so the space over the books
+    /// matches the space under them, and its turned books stay inside its width.
+    @MainActor
+    func testTopFiveFanIsCenteredInItsSpace() {
+        let size = CGSize(width: 920, height: 560)
+        for style in [ShareCoverStyle.threeD, .flat] {
+            for count in [1, 3, 5] {
+                let aspects = (0..<count).map { 0.6 + CGFloat($0) * 0.04 }
+                let jitters = (0..<count).map { Double($0) / 5 - 0.4 }
+                let cards = TopFiveCard.fan(
+                    aspects: aspects, jitters: jitters, style: style, in: size)
+                let extents = zip(cards, aspects)
+                    .map { card, aspect in
+                        let angle = abs(card.turn) * .pi / 180
+                        let width = card.height * aspect
+                        let half = CGSize(
+                            width: (width * cos(angle) + card.height * sin(angle)) / 2,
+                            height: (width * sin(angle) + card.height * cos(angle)) / 2)
+                        return CGRect(
+                            x: card.offset.x - half.width, y: card.offset.y - half.height,
+                            width: half.width * 2, height: half.height * 2)
+                    }
+                let top = extents.map(\.minY).min() ?? 0
+                let bottom = extents.map(\.maxY).max() ?? 0
+                XCTAssertEqual(-top, bottom, accuracy: 0.01, "\(count) \(style) books")
+                XCTAssertGreaterThanOrEqual(
+                    extents.map(\.minX).min() ?? 0, -size.width / 2, "\(count) \(style) books")
+                XCTAssertLessThanOrEqual(
+                    extents.map(\.maxX).max() ?? 0, size.width / 2, "\(count) \(style) books")
+            }
+        }
+    }
+
     /// The Pile template offers every time frame kind, draws the frame's finished books newest
     /// first so they land on top, and heads the image with the frame's name.
     func testPileTemplateDrawsEachTimeFrameNewestFirst() {

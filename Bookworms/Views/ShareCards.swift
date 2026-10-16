@@ -169,52 +169,66 @@ struct TopFiveCard: View {
         return input.frame == .lifetime ? "My all-time \(top)" : "My \(top) of \(input.period)"
     }
 
-    private func fan(_ books: [CloudBook]) -> some View {
+    /// A book's place in the fan: its offset from the fan's center, its height, and its turn in
+    /// degrees.
+    struct FanCard {
+        let offset: CGPoint
+        let height: CGFloat
+        let turn: Double
+    }
+
+    /// Lays out the fan in `size` for books with the width-to-height `aspects`, by rank, each
+    /// turned a little by its jitter (-0.5...0.5). Outer books sit lower and turn further, as a
+    /// hand of cards curves, and the fan reaches as far above its middle as below it.
+    static func fan(
+        aspects: [CGFloat], jitters: [Double], style: ShareCoverStyle, in size: CGSize
+    ) -> [FanCard] {
         // Centers the fan when fewer than five books leave it lopsided.
-        let used = Self.slots.prefix(books.count)
+        let used = slots.prefix(aspects.count)
         let middle = used.reduce(0, +) / CGFloat(max(1, used.count))
+        // A lone book takes the fan's space, sized as a featured book's hero is.
+        let leadHeight =
+            aspects.count == 1
+            ? min(size.height * 0.88, size.width * 0.86 / aspects[0])
+            : min(size.height * 0.78, size.width * 0.55)
+        // An outer book, at 0.82 of the lead height and turned about 15 degrees, reaches up to
+        // 0.47 lead heights from its center with the widest 3D book, or 0.5 with the widest flat
+        // cover (`ShareCover.aspect`). This spacing keeps the outermost slot (2) inside the
+        // fan's width, and so in the gutters.
+        let reach: CGFloat = style == .flat ? 0.5 : 0.47
+        let spacing = min(size.width * 0.16, (size.width / 2 - reach * leadHeight) / 2)
+        let cards = aspects.indices.map { index in
+            let slot = slots[index] - middle
+            let height = leadHeight * (index == 0 ? 1 : 0.82)
+            let turn = Double(slot) * 7 + jitters[index] * 2
+            let angle = abs(turn) * .pi / 180
+            return (
+                x: slot * spacing, height: height, turn: turn,
+                drop: slot * slot * 14 + (index == 0 ? 0 : leadHeight * 0.06),
+                // How far the turned book reaches above and below its center.
+                half: (height * aspects[index] * sin(angle) + height * cos(angle)) / 2
+            )
+        }
+        // The drops push the fan's lowest corners down, so the fan rises by half the difference
+        // between the books' reach below and above the middle. That leaves as much room under
+        // the books, above the ranked list, as over them.
+        let below = cards.map { $0.half + $0.drop }.max() ?? 0
+        let above = cards.map { $0.half - $0.drop }.max() ?? 0
+        let lift = (below - above) / 2
+        return cards.map {
+            FanCard(offset: CGPoint(x: $0.x, y: $0.drop - lift), height: $0.height, turn: $0.turn)
+        }
+    }
+
+    private func fan(_ books: [CloudBook]) -> some View {
+        let jitters = books.map { ShareStyle.unit(input.seed, $0.id, 6) - 0.5 }
+        let aspects = books.map {
+            ShareCover.aspect(of: input.covers[$0.id], style: input.coverStyle)
+        }
         return GeometryReader { proxy in
             let size = proxy.size
-            // A lone book takes the fan's space, sized as a featured book's hero is.
-            let leadHeight =
-                books.count == 1
-                ? min(
-                    size.height * 0.88,
-                    size.width * 0.86
-                        / ShareCover.aspect(of: input.covers[books[0].id], style: input.coverStyle))
-                : min(size.height * 0.78, size.width * 0.55)
-            // An outer book, at 0.82 of the lead height and turned about 15 degrees, reaches up
-            // to 0.47 lead heights from its center with the widest 3D book, or 0.5 with the
-            // widest flat cover (`ShareCover.aspect`). This spacing keeps the outermost slot (2)
-            // inside the fan's width, and so in the gutters.
-            let reach = input.coverStyle == .flat ? 0.5 : 0.47
-            let spacing = min(size.width * 0.16, (size.width / 2 - reach * leadHeight) / 2)
-            // Each book's slot, height, turn in degrees, and drop below the fan's middle: outer
-            // books sit lower and turn further, as a hand of cards curves.
-            let cards = books.enumerated()
-                .map { index, book in
-                    let slot = Self.slots[index] - middle
-                    let jitter = ShareStyle.unit(input.seed, book.id, 6) - 0.5
-                    return (
-                        slot: slot, jitter: jitter, height: leadHeight * (index == 0 ? 1 : 0.82),
-                        turn: Double(slot) * 7 + jitter * 2,
-                        drop: slot * slot * 14 + (index == 0 ? 0 : leadHeight * 0.06)
-                    )
-                }
-            // The drops push the fan's lowest corners down, so the fan rises by half the
-            // difference between the turned books' reach below and above the middle. That leaves
-            // as much room under the books, above the ranked list, as over them.
-            let reaches = zip(books, cards)
-                .map { book, card in
-                    let width =
-                        card.height
-                        * ShareCover.aspect(of: input.covers[book.id], style: input.coverStyle)
-                    let turn = abs(card.turn) * .pi / 180
-                    let half = (width * sin(turn) + card.height * cos(turn)) / 2
-                    return (above: half - card.drop, below: half + card.drop)
-                }
-            let lift =
-                ((reaches.map(\.below).max() ?? 0) - (reaches.map(\.above).max() ?? 0)) / 2
+            let cards = Self.fan(
+                aspects: aspects, jitters: jitters, style: input.coverStyle, in: size)
             ZStack {
                 // The first-ranked book is drawn last, in front.
                 ForEach(Array(books.enumerated().reversed()), id: \.element.id) { index, book in
@@ -222,20 +236,18 @@ struct TopFiveCard: View {
                     ShareCover(
                         book: book, look: input.look(for: book), cover: input.covers[book.id],
                         style: input.coverStyle, height: card.height,
-                        yaw: 0.36 + card.jitter * 0.12, pitch: -0.1
+                        yaw: 0.36 + jitters[index] * 0.12, pitch: -0.1
                     )
                     .shadow(color: .black.opacity(0.45), radius: 24, y: 18)
                     .rotationEffect(.degrees(card.turn))
                     .position(
-                        x: size.width / 2 + card.slot * spacing,
-                        y: size.height / 2 + card.drop - lift)
+                        x: size.width / 2 + card.offset.x, y: size.height / 2 + card.offset.y)
                 }
             }
         }
     }
 
-    /// A ranked book: its rank, title, author, and stars. The title letters at 40 pixels or
-    /// more, wrapping to a second line before it shrinks, so it stays legible on a phone.
+    /// A ranked book: its rank, title, author, and stars.
     private func row(rank: Int, book: CloudBook, showsAuthor: Bool) -> some View {
         // The rank and stars line up with the title's first line when it wraps.
         HStack(alignment: .firstTextBaseline, spacing: 20) {
@@ -244,12 +256,7 @@ struct TopFiveCard: View {
                 .foregroundStyle(ShareStyle.gold)
                 .frame(width: 44)
             VStack(alignment: .leading, spacing: 0) {
-                ShareFittingText(
-                    forms: ShareStyle.titles(book), size: 44, minimumScale: 40 / 44, lines: 2,
-                    book: book
-                ) {
-                    ShareStyle.serif($0, .semibold)
-                }
+                title(book)
                 if showsAuthor {
                     Text(SpineView.shortAuthor(book.author))
                         .font(ShareStyle.serif(32))
@@ -263,5 +270,26 @@ struct TopFiveCard: View {
             }
         }
         .foregroundStyle(ShareStyle.cream.color)
+    }
+
+    /// A ranked book's title at 40 pixels or more, so it stays legible on a phone. It drops a
+    /// subtitle or series name to fit on one line, and wraps to a second line only when its
+    /// shortest form doesn't fit, which keeps the list from crowding the fan.
+    private func title(_ book: CloudBook) -> some View {
+        let forms = ShareStyle.titles(book)
+        let options = forms.flatMap { form in [44, 40].map { (form: form, size: CGFloat($0)) } }
+        return ViewThatFits(in: .horizontal) {
+            ForEach(options.indices, id: \.self) { index in
+                BookText(options[index].form, of: book)
+                    .font(ShareStyle.serif(options[index].size, .semibold))
+                    .lineLimit(1)
+            }
+            ShareFittingText(
+                forms: Array(forms.suffix(1)), size: 44, minimumScale: 40 / 44, lines: 2,
+                book: book
+            ) {
+                ShareStyle.serif($0, .semibold)
+            }
+        }
     }
 }
