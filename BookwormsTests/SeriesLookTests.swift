@@ -238,6 +238,19 @@ final class SeriesLookTests: XCTestCase {
         XCTAssertEqual(fromTV.design(bookID: 9).fontPostScriptName, "Georgia-Bold")
     }
 
+    func testRemadeLookTakesTheNewDesignAndKeepsItsCreation() throws {
+        let redesigned = design(7, at: 60, family: "Lora")
+        let remade = look().remade(from: redesigned, at: created.addingTimeInterval(120))
+        XCTAssertEqual(remade.key, look().key)
+        XCTAssertEqual(remade.createdAt, created)
+        XCTAssertEqual(remade.editedAt, created.addingTimeInterval(120))
+        XCTAssertEqual(remade.sourceBookID, 7)
+        XCTAssertEqual(remade.origin, CloudContract.generatorVersion)
+        XCTAssertEqual(remade.fontFamily, "Lora")
+        XCTAssertNil(remade.fontPostScriptName)
+        XCTAssertNoThrow(try remade.validate())
+    }
+
     @MainActor
     func testLookWithoutAFamilyDrawsAnInstalledFace() async {
         let fonts = SpineFonts()

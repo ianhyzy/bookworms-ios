@@ -387,6 +387,14 @@ struct SeriesLookV1: Codable, Sendable, Hashable {
         return look
     }
 
+    /// Returns the look made again from `design`, a new design of one of its books, at `date`:
+    /// `design`'s colors and type, book, and generator, with the look's creation date.
+    func remade(from design: SpineDesignV1, at date: Date) -> SeriesLookV1 {
+        var look = SeriesLookV1(design: design, key: key, createdAt: createdAt)
+        look.editedAt = date
+        return look
+    }
+
     /// Returns the valid looks for `accountID` among `looks`, which maps record names to
     /// payloads, keyed by look group. A look counts only under its own record name.
     static func keyed(_ looks: [String: SeriesLookV1], accountID: String)
