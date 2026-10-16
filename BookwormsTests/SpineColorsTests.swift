@@ -440,6 +440,8 @@ final class SpineColorsTests: XCTestCase {
             for: books[1], linkedSeriesID: nil, standsAlone: false, ownLook: true)
         XCTAssertEqual(model.designSource(for: books[0]).id, 1)
         XCTAssertEqual(model.look(for: books[0]).background, reader.background)
+        XCTAssertNotNil(model.lookDesigns[1])
+        XCTAssertFalse(model.sharesSeriesDesign(books[0]), "Book 1 shares its look with no one")
         let second = try XCTUnwrap(model.books.first { $0.id == 2 })
         XCTAssertTrue(model.choosesEditScope(for: second))
         XCTAssertEqual(model.generatedColors(for: second)?.background.hex, "#404040")
