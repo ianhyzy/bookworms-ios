@@ -50,6 +50,8 @@ struct WorkerSnapshot: Sendable, Codable {
 enum WorkerUpdate: Sendable {
     case status(WorkerSnapshot)
     case saved(SpineDesignV1)
+    /// A series look that a pass created, or found another device had created first.
+    case savedLook(SeriesLookV1)
 }
 
 /// Serializes reconciliation so a push, the charging task, and **Generate now** cannot
@@ -84,6 +86,10 @@ actor SpineWorker {
     // made.
     private var bookDesigns: [Int: SpineDesignV1] = [:]
     private var checkedBooks = Set<Int>()
+    // The pass's look groups, and their saved looks, looked up at most once per pass; `nil`
+    // records a group without a look.
+    private var lookGroups: [SeriesLookKey: [CloudBook]] = [:]
+    private var looks: [SeriesLookKey: SeriesLookV1?] = [:]
 
     static let busyRetryDelay: TimeInterval = 15 * 60
     /// How long a stop waits when its cause needs the user, such as a full iCloud storage plan
@@ -148,6 +154,8 @@ actor SpineWorker {
         snapshot.failed = 0
         bookDesigns = [:]
         checkedBooks = []
+        lookGroups = [:]
+        looks = [:]
         publish()
         do {
             guard let context = try await store.loadWork() else {
@@ -160,6 +168,7 @@ actor SpineWorker {
             }
             let accountID = context.accountID
             try await ledger.useCloudUser(context.cloudUserRecordName)
+            lookGroups = SeriesDesigns.lookGroups(context.books)
             let books = context.books.filter { !$0.coverCandidates.isEmpty }
             try await ledger.retain(Set(books.map { Self.recordName(accountID, $0) }))
             var queue: [CloudBook] = []
@@ -196,16 +205,17 @@ actor SpineWorker {
                 let start = ContinuousClock.now
                 do {
                     let cover = try await covers.fetch(book.coverCandidates)
-                    if let design = try await design(
+                    if let made = try await design(
                         for: book, cover: cover, workHash: workHash, context: context)
                     {
                         guard try await store.isStillCurrent(context, book: book) else {
                             return true
                         }
-                        try await store.save(design)
-                        continuation.yield(.saved(design))
-                        bookDesigns[book.id] = design
+                        try await store.save(made.design)
+                        continuation.yield(.saved(made.design))
+                        bookDesigns[book.id] = made.design
                         checkedBooks.insert(book.id)
+                        if made.isModelDesign { await createLook(from: made.design, for: book) }
                         generationLog.info(
                             "Book \(book.id, privacy: .private(mask: .hash)) designed in \(start.duration(to: .now), privacy: .public)"
                         )
@@ -254,50 +264,100 @@ actor SpineWorker {
         return false
     }
 
-    /// Returns the design to save for `book`, or `nil` when iCloud already has this work or a
-    /// design whose colors the reader chose (see
-    /// `SpineDesignV1.action(workItemHash:coverHash:readerChoseCover:)`).
+    /// Returns the design to save for `book`, and whether a model request made it, or `nil` when
+    /// iCloud already has this work or a design whose colors the reader chose (see
+    /// `SpineDesignV1.action(workItemHash:coverHash:readerChoseCover:drawsSeriesLook:)`).
     private func design(
         for book: CloudBook, cover: CoverImage, workHash: String, context: WorkContext
-    ) async throws -> SpineDesignV1? {
+    ) async throws -> (design: SpineDesignV1, isModelDesign: Bool)? {
         // A ledger miss is not proof: another device may have saved this work already.
         let saved = try await store.savedDesign(accountID: context.accountID, bookID: book.id)
+        let look = try await seriesLook(for: book, accountID: context.accountID)
         let readerChoseCover = await ledger.readerChoseCover(
             recordName: Self.recordName(context.accountID, book), chosenCover: book.chosenCoverURL)
         let action = saved?
             .action(
-                workItemHash: workHash, coverHash: cover.hash, readerChoseCover: readerChoseCover)
+                workItemHash: workHash, coverHash: cover.hash, readerChoseCover: readerChoseCover,
+                drawsSeriesLook: look != nil)
         switch action ?? .redesign {
         case .keep: return nil
-        case .save(let design): return design
+        case .save(let design): return (design, false)
         case .redesign: break
         }
-        // Books in one series share a design so their spines match on the shelf.
-        if let source = try await storedSeriesDesign(for: book, context: context),
+        // Books in one look group share a design so their spines match on the shelf. A book
+        // that draws its group's look saves a copy of it, whichever device made the look.
+        let source =
+            if let look {
+                look.design(bookID: look.sourceBookID)
+            } else {
+                try await storedSeriesDesign(for: book, context: context)
+            }
+        if let source,
             let reused = try await analyzer.seriesDesign(
                 from: source, book: book, accountID: context.accountID,
                 workItemHash: workHash, coverHash: cover.hash)
         {
-            return reused
+            return (reused, false)
         }
-        return try await analyzer.design(
-            book: book, accountID: context.accountID, workItemHash: workHash, cover: cover)
+        return (
+            try await analyzer.design(
+                book: book, accountID: context.accountID, workItemHash: workHash, cover: cover),
+            true
+        )
     }
 
-    /// Returns the saved design of `book`'s series source, by the rule the app draws with
-    /// (`SeriesDesigns.sources(of:lends:canLetter:)`), when that source is another book with a
-    /// usable saved design from this generator.
+    /// Returns the series look `book` draws: its look group's saved look, unless its link keeps
+    /// its own look.
+    private func seriesLook(for book: CloudBook, accountID: String) async throws -> SeriesLookV1? {
+        guard book.seriesLink?.ownLook != true,
+            let key = SeriesDesigns.lookKey(of: book, link: book.seriesLink)
+        else { return nil }
+        if let known = looks[key] { return known }
+        let look = try await store.seriesLooks(accountID: accountID, keys: [key])[key]
+        looks[key] = .some(look)
+        return look
+    }
+
+    /// Makes `design`, a new model design, the series look of `book`'s look group when the group
+    /// has none, so the group's first design decides its look. A look another device saved first
+    /// wins. A failed save leaves the group to the rank rule (`storedSeriesDesign`) until a later
+    /// design or the app's catch-up saves one.
+    private func createLook(from design: SpineDesignV1, for book: CloudBook) async {
+        // `design(for:...)` looked up the group's look, unless the book keeps its own look.
+        guard book.seriesLink?.ownLook != true,
+            let key = SeriesDesigns.lookKey(of: book, link: book.seriesLink),
+            looks[key] == .some(nil)
+        else { return }
+        do {
+            let look = try await store.createLook(
+                SeriesLookV1(design: design, key: key, createdAt: Date()))
+            looks[key] = .some(look)
+            continuation.yield(.savedLook(look))
+        } catch {
+            let nsError = error as NSError
+            generationLog.error(
+                "Series look not saved: \(nsError.domain, privacy: .public) \(nsError.code, privacy: .public)"
+            )
+        }
+    }
+
+    /// Returns the saved design of `book`'s source in a look group without a saved look, by the
+    /// rule the app draws with (`SeriesDesigns.sources(of:lends:canLetter:)`), when that source
+    /// is another book with a usable saved design from this generator.
     ///
     /// A source ranks before the books that draw with it and is always designed from its own
-    /// cover: a redesign from a new cover, or a newly read first book, changes the series.
+    /// cover: a redesign from a new cover, or a newly read first book, changes the group.
     private func storedSeriesDesign(
         for book: CloudBook, context: WorkContext
     ) async throws -> SpineDesignV1? {
-        // Every earlier book in the series, matching or not, decides which of them are roots.
-        let earlier = context.books.filter {
-            $0.id != book.id && $0.seriesID != nil && $0.seriesID == book.seriesID
-                && SeriesDesigns.ranksBefore($0, book)
-        }
+        guard book.seriesLink?.ownLook != true,
+            let key = SeriesDesigns.lookKey(of: book, link: book.seriesLink)
+        else { return nil }
+        // Every earlier book in the group, usable or not, decides which of them are roots.
+        let earlier = (lookGroups[key] ?? [])
+            .filter {
+                $0.id != book.id && SeriesDesigns.ranksBefore($0, book)
+            }
         guard !earlier.isEmpty else { return nil }
         for mate in earlier where checkedBooks.insert(mate.id).inserted {
             bookDesigns[mate.id] = try await store.savedDesign(

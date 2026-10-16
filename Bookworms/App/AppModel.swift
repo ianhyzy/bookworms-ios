@@ -1,14 +1,15 @@
 import Foundation
 import Observation
 
-/// The library the app shows: the active Hardcover account's books, their saved designs, and the
-/// covers the reader chose.
+/// The library the app shows: the active Hardcover account's books, their saved designs and series
+/// looks, and the covers and series links the reader chose.
 ///
 /// Signed in to Hardcover on this iPhone, the books come from that account (`HardcoverAccount`);
-/// otherwise from the Apple TV's iCloud archive. Either way `CloudSpineStore` adds the designs
-/// from iCloud. Launching with `-BookwormsPreviewFolder <path>` reads a local folder instead and
-/// ignores the sign-in (see `script/load-preview-data.py`); a relative path resolves inside the
-/// app's `Caches/Bookworms` folder. The last library is cached so launch shows it immediately.
+/// otherwise from the Apple TV's iCloud archive. Either way `CloudSpineStore` adds the designs,
+/// looks, and choices from iCloud. Launching with `-BookwormsPreviewFolder <path>` reads a local
+/// folder instead and ignores the sign-in (see `script/load-preview-data.py`); a relative path
+/// resolves inside the app's `Caches/Bookworms` folder. The last library is cached so launch shows
+/// it immediately.
 @MainActor
 @Observable
 final class AppModel {
@@ -17,9 +18,13 @@ final class AppModel {
     private(set) var library: LibrarySnapshot?
     /// The library's books, most recently finished first, then unfinished books by title.
     private(set) var books: [CloudBook] = []
-    /// Maps each book that shares a series design to the book whose design it draws with
-    /// (`SeriesDesigns.sources`). Recomputed when the library changes or any face loads.
+    /// Maps each book that shares a series design to the book whose design sets its spine: the
+    /// source book of the series look it draws, or its source by rank in a look group without a
+    /// look (`SeriesDesigns.sources`). Recomputed when the library changes or any face loads.
     private(set) var seriesSources: [Int: Int] = [:]
+    /// The series look that each book drawing one draws, as that book's design
+    /// (`SeriesLookV1.design(bookID:hashesFrom:)`). Recomputed with `seriesSources`.
+    private(set) var lookDesigns: [Int: SpineDesignV1] = [:]
     private(set) var isLoading = false
     private(set) var loadError: String?
     /// The visible tab. Other features switch it, such as **Share** from a book's details.
@@ -51,6 +56,11 @@ final class AppModel {
     /// Covers chosen while a reload's fetch runs, applied to its result for the same reason.
     @ObservationIgnored private var coversChosenDuringLoad:
         [(accountID: String, bookID: Int, url: URL?)] = []
+    /// Series links chosen while a reload's fetch runs, applied to its result for the same reason.
+    @ObservationIgnored private var linksChosenDuringLoad:
+        [(accountID: String, bookID: Int, link: SeriesLinkV1?)] = []
+    /// Series looks saved while a reload's fetch runs, merged into its result for the same reason.
+    @ObservationIgnored private var looksAppliedDuringLoad: [SeriesLookV1] = []
     /// The cache write that `apply(_:)` deferred until a run's saves pause.
     @ObservationIgnored private var persistTask: Task<Void, Never>?
     /// Glyph checks by face and lettering, so each runs once rather than on every library change.
@@ -102,10 +112,10 @@ final class AppModel {
         return SpineLook(book: book, design: design, face: fonts.face(for: design))
     }
 
-    /// The design `book` draws with: its series source's design when it shares one (see
-    /// `SeriesDesigns`), otherwise its own.
+    /// The design `book` draws with: its series look, or its series source's design when it
+    /// shares one (see `SeriesDesigns`), otherwise its own.
     func design(for book: CloudBook) -> SpineDesignV1? {
-        library?.designs[seriesSources[book.id] ?? book.id]
+        lookDesigns[book.id] ?? library?.designs[seriesSources[book.id] ?? book.id]
     }
 
     /// The book whose design and cover set `book`'s spine: its series source, or `book` itself.
@@ -133,6 +143,8 @@ final class AppModel {
         isLoading = true
         appliedDuringLoad = []
         coversChosenDuringLoad = []
+        linksChosenDuringLoad = []
+        looksAppliedDuringLoad = []
         if !isPreview { await account.syncIfStale() }
         let revision = account.libraryRevision
         do {
@@ -148,6 +160,13 @@ final class AppModel {
                     for chosen in coversChosenDuringLoad
                     where chosen.accountID == snapshot.accountID {
                         snapshot.setChosenCover(chosen.url, bookID: chosen.bookID)
+                    }
+                    for chosen in linksChosenDuringLoad
+                    where chosen.accountID == snapshot.accountID {
+                        snapshot.setSeriesLink(chosen.link, bookID: chosen.bookID)
+                    }
+                    for look in looksAppliedDuringLoad where look.accountID == snapshot.accountID {
+                        snapshot.looks[look.key] = look
                     }
                     // A design saved during the load for a book the result lacks needs another
                     // reload to show.
@@ -184,9 +203,10 @@ final class AppModel {
         if revision != account.libraryRevision { return await reload() }
         // Social data refreshes on its own, so its downloads never hold up the next reload.
         Task { await syncSocial() }
+        await createMissingLooks()
         // Fonts load after `isLoading` clears, so a slow download never blocks the next reload.
         if let designs = library?.designs.values {
-            await fonts.load(Array(designs))
+            await fonts.load(Array(designs) + Array(lookDesigns.values))
         }
     }
 
@@ -274,19 +294,52 @@ final class AppModel {
         }
         library.designs[design.bookID] = design
         setLibrary(library)
+        persistSoon()
+        Task { await fonts.load([design]) }
+    }
+
+    /// Shows series looks that the generator, the catch-up after a reload, or `recolor(_:to:)`
+    /// saves, without a reload. Like `apply(_:)` for designs, it defers the cache write.
+    func apply(_ looks: [SeriesLookV1]) {
+        if isLoading { looksAppliedDuringLoad += looks }
+        guard var library else { return }
+        for look in looks where look.accountID == library.accountID {
+            library.looks[look.key] = look
+        }
+        setLibrary(library)
+        persistSoon()
+        Task { await fonts.load(looks.map { $0.design(bookID: $0.sourceBookID) }) }
+    }
+
+    /// Saves the series look of each look group that has none but has a member with a usable
+    /// saved design (`SeriesDesigns.missingLooks`), and shows the look each group keeps, which
+    /// another device may have saved first. A failed save leaves the group to the rank rule
+    /// until the next reload tries again.
+    private func createMissingLooks() async {
+        guard let library else { return }
+        var saved: [SeriesLookV1] = []
+        for look in SeriesDesigns.missingLooks(
+            books: library.books, designs: library.designs, looks: library.looks, now: .now)
+        {
+            if let kept = try? await store.createLook(look) { saved.append(kept) }
+        }
+        if !saved.isEmpty { apply(saved) }
+    }
+
+    /// Writes the library cache once saves pause for 20 seconds.
+    private func persistSoon() {
         persistTask?.cancel()
         persistTask = Task {
             try? await Task.sleep(for: .seconds(20))
             guard !Task.isCancelled else { return }
             persist()
         }
-        Task { await fonts.load([design]) }
     }
 
     /// Shows `colors` on the spine `book` draws and saves them to that design as the reader's
     /// colors (see `SpineDesignV1.recolored(_:)`), through the store the library comes from.
-    /// A book that shares its series' design recolors the series source, which recolors every
-    /// book in the series.
+    /// A book that draws its series' look recolors the look, and a book that shares its series
+    /// source's design recolors that design; either recolors every book that draws it.
     ///
     /// Throws when the colors cannot be saved, and then they stay on screen until the next
     /// reload. Throws `CompanionError.invalidDesign`, before showing anything, when the colors
@@ -294,6 +347,16 @@ final class AppModel {
     /// When iCloud holds another design, such as a redesign from another device, reloads to show
     /// it and throws `CompanionError.designChanged`.
     func recolor(_ book: CloudBook, to colors: SpineColors) async throws {
+        if lookDesigns[book.id] != nil,
+            let key = SeriesDesigns.lookKey(of: book, link: book.seriesLink),
+            let look = library?.looks[key]
+        {
+            let recolored = look.recolored(colors, at: .now)
+            try recolored.validate()
+            apply([recolored])
+            try await store.save(recolored)
+            return
+        }
         guard let design = design(for: book) else {
             throw CompanionError.bookNotInLibrary
         }
@@ -348,6 +411,40 @@ final class AppModel {
         persist()
     }
 
+    /// Saves the reader's series choice for `book` in the shown account, or deletes it when the
+    /// choice changes nothing (`SeriesLinkV1.changesNothing`), then shows the result without a
+    /// reload. `linkedSeriesID` names the series whose look the book draws, `standsAlone` takes
+    /// it out of every series, and `ownLook` keeps its own design instead of its series' look.
+    ///
+    /// The choice goes to iCloud, so other devices and generation runs use it too. A look group
+    /// that the book joins and that has no look yet gets one when a member has a usable design
+    /// (`SeriesDesigns.missingLooks`). Throws when the choice cannot be saved, and then nothing
+    /// changes. Throws `CompanionError.bookNotInLibrary` unless the shown library includes
+    /// `book`.
+    func setSeriesLink(
+        for book: CloudBook, linkedSeriesID: Int?, standsAlone: Bool, ownLook: Bool
+    ) async throws {
+        guard let shown = library, shown.books.contains(where: { $0.id == book.id }) else {
+            throw CompanionError.bookNotInLibrary
+        }
+        let accountID = shown.accountID
+        let chosen = SeriesLinkV1(
+            version: 1, accountID: accountID, bookID: book.id, linkedSeriesID: linkedSeriesID,
+            standsAlone: standsAlone, ownLook: ownLook, chosenAt: .now)
+        let link = chosen.changesNothing ? nil : chosen
+        if let link {
+            try await store.save(link)
+        } else {
+            try await store.deleteSeriesLink(accountID: accountID, bookID: book.id)
+        }
+        if isLoading { linksChosenDuringLoad.append((accountID, book.id, link)) }
+        guard var library, library.accountID == accountID else { return }
+        library.setSeriesLink(link, bookID: book.id)
+        setLibrary(library)
+        persist()
+        await createMissingLooks()
+    }
+
     private func clearLibrary() {
         // A deferred write would restore the cleared library.
         persistTask?.cancel()
@@ -376,24 +473,48 @@ final class AppModel {
         social.prepare(mine: books)
     }
 
-    /// Recomputes `seriesSources` from the library and the loaded faces. A book whose lettering
-    /// the source's loaded face lacks glyphs for keeps its own design; until a face loads, the
-    /// source's system typeface letters every book.
+    /// Recomputes `seriesSources` and `lookDesigns` from the library and the loaded faces.
+    ///
+    /// The books of a look group with a saved look draw it; the books of other groups draw by
+    /// rank (`SeriesDesigns.sources`). A book whose lettering the look's or source's loaded face
+    /// lacks glyphs for keeps its own design; until a face loads, the system typeface letters
+    /// every book.
     private func alignSeries() {
-        let sources =
-            library.map { library in
-                SeriesDesigns.sources(books: library.books, designs: library.designs) {
-                    book, design in
-                    guard let face = fonts.face(for: design) else { return true }
-                    let text = SeriesDesigns.lettering(of: book, uppercase: design.uppercase)
-                    let key = face.postScriptName + "\n" + text
-                    if let covered = coverage[key] { return covered }
-                    let covered = face.covers(text)
-                    coverage[key] = covered
-                    return covered
+        var sources: [Int: Int] = [:]
+        var drawn: [Int: SpineDesignV1] = [:]
+        if let library {
+            var unlooked: [CloudBook] = []
+            for (key, members) in SeriesDesigns.lookGroups(library.books) {
+                guard let look = library.looks[key] else {
+                    unlooked += members
+                    continue
                 }
-            } ?? [:]
+                for book in members {
+                    let design = look.design(bookID: book.id, hashesFrom: library.designs[book.id])
+                    guard canLetter(book, with: design) else { continue }
+                    drawn[book.id] = design
+                    sources[book.id] = look.sourceBookID
+                }
+            }
+            sources.merge(
+                SeriesDesigns.sources(
+                    books: unlooked, designs: library.designs, canLetter: canLetter(_:with:))
+            ) { $1 }
+        }
         if sources != seriesSources { seriesSources = sources }
+        if drawn != lookDesigns { lookDesigns = drawn }
+    }
+
+    /// Returns whether `design`'s loaded face has glyphs for `book`'s lettering, or `true` before
+    /// the face loads. Each face and lettering is checked once.
+    private func canLetter(_ book: CloudBook, with design: SpineDesignV1) -> Bool {
+        guard let face = fonts.face(for: design) else { return true }
+        let text = SeriesDesigns.lettering(of: book, uppercase: design.uppercase)
+        let key = face.postScriptName + "\n" + text
+        if let covered = coverage[key] { return covered }
+        let covered = face.covers(text)
+        coverage[key] = covered
+        return covered
     }
 
     /// Writes the shown library to the launch cache, replacing any deferred write.
@@ -413,6 +534,11 @@ extension LibrarySnapshot {
     fileprivate mutating func setChosenCover(_ url: URL?, bookID: Int) {
         guard let index = books.firstIndex(where: { $0.id == bookID }) else { return }
         books[index].chosenCoverURL = url
+    }
+
+    fileprivate mutating func setSeriesLink(_ link: SeriesLinkV1?, bookID: Int) {
+        guard let index = books.firstIndex(where: { $0.id == bookID }) else { return }
+        books[index].seriesLink = link
     }
 }
 

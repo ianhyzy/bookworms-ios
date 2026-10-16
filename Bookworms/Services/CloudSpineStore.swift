@@ -3,7 +3,8 @@ import Foundation
 
 /// Reads the Apple TV archive, or this iPhone's own Hardcover library when it is signed in, and
 /// publishes one portable design per Hardcover book in the private database of the shared iCloud
-/// container. The reader's cover choices live in the same database.
+/// container. The reader's cover choices and series links, and the series looks, live in the same
+/// database.
 actor CloudSpineStore: SpineStore {
     private let container = CKContainer(identifier: CloudContract.containerID)
     private var database: CKDatabase { container.privateCloudDatabase }
@@ -40,7 +41,7 @@ actor CloudSpineStore: SpineStore {
             phoneWork = (phone.accountID, phone.syncedAt)
             return WorkContext(
                 accountID: phone.accountID, syncedAt: phone.syncedAt,
-                books: try await choosingCovers(accountID: phone.accountID, books: phone.books),
+                books: try await applyingChoices(accountID: phone.accountID, books: phone.books),
                 followsWorklist: false, cloudUserRecordName: cloudUserRecordName)
         case .worklist, .archive:
             guard let archive = try await fetchArchive() else {
@@ -50,7 +51,7 @@ actor CloudSpineStore: SpineStore {
             let (snapshot, books) = try archive.workSource(for: worklist)
             return WorkContext(
                 accountID: snapshot.accountID, syncedAt: snapshot.syncedAt,
-                books: try await choosingCovers(accountID: snapshot.accountID, books: books),
+                books: try await applyingChoices(accountID: snapshot.accountID, books: books),
                 followsWorklist: worklist != nil, cloudUserRecordName: cloudUserRecordName)
         }
     }
@@ -70,7 +71,7 @@ actor CloudSpineStore: SpineStore {
 
     func isStillCurrent(_ context: WorkContext, book: CloudBook) async throws -> Bool {
         guard try await belongsToWork(context, bookID: book.id) else { return false }
-        let current = try await choosingCovers(accountID: context.accountID, books: [book])
+        let current = try await applyingChoices(accountID: context.accountID, books: [book])
         return current.first?.chosenCoverURL == book.chosenCoverURL
     }
 
@@ -147,12 +148,7 @@ actor CloudSpineStore: SpineStore {
             try saving.validate()
             record["payload"] = try JSONEncoder().encode(saving) as CKRecordValue
             do {
-                let result = try await database.modifyRecords(
-                    saving: [record], deleting: [], savePolicy: .ifServerRecordUnchanged)
-                guard let saved = result.saveResults[id] else {
-                    throw CompanionError.invalidCloudData
-                }
-                _ = try saved.get()
+                try await saveIfUnchanged(record)
                 return
             } catch let error as CKError where error.code == .serverRecordChanged {
                 continue
@@ -161,37 +157,101 @@ actor CloudSpineStore: SpineStore {
         throw CompanionError.cloudConflict
     }
 
-    /// Saves `choice` with the same conditional save and retries as designs, unless the record
-    /// already names this cover.
+    /// Saves `choice` unless the record already names this cover; the last writer wins.
     func save(_ choice: CoverChoiceV1) async throws {
         try choice.validate()
-        let id = CKRecord.ID(
+        try await write(
+            JSONEncoder().encode(choice), recordType: "CoverChoiceV1",
             recordName: CloudContract.coverChoiceRecordName(
-                accountID: choice.accountID, bookID: choice.bookID))
-        let payload = try JSONEncoder().encode(choice)
+                accountID: choice.accountID, bookID: choice.bookID)
+        ) { record in
+            guard let existing = Self.payload(CoverChoiceV1.self, in: record) else { return false }
+            return existing.coverURL == choice.coverURL && existing.editionID == choice.editionID
+        }
+    }
+
+    func deleteCoverChoice(accountID: String, bookID: Int) async throws {
+        try await deleteRecord(
+            named: CloudContract.coverChoiceRecordName(accountID: accountID, bookID: bookID))
+    }
+
+    /// Saves `link`; the last writer wins.
+    func save(_ link: SeriesLinkV1) async throws {
+        try link.validate()
+        try await write(
+            JSONEncoder().encode(link), recordType: "SeriesLinkV1",
+            recordName: CloudContract.seriesLinkRecordName(
+                accountID: link.accountID, bookID: link.bookID))
+    }
+
+    func deleteSeriesLink(accountID: String, bookID: Int) async throws {
+        try await deleteRecord(
+            named: CloudContract.seriesLinkRecordName(accountID: accountID, bookID: bookID))
+    }
+
+    func seriesLooks(accountID: String, keys: Set<SeriesLookKey>) async throws -> [SeriesLookKey:
+        SeriesLookV1]
+    {
+        var looks: [String: SeriesLookV1] = [:]
+        for record in try await records(
+            keys.map { CloudContract.seriesLookRecordName(accountID: accountID, key: $0) })
+        {
+            looks[record.recordID.recordName] = Self.payload(SeriesLookV1.self, in: record)
+        }
+        return SeriesLookV1.keyed(looks, accountID: accountID)
+    }
+
+    /// Saves `look` as a new record. When the record exists, another device decided the group's
+    /// look first: the save fails with `serverRecordChanged`, and the saved look is returned.
+    func createLook(_ look: SeriesLookV1) async throws -> SeriesLookV1 {
+        try look.validate()
+        let record = CKRecord(
+            recordType: "SeriesLookV1",
+            recordID: CKRecord.ID(
+                recordName: CloudContract.seriesLookRecordName(
+                    accountID: look.accountID, key: look.key)))
+        record["payload"] = try JSONEncoder().encode(look) as CKRecordValue
+        do {
+            try await saveIfUnchanged(record)
+            return look
+        } catch let error as CKError where error.code == .serverRecordChanged {
+            guard
+                let existing = try await seriesLooks(
+                    accountID: look.accountID, keys: [look.key])[look.key]
+            else { throw CompanionError.invalidCloudData }
+            return existing
+        }
+    }
+
+    /// Saves `look` over its group's look; the last writer wins.
+    func save(_ look: SeriesLookV1) async throws {
+        try look.validate()
+        try await write(
+            JSONEncoder().encode(look), recordType: "SeriesLookV1",
+            recordName: CloudContract.seriesLookRecordName(
+                accountID: look.accountID, key: look.key))
+    }
+
+    /// Saves `payload` in the named record, creating the record when it is missing, unless
+    /// `isCurrent` finds that the record already holds it. Saves with `ifServerRecordUnchanged`
+    /// and retries up to three times when another device changes the record meanwhile.
+    private func write(
+        _ payload: Data, recordType: String, recordName: String,
+        isCurrent: (CKRecord) -> Bool = { _ in false }
+    ) async throws {
+        let id = CKRecord.ID(recordName: recordName)
         for _ in 0..<3 {
             let record: CKRecord
             do { record = try await database.record(for: id) } catch let error as CKError
                 where error.code == .unknownItem
             {
-                record = CKRecord(recordType: "CoverChoiceV1", recordID: id)
+                record = CKRecord(recordType: recordType, recordID: id)
             }
-            guard record.recordType == "CoverChoiceV1" else {
-                throw CompanionError.invalidCloudData
-            }
-            if let existing = Self.coverChoice(in: record), existing.coverURL == choice.coverURL,
-                existing.editionID == choice.editionID
-            {
-                return
-            }
+            guard record.recordType == recordType else { throw CompanionError.invalidCloudData }
+            if isCurrent(record) { return }
             record["payload"] = payload as CKRecordValue
             do {
-                let result = try await database.modifyRecords(
-                    saving: [record], deleting: [], savePolicy: .ifServerRecordUnchanged)
-                guard let saved = result.saveResults[id] else {
-                    throw CompanionError.invalidCloudData
-                }
-                _ = try saved.get()
+                try await saveIfUnchanged(record)
                 return
             } catch let error as CKError where error.code == .serverRecordChanged {
                 continue
@@ -200,12 +260,21 @@ actor CloudSpineStore: SpineStore {
         throw CompanionError.cloudConflict
     }
 
-    func deleteCoverChoice(accountID: String, bookID: Int) async throws {
-        let id = CKRecord.ID(
-            recordName: CloudContract.coverChoiceRecordName(accountID: accountID, bookID: bookID))
-        do { _ = try await database.deleteRecord(withID: id) } catch let error as CKError
-            where error.code == .unknownItem
-        {}
+    /// Saves `record` only when the server's copy is unchanged since it was fetched, or does not
+    /// exist for a new record, and throws the record's save error.
+    private func saveIfUnchanged(_ record: CKRecord) async throws {
+        let result = try await database.modifyRecords(
+            saving: [record], deleting: [], savePolicy: .ifServerRecordUnchanged)
+        guard let saved = result.saveResults[record.recordID] else {
+            throw CompanionError.invalidCloudData
+        }
+        _ = try saved.get()
+    }
+
+    private func deleteRecord(named name: String) async throws {
+        do {
+            _ = try await database.deleteRecord(withID: CKRecord.ID(recordName: name))
+        } catch let error as CKError where error.code == .unknownItem {}
     }
 
     /// Returns this iPhone's own Hardcover library when it is signed in, otherwise the Apple TV
@@ -223,8 +292,9 @@ actor CloudSpineStore: SpineStore {
             do {
                 _ = try await checkedUserRecordName()
                 snapshot.designs = try await designs(accountID: phone.accountID, books: phone.books)
-                snapshot.books = try await choosingCovers(
+                snapshot.books = try await applyingChoices(
                     accountID: phone.accountID, books: phone.books)
+                snapshot.looks = try await looks(accountID: phone.accountID, books: snapshot.books)
             } catch CompanionError.noICloudAccount, CompanionError.iCloudRestricted {}
             return snapshot
         }
@@ -234,10 +304,20 @@ actor CloudSpineStore: SpineStore {
         let shown = (try? await fetchWorklist()).flatMap { $0.bookIDs.isEmpty ? nil : $0 }
         let (snapshot, books) =
             try (try? archive.workSource(for: shown)) ?? archive.workSource(for: nil)
+        let chosen = try await applyingChoices(accountID: snapshot.accountID, books: books)
         return LibrarySnapshot(
-            accountID: snapshot.accountID, syncedAt: snapshot.syncedAt,
-            books: try await choosingCovers(accountID: snapshot.accountID, books: books),
-            designs: try await designs(accountID: snapshot.accountID, books: books))
+            accountID: snapshot.accountID, syncedAt: snapshot.syncedAt, books: chosen,
+            designs: try await designs(accountID: snapshot.accountID, books: books),
+            looks: try await looks(accountID: snapshot.accountID, books: chosen))
+    }
+
+    /// Returns the saved looks of the look groups of `books`, which carry their series links.
+    private func looks(accountID: String, books: [CloudBook]) async throws -> [SeriesLookKey:
+        SeriesLookV1]
+    {
+        try await seriesLooks(
+            accountID: accountID,
+            keys: Set(books.compactMap { SeriesDesigns.lookKey(of: $0, link: $0.seriesLink) }))
     }
 
     private func designs(accountID: String, books: [CloudBook]) async throws -> [Int:
@@ -249,21 +329,32 @@ actor CloudSpineStore: SpineStore {
             records.compactMap(Self.design(in:)), accountID: accountID, books: books)
     }
 
-    /// Returns `books` with the reader's chosen covers.
-    private func choosingCovers(accountID: String, books: [CloudBook]) async throws -> [CloudBook] {
+    /// Returns `books` with the reader's chosen covers and series links.
+    private func applyingChoices(accountID: String, books: [CloudBook]) async throws
+        -> [CloudBook]
+    {
         let records = try await records(
-            books.map { CloudContract.coverChoiceRecordName(accountID: accountID, bookID: $0.id) })
-        var choices: [String: CoverChoiceV1] = [:]
+            books.flatMap {
+                [
+                    CloudContract.coverChoiceRecordName(accountID: accountID, bookID: $0.id),
+                    CloudContract.seriesLinkRecordName(accountID: accountID, bookID: $0.id),
+                ]
+            })
+        var covers: [String: CoverChoiceV1] = [:]
+        var links: [String: SeriesLinkV1] = [:]
         for record in records {
-            choices[record.recordID.recordName] = Self.coverChoice(in: record)
+            covers[record.recordID.recordName] = Self.payload(CoverChoiceV1.self, in: record)
+            links[record.recordID.recordName] = Self.payload(SeriesLinkV1.self, in: record)
         }
-        return CoverChoiceV1.apply(choices, accountID: accountID, to: books)
+        return SeriesLinkV1.apply(
+            links, accountID: accountID,
+            to: CoverChoiceV1.apply(covers, accountID: accountID, to: books))
     }
 
     /// Fetches the `payload` of the named records that exist.
     ///
     /// A missing record is skipped. Any other per-record failure throws, so a transient error
-    /// cannot pass for a deleted design or cover choice.
+    /// cannot pass for a deleted design, choice, or look.
     private func records(_ names: [String]) async throws -> [CKRecord] {
         var records: [CKRecord] = []
         // CloudKit limits one fetch to a few hundred IDs; batches of 100 match the Apple TV.
@@ -346,10 +437,11 @@ actor CloudSpineStore: SpineStore {
         return design
     }
 
-    private static func coverChoice(in record: CKRecord) -> CoverChoiceV1? {
-        guard record.recordType == "CoverChoiceV1", let data = record["payload"] as? Data else {
-            return nil
-        }
-        return try? JSONDecoder().decode(CoverChoiceV1.self, from: data)
+    /// Decodes the `payload` of a record whose type is named for `type`, such as a
+    /// `CoverChoiceV1` record. Readers validate the result.
+    private static func payload<T: Decodable>(_ type: T.Type, in record: CKRecord) -> T? {
+        guard record.recordType == String(describing: type), let data = record["payload"] as? Data
+        else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
     }
 }

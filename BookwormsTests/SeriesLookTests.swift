@@ -4,7 +4,8 @@ import XCTest
 @testable import Bookworms
 
 /// Covers series looks and links: the style series and look key rules the Apple TV app mirrors,
-/// and the record names and JSON the two apps share.
+/// the record names and JSON the two apps share, and the create-only save that lets the first
+/// look decide.
 final class SeriesLookTests: XCTestCase {
     private let created = Date(timeIntervalSince1970: 1_000_000)
 
@@ -237,6 +238,18 @@ final class SeriesLookTests: XCTestCase {
         XCTAssertEqual(fromTV.design(bookID: 9).fontPostScriptName, "Georgia-Bold")
     }
 
+    @MainActor
+    func testLookWithoutAFamilyDrawsAnInstalledFace() async {
+        let fonts = SpineFonts()
+        var installed = design(1, family: nil)
+        installed.fontPostScriptName = "Georgia-Bold"
+        var missing = design(2, family: nil)
+        missing.fontPostScriptName = "NoSuchFace-Bold"
+        await fonts.load([installed, missing])
+        XCTAssertEqual(fonts.face(for: installed)?.postScriptName, "Georgia-Bold")
+        XCTAssertNil(fonts.face(for: missing), "A missing face draws the system typeface")
+    }
+
     func testMissingLooksCopyTheEarliestOriginalDesign() throws {
         var books = [
             book(1, series: 9), book(2, series: 9), book(3, series: 9),
@@ -270,6 +283,36 @@ final class SeriesLookTests: XCTestCase {
                 books: books, designs: designs, looks: [existing.key: existing], now: created
             )
             .map(\.group), ["|anotherwriter"], "A group with a look keeps it")
+    }
+
+    func testCreatingALookKeepsTheFirstOneSaved() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appending(path: "bookworms-looks-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = LocalSpineStore(folder: folder)
+        let first = look()
+        var second = look()
+        second.backgroundHex = "#000000"
+        second.foregroundHex = "#FFFFFF"
+
+        let kept = try await store.createLook(first)
+        let raced = try await store.createLook(second)
+        XCTAssertEqual(kept, first)
+        XCTAssertEqual(raced, first, "The first look saved decides the group")
+        let saved = try await store.seriesLooks(accountID: "42", keys: [first.key])
+        XCTAssertEqual(saved, [first.key: first])
+
+        // An edit replaces the look.
+        let recolored = first.recolored(
+            SpineColors(
+                background: ColorValue(hex: "#000000")!, foreground: ColorValue(hex: "#FFFFFF")!,
+                accent: ColorValue(hex: "#FF0000")!), at: created.addingTimeInterval(60))
+        try await store.save(recolored)
+        let edited = try await store.seriesLooks(accountID: "42", keys: [first.key])
+        XCTAssertEqual(edited[first.key]?.backgroundHex, "#000000")
+        XCTAssertEqual(edited[first.key]?.origin, first.origin)
+        XCTAssertEqual(edited[first.key]?.editedAt, created.addingTimeInterval(60))
     }
 }
 

@@ -5,8 +5,8 @@ import XCTest
 @testable import Bookworms
 
 /// Covers the reader's spine colors: the provenance record that Reset restores from, the
-/// contrast gate, which saved designs a generation run keeps, series reuse and alignment, and
-/// the preview store's save.
+/// contrast gate, which saved designs a generation run keeps, series reuse, alignment, and looks,
+/// and the preview store's save.
 final class SpineColorsTests: XCTestCase {
     private let work = String(repeating: "a", count: 64)
     private let cover = String(repeating: "b", count: 64)
@@ -117,6 +117,18 @@ final class SpineColorsTests: XCTestCase {
 
         // A cover the reader chose redesigns the spine.
         XCTAssertEqual(action(edited, cover: otherCover, readerChoseCover: true), .redesign)
+
+        // A book that draws its series' look keeps another generator's design while the hashes
+        // match, since a redesign would not change its spine.
+        let foreign = design(generator: "mac-foundation-models-v2")
+        XCTAssertEqual(
+            foreign.action(
+                workItemHash: work, coverHash: cover, readerChoseCover: false,
+                drawsSeriesLook: true), .keep)
+        XCTAssertEqual(
+            foreign.action(
+                workItemHash: otherWork, coverHash: cover, readerChoseCover: false,
+                drawsSeriesLook: true), .redesign)
     }
 
     func testLedgerTellsWhetherTheReaderChoseAnotherCover() async throws {
@@ -268,12 +280,13 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertEqual(sources, [1: 1, 2: 1])
     }
 
-    /// A model reading a preview folder that holds `books` and their saved `designs`; the
-    /// folder is removed when the test ends.
+    /// A model reading a preview folder that holds `books`, their saved `designs`, and saved
+    /// `looks`; the folder is removed when the test ends. Loading creates the looks that the
+    /// designs decide (`SeriesDesigns.missingLooks`).
     @MainActor
-    private func previewModel(books: [CloudBook], designs: [SpineDesignV1]) async throws
-        -> (model: AppModel, folder: URL)
-    {
+    private func previewModel(
+        books: [CloudBook], designs: [SpineDesignV1], looks: [SeriesLookV1] = []
+    ) async throws -> (model: AppModel, folder: URL) {
         let folder = FileManager.default.temporaryDirectory
             .appending(path: "bookworms-series-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -298,13 +311,21 @@ final class SpineColorsTests: XCTestCase {
                     })
             )
             .write(to: folder.appending(path: "spine-designs-v1.json"))
+        try JSONEncoder()
+            .encode(
+                Dictionary(
+                    uniqueKeysWithValues: looks.map {
+                        (CloudContract.seriesLookRecordName(accountID: "42", key: $0.key), $0)
+                    })
+            )
+            .write(to: folder.appending(path: "series-looks-v1.json"))
         let model = AppModel(previewFolder: folder)
         await model.reload()
         return (model, folder)
     }
 
     @MainActor
-    func testSeriesActionsActOnASourceThatDesignsFromItsOwnCover() async throws {
+    func testSeriesActionsActOnTheSourceOfTheSeriesLook() async throws {
         let books = [
             seriesBook(1, by: "Ann Author", position: 1),
             seriesBook(2, by: "Ann Author, Co Writer", position: 2),
@@ -312,28 +333,86 @@ final class SpineColorsTests: XCTestCase {
         ]
         let (model, _) = try await previewModel(
             books: books, designs: [1, 2, 3].map { design(for: $0) })
-        // Change cover and Redesign spine act on `designSource(for:)`.
+        // Loading made a look for each first author from the earliest design, book 1's and
+        // book 3's. Change cover and Redesign spine act on `designSource(for:)`.
+        XCTAssertEqual(model.library?.looks.values.map(\.sourceBookID).sorted(), [1, 3])
         XCTAssertEqual(model.designSource(for: books[1]).id, 1, "Book 2 changes book 1")
         XCTAssertEqual(model.designSource(for: books[2]).id, 3, "Book 3 changes itself")
         XCTAssertEqual(model.design(for: books[2])?.bookID, 3)
     }
 
     @MainActor
-    func testRecoloringASeriesBookRecolorsTheSeriesSource() async throws {
+    func testRecoloringASeriesBookRecolorsTheSeriesLook() async throws {
         let first = seriesBook(1, position: 1)
         let second = seriesBook(2, position: 2)
-        let saved = [design(for: 1, background: "#202020"), design(for: 2, background: "#404040")]
+        let saved = [
+            design(for: 1, background: "#202020"),
+            design(for: 2, background: "#404040").movedBack(),
+        ]
         let (model, folder) = try await previewModel(books: [first, second], designs: saved)
-        XCTAssertEqual(model.design(for: second)?.bookID, 1)
-        XCTAssertEqual(model.designSource(for: second).id, 1)
+        // Book 2's design is older, so it decides the look, even though book 1 ranks first.
+        XCTAssertEqual(model.designSource(for: first).id, 2)
+        XCTAssertEqual(model.design(for: first)?.backgroundHex, "#404040")
+        XCTAssertEqual(model.design(for: first)?.bookID, 1)
 
-        try await model.recolor(second, to: reader)
+        try await model.recolor(first, to: reader)
         let store = LocalSpineStore(folder: folder)
-        let source = try await store.savedDesign(accountID: "42", bookID: 1)
-        let own = try await store.savedDesign(accountID: "42", bookID: 2)
-        XCTAssertEqual(source?.colors, reader)
-        XCTAssertEqual(own?.backgroundHex, "#404040")
+        let key = try XCTUnwrap(SeriesDesigns.lookKey(of: first, link: nil))
+        let look = try await store.seriesLooks(accountID: "42", keys: [key])[key]
+        XCTAssertEqual(look?.backgroundHex, reader.background.hex)
+        XCTAssertEqual(look?.sourceBookID, 2)
+        XCTAssertNotNil(look?.editedAt)
+        // Each book's own saved design is unchanged.
+        let own = try await store.savedDesign(accountID: "42", bookID: 1)
+        let source = try await store.savedDesign(accountID: "42", bookID: 2)
+        XCTAssertEqual(own?.backgroundHex, "#202020")
+        XCTAssertEqual(source?.backgroundHex, "#404040")
+        XCTAssertEqual(model.look(for: first).background, reader.background)
         XCTAssertEqual(model.look(for: second).background, reader.background)
+    }
+
+    @MainActor
+    func testSavedLookDecidesTheSeriesUnlessABookKeepsItsOwn() async throws {
+        var books = [seriesBook(1, position: 1), seriesBook(2, position: 2)]
+        let saved = [design(for: 1, background: "#202020"), design(for: 2, background: "#404040")]
+        let key = try XCTUnwrap(SeriesDesigns.lookKey(of: books[0], link: nil))
+        // A look the Apple TV made from a cover, in a system face, before either design.
+        let television = SeriesLookV1(
+            version: 1, accountID: "42", seriesID: key.seriesID, group: key.group,
+            sourceBookID: 2, origin: "tvos-local-v1", createdAt: Date(timeIntervalSince1970: 0),
+            backgroundHex: "#102030", foregroundHex: "#F0F0F0", accentHex: "#F0F0F0",
+            typeface: "serif", weight: 700, uppercase: true, fontPostScriptName: "Georgia-Bold")
+        let (model, folder) = try await previewModel(
+            books: books, designs: saved, looks: [television])
+        XCTAssertEqual(model.library?.looks, [key: television], "Loading keeps the first look")
+        for book in books {
+            let drawn = try XCTUnwrap(model.design(for: book))
+            XCTAssertEqual(drawn.backgroundHex, "#102030")
+            XCTAssertEqual(drawn.generatorVersion, "tvos-local-v1")
+            XCTAssertEqual(model.look(for: book).face?.postScriptName, "Georgia-Bold")
+        }
+
+        // Keeping book 2's own look draws its own design, and recoloring it leaves the look.
+        books[1].seriesLink = SeriesLinkV1(
+            version: 1, accountID: "42", bookID: 2, standsAlone: false, ownLook: true,
+            chosenAt: .now)
+        try await model.setSeriesLink(
+            for: books[1], linkedSeriesID: nil, standsAlone: false, ownLook: true)
+        XCTAssertEqual(model.design(for: books[1])?.backgroundHex, "#404040")
+        XCTAssertFalse(model.sharesSeriesDesign(books[1]))
+        try await model.recolor(books[1], to: reader)
+        XCTAssertEqual(model.design(for: books[0])?.backgroundHex, "#102030")
+        let own = try await LocalSpineStore(folder: folder).savedDesign(accountID: "42", bookID: 2)
+        XCTAssertEqual(own?.colors, reader)
+
+        // The link survives a reload, and a choice that changes nothing deletes it.
+        await model.reload()
+        XCTAssertEqual(model.books.first { $0.id == 2 }?.seriesLink?.ownLook, true)
+        try await model.setSeriesLink(
+            for: books[1], linkedSeriesID: nil, standsAlone: false, ownLook: false)
+        await model.reload()
+        XCTAssertNil(model.books.first { $0.id == 2 }?.seriesLink)
+        XCTAssertEqual(model.design(for: books[1])?.backgroundHex, "#102030")
     }
 
     @MainActor
@@ -382,5 +461,18 @@ final class SpineColorsTests: XCTestCase {
         } catch CompanionError.designChanged {}
         let kept = try await store.savedDesign(accountID: "42", bookID: 7)
         XCTAssertEqual(kept, redesigned)
+    }
+}
+
+extension SpineDesignV1 {
+    /// The design, made a minute earlier.
+    fileprivate func movedBack() -> SpineDesignV1 {
+        SpineDesignV1(
+            version: version, accountID: accountID, bookID: bookID, workItemHash: workItemHash,
+            coverHash: coverHash, generatorVersion: generatorVersion,
+            generatedAt: generatedAt.addingTimeInterval(-60), backgroundHex: backgroundHex,
+            foregroundHex: foregroundHex, accentHex: accentHex, typeface: typeface, weight: weight,
+            uppercase: uppercase, fontFamily: fontFamily, fontPostScriptName: fontPostScriptName,
+            instanceWeight: instanceWeight, provenance: provenance)
     }
 }

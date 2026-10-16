@@ -226,6 +226,8 @@ final class GenerationController {
             #endif
         case .saved(let design):
             AppModel.shared.apply(design)
+        case .savedLook(let look):
+            AppModel.shared.apply([look])
         }
     }
 

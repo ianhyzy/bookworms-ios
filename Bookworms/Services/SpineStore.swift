@@ -7,8 +7,8 @@ import Foundation
 /// reads a folder of the same JSON for Simulator previews and tests, so no iCloud account is
 /// needed; it ignores the Hardcover sign-in.
 ///
-/// Both stores set each book's `chosenCoverURL` from the reader's `CoverChoiceV1` records when
-/// they load work or the library.
+/// Both stores set each book's `chosenCoverURL` and `seriesLink` from the reader's
+/// `CoverChoiceV1` and `SeriesLinkV1` records when they load work or the library.
 protocol SpineStore: Sendable {
     /// Returns the books to design, or `nil` when there is no work.
     func loadWork() async throws -> WorkContext?
@@ -28,8 +28,21 @@ protocol SpineStore: Sendable {
     func save(_ choice: CoverChoiceV1) async throws
     /// Deletes the reader's cover choice for a book, which restores its default cover.
     func deleteCoverChoice(accountID: String, bookID: Int) async throws
-    /// Returns the active account's books and every valid saved design, or `nil` before there
-    /// is a library.
+    /// Saves the reader's series choice for a book, replacing an earlier choice.
+    func save(_ link: SeriesLinkV1) async throws
+    /// Deletes the reader's series choice for a book, which restores its default series.
+    func deleteSeriesLink(accountID: String, bookID: Int) async throws
+    /// Returns the valid saved looks of the look groups `keys`.
+    func seriesLooks(accountID: String, keys: Set<SeriesLookKey>) async throws -> [SeriesLookKey:
+        SeriesLookV1]
+    /// Saves `look` only when its group has no look yet, and returns the look the group keeps:
+    /// `look`, or the look another device saved first. Throws `CompanionError.invalidCloudData`
+    /// when the group's saved look is not valid.
+    func createLook(_ look: SeriesLookV1) async throws -> SeriesLookV1
+    /// Saves `look` over its group's look, such as after the reader recolors it.
+    func save(_ look: SeriesLookV1) async throws
+    /// Returns the active account's books, every valid saved design, and the saved looks of the
+    /// books' look groups, or `nil` before there is a library.
     func loadLibrary() async throws -> LibrarySnapshot?
     /// Subscribes to worklist changes so a silent push can schedule generation.
     func installWorklistSubscription() async throws
@@ -69,8 +82,9 @@ enum WorkSource: Equatable {
 /// Reads and writes the iCloud JSON shapes in a local folder.
 ///
 /// The folder holds `library-v1.json` (the archive), an optional `spine-worklist-v1.json`,
-/// `spine-designs-v1.json` (`[recordName: SpineDesignV1]`, the Apple TV cache shape), and
-/// `cover-choices-v1.json` (`[recordName: CoverChoiceV1]`).
+/// `spine-designs-v1.json` (`[recordName: SpineDesignV1]`, the Apple TV cache shape),
+/// `cover-choices-v1.json` (`[recordName: CoverChoiceV1]`), `series-links-v1.json`
+/// (`[recordName: SeriesLinkV1]`), and `series-looks-v1.json` (`[recordName: SeriesLookV1]`).
 actor LocalSpineStore: SpineStore {
     private let folder: URL
 
@@ -87,8 +101,7 @@ actor LocalSpineStore: SpineStore {
         let (snapshot, books) = try archive.workSource(for: worklist)
         return WorkContext(
             accountID: snapshot.accountID, syncedAt: snapshot.syncedAt,
-            books: CoverChoiceV1.apply(
-                try coverChoices(), accountID: snapshot.accountID, to: books),
+            books: try applyingChoices(accountID: snapshot.accountID, to: books),
             followsWorklist: worklist != nil, cloudUserRecordName: "local")
     }
 
@@ -147,6 +160,48 @@ actor LocalSpineStore: SpineStore {
         try write(all, "cover-choices-v1.json")
     }
 
+    func save(_ link: SeriesLinkV1) async throws {
+        try link.validate()
+        var all = try seriesLinks()
+        all[CloudContract.seriesLinkRecordName(accountID: link.accountID, bookID: link.bookID)] =
+            link
+        try write(all, "series-links-v1.json")
+    }
+
+    func deleteSeriesLink(accountID: String, bookID: Int) async throws {
+        var all = try seriesLinks()
+        all[CloudContract.seriesLinkRecordName(accountID: accountID, bookID: bookID)] = nil
+        try write(all, "series-links-v1.json")
+    }
+
+    func seriesLooks(accountID: String, keys: Set<SeriesLookKey>) async throws -> [SeriesLookKey:
+        SeriesLookV1]
+    {
+        SeriesLookV1.keyed(try looks(), accountID: accountID).filter { keys.contains($0.key) }
+    }
+
+    func createLook(_ look: SeriesLookV1) async throws -> SeriesLookV1 {
+        try look.validate()
+        var all = try looks()
+        let name = CloudContract.seriesLookRecordName(accountID: look.accountID, key: look.key)
+        if all[name] != nil {
+            guard
+                let existing = SeriesLookV1.keyed(all, accountID: look.accountID)[look.key]
+            else { throw CompanionError.invalidCloudData }
+            return existing
+        }
+        all[name] = look
+        try write(all, "series-looks-v1.json")
+        return look
+    }
+
+    func save(_ look: SeriesLookV1) async throws {
+        try look.validate()
+        var all = try looks()
+        all[CloudContract.seriesLookRecordName(accountID: look.accountID, key: look.key)] = look
+        try write(all, "series-looks-v1.json")
+    }
+
     func loadLibrary() async throws -> LibrarySnapshot? {
         guard let archive = try decode(CloudLibraryArchive.self, "library-v1.json") else {
             return nil
@@ -156,15 +211,22 @@ actor LocalSpineStore: SpineStore {
             .flatMap { $0.bookIDs.isEmpty ? nil : $0 }
         let (snapshot, books) =
             try (try? archive.workSource(for: shown)) ?? archive.workSource(for: nil)
+        let chosen = try applyingChoices(accountID: snapshot.accountID, to: books)
         return LibrarySnapshot(
-            accountID: snapshot.accountID, syncedAt: snapshot.syncedAt,
-            books: CoverChoiceV1.apply(
-                try coverChoices(), accountID: snapshot.accountID, to: books),
+            accountID: snapshot.accountID, syncedAt: snapshot.syncedAt, books: chosen,
             designs: LibrarySnapshot.latestDesigns(
-                try designs().values, accountID: snapshot.accountID, books: books))
+                try designs().values, accountID: snapshot.accountID, books: books),
+            looks: SeriesLookV1.keyed(try looks(), accountID: snapshot.accountID))
     }
 
     func installWorklistSubscription() async throws {}
+
+    /// Returns `books` with the reader's chosen covers and series links.
+    private func applyingChoices(accountID: String, to books: [CloudBook]) throws -> [CloudBook] {
+        SeriesLinkV1.apply(
+            try seriesLinks(), accountID: accountID,
+            to: CoverChoiceV1.apply(try coverChoices(), accountID: accountID, to: books))
+    }
 
     private func designs() throws -> [String: SpineDesignV1] {
         try decode([String: SpineDesignV1].self, "spine-designs-v1.json") ?? [:]
@@ -172,6 +234,14 @@ actor LocalSpineStore: SpineStore {
 
     private func coverChoices() throws -> [String: CoverChoiceV1] {
         try decode([String: CoverChoiceV1].self, "cover-choices-v1.json") ?? [:]
+    }
+
+    private func seriesLinks() throws -> [String: SeriesLinkV1] {
+        try decode([String: SeriesLinkV1].self, "series-links-v1.json") ?? [:]
+    }
+
+    private func looks() throws -> [String: SeriesLookV1] {
+        try decode([String: SeriesLookV1].self, "series-looks-v1.json") ?? [:]
     }
 
     private func write(_ value: some Encodable, _ name: String) throws {
