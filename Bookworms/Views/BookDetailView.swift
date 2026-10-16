@@ -96,8 +96,11 @@ struct BookDetailView: View {
             let text = await Self.plainText(book.description)
             if !Task.isCancelled { about = text }
         }
-        // A new design of the spine's source, not a recoloring of its look or design.
+        // A new design of the spine's source, not a recoloring of its look or design, nor an
+        // ordinary run's copy of its series look.
         .onChange(of: model.library?.designs[model.designSource(for: book).id]?.generatedAt) {
+            guard model.library?.designs[model.designSource(for: book).id]?.isSeriesReuse != true
+            else { return }
             designedCover = model.designSource(for: book).chosenCoverURL
         }
         .sheet(isPresented: $choosesCover) {
@@ -937,8 +940,11 @@ private struct SpineDesignCard: View {
             Task { [model, book] in try? await model.recolor(book, to: draft) }
         }
         // A new design, such as a redesign from a new cover, replaces the colors being picked.
-        // Recoloring a look sets its edit date, so the source's stored design tells instead.
+        // Recoloring a look sets its edit date, so the source's stored design tells instead; an
+        // ordinary run's copy of the series look is no new design.
         .onChange(of: model.library?.designs[model.designSource(for: book).id]?.generatedAt) {
+            guard model.library?.designs[model.designSource(for: book).id]?.isSeriesReuse != true
+            else { return }
             draft = nil
             redesignedAt = nil
         }
