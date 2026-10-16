@@ -339,8 +339,8 @@ struct PullOutPath {
     }
 }
 
-/// Shows the book that `pullOut` has out, and its details, over the carousel, which waits
-/// meanwhile and which VoiceOver skips while the details show.
+/// Shows the book that `pullOut` has out, and its details, over the shelf, which VoiceOver skips
+/// while the details show.
 ///
 /// A modifier of its own, so a pull and a return update only it, not the shelf's body, which
 /// sorts the library.
@@ -349,7 +349,6 @@ struct ShelfPullOutStage: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .allowsHitTesting(pullOut.book == nil)
             .accessibilityHidden(pullOut.showsDetails)
             .overlay {
                 if let book = pullOut.book { ShelfPullOutLayer(book: book, pullOut: pullOut) }
@@ -358,6 +357,17 @@ struct ShelfPullOutStage: ViewModifier {
             // Another tab closes the details at once, except for the book's Share, which
             // keeps them for the reader's return, as pushed details stay.
             .onDisappear { if !pullOut.keepsForShare { pullOut.close() } }
+    }
+}
+
+/// Keeps the carousel from taking touches while `pullOut` has a book out, from the tap until the
+/// book is back in its place, so the carousel neither scrolls the book's place away nor pulls
+/// another book. A modifier of its own, for the same reason as `ShelfPullOutStage`.
+struct ShelfPullOutWait: ViewModifier {
+    let pullOut: ShelfPullOut
+
+    func body(content: Content) -> some View {
+        content.allowsHitTesting(pullOut.book == nil)
     }
 }
 
