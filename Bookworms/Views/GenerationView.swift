@@ -145,9 +145,10 @@ struct GenerationView: View {
 
     /// The run's model tier: Private Cloud Compute with its daily limit, or, when it isn't
     /// available, the backup model, the on-device model, or local defaults, with why Private
-    /// Cloud Compute, a backup model the reader chose but didn't set up, and, under local
-    /// defaults, the on-device model are unavailable, and what a design costs at this tier. The
-    /// reasons come from the cached status, so the body reads no Keychain item.
+    /// Cloud Compute, a backup model the reader chose but didn't set up or whose provider
+    /// rejected its settings, and, under local defaults, the on-device model are unavailable,
+    /// and what a design costs at this tier. The reasons come from the cached status, so the
+    /// body reads no Keychain item.
     private var designModel: some View {
         let status = generation.status.model
         // Until the first status arrives, the best tier this build could use names the model.

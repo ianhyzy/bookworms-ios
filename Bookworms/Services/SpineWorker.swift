@@ -93,8 +93,8 @@ actor SpineWorker {
     /// The book that the reader asked to design anew in this run, until the run tries it.
     private var redesign: (bookID: Int, remakesLook: Bool)?
     /// The model this run designs with: the best tier when the run first loaded the library, or
-    /// the best one below the backup model after the backup rejected a request. `nil` between
-    /// runs.
+    /// the best one below the backup model after the backup's lasting rejection, including the
+    /// same refusal of several books in a row (`newDesign`). `nil` between runs.
     private var runModel: ModelStatus?
     /// The backup model's refusals of this run's latest books.
     private var refusals = RefusalStreak()
@@ -446,12 +446,12 @@ actor SpineWorker {
     ///
     /// A lasting rejection by the backup model, such as a revoked key, an unknown model name, or
     /// an account without credit (`ProviderError.isLasting`), would repeat for every book. The
-    /// app remembers it until the reader changes the backup model's settings
-    /// (`SpineDesigner.rejection`), so this run and later ones design with the best tier below
-    /// the backup, down to local defaults, and the Spines tab shows the rejection. When the tier
-    /// found can take no request now, such as Private Cloud Compute at its daily limit, the
-    /// rejection stops the run. A rejection that arrives after the reader replaced the key fails
-    /// only this book, because it says nothing about the new key.
+    /// app remembers it until the reader changes the backup model's settings or starts
+    /// **Generate now** (`SpineDesigner.rejection`), so this run and later ones design with the
+    /// best tier below the backup, down to local defaults, and the Spines tab shows the
+    /// rejection. When the tier found can take no request now, such as Private Cloud Compute at
+    /// its daily limit, the rejection stops the run. A rejection that arrives after the reader
+    /// replaced the key fails only this book, because it says nothing about the new key.
     ///
     /// An HTTP 400 refusal fails only this book (`BookAnalyzer.modelFailure(_:)`), unless it is
     /// the third book in a row that the backup refuses with the same message

@@ -639,8 +639,8 @@ enum CompanionError: LocalizedError, Sendable {
     /// iCloud holds another design than the one the reader recolored, such as a redesign from
     /// another device.
     case designChanged
-    /// A third-party spine designer rejected its key, model name, or account, or is not set up,
-    /// with the reason.
+    /// A third-party spine designer rejected its settings, such as its key, model name, or
+    /// account, or is not set up, with the reason.
     case providerRejected(String)
     /// The backup model refused one book's request with HTTP 400, with the provider's message.
     /// It fails only the book, unless the backup refuses several books in a row with the same

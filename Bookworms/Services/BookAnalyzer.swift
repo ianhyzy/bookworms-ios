@@ -86,8 +86,9 @@ struct ModelStatus: Sendable {
     var designer = SpineDesigner.appleOnly
     /// Why Private Cloud Compute is unavailable, when a lower tier designs instead.
     var pccUnavailableReason: String?
-    /// Why the backup model the reader chose isn't set up, such as a missing key or model name,
-    /// when a lower tier designs instead.
+    /// Why the backup model the reader chose can't design, such as a missing key or model name or
+    /// its provider's lasting rejection of these settings (`SpineDesigner.rejection`), when a
+    /// lower tier designs instead.
     var backupUnavailableReason: String?
     /// Why Apple's on-device model is unavailable, when local defaults design instead.
     var onDeviceUnavailableReason: String?
