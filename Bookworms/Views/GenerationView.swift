@@ -37,7 +37,14 @@ struct GenerationView: View {
                     }
                 }
             }
+            #if os(iOS)
+                // The first section has no header, so the default top margin under an inline
+                // title reads as a gap.
+                .contentMargins(.top, 8, for: .scrollContent)
+            #endif
             .navigationTitle("Spines")
+            // The tab bar already names the tab, so an inline title leaves the form more room.
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 Button("Hardcover account", systemImage: accountSymbol) { showsAccount = true }
                     .accessibilityValue(accountNeedsAttention ? "Needs attention" : "")
