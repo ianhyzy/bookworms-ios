@@ -974,9 +974,13 @@ private struct ShareBookPicker: View {
     /// `-BookwormsShareBatch` renders a list of option sets in one launch
     /// (`ShareStudioView.renderBatch()`).
     enum ShareDebug {
-        /// Writes `image` as `share-debug<name>.png`, with the credit, as sharing exports it.
+        /// Writes `image` as `share-debug<name>.png`, with the credit, as sharing exports it, in
+        /// a launch with `-BookwormsShareTemplate` or `-BookwormsShareBatch`.
         @MainActor static func write(_ image: ShareImage?, name: String = "") {
-            guard let image, UserDefaults.standard.string(forKey: "BookwormsShareTemplate") != nil
+            let defaults = UserDefaults.standard
+            guard let image,
+                defaults.string(forKey: "BookwormsShareTemplate") != nil
+                    || defaults.string(forKey: "BookwormsShareBatch") != nil
             else { return }
             let url = URL.cachesDirectory.appending(path: "Bookworms/share-debug\(name).png")
             try? FileManager.default.createDirectory(
