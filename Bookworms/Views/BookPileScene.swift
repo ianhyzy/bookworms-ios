@@ -181,13 +181,11 @@ extension PileTray {
     /// look at the table's center without turning, as the default camera and a zoomed one do.
     ///
     /// A pile against the far or side walls rises toward the top or sides of the screen, so
-    /// those walls stand where the view's edges meet a pile `pileHeight` high: room for the
-    /// longest book, 2.8 units, standing on end on a 1.7-unit pile. `PileLayout.maximumVolume`
-    /// keeps a pile of long books from rising much higher. A pile against the near wall rises
-    /// toward the middle of the screen, so that wall stands where the bottom edge meets the
-    /// table.
+    /// those walls stand where the view's edges meet a pile `pileHeight` high, by default the
+    /// tallest pile (`tallestPile`). A pile against the near wall rises toward the middle of the
+    /// screen, so that wall stands where the bottom edge meets the table.
     init?(
-        aspect: Float, safeTop: Float, safeBottom: Float, pileHeight: Float = 4.5,
+        aspect: Float, safeTop: Float, safeBottom: Float, pileHeight: Float = tallestPile,
         camera: PileCamera = PileCamera()
     ) {
         let top = camera.ray(ndc: [1, safeTop], aspect: aspect)
@@ -207,7 +205,9 @@ extension PileTray {
 
     /// Fits the tray between the bars that cover `viewport`'s edges, as `camera` sees it.
     /// Returns `nil` when the bars leave no room between them.
-    init?(viewport: PileViewport, pileHeight: Float = 4.5, camera: PileCamera = PileCamera()) {
+    init?(
+        viewport: PileViewport, pileHeight: Float = tallestPile, camera: PileCamera = PileCamera()
+    ) {
         let height = Float(viewport.size.height)
         guard viewport.size.width > 0, Float(viewport.insets.top + viewport.insets.bottom) < height
         else { return nil }
@@ -216,6 +216,34 @@ extension PileTray {
             safeTop: 1 - 2 * Float(viewport.insets.top) / height,
             safeBottom: -1 + 2 * Float(viewport.insets.bottom) / height, pileHeight: pileHeight,
             camera: camera)
+    }
+
+    /// Fits the tray between the bars for a drop of `books`, as `camera` sees it, with walls
+    /// where the view's edges meet the pile those books make (`pileHeight(of:over:)`), so a
+    /// small pile fills the screen as a full one does. Returns `nil` when the bars leave no
+    /// room between them.
+    init?(viewport: PileViewport, books: [CloudBook], camera: PileCamera = PileCamera()) {
+        guard let tallest = PileTray(viewport: viewport, camera: camera) else { return nil }
+        self.init(
+            viewport: viewport, pileHeight: Self.pileHeight(of: books, over: tallest),
+            camera: camera)
+    }
+
+    /// The most height the walls allow for: room for the longest book, 2.8 units, standing on
+    /// end on a 1.7-unit pile, as books that a full pile pushes against a wall stand.
+    /// `PileLayout.maximumVolume` keeps a pile of long books from rising much higher.
+    static let tallestPile: Float = 4.5
+
+    /// How high `books` pile on `tray`: their volume spread over the tray, doubled for a loose
+    /// pile, and a unit more for the books that lie across others or lean on them, which also
+    /// keeps the tray's far edge inside the box of **Phone is the box**, at most `tallestPile`. Live piles stay under it: 14 liters top out at 0.8 units (1.3 here), and
+    /// 33 liters, a year's books, at 1.4 (1.7 here). `tray` is the tallest pile's, the smallest
+    /// tray, so its area overstates the height a little.
+    static func pileHeight(of books: [CloudBook], over tray: PileTray) -> Float {
+        let volume = books.map { BookShape(of: $0, coverAspect: 2 / 3).size }
+            .map { $0.x * $0.y * $0.z }
+            .reduce(0, +)
+        return min(tallestPile, 2 * volume / tray.area + 1)
     }
 
     /// The tray's area on the table, in square units.
@@ -811,13 +839,16 @@ final class BookPileScene {
 
     // MARK: Building
 
-    /// Adds the table, walls, and lights once the view has room for the tray, and fits them to
-    /// each new size until the first books drop: a tab's first layouts pass through sizes it
-    /// never shows, such as one with a large title. Returns whether the tray changed.
+    /// Adds the table, walls, and lights once the view has room for the tray, fitted to the
+    /// pile of `books`, and fits them to each new size until the first books drop: a tab's
+    /// first layouts pass through sizes it never shows, such as one with a large title. A
+    /// `newPile` fits them again. Returns whether the tray changed.
     @discardableResult
-    private func build(_ viewport: PileViewport) -> Bool {
-        guard tray == nil || spawned == 0, let tray = PileTray(viewport: viewport),
-            tray != self.tray
+    private func build(_ viewport: PileViewport, for books: [CloudBook], newPile: Bool = false)
+        -> Bool
+    {
+        guard tray == nil || spawned == 0 || newPile,
+            let tray = PileTray(viewport: viewport, books: books), tray != self.tray
         else { return false }
         aspect = Float(viewport.size.width / viewport.size.height)
         box = PileBox(viewport: viewport)
@@ -887,23 +918,26 @@ final class BookPileScene {
     /// With `periods` set, the books drop period by period through that frame (see
     /// `PileLayout.periods`). Otherwise, books added to a dropped list, such as a book a library
     /// update adds, join the books still waiting, when the list keeps the earlier books in their
-    /// order. Any other change starts a new pile, which removes
-    /// every book, the lifted one too.
+    /// order. Any other change starts a new pile, which removes every book, the lifted one too,
+    /// and fits the walls and the lamp's pool to the new pile's books.
     func planDrop(
         _ books: [CloudBook], tidy: Bool, periods: TimeFrame? = nil, generation: Int,
         viewport: PileViewport
     ) {
-        let refits = build(viewport)
-        guard let tray else { return }
         let periods = tidy ? nil : periods
         let key = PlanKey(
             ids: books.map(\.id), tidy: tidy, periods: periods, generation: generation)
+        var added: [CloudBook]?
+        if !tidy, periods == nil, let planKey, !planKey.tidy, planKey.periods == nil,
+            planKey.generation == generation
+        {
+            added = PileLayout.added(to: planKey.ids, in: books)
+        }
+        let refits = build(viewport, for: books, newPile: key != planKey && added == nil)
+        guard let tray else { return }
         guard refits || key != planKey else { return }
         stir()
-        if !refits, !tidy, periods == nil, let planKey, !planKey.tidy, planKey.periods == nil,
-            planKey.generation == generation,
-            let added = PileLayout.added(to: planKey.ids, in: books)
-        {
+        if !refits, let added {
             // Plans the waiting books again with the new ones, so the next wave starts in a
             // fresh set of cells.
             let waiting = plan[spawned...].map(\.book) + added
@@ -1480,7 +1514,7 @@ final class BookPileScene {
         _ handover: DeskHandover, books: [CloudBook], tidy: Bool, periods: TimeFrame?,
         generation: Int, viewport: PileViewport
     ) {
-        build(viewport)
+        build(viewport, for: books)
         guard let fitted = tray else { return }
         reset(keeping: Set(handover.books.map(\.id)))
         let byID = Dictionary(books.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })

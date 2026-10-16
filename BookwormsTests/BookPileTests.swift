@@ -161,6 +161,49 @@ final class BookPileTests: XCTestCase {
         }
     }
 
+    func testTrayFitsThePlannedPile() throws {
+        func book(_ id: Int, pages: Int) -> CloudBook {
+            CloudBook(
+                id: id, title: "Fictional Book \(id)", author: "An Author", coverURL: nil,
+                detailCoverURL: nil, pages: pages)
+        }
+        let viewport = PileViewport(
+            size: CGSize(width: 402, height: 874),
+            insets: .init(top: 116, leading: 0, bottom: 83, trailing: 0))
+        let tallest = try XCTUnwrap(PileTray(viewport: viewport))
+        // A drop that fills the volume budget keeps the tallest pile's walls.
+        let long = (1...300).map { book($0, pages: 600 + ($0 * 337) % 600) }
+        let full = Array(PileLayout.dropped(long, count: 300))
+        XCTAssertEqual(PileTray(viewport: viewport, books: full), tallest)
+        // A year's 40 typical books pile under 2 units, so the far and side walls move out
+        // toward the screen's edges, and the near wall, where the bottom edge meets the table,
+        // stays.
+        let year = (1...40).map { book($0, pages: 150 + ($0 * 97) % 400) }
+        let height = PileTray.pileHeight(of: year, over: tallest)
+        XCTAssertGreaterThan(height, 1)
+        XCTAssertLessThan(height, 2)
+        let tray = try XCTUnwrap(PileTray(viewport: viewport, books: year))
+        XCTAssertEqual(tray, PileTray(viewport: viewport, pileHeight: height))
+        XCTAssertLessThan(tray.farZ, tallest.farZ - 2)
+        XCTAssertGreaterThan(tray.farHalfWidth, tallest.farHalfWidth)
+        XCTAssertGreaterThan(tray.nearHalfWidth, tallest.nearHalfWidth)
+        XCTAssertEqual(tray.nearZ, tallest.nearZ, accuracy: 0.0001)
+        // The far edge shows higher, nearer the bar's edge.
+        XCTAssertGreaterThan(
+            project([0, 0, tray.farZ]).y, project([0, 0, tallest.farZ]).y + 0.1)
+        // The emptiest drop's tray, the largest, still starts every book under the ceiling and
+        // keeps its far edge inside the box of Phone is the box.
+        let largest = try XCTUnwrap(PileTray(viewport: viewport, books: []))
+        let starts = (0..<3 as Range<UInt64>)
+            .flatMap { PileLayout.dropPlan(Self.books, in: largest, seed: $0) }
+        XCTAssertLessThan(
+            starts.map(\.transform.translation.y).max()! + 1.86, PileLayout.ceiling)
+        let box = try XCTUnwrap(PileBox(viewport: viewport))
+        for corner in largest.corners.prefix(2) {
+            XCTAssertTrue(box.contains(corner + [0, 0.1, 0], margin: 0.3))
+        }
+    }
+
     func testClampKeepsPointsInsideTheTray() {
         let tray = Self.tray
         let inside = SIMD3<Float>(0.5, 2, 0)
