@@ -189,46 +189,74 @@ struct TopFiveCard: View {
             // inside the fan's width, and so in the gutters.
             let reach = input.coverStyle == .flat ? 0.5 : 0.47
             let spacing = min(size.width * 0.16, (size.width / 2 - reach * leadHeight) / 2)
+            // Each book's slot, height, turn in degrees, and drop below the fan's middle: outer
+            // books sit lower and turn further, as a hand of cards curves.
+            let cards = books.enumerated()
+                .map { index, book in
+                    let slot = Self.slots[index] - middle
+                    let jitter = ShareStyle.unit(input.seed, book.id, 6) - 0.5
+                    return (
+                        slot: slot, jitter: jitter, height: leadHeight * (index == 0 ? 1 : 0.82),
+                        turn: Double(slot) * 7 + jitter * 2,
+                        drop: slot * slot * 14 + (index == 0 ? 0 : leadHeight * 0.06)
+                    )
+                }
+            // The drops push the fan's lowest corners down, so the fan rises by half the
+            // difference between the turned books' reach below and above the middle. That leaves
+            // as much room under the books, above the ranked list, as over them.
+            let reaches = zip(books, cards)
+                .map { book, card in
+                    let width =
+                        card.height
+                        * ShareCover.aspect(of: input.covers[book.id], style: input.coverStyle)
+                    let turn = abs(card.turn) * .pi / 180
+                    let half = (width * sin(turn) + card.height * cos(turn)) / 2
+                    return (above: half - card.drop, below: half + card.drop)
+                }
+            let lift =
+                ((reaches.map(\.below).max() ?? 0) - (reaches.map(\.above).max() ?? 0)) / 2
             ZStack {
                 // The first-ranked book is drawn last, in front.
                 ForEach(Array(books.enumerated().reversed()), id: \.element.id) { index, book in
-                    let slot = Self.slots[index] - middle
-                    let jitter = ShareStyle.unit(input.seed, book.id, 6) - 0.5
+                    let card = cards[index]
                     ShareCover(
                         book: book, look: input.look(for: book), cover: input.covers[book.id],
-                        style: input.coverStyle, height: leadHeight * (index == 0 ? 1 : 0.82),
-                        yaw: 0.36 + jitter * 0.12, pitch: -0.1
+                        style: input.coverStyle, height: card.height,
+                        yaw: 0.36 + card.jitter * 0.12, pitch: -0.1
                     )
                     .shadow(color: .black.opacity(0.45), radius: 24, y: 18)
-                    .rotationEffect(.degrees(Double(slot) * 7 + jitter * 2))
+                    .rotationEffect(.degrees(card.turn))
                     .position(
-                        x: size.width / 2 + slot * spacing,
-                        y: size.height / 2 + slot * slot * 14 + (index == 0 ? 0 : leadHeight * 0.06)
-                    )
+                        x: size.width / 2 + card.slot * spacing,
+                        y: size.height / 2 + card.drop - lift)
                 }
             }
         }
     }
 
+    /// A ranked book: its rank, title, author, and stars. The title letters at 40 pixels or
+    /// more, wrapping to a second line before it shrinks, so it stays legible on a phone.
     private func row(rank: Int, book: CloudBook, showsAuthor: Bool) -> some View {
-        HStack(spacing: 20) {
+        // The rank and stars line up with the title's first line when it wraps.
+        HStack(alignment: .firstTextBaseline, spacing: 20) {
             Text(String(rank))
                 .font(ShareStyle.serif(46, .bold))
                 .foregroundStyle(ShareStyle.gold)
                 .frame(width: 44)
             VStack(alignment: .leading, spacing: 0) {
                 ShareFittingText(
-                    forms: ShareStyle.titles(book), size: 38, minimumScale: 0.8, book: book
+                    forms: ShareStyle.titles(book), size: 44, minimumScale: 40 / 44, lines: 2,
+                    book: book
                 ) {
                     ShareStyle.serif($0, .semibold)
                 }
                 if showsAuthor {
                     Text(SpineView.shortAuthor(book.author))
-                        .font(ShareStyle.serif(30))
+                        .font(ShareStyle.serif(32))
                         .opacity(0.7)
+                        .lineLimit(1)
                 }
             }
-            .lineLimit(1)
             Spacer(minLength: 16)
             if input.showsRatings, let rating = book.rating, rating > 0 {
                 ShareStars(rating: rating, size: 30)
