@@ -6,8 +6,8 @@ import UniformTypeIdentifiers
 
 /// The reader's backup model, which designs spines when Private Cloud Compute isn't available: a
 /// third-party provider chosen in Settings on the Mac or from the Spines tab on the iPhone. The
-/// `.apple` choice means no backup, so Apple's on-device model designs when Private Cloud
-/// Compute isn't available (`ModelTier`).
+/// `.apple` choice means no backup, so Apple's on-device model, or without it local defaults,
+/// designs when Private Cloud Compute isn't available (`ModelTier`).
 ///
 /// The choice and model name live in `UserDefaults`; each provider's API key lives in this
 /// device's Keychain (`KeychainSecret`), never synced. Third-party providers answer through
