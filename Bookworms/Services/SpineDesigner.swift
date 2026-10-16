@@ -119,10 +119,16 @@ struct SpineDesigner: Hashable, Sendable {
         return saved["message"]
     }
 
-    /// Remembers `message` as the provider's lasting rejection of these settings (`rejection`).
-    func rememberRejection(_ message: String) {
+    /// Remembers `message` as the provider's lasting rejection of these settings (`rejection`),
+    /// unless this device's key is no longer `sentKey`, the key of the rejected request. A late
+    /// rejection of a key the reader has since replaced says nothing about the new key, which
+    /// the settings ID can't tell apart. The keys are compared in memory, and nothing about
+    /// them is saved. Returns whether it remembered the rejection.
+    @discardableResult func rememberRejection(_ message: String, sentKey: String?) -> Bool {
+        guard provider.key.read() == sentKey else { return false }
         UserDefaults.standard.set(
             ["settings": settingsID, "message": message], forKey: Self.rejectionKey)
+        return true
     }
 
     /// Forgets a remembered rejection, because the reader changed the settings, and returns its
@@ -367,7 +373,7 @@ enum ProviderHTTP {
                 error?["message"] as? String
                 ?? HTTPURLResponse.localizedString(forStatusCode: status)
             // The app saves the message with the run's outcome and as a remembered rejection
-            // (`SpineDesigner.rememberRejection(_:)`), so a key that an endpoint echoes is
+            // (`SpineDesigner.rememberRejection(_:sentKey:)`), so a key that an endpoint echoes is
             // removed from it.
             if !key.isEmpty { message = message.replacingOccurrences(of: key, with: "…") }
             let details = error?["details"] as? [[String: Any]]

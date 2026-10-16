@@ -450,7 +450,8 @@ actor SpineWorker {
     /// (`SpineDesigner.rejection`), so this run and later ones design with the best tier below
     /// the backup, down to local defaults, and the Spines tab shows the rejection. When the tier
     /// found can take no request now, such as Private Cloud Compute at its daily limit, the
-    /// rejection stops the run.
+    /// rejection stops the run. A rejection that arrives after the reader replaced the key fails
+    /// only this book, because it says nothing about the new key.
     ///
     /// An HTTP 400 refusal fails only this book (`BookAnalyzer.modelFailure(_:)`), unless it is
     /// the third book in a row that the backup refuses with the same message
@@ -467,17 +468,23 @@ actor SpineWorker {
                 using: model)
         }
         guard model.tier == .backup else { return try await design(using: model) }
+        // Held in memory for the request, so a rejection that arrives after the reader replaced
+        // the key isn't remembered for the new one.
+        let key = model.designer.provider.key.read()
         // Any outcome but another refusal ends the streak.
         var streak = refusals
         refusals = RefusalStreak()
         do {
             return try await design(using: model)
         } catch CompanionError.providerRejected(let reason) {
-            return try await design(
-                using: try await fallBack(from: model, rejection: reason, mode: mode))
+            // A rejection of a replaced key fails only this book, and the run keeps its tier.
+            guard
+                let next = try await fallBack(from: model, rejection: reason, key: key, mode: mode)
+            else { throw CompanionError.providerRefused(reason) }
+            return try await design(using: next)
         } catch CompanionError.providerRefused(let reason) {
             if streak.isLasting(after: reason) {
-                _ = try await fallBack(from: model, rejection: reason, mode: mode)
+                _ = try await fallBack(from: model, rejection: reason, key: key, mode: mode)
             }
             refusals = streak
             throw CompanionError.providerRefused(reason)
@@ -485,13 +492,15 @@ actor SpineWorker {
     }
 
     /// Remembers `rejection` as the backup model's lasting rejection of `model`'s settings
-    /// (`SpineDesigner.rememberRejection(_:)`) and moves the run to the best tier below it, which
-    /// it returns. Throws `CompanionError.providerRejected`, which stops the run, when that tier
-    /// can take no request now.
-    private func fallBack(from model: ModelStatus, rejection: String, mode: RunMode) async throws
-        -> ModelStatus
-    {
-        model.designer.rememberRejection(rejection)
+    /// (`SpineDesigner.rememberRejection(_:sentKey:)`) and moves the run to the best tier below
+    /// it, which it returns. Returns `nil`, and changes nothing, when this device's key is no
+    /// longer `key`, the one it held when the rejected request started. Throws
+    /// `CompanionError.providerRejected`, which stops the run, when that tier can take no request
+    /// now.
+    private func fallBack(
+        from model: ModelStatus, rejection: String, key: String?, mode: RunMode
+    ) async throws -> ModelStatus? {
+        guard model.designer.rememberRejection(rejection, sentKey: key) else { return nil }
         var next = await analyzer.status(for: .appleOnly)
         next.backupUnavailableReason = rejection
         guard Self.modelStop(next, mode: mode) == nil else {

@@ -86,7 +86,7 @@ final class GenerationTests: XCTestCase {
         let ready = await analyzer.status(of: .backup, designer: custom)
         XCTAssertTrue(ready.isAvailable)
 
-        custom.rememberRejection("Custom: Unknown model.")
+        custom.rememberRejection("Custom: Unknown model.", sentKey: custom.provider.key.read())
         let rejected = await analyzer.status(of: .backup, designer: custom)
         XCTAssertFalse(rejected.isAvailable)
         XCTAssertEqual(rejected.unavailableReason, "Custom: Unknown model.")
@@ -108,6 +108,20 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(custom.rejection, "Custom: Unknown model.")
         SpineDesigner.forgetRejection()
         XCTAssertNil(custom.rejection, "Changed settings forget the rejection")
+    }
+
+    func testARejectionOfAReplacedKeyIsNotRemembered() {
+        SpineDesigner.forgetRejection()
+        defer { SpineDesigner.forgetRejection() }
+        let custom = SpineDesigner(
+            provider: .custom, model: "local-model", baseURL: "http://localhost:1234/v1")
+        // Whatever key this device holds, the late rejection's request sent another one.
+        let current = custom.provider.key.read()
+        XCTAssertFalse(
+            custom.rememberRejection("Custom: Invalid key.", sentKey: (current ?? "") + "-old"))
+        XCTAssertNil(custom.rejection, "A late rejection of a replaced key leaves the new one")
+        XCTAssertTrue(custom.rememberRejection("Custom: Invalid key.", sentKey: current))
+        XCTAssertEqual(custom.rejection, "Custom: Invalid key.")
     }
 
     func testModelErrorsMapToRunStopsOrBookFailures() {
