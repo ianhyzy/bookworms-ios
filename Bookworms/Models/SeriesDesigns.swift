@@ -151,16 +151,18 @@ enum SeriesDesigns {
         return rank(lhs) < rank(rhs)
     }
 
-    /// Returns whether a design's font is allowed: its `fontFamily` is not blocked, such as Impact
-    /// or an italic, or it has none.
+    /// Returns whether a design's font is allowed: neither its `fontFamily` nor its
+    /// `fontPostScriptName` is blocked, such as Impact or an italic. A missing name passes.
     ///
     /// A new look copies only a design that passes as stored (`SpineStore.savedDesign`,
     /// `LibrarySnapshot.designs`), the same records the Apple TV app checks with its copy of this
-    /// rule, so both apps pick the same source for a group's first look. It checks only
-    /// `fontFamily`, as the Apple TV does. A group without a look judges each design in its
-    /// allowed upright face (`SpineDesignV1.withAllowedFont`), as readers draw it.
+    /// rule, so both apps pick the same source for a group's first look. It rejects a blocked
+    /// `fontFamily` or `fontPostScriptName`, as the Apple TV does. A group without a look judges
+    /// each design in its allowed upright face (`SpineDesignV1.withAllowedFont`), as readers draw
+    /// it.
     static func isUsableSource(_ design: SpineDesignV1) -> Bool {
-        design.fontFamily.map(BookAnalyzer.allowsFamily) ?? true
+        (design.fontFamily.map(BookAnalyzer.allowsFamily) ?? true)
+            && (design.fontPostScriptName.map(BookAnalyzer.allowsFamily) ?? true)
     }
 
     /// Groups `books` by look key, leaving out books without one and books whose link keeps
