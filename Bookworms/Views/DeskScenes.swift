@@ -124,16 +124,20 @@ final class DeskScenes {
     }
 
     /// Pauses the resting Desk scene: takes a still of the view, then drops the view for it,
-    /// unless the pile stirs first. Does nothing while the view does not show the Desk scene.
+    /// unless the pile stirs first. While the view does not show the Desk scene, or when the
+    /// still fails, the pile counts its rest again, so the pause comes `restDelay` later.
     private func pause() {
-        guard mode == .desk, !hidesView, !isPaused, let view else { return }
+        guard !isPaused else { return }
+        guard mode == .desk, !hidesView, let view else { return pile.stir() }
         restRequest += 1
         let request = restRequest
         Task {
             let image: UIImage? = await withCheckedContinuation { done in
                 view.snapshot(saveToHDR: false) { done.resume(returning: $0) }
             }
-            guard let image, request == restRequest, mode == .desk, !hidesView else { return }
+            // A pile that stirred meanwhile counts its rest again on its own.
+            guard request == restRequest else { return }
+            guard let image, mode == .desk, !hidesView else { return pile.stir() }
             still = image
             isPaused = true
         }
@@ -152,9 +156,11 @@ final class DeskScenes {
         resume()
     }
 
-    /// Waits until a waking desk's view has drawn, for at most half a second, so the scene can
-    /// find the book under the touch that woke it. Returns at once while the view shows.
+    /// Wakes the desk for a touch, and waits until a paused desk's view has drawn, for at most
+    /// half a second, so the scene can find the book under the touch. Returns at once while
+    /// the view shows.
     func awake() async {
+        wake()
         // ponytail: polls each frame for the still to go; resume a continuation from the frame
         // count if more callers need to wait.
         let deadline = ContinuousClock.now + .milliseconds(500)

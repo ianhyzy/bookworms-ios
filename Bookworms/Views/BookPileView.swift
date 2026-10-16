@@ -34,14 +34,13 @@ struct PileViewport: Equatable {
 ///
 /// The scene (`DeskScenes.pile`) draws in the desk's view, which lives only while Desk is on
 /// screen and no share sheet covers the pile (`DeskSceneView`), so a hidden tab runs no frame
-/// loop; the scene keeps its books, so the pile is as the reader left it on return. Once the pile
-/// rests, a still of it replaces the view until a touch or a change wakes the desk
-/// (`DeskScenes`). This view
-/// lays the gestures, controls, and details over it. Under pushed details, the table and books
-/// are disabled, so nothing simulates or draws. Leaving the pile other than for details, such
-/// as for another tab or for the dominoes, puts a lifted or returning book back at once. A
-/// memory warning while the tab is hidden frees the books and textures, and the books drop
-/// again on the reader's return.
+/// loop; the scene keeps its books, so the pile is as the reader left it on return. Once the
+/// pile rests, a still of it replaces the view until a touch or a change wakes the desk
+/// (`DeskScenes`). This view lays the gestures, controls, and details over it. Under pushed
+/// details, the table and books are disabled, so nothing simulates or draws. Leaving the pile
+/// other than for details, such as for another tab or for the dominoes, puts a lifted or
+/// returning book back at once. A memory warning while the tab is hidden frees the books and
+/// textures, and the books drop again on the reader's return.
 ///
 /// **Share** makes an image of `books`, up to `PileSnapshotRenderer.maximumBooks` of them, in a
 /// new pile headed `title`. While its sheet is open, the pile leaves the screen and keeps its
@@ -265,15 +264,13 @@ struct BookPileView: View {
 
     #if DEBUG
         /// Simulator hook: `-BookwormsPileWakeTap <seconds>` taps the middle of the screen that
-        /// long after the desk pauses, as a quick tap does: the touch wakes the desk, and 80
-        /// milliseconds later it lets go, which lifts the book there.
+        /// long after the desk pauses, as a tap does whose touch the gesture never reported, so
+        /// the tap alone wakes the desk and lifts the book there.
         private func tapAfterPause() {
             let delay = UserDefaults.standard.double(forKey: "BookwormsPileWakeTap")
             guard desk.isPaused, delay > 0, let size = viewport?.size else { return }
             Task {
                 try? await Task.sleep(for: .seconds(delay))
-                desk.wake()
-                try? await Task.sleep(for: .milliseconds(80))
                 tap(at: CGPoint(x: size.width / 2, y: size.height / 2), in: size)
             }
         }
@@ -365,8 +362,8 @@ struct BookPileView: View {
     }
 
     /// Opens the book under a tap at `point` once the desk's view can find it. A tap on a paused
-    /// desk wakes it as the finger lands, and the returning view takes a few frames, about a
-    /// tenth of a second in the Simulator, before the scene's rays find books.
+    /// desk wakes it, if the touch did not already, and the returning view takes a few frames
+    /// before the scene's rays find books.
     private func tap(at point: CGPoint, in size: CGSize) {
         Task {
             await desk.awake()

@@ -96,19 +96,7 @@ struct DeskView: View {
             } else {
                 let title = frame?.title ?? Self.years(of: shelf.books)
                 ZStack {
-                    // The resting pile's still stands in for the view, and lies under the view
-                    // as it returns, until it draws (see `DeskScenes`).
-                    if let still = desk.still {
-                        Image(uiImage: still)
-                            .resizable()
-                            .ignoresSafeArea()
-                            .accessibilityHidden(true)
-                    }
-                    if !desk.hidesView && !desk.isPaused {
-                        DeskSceneView(reducesEffects: desk.reducesEffects) { desk.attach(to: $0) }
-                            .ignoresSafeArea()
-                            .accessibilityHidden(true)
-                    }
+                    DeskCanvas(desk: desk)
                     switch desk.mode {
                     case .desk:
                         BookPileView(
@@ -169,6 +157,29 @@ struct DeskView: View {
             books = ShareDebug.samples(books)
         #endif
         return books
+    }
+}
+
+/// The desk's view, or the resting pile's still in its place, which also lies under the view
+/// as it returns, until the view draws (see `DeskScenes`).
+///
+/// A view of its own, so a pause and a wake update only it, not the desk's body, which sorts
+/// the library.
+private struct DeskCanvas: View {
+    let desk: DeskScenes
+
+    var body: some View {
+        if let still = desk.still {
+            Image(uiImage: still)
+                .resizable()
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+        }
+        if !desk.hidesView && !desk.isPaused {
+            DeskSceneView(reducesEffects: desk.reducesEffects) { desk.attach(to: $0) }
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+        }
     }
 }
 
