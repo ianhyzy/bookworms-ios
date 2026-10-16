@@ -150,12 +150,14 @@ enum SeriesDesigns {
         return rank(lhs) < rank(rhs)
     }
 
-    /// Returns whether another book may draw with `design`, or a new look may copy it: never a
-    /// blocked family, such as Impact or an italic.
+    /// Returns whether a design's font is allowed: its `fontFamily` is not blocked, such as Impact
+    /// or an italic, or it has none.
     ///
-    /// Callers pass designs as stored (`SpineStore.savedDesign`, `LibrarySnapshot.designs`), the
-    /// same records the Apple TV app checks with its copy of this rule, so both apps pick the same
-    /// source for a group's first look. It checks only `fontFamily`, as the Apple TV does.
+    /// A new look copies only a design that passes as stored (`SpineStore.savedDesign`,
+    /// `LibrarySnapshot.designs`), the same records the Apple TV app checks with its copy of this
+    /// rule, so both apps pick the same source for a group's first look. It checks only
+    /// `fontFamily`, as the Apple TV does. A group without a look judges each design in its
+    /// allowed upright face (`SpineDesignV1.withAllowedFont`), as readers draw it.
     static func isUsableSource(_ design: SpineDesignV1) -> Bool {
         design.fontFamily.map(BookAnalyzer.allowsFamily) ?? true
     }
@@ -201,13 +203,15 @@ enum SeriesDesigns {
     }
 
     /// `sources(of:lends:canLetter:)` for books with saved `designs`: a book lends its design
-    /// when it has a usable one (`isUsableSource`).
+    /// when its allowed upright face (`SpineDesignV1.withAllowedFont`) is usable
+    /// (`isUsableSource`), so a design saved in a blocked face, such as Impact, lends its
+    /// replacement.
     static func sources(
         books: [CloudBook], designs: [Int: SpineDesignV1],
         canLetter: (CloudBook, SpineDesignV1) -> Bool = { _, _ in true }
     ) -> [Int: Int] {
         sources(
-            of: books, lends: { designs[$0.id].map(isUsableSource) == true },
+            of: books, lends: { designs[$0.id].map { isUsableSource($0.withAllowedFont) } == true },
             canLetter: { book, source in designs[source.id].map { canLetter(book, $0) } ?? false })
     }
 

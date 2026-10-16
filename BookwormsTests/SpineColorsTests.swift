@@ -223,7 +223,7 @@ final class SpineColorsTests: XCTestCase {
     }
 
     func testSeriesSourceRanksPositionThenFinishThenID() {
-        // Book 1 ranks first but has no design; book 2's Impact design is not usable.
+        // Book 1 ranks first but has no design; book 2's design names Impact, a blocked face.
         let books = [
             seriesBook(1, position: 1), seriesBook(2, position: 2),
             seriesBook(3, position: 3, finished: "2024-05-01"),
@@ -232,11 +232,15 @@ final class SpineColorsTests: XCTestCase {
         ]
         var designs = [2: design(for: 2, family: "Impact")]
         for id in 3...7 { designs[id] = design(for: id) }
-        let sources = SeriesDesigns.sources(books: books, designs: designs)
-        // Book 4 finished before book 3 at the same position, so it lends its design to the
-        // books after it; book 7 has another author. Books 1 and 2 rank before book 4, so they
-        // draw their own designs: book 1 once it has one, and book 2 in its remapped face.
-        XCTAssertEqual(sources, [3: 4, 4: 4, 5: 4, 6: 4])
+        // Book 2 lends its design, in Bebas Neue, to the books after it; book 7 has another
+        // author. Book 1 ranks first but draws its own design once it has one.
+        XCTAssertEqual(
+            SeriesDesigns.sources(books: books, designs: designs),
+            [2: 2, 3: 2, 4: 2, 5: 2, 6: 2])
+        // Without book 2, book 4 finished before book 3 at the same position, so it leads.
+        designs[2] = nil
+        XCTAssertEqual(
+            SeriesDesigns.sources(books: books, designs: designs), [3: 4, 4: 4, 5: 4, 6: 4])
 
         // Without positions, the earliest finish leads, and a missing finish ranks last.
         let unnumbered = [seriesBook(10), seriesBook(11, finished: "2021-01-01"), seriesBook(9)]
