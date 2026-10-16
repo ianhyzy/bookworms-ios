@@ -113,8 +113,9 @@ extension CloudLibraryArchive {
     /// or `nil` when the stored entry is as new or newer.
     ///
     /// The splice edits the JSON, so it keeps every other key, snapshot, and design, including
-    /// fields this app doesn't decode. It replaces the first entry for `snapshot`'s source and
-    /// account only when `snapshot` is strictly newer, and appends an entry when there is none.
+    /// fields this app doesn't decode. It replaces the newest entry for `snapshot`'s source and
+    /// account only when `snapshot` is strictly newer than every such entry, and appends an entry
+    /// when there is none.
     /// It never removes an entry, and it sorts entries as the Apple TV does. A snapshot without
     /// `series` keeps the stored entry's series. Books leave out `chosenCoverURL` and
     /// `seriesLink`, which the archive never carries. When `stored` is `nil`, the splice starts
@@ -151,17 +152,25 @@ extension CloudLibraryArchive {
         func key(_ entry: [String: Any]) -> String {
             (entry["source"] as? String ?? "") + (entry["accountID"] as? String ?? "")
         }
-        if let index = sources.firstIndex(where: {
-            $0["source"] as? String == snapshot.source
-                && $0["accountID"] as? String == snapshot.accountID
-        }) {
-            let existing = sources[index]
+        // The Apple TV keeps one entry per source and account, but a duplicate from any writer is
+        // compared too, so an older snapshot never replaces a newer stored copy.
+        var newest: (index: Int, date: Date)?
+        for (index, stored) in sources.enumerated()
+        where stored["source"] as? String == snapshot.source
+            && stored["accountID"] as? String == snapshot.accountID
+        {
             // A date the default decoder can't read means another writer's format; replacing the
             // entry could discard a newer copy, so the write stops instead.
-            guard let date = existing["syncedAt"] as? Double else {
+            guard let seconds = stored["syncedAt"] as? Double else {
                 throw CompanionError.invalidCloudData
             }
-            if Date(timeIntervalSinceReferenceDate: date) >= snapshot.syncedAt { return nil }
+            let date = Date(timeIntervalSinceReferenceDate: seconds)
+            if newest.map({ date > $0.date }) ?? true { newest = (index, date) }
+        }
+        if let newest {
+            if newest.date >= snapshot.syncedAt { return nil }
+            let index = newest.index
+            let existing = sources[index]
             if entry["series"] == nil { entry["series"] = existing["series"] }
             entry["books"] = keepingAppleTVFields(of: entry["books"], from: existing["books"])
             sources[index] = entry

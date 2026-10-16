@@ -108,6 +108,18 @@ final class LibraryArchiveTests: XCTestCase {
             }
         }
 
+        // A duplicate entry for the account counts too: a snapshot older than either is skipped.
+        var duplicated = try object(stored)
+        var copies = try XCTUnwrap(duplicated["sources"] as? [[String: Any]])
+        var later = try XCTUnwrap(copies.first { $0["accountID"] as? String == "42" })
+        later["syncedAt"] = synced.addingTimeInterval(120).timeIntervalSinceReferenceDate
+        copies.append(later)
+        duplicated["sources"] = copies
+        XCTAssertNil(
+            try CloudLibraryArchive.splice(
+                newer, into: try JSONSerialization.data(withJSONObject: duplicated)),
+            "A snapshot newer than the first entry but older than a duplicate is skipped")
+
         // A stored date in another format could hide a newer copy, so the write stops.
         var unreadable = try object(stored)
         var sources = try XCTUnwrap(unreadable["sources"] as? [[String: Any]])
