@@ -157,16 +157,32 @@ struct RootView: View {
         @Bindable var model = model
         TabView(selection: $model.selectedTab) {
             Tab("Share", systemImage: "square.and.arrow.up", value: .share) { ShareStudioView() }
-            Tab("Library", systemImage: "books.vertical", value: .library) { LibraryView() }
-            Tab("Desk", systemImage: "lamp.desk", value: .desk) { DeskView() }
+            // On a Mac, Library and Desk set their own tint, which keeps the sidebar's lamp tint
+            // out of their account sheets, which follow the system appearance.
+            Tab("Library", systemImage: "books.vertical", value: .library) {
+                LibraryView()
+                    #if os(macOS)
+                        .tint(.accentColor)
+                    #endif
+            }
+            Tab("Desk", systemImage: "lamp.desk", value: .desk) {
+                DeskView()
+                    #if os(macOS)
+                        .tint(.accentColor)
+                    #endif
+            }
             Tab("Spines", systemImage: "wand.and.sparkles", value: .spines) { GenerationView() }
         }
         #if os(macOS)
             // A Mac app lists its sections in a Liquid Glass sidebar rather than a tab bar.
             .tabViewStyle(.sidebarAdaptable)
+            // While Library or Desk shows, the sidebar marks its row in their lamp's color. An
+            // iPhone's tab bar turns dark over them instead (see `DeskView`).
+            .tint([.library, .desk].contains(model.selectedTab) ? ShelfPalette.lamp : nil)
         #endif
         // Hardcover is the library's own source, so each launch without a working sign-in, and
-        // a sign-in that stops working, offers it over whichever tab shows.
+        // a sign-in that stops working, offers it over whichever tab shows. Outside the Mac's
+        // tint, so the sheet follows the system appearance.
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
         #if os(macOS)
             // Grouped forms match the iPhone's inset sections instead of the Mac's columns.

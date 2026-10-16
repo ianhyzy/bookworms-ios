@@ -151,7 +151,7 @@ The Mac app replaces Bookworms Spines, the retired menu bar companion from the a
 
 ### Tabs
 
-The app opens on **Share**, its main feature, and the tab bar reads **Share**, **Library**, **Desk**, and **Spines**. **Library** and **Desk** show your books against a walnut wall, with dark bars in either appearance. On iPhone, that includes the tab bar while either tab shows, so its selected tab reads as a white icon on a dark capsule; the other tabs keep the system tab bar.
+The app opens on **Share**, its main feature, and the tab bar reads **Share**, **Library**, **Desk**, and **Spines**. **Library** and **Desk** show your books against a walnut wall, with dark bars in either appearance. On iPhone, that includes the tab bar while either tab shows, so its selected tab reads as a white icon on a dark capsule; the other tabs keep the system tab bar. On a Mac, the sidebar marks the Library and Desk rows in the lamp's warm color while either shows.
 
 ### Library
 
