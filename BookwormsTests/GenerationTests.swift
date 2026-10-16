@@ -366,6 +366,11 @@ final class GenerationTests: XCTestCase {
             LibrarySnapshot.latestDesigns([design], accountID: "account", books: [book])[5])
         XCTAssertEqual(stored, design, "The library keeps the record as stored")
         XCTAssertFalse(SeriesDesigns.isUsableSource(stored), "No series look copies Impact")
+        var unnamed = stored
+        unnamed.fontFamily = nil
+        XCTAssertFalse(
+            SeriesDesigns.isUsableSource(unnamed),
+            "Nor one that names Impact only by PostScript name")
         let loaded = stored.withAllowedFont
         XCTAssertEqual(loaded.fontFamily, "Bebas Neue")
         XCTAssertNil(loaded.fontPostScriptName)
