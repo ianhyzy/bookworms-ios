@@ -92,10 +92,40 @@ actor SpineWorker {
     private var looks: [SeriesLookKey: SeriesLookV1?] = [:]
     /// The book that the reader asked to design anew in this run, until the run tries it.
     private var redesign: (bookID: Int, remakesLook: Bool)?
+    /// The model this run designs with: the best tier when the run first loaded the library, or
+    /// the best one below the backup model after the backup's lasting rejection, including the
+    /// same refusal of several books in a row (`newDesign`). `nil` between runs.
+    private var runModel: ModelStatus?
+    /// The backup model's refusals of this run's latest books.
+    private var refusals = RefusalStreak()
+
+    /// Counts the backup model's refusals of consecutive books in a run with one message.
+    ///
+    /// An HTTP 400 usually refuses one book's request, such as for its crop, but some refuse
+    /// every request with these settings: Anthropic reports an account without credit as an
+    /// `invalid_request_error`, a text-only model refuses image input, and some
+    /// OpenAI-compatible endpoints refuse the JSON schema format. So the same refusal of
+    /// `limit` books in a row counts as a lasting rejection. Books that send the backup no
+    /// request, such as those that keep a saved design, leave the count alone.
+    struct RefusalStreak {
+        static let limit = 3
+        private var message: String?
+        private var count = 0
+
+        /// Counts a book's refusal with `message`. Returns `true`, and starts counting again,
+        /// when it makes `limit` refusals in a row with that message.
+        mutating func isLasting(after message: String) -> Bool {
+            count = message == self.message ? count + 1 : 1
+            self.message = message
+            guard count == Self.limit else { return false }
+            self = RefusalStreak()
+            return true
+        }
+    }
 
     static let busyRetryDelay: TimeInterval = 15 * 60
-    /// How long a stop waits when its cause needs the user, such as a full iCloud storage plan
-    /// or Apple Intelligence turned off. **Generate now** does not wait.
+    /// How long a stop waits when its cause needs the user, such as a full iCloud storage plan.
+    /// **Generate now** does not wait.
     static let lastingStopDelay: TimeInterval = 24 * 60 * 60
     /// URL error codes that stop the run with no retry date: no usable network, or a cancelled
     /// request.
@@ -111,18 +141,29 @@ actor SpineWorker {
         (updates, continuation) = AsyncStream.makeStream()
     }
 
-    /// Reads and publishes the designing model's availability and quota.
+    /// Reads and publishes the best model tier's availability and quota. A run in progress keeps
+    /// showing its own tier, which it publishes after each book, and reads the best tier again
+    /// when it ends.
     func refreshModelStatus() async {
-        snapshot.model = await analyzer.status()
+        if runModel == nil { snapshot.model = await analyzer.status() }
         snapshot.dropExpiredStop()
+        publish()
+    }
+
+    /// Clears the Spines tab's message about the backup model's `rejection` after the reader's
+    /// change to its settings made the app forget it, so the tab no longer says that a lower
+    /// tier designs until then. A run in progress keeps its tier.
+    func clearMessage(about rejection: String) {
+        guard snapshot.error?.contains(rejection) == true else { return }
+        snapshot.error = nil
         publish()
     }
 
     /// Designs the books that need it, until the queue is empty or a stop condition.
     ///
-    /// With `redesigning`, the run first makes a new model design for that book even when its
-    /// saved design is current, as **Redesign spine** asks: it skips the ledger, the saved
-    /// design, and series reuse. With `remakesLook`, the book's look group's saved look then takes
+    /// With `redesigning`, the run first designs that book anew at its tier even when its saved
+    /// design is current, as **Redesign spine** asks: it skips the ledger, the saved design, and
+    /// series reuse. With `remakesLook`, the book's look group's saved look then takes
     /// the new design's colors and type (`SeriesLookV1.remade(from:at:)`). A book outside the
     /// run's work, or without a cover, is not designed.
     ///
@@ -135,6 +176,8 @@ actor SpineWorker {
         }
         isRunning = true
         redesign = redesigning
+        runModel = nil
+        refusals = RefusalStreak()
         snapshot.isRunning = true
         snapshot.error = nil
         snapshot.retryAfter = nil
@@ -147,10 +190,14 @@ actor SpineWorker {
         }
         // The work kept changing. The books left in `queue` keep the charging task scheduled.
         if changed { snapshot.phase = "Ready to continue" }
+        redesign = nil
+        runModel = nil
+        // The best tier again, as the next run would pick it, such as below a backup model that
+        // this run found rejected.
+        snapshot.model = await analyzer.status()
         snapshot.isRunning = false
         snapshot.currentBook = nil
         snapshot.lastRunAt = Date()
-        redesign = nil
         isRunning = false
         publish()
     }
@@ -181,68 +228,84 @@ actor SpineWorker {
             lookGroups = SeriesDesigns.lookGroups(context.books)
             let books = context.books.filter { !$0.coverCandidates.isEmpty }
             try await ledger.retain(Set(books.map { Self.recordName(accountID, $0) }))
-            var queue: [CloudBook] = []
-            for book in books {
-                let workHash = CloudContract.workItemHash(accountID: accountID, book: book)
-                if await ledger.needsCheck(
-                    recordName: Self.recordName(accountID, book), workItemHash: workHash,
-                    chosenCover: book.chosenCoverURL)
-                {
-                    queue.append(book)
-                }
-            }
-            queue = SeriesDesigns.sourceFirst(queue)
+            // The status read sends no model request. It comes before the queue so that a better
+            // tier queues the books a weaker tier last checked.
+            let model = await readModel()
+            let upgradeTier = Self.upgradeTier(model, mode: mode)
+            let work = await Self.work(
+                books, accountID: accountID, ledger: ledger, tier: model.tier,
+                upgradeTier: upgradeTier)
+            var queue = SeriesDesigns.sourceFirst(work.queue)
             if let redesign, let book = books.first(where: { $0.id == redesign.bookID }) {
                 queue.removeAll { $0.id == book.id }
                 queue.insert(book, at: 0)
             }
             snapshot.queue = queue.count
             guard !queue.isEmpty else {
-                snapshot.phase = "All spines are up to date"
+                // Waiting upgrades keep the model's stop and its retry date, such as the quota
+                // reset, so the charging task runs again then.
+                if !work.upgradeWaits || !stopForModel(model, mode: mode) {
+                    snapshot.phase = "All spines are up to date"
+                }
                 return false
             }
-            // Checked only when there is work, so an idle library never reports the model.
-            if await stopForModel(mode: mode) { return false }
-            if let model = snapshot.model {
-                generationLog.info(
-                    "Run started with \(queue.count) books; covers read by \(String(describing: model.coverReader), privacy: .public); quota \(String(describing: model.quota), privacy: .public)"
-                )
-            }
+            if stopForModel(model, mode: mode) { return false }
+            generationLog.info(
+                "Run started with \(queue.count) books; tier \(String(describing: model.tier), privacy: .public); covers read by \(String(describing: model.coverReader), privacy: .public); quota \(String(describing: model.quota), privacy: .public)"
+            )
             let covers = mode == .foreground ? self.covers : backgroundCovers
             for book in queue {
                 try Task.checkCancellation()
+                let workHash = CloudContract.workItemHash(accountID: accountID, book: book)
+                let recordName = Self.recordName(accountID, book)
+                let redesigned = redesign?.bookID == book.id ? redesign : nil
+                // After the backup model's lasting rejection moved the run to a lower tier
+                // (`newDesign`), a book queued only to upgrade to the backup's tier is skipped
+                // without downloading its cover. A rejection of one book's request leaves the
+                // run's tier, so the other books still upgrade.
+                if redesigned == nil, let tier = runModel?.tier, tier < upgradeTier,
+                    !(await ledger.needsCheck(
+                        recordName: recordName, workItemHash: workHash,
+                        chosenCover: book.chosenCoverURL, runTier: tier))
+                {
+                    snapshot.queue -= 1
+                    continue
+                }
                 snapshot.phase = "Designing spines"
                 snapshot.currentBook = book
                 publish()
-                let workHash = CloudContract.workItemHash(accountID: accountID, book: book)
-                let recordName = Self.recordName(accountID, book)
                 let start = ContinuousClock.now
-                let redesigned = redesign?.bookID == book.id ? redesign : nil
                 do {
                     let cover = try await covers.fetch(book.coverCandidates)
-                    if let made = try await design(
+                    let outcome = try await design(
                         for: book, cover: cover, workHash: workHash, context: context,
-                        forced: redesigned != nil)
-                    {
+                        forced: redesigned != nil, mode: mode)
+                    if case .save(let made, let isNew) = outcome {
                         guard try await store.isStillCurrent(context, book: book) else {
                             return true
                         }
-                        try await store.save(made.design, replacing: redesigned != nil)
-                        continuation.yield(.saved(made.design))
-                        bookDesigns[book.id] = made.design
+                        try await store.save(made, replacing: redesigned != nil)
+                        continuation.yield(.saved(made))
+                        bookDesigns[book.id] = made
                         checkedBooks.insert(book.id)
-                        if made.isModelDesign {
+                        if isNew {
                             await saveLook(
-                                from: made.design, for: book,
-                                replacing: redesigned?.remakesLook == true)
+                                from: made, for: book, replacing: redesigned?.remakesLook == true)
                         }
                         generationLog.info(
                             "Book \(book.id, privacy: .private(mask: .hash)) designed in \(start.duration(to: .now), privacy: .public)"
                         )
                     }
+                    // A design from a better tier than the run's, such as a kept Private Cloud
+                    // Compute design, needs no recheck when that tier runs. A saved design that
+                    // awaits its font is checked again after a day.
+                    var awaitsFont = false
+                    if case .save(let made, _) = outcome { awaitsFont = made.awaitsFont }
                     try await ledger.recordSuccess(
                         recordName: recordName, workItemHash: workHash, coverHash: cover.hash,
-                        chosenCover: book.chosenCoverURL)
+                        chosenCover: book.chosenCoverURL,
+                        tier: runModel.map { max($0.tier, outcome.design.tier) },
+                        awaitsFont: awaitsFont)
                     snapshot.completed += 1
                 } catch {
                     try Task.checkCancellation()
@@ -265,12 +328,15 @@ actor SpineWorker {
                         stop(Self.message(for: error), retryAfter: nil)
                         return false
                     }
-                    snapshot.error =
-                        "Some books could not be designed. Bookworms tries them again tomorrow."
+                    // A backup model's rejection, which needs the reader, stays in view.
+                    if snapshot.error == nil {
+                        snapshot.error =
+                            "Some books could not be designed. Bookworms tries them again tomorrow."
+                    }
                 }
                 if redesigned != nil { redesign = nil }
                 snapshot.queue -= 1
-                if await stopForModel(mode: mode) { return false }
+                if stopForModel(await readModel(), mode: mode) { return false }
             }
             snapshot.phase = "Finished"
         } catch {
@@ -285,36 +351,79 @@ actor SpineWorker {
         return false
     }
 
-    /// Returns the design to save for `book`, and whether a model request made it, or `nil` when
-    /// iCloud already has this work or a design whose colors the reader chose (see
-    /// `SpineDesignV1.action(workItemHash:coverHash:readerChoseCover:drawsSeriesLook:)`).
-    /// `forced` always makes a model design.
+    /// What a run does with a book's design (`design(for:cover:workHash:context:forced:mode:)`).
+    private enum Outcome {
+        /// Leaves this design, iCloud's, in place.
+        case keep(SpineDesignV1)
+        /// Saves this design. `isNew` tells whether the run's tier made it from the cover rather
+        /// than copying a saved design or look.
+        case save(SpineDesignV1, isNew: Bool)
+
+        var design: SpineDesignV1 {
+            switch self {
+            case .keep(let design), .save(let design, _): design
+            }
+        }
+    }
+
+    /// Returns the design to save for `book`, or the saved design to keep when iCloud already
+    /// has this work at the run's tier or better, or a design whose colors the reader chose (see
+    /// `SpineDesignV1.action(workItemHash:coverHash:readerChoseCover:runTier:drawsSeriesLook:)`).
+    /// `forced` always makes a new design.
+    ///
+    /// The book whose design upgrades its group's look (`SeriesLookV1.upgradeSource(among:)`)
+    /// is designed as if the group had no look, so a weaker tier's look gets a design from the
+    /// run's tier. When that book's own saved design is kept, it upgrades the look with no
+    /// request. A book draws its group's look only when the look's face letters its title and
+    /// author, as the app draws it; otherwise its own design follows the tier rule.
     private func design(
         for book: CloudBook, cover: CoverImage, workHash: String, context: WorkContext,
-        forced: Bool
-    ) async throws -> (design: SpineDesignV1, isModelDesign: Bool)? {
+        forced: Bool, mode: RunMode
+    ) async throws -> Outcome {
         // Looked up even when forced, so `saveLook` knows whether the group has a look.
-        let look = try await seriesLook(for: book, accountID: context.accountID)
+        let savedLook = try await seriesLook(for: book, accountID: context.accountID)
+        let runTier = runModel?.tier ?? .local
+        let upgradesLook =
+            savedLook.map { $0.isUpgraded(at: runTier) && isUpgradeSource(book, of: $0) } ?? false
+        let look = upgradesLook ? nil : savedLook
         if !forced {
             // A ledger miss is not proof: another device may have saved this work already.
             let saved = try await store.savedDesign(accountID: context.accountID, bookID: book.id)
             let readerChoseCover = await ledger.readerChoseCover(
                 recordName: Self.recordName(context.accountID, book),
                 chosenCover: book.chosenCoverURL)
-            let action = saved?
-                .action(
-                    workItemHash: workHash, coverHash: cover.hash,
-                    readerChoseCover: readerChoseCover, drawsSeriesLook: look != nil)
-            switch action ?? .redesign {
-            case .keep: return nil
-            case .save(let design): return (design, false)
-            case .redesign: break
+            func action(drawsSeriesLook: Bool) -> SavedDesignAction {
+                saved?
+                    .action(
+                        workItemHash: workHash, coverHash: cover.hash,
+                        readerChoseCover: readerChoseCover, runTier: runTier,
+                        drawsSeriesLook: drawsSeriesLook, upgradesSeriesLook: upgradesLook)
+                    ?? .redesign
+            }
+            // The glyph check waits until the book's design would otherwise be redesigned, so
+            // kept designs cost no font download.
+            var savedAction = action(drawsSeriesLook: false)
+            if savedAction == .redesign, let look, action(drawsSeriesLook: true) == .keep,
+                try await analyzer.letters(book, with: look.design(bookID: look.sourceBookID))
+            {
+                savedAction = .keep
+            }
+            switch (savedAction, saved) {
+            case (.keep, let saved?):
+                if upgradesLook, saved.generatedColors == nil {
+                    await saveLook(from: saved, for: book, replacing: false)
+                }
+                return .keep(saved)
+            case (.save(let design), _): return .save(design, isNew: false)
+            default: break
             }
             // Books in one look group share a design so their spines match on the shelf. A book
             // that draws its group's look saves a copy of it, whichever device made the look.
-            let source =
+            let source: SpineDesignV1? =
                 if let look {
                     look.design(bookID: look.sourceBookID)
+                } else if upgradesLook {
+                    nil
                 } else {
                     try await storedSeriesDesign(for: book, context: context)
                 }
@@ -323,14 +432,99 @@ actor SpineWorker {
                     from: source, book: book, accountID: context.accountID,
                     workItemHash: workHash, coverHash: cover.hash)
             {
-                return (reused, false)
+                return .save(reused, isNew: false)
             }
         }
-        return (
+        return .save(
+            try await newDesign(
+                for: book, cover: cover, workHash: workHash, accountID: context.accountID,
+                mode: mode),
+            isNew: true)
+    }
+
+    /// Designs `book` at the run's tier.
+    ///
+    /// A lasting rejection by the backup model, such as a revoked key, an unknown model name, or
+    /// an account without credit (`ProviderError.isLasting`), would repeat for every book. The
+    /// app remembers it until the reader changes the backup model's settings or starts
+    /// **Generate now** (`SpineDesigner.rejection`), so this run and later ones design with the
+    /// best tier below the backup, down to local defaults, and the Spines tab shows the
+    /// rejection. When the tier found can take no request now, such as Private Cloud Compute at
+    /// its daily limit, the rejection stops the run. A rejection that arrives after the reader
+    /// replaced the key fails only this book, because it says nothing about the new key.
+    ///
+    /// An HTTP 400 refusal fails only this book (`BookAnalyzer.modelFailure(_:)`), unless it is
+    /// the third book in a row that the backup refuses with the same message
+    /// (`RefusalStreak`). That refusal counts as a lasting rejection for later books, and the
+    /// three books keep their failures.
+    private func newDesign(
+        for book: CloudBook, cover: CoverImage, workHash: String, accountID: String,
+        mode: RunMode
+    ) async throws -> SpineDesignV1 {
+        guard let model = runModel else { throw CompanionError.modelUnavailable }
+        func design(using model: ModelStatus) async throws -> SpineDesignV1 {
             try await analyzer.design(
-                book: book, accountID: context.accountID, workItemHash: workHash, cover: cover),
-            true
-        )
+                book: book, accountID: accountID, workItemHash: workHash, cover: cover,
+                using: model)
+        }
+        guard model.tier == .backup else { return try await design(using: model) }
+        // Held in memory for the request, so a rejection that arrives after the reader replaced
+        // the key isn't remembered for the new one.
+        let key = model.designer.provider.key.read()
+        // Any outcome but another refusal ends the streak.
+        var streak = refusals
+        refusals = RefusalStreak()
+        do {
+            return try await design(using: model)
+        } catch CompanionError.providerRejected(let reason) {
+            // A rejection of a replaced key fails only this book, and the run keeps its tier.
+            guard
+                let next = try await fallBack(from: model, rejection: reason, key: key, mode: mode)
+            else { throw CompanionError.providerRefused(reason) }
+            return try await design(using: next)
+        } catch CompanionError.providerRefused(let reason) {
+            if streak.isLasting(after: reason) {
+                _ = try await fallBack(from: model, rejection: reason, key: key, mode: mode)
+            }
+            refusals = streak
+            throw CompanionError.providerRefused(reason)
+        }
+    }
+
+    /// Remembers `rejection` as the backup model's lasting rejection of `model`'s settings
+    /// (`SpineDesigner.rememberRejection(_:sentKey:)`) and moves the run to the best tier below
+    /// it, which it returns. Returns `nil`, and changes nothing, when this device's key is no
+    /// longer `key`, the one it held when the rejected request started. Throws
+    /// `CompanionError.providerRejected`, which stops the run, when that tier can take no request
+    /// now.
+    private func fallBack(
+        from model: ModelStatus, rejection: String, key: String?, mode: RunMode
+    ) async throws -> ModelStatus? {
+        guard model.designer.rememberRejection(rejection, sentKey: key) else { return nil }
+        var next = await analyzer.status(for: .appleOnly)
+        next.backupUnavailableReason = rejection
+        guard Self.modelStop(next, mode: mode) == nil else {
+            throw CompanionError.providerRejected(rejection)
+        }
+        runModel = next
+        snapshot.model = next
+        snapshot.error = Self.fallbackMessage(rejection: rejection, next: next)
+        publish()
+        return next
+    }
+
+    /// The Spines tab's message when the backup model's `rejection` moves runs to `next`.
+    static func fallbackMessage(rejection: String, next: ModelStatus) -> String {
+        let sentence = rejection.hasSuffix(".") ? rejection : rejection + "."
+        let tier =
+            switch next.tier {
+            case .privateCloudCompute: "Private Cloud Compute"
+            case .backup: next.designerName
+            case .onDevice: "Apple's on-device model"
+            case .local: "local defaults"
+            }
+        return
+            "\(sentence) Until you change the backup model, Bookworms uses \(tier). Generate now tries the backup model again."
     }
 
     /// Returns the series look `book` draws: its look group's saved look, unless its link keeps
@@ -345,25 +539,43 @@ actor SpineWorker {
         return look
     }
 
-    /// Makes `design`, a new model design, the series look of `book`'s look group when the group
-    /// has none, so the group's first design decides its look. A look another device saved first
-    /// wins. With `replacing`, a group's saved look is made again from `design` instead. A failed
-    /// save leaves the group to the rank rule (`storedSeriesDesign`) or its old look until a
-    /// later design or the app's catch-up saves one.
+    /// Makes `design`, a new design at the run's tier, the series look of `book`'s look group
+    /// when the group has none, so the group's first design decides its look. A look another
+    /// device saved first from this tier or a better one wins. When `book` is the source that
+    /// upgrades the group's look (`isUpgradeSource(_:of:)`), `design` replaces a look that the
+    /// reader never edited and that `design` outranks, such as one from a weaker tier or one
+    /// that awaits its font (`SeriesLookV1.isUpgraded(at:awaitingFont:)`), keeping its creation
+    /// date. With `replacing`, a group's saved look is made again from `design` instead. A
+    /// failed save leaves the group to the rank rule (`storedSeriesDesign`) or its old look
+    /// until a later design or the app's catch-up saves one, or, for an upgrade, until the
+    /// book's next check.
     private func saveLook(from design: SpineDesignV1, for book: CloudBook, replacing: Bool) async {
         // `design(for:...)` looked up the group's look, unless the book keeps its own look.
         guard book.seriesLink?.ownLook != true,
             let key = SeriesDesigns.lookKey(of: book, link: book.seriesLink),
-            let saved = looks[key], saved == nil || replacing
+            let saved = looks[key]
         else { return }
         do {
-            let look: SeriesLookV1
-            if let saved {
+            var look: SeriesLookV1
+            if let saved, replacing {
                 look = saved.remade(from: design, at: Date())
                 try await store.save(look)
             } else {
-                look = try await store.createLook(
-                    SeriesLookV1(design: design, key: key, createdAt: Date()))
+                if let saved {
+                    look = saved
+                } else {
+                    look = try await store.createLook(
+                        SeriesLookV1(design: design, key: key, createdAt: Date()))
+                }
+                // The saved look, or a look another device created first.
+                if look.isUpgraded(at: design.tier, awaitingFont: design.awaitsFont),
+                    isUpgradeSource(book, of: look)
+                {
+                    look = try await store.upgradeLook(
+                        SeriesLookV1(design: design, key: key, createdAt: look.createdAt))
+                } else if saved != nil {
+                    return
+                }
             }
             looks[key] = .some(look)
             continuation.yield(.savedLook(look))
@@ -373,6 +585,12 @@ actor SpineWorker {
                 "Series look not saved: \(nsError.domain, privacy: .public) \(nsError.code, privacy: .public)"
             )
         }
+    }
+
+    /// Whether `book` is the book of this pass's library whose design upgrades `look`
+    /// (`SeriesLookV1.upgradeSource(among:)`).
+    private func isUpgradeSource(_ book: CloudBook, of look: SeriesLookV1) -> Bool {
+        look.upgradeSource(among: lookGroups[look.key] ?? []) == book.id
     }
 
     /// Returns the saved design of `book`'s source in a look group without a saved look, by the
@@ -410,13 +628,67 @@ actor SpineWorker {
         return source.flatMap { designs[$0] }
     }
 
-    /// Reads the model status and stops the run when it should send no more requests.
-    private func stopForModel(mode: RunMode) async -> Bool {
-        let status = await analyzer.status()
+    /// Reads the run's model status, which sends no model request, and shows it in the snapshot.
+    ///
+    /// A run's first read picks its tier (`BookAnalyzer.status(for:)`). Later reads keep that
+    /// tier and watch its availability and quota. Only the backup model's lasting rejection
+    /// moves a run to a lower tier (`newDesign`); a tier that becomes unavailable stops the run
+    /// (`stopForModel(_:mode:)`).
+    private func readModel() async -> ModelStatus {
+        var status: ModelStatus
+        if let runModel {
+            status = await analyzer.status(of: runModel.tier, designer: runModel.designer)
+            status.pccUnavailableReason = runModel.pccUnavailableReason
+            status.backupUnavailableReason = runModel.backupUnavailableReason
+            status.onDeviceUnavailableReason = runModel.onDeviceUnavailableReason
+        } else {
+            status = await analyzer.status()
+        }
+        runModel = status
         snapshot.model = status
+        return status
+    }
+
+    /// Stops the run when `status` says its model should get no more requests.
+    private func stopForModel(_ status: ModelStatus, mode: RunMode) -> Bool {
         guard let reason = Self.modelStop(status, mode: mode) else { return false }
         stop(reason.message, retryAfter: reason.retryAfter)
         return true
+    }
+
+    /// Returns the books of `books` that the ledger says a run checks at `upgradeTier`
+    /// (`upgradeTier(_:mode:)`), and whether another book waits only for `tier`, the run's, to
+    /// take requests again, such as an upgrade held back by Private Cloud Compute's daily limit.
+    static func work(
+        _ books: [CloudBook], accountID: String, ledger: WorkLedger, tier: ModelTier,
+        upgradeTier: ModelTier
+    ) async -> (queue: [CloudBook], upgradeWaits: Bool) {
+        var queue: [CloudBook] = []
+        var upgradeWaits = false
+        for book in books {
+            let workHash = CloudContract.workItemHash(accountID: accountID, book: book)
+            func needsCheck(at tier: ModelTier) async -> Bool {
+                await ledger.needsCheck(
+                    recordName: recordName(accountID, book), workItemHash: workHash,
+                    chosenCover: book.chosenCoverURL, runTier: tier)
+            }
+            if await needsCheck(at: upgradeTier) {
+                queue.append(book)
+            } else if !upgradeWaits, upgradeTier < tier {
+                upgradeWaits = await needsCheck(at: tier)
+            }
+        }
+        return (queue, upgradeWaits)
+    }
+
+    /// The tier a run passes to `WorkLedger.needsCheck`, so that a book whose last check ran at
+    /// a lower tier is checked again at once: the run's tier, or `.local`, which queues no
+    /// upgrade, when the run would stop for its model (`modelStop(_:mode:)`), such as at Private
+    /// Cloud Compute's daily limit. That run queues only the books it would queue without tiers.
+    /// With none, it still stops for its model when upgrades wait, so the charging task runs
+    /// again at the reset. The daily limit also stops a run partway through upgrades.
+    static func upgradeTier(_ status: ModelStatus, mode: RunMode) -> ModelTier {
+        modelStop(status, mode: mode) == nil ? status.tier : .local
     }
 
     private func stop(_ message: String, retryAfter: Date?) {
@@ -427,23 +699,19 @@ actor SpineWorker {
 
     private func publish() { continuation.yield(.status(snapshot)) }
 
-    /// Returns why the model should get no more requests in this run, or `nil` to continue.
+    /// Returns why the run's model should get no more requests in this run, or `nil` to continue.
+    /// Only Private Cloud Compute has a daily quota.
     ///
-    /// An unavailable model waits `lastingStopDelay`, so the charging task does not download the
-    /// library in every charging window only to stop again.
-    static func modelStop(_ status: ModelStatus, mode: RunMode, now: Date = Date()) -> (
+    /// A run's tier becomes unavailable only during the run, because a run starts with the best
+    /// available tier and local defaults are always available. That stop sets no retry date,
+    /// so the next run, which picks the best tier again, starts as soon as it is scheduled.
+    static func modelStop(_ status: ModelStatus, mode: RunMode) -> (
         message: String, retryAfter: Date?
     )? {
         guard status.isAvailable else {
             return (
                 status.unavailableReason ?? CompanionError.modelUnavailable.localizedDescription,
-                now.addingTimeInterval(lastingStopDelay)
-            )
-        }
-        guard status.coverReader != .none else {
-            return (
-                CompanionError.modelUnavailable.localizedDescription,
-                now.addingTimeInterval(lastingStopDelay)
+                nil
             )
         }
         switch status.quota {
@@ -474,7 +742,7 @@ actor SpineWorker {
         switch error {
         case let error as CompanionError:
             switch error {
-            case .invalidCover, .coverTooLarge, .invalidDesign: return .skipBook
+            case .invalidCover, .coverTooLarge, .invalidDesign, .providerRefused: return .skipBook
             case .quotaReached(let resetDate): return .stopRun(retryAfter: resetDate)
             case .modelBusy(let retryAfter), .fontServiceUnavailable(let retryAfter):
                 return .stopRun(retryAfter: retryAfter ?? now.addingTimeInterval(busyRetryDelay))

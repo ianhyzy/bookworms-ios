@@ -98,17 +98,7 @@ actor CloudSpineStore: SpineStore {
 
     func save(_ design: SpineDesignV1, replacing: Bool) async throws {
         try await write(design) { existing in
-            // Another run already saved this work from this generator, so the first design
-            // saved stays; only a newer redesign the reader asked for replaces it.
-            if let existing, existing.accountID == design.accountID,
-                existing.bookID == design.bookID, existing.workItemHash == design.workItemHash,
-                existing.coverHash == design.coverHash,
-                existing.generatorVersion == design.generatorVersion,
-                !replacing || existing.generatedAt >= design.generatedAt
-            {
-                return nil
-            }
-            return design
+            existing?.outlasts(design, replacing: replacing) == true ? nil : design
         }
     }
 
@@ -222,6 +212,27 @@ actor CloudSpineStore: SpineStore {
             else { throw CompanionError.invalidCloudData }
             return existing
         }
+    }
+
+    /// Saves `look` over a saved look it upgrades, checking the saved record again on each try,
+    /// so a recoloring or a better look that another device saves meanwhile is kept. A record
+    /// that holds no valid look is replaced.
+    func upgradeLook(_ look: SeriesLookV1) async throws -> SeriesLookV1 {
+        try look.validate()
+        let name = CloudContract.seriesLookRecordName(accountID: look.accountID, key: look.key)
+        var kept = look
+        try await write(
+            JSONEncoder().encode(look), recordType: "SeriesLookV1", recordName: name
+        ) { record in
+            guard let payload = Self.payload(SeriesLookV1.self, in: record),
+                let saved =
+                    SeriesLookV1.keyed([name: payload], accountID: look.accountID)[look.key],
+                !saved.isUpgraded(at: look.tier, awaitingFont: look.awaitsFont)
+            else { return false }
+            kept = saved
+            return true
+        }
+        return kept
     }
 
     /// Saves `look` over its group's look; the last writer wins.

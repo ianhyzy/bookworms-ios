@@ -68,7 +68,7 @@
     }
 
     /// The Settings window (**Bookworms > Settings…**): background generation, launch at
-    /// login, and the Hardcover account.
+    /// login, the backup spine design model, and the Hardcover account.
     struct MacSettingsView: View {
         @Environment(AppModel.self) private var model
         @Environment(GenerationController.self) private var generation

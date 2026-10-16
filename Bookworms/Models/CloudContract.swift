@@ -7,9 +7,15 @@ enum CloudContract {
     static let worklistSubscriptionID = "spine-worklist-v1-changes"
     static let libraryRecordName = "library-v1"
     /// Identifies designs from this app's current generator. Designs with another version, such
-    /// as the Mac companion's on-device `mac-foundation-models-v2` or this app's earlier
-    /// `ios-pcc-v1`, show until a run regenerates them; colors the reader chose are kept.
+    /// as the Mac companion's `macGeneratorVersion` or this app's earlier `ios-pcc-v1`, show
+    /// until a run regenerates them; colors the reader chose are kept.
     static let generatorVersion = "ios-pcc-v2"
+    /// The generator of the retired Bookworms Spines Mac companion, which designed with Apple's
+    /// on-device model and recorded no model token.
+    static let macGeneratorVersion = "mac-foundation-models-v2"
+    /// The `SeriesLookV1.origin` of the Apple TV's own looks, which it makes without a model from
+    /// a cover's colors and the book's genres.
+    static let appleTVGeneratorVersion = "tvos-local-v1"
 
     static func designRecordName(accountID: String, bookID: Int) -> String {
         "spine-design-v1-" + digest("\(accountID):\(bookID)")
@@ -232,7 +238,8 @@ struct SpineDesignV1: Codable, Sendable, Hashable {
     /// `weight` when the family lacks that weight.
     var instanceWeight: Int? = nil
     /// How the design was made, in space-separated tokens such as "model:apple/on-device" or
-    /// "series-reuse:12". Private Cloud Compute's designs record no model token.
+    /// "series-reuse:12". The model token names the design's tier (`SpineDesignV1.tier`);
+    /// Private Cloud Compute's designs record none.
     var provenance: String? = nil
 
     func validate() throws {
@@ -315,12 +322,19 @@ struct CoverChoiceV1: Codable, Sendable, Hashable {
 ///
 /// A `SeriesLookV1` record in the private database's default zone, named by
 /// `CloudContract.seriesLookRecordName(accountID:key:)`, holds this JSON in its `payload` Bytes
-/// field, with dates in `JSONEncoder`'s default encoding. The first look saved for a group decides
-/// it: devices create the record only when it is missing (see `SpineStore.createLook(_:)`). Later
-/// edits replace the colors and set `editedAt`, keeping `origin`, the generator of the design or
-/// look the record was made from, such as "ios-pcc-v2" or the Apple TV's "tvos-local-v1".
-/// `sourceBookID` is the book whose design or look it was made from. Readers ignore a record that
-/// fails `validate()` or names another account or group than its record name.
+/// field, with dates in `JSONEncoder`'s default encoding. `origin` is the generator of the design
+/// or look the record was made from, such as "ios-pcc-v2" or the Apple TV's "tvos-local-v1", and
+/// `sourceBookID` is the book whose design or look it was made from. `provenance`, when present,
+/// holds that design's tier tokens (`SpineDesignV1.tierTokens`): its model token, which gives the
+/// look's tier (`tier`), and the system-font token of a design that awaits its font.
+///
+/// The first look saved for a group decides it among equal tiers: devices create the record only
+/// when it is missing (see `SpineStore.createLook(_:)`). A design from a better tier, or from
+/// the look's tier when the look awaits its font, replaces a look the reader never edited
+/// (`isUpgraded(at:awaitingFont:)`, `SpineStore.upgradeLook(_:)`), keeping `createdAt`. The
+/// reader's edits replace the colors, or the whole look when the reader asks to redesign the
+/// series, and set `editedAt`. Readers ignore a record that fails `validate()` or
+/// names another account or group than its record name.
 struct SeriesLookV1: Codable, Sendable, Hashable {
     /// The hash a look's design carries in place of a book's own work-item or cover hash.
     static let placeholderHash = String(repeating: "0", count: 64)
@@ -342,8 +356,44 @@ struct SeriesLookV1: Codable, Sendable, Hashable {
     var fontFamily: String? = nil
     var fontPostScriptName: String? = nil
     var instanceWeight: Int? = nil
+    var provenance: String? = nil
 
     var key: SeriesLookKey { SeriesLookKey(seriesID: seriesID, group: group) }
+
+    /// The model tier that made the look (`SpineDesignV1.tier`): the tier its `provenance` names,
+    /// or, without a model token, the tier its `origin` implies, such as local defaults for an
+    /// Apple TV look.
+    var tier: ModelTier { storedDesign(bookID: sourceBookID, hashesFrom: nil).tier }
+
+    /// Whether the look stands in its system typeface for a font that couldn't download
+    /// (`SpineDesignV1.awaitsFont`).
+    var awaitsFont: Bool { storedDesign(bookID: sourceBookID, hashesFrom: nil).awaitsFont }
+
+    /// Whether a design from `tier` replaces this look: the look's colors are the generator's,
+    /// and the design outranks the look's own (`SpineDesignV1.isOutranked(by:awaitingFont:)`),
+    /// because a weaker tier made the look, or the look awaits a font that the design, unless
+    /// `awaitingFont`, has. The reader's colors stay: an edited look, or one whose `provenance`
+    /// carries a recolored design's `generated-colors` token.
+    func isUpgraded(at tier: ModelTier, awaitingFont: Bool = false) -> Bool {
+        let design = storedDesign(bookID: sourceBookID, hashesFrom: nil)
+        return editedAt == nil && design.generatedColors == nil
+            && design.isOutranked(by: tier, awaitingFont: awaitingFont)
+    }
+
+    /// The book among `members`, the look group's books, whose design replaces the look when it
+    /// is upgraded (`isUpgraded(at:awaitingFont:)`), or `nil` when no member has a cover: the
+    /// look's source book while it is a member with a cover, otherwise the best-ranked member
+    /// with one (`SeriesDesigns.ranksBefore(_:_:)`). An Apple TV look samples a cover instead of
+    /// copying a design, so it always takes the best-ranked member.
+    func upgradeSource(among members: [CloudBook]) -> Int? {
+        let designable = members.filter { !$0.coverCandidates.isEmpty }
+        if origin != CloudContract.appleTVGeneratorVersion,
+            designable.contains(where: { $0.id == sourceBookID })
+        {
+            return sourceBookID
+        }
+        return designable.min(by: SeriesDesigns.ranksBefore)?.id
+    }
 
     /// Checks the record's own fields, then the design rules for colors and type that
     /// `SpineDesignV1.validate()` applies to the look's design.
@@ -360,11 +410,17 @@ struct SeriesLookV1: Codable, Sendable, Hashable {
 
     /// The look as a design of the book `bookID`, which draws and series reuse treat like a saved
     /// design: the look's colors and type in an allowed upright face
-    /// (`SpineDesignV1.withAllowedFont`), `origin` as the generator, and the last edit or
-    /// creation as the design date. The work-item and cover hashes come from `saved`, the book's
-    /// own saved design, or are `placeholderHash`.
+    /// (`SpineDesignV1.withAllowedFont`), `origin` as the generator, the tier tokens of
+    /// `provenance` alone (`SpineDesignV1.tierTokens`), and the last edit or creation as the
+    /// design date. The work-item and cover hashes come from `saved`, the book's own saved
+    /// design, or are `placeholderHash`. Dropping the other tokens, which any device may have
+    /// copied from a design, keeps a copy of the look in the look's own colors.
     func design(bookID: Int, hashesFrom saved: SpineDesignV1? = nil) -> SpineDesignV1 {
-        storedDesign(bookID: bookID, hashesFrom: saved).withAllowedFont
+        var design = storedDesign(bookID: bookID, hashesFrom: saved).withAllowedFont
+        let tokens = (provenance?.split(separator: " ") ?? [])
+            .filter { $0.hasPrefix("model:") || $0 == SpineDesignV1.systemFontToken }
+        design.provenance = tokens.isEmpty ? nil : tokens.joined(separator: " ")
+        return design
     }
 
     /// `design(bookID:hashesFrom:)` with the stored font, which validation checks.
@@ -376,7 +432,7 @@ struct SeriesLookV1: Codable, Sendable, Hashable {
             generatedAt: editedAt ?? createdAt, backgroundHex: backgroundHex,
             foregroundHex: foregroundHex, accentHex: accentHex, typeface: typeface, weight: weight,
             uppercase: uppercase, fontFamily: fontFamily, fontPostScriptName: fontPostScriptName,
-            instanceWeight: instanceWeight)
+            instanceWeight: instanceWeight, provenance: provenance)
     }
 
     /// Whether `other` is this look or a recoloring of it: every field but the colors and
@@ -401,7 +457,8 @@ struct SeriesLookV1: Codable, Sendable, Hashable {
     }
 
     /// Returns the look made again from `design`, a new design of one of its books, at `date`:
-    /// `design`'s colors and type, book, and generator, with the look's creation date.
+    /// `design`'s colors and type, book, generator, and model token, with the look's creation
+    /// date.
     func remade(from design: SpineDesignV1, at date: Date) -> SeriesLookV1 {
         var look = SeriesLookV1(design: design, key: key, createdAt: createdAt)
         look.editedAt = date
@@ -426,15 +483,22 @@ struct SeriesLookV1: Codable, Sendable, Hashable {
 }
 
 extension SeriesLookV1 {
-    /// A new look for the group `key`, made from `design`'s colors and type.
+    /// A look for the group `key`, made from `design`'s colors and type, with `design`'s tier
+    /// tokens (`SpineDesignV1.tierTokens`) as its `provenance`. The design's other tokens
+    /// describe that book's design alone: a look copies no `series-reuse` or `generated-colors`
+    /// token. A design the reader recolored gives the look the reader's colors, so the look
+    /// counts as edited at `createdAt` and no upgrade replaces them
+    /// (`isUpgraded(at:awaitingFont:)`).
     init(design: SpineDesignV1, key: SeriesLookKey, createdAt: Date) {
         self.init(
             version: 1, accountID: design.accountID, seriesID: key.seriesID, group: key.group,
             sourceBookID: design.bookID, origin: design.generatorVersion, createdAt: createdAt,
+            editedAt: design.generatedColors == nil ? nil : createdAt,
             backgroundHex: design.backgroundHex, foregroundHex: design.foregroundHex,
             accentHex: design.accentHex, typeface: design.typeface, weight: design.weight,
             uppercase: design.uppercase, fontFamily: design.fontFamily,
-            fontPostScriptName: design.fontPostScriptName, instanceWeight: design.instanceWeight)
+            fontPostScriptName: design.fontPostScriptName, instanceWeight: design.instanceWeight,
+            provenance: design.tierTokens.isEmpty ? nil : design.tierTokens.joined(separator: " "))
     }
 }
 
@@ -575,8 +639,13 @@ enum CompanionError: LocalizedError, Sendable {
     /// iCloud holds another design than the one the reader recolored, such as a redesign from
     /// another device.
     case designChanged
-    /// A third-party spine designer rejected the request or is not set up, with its reason.
+    /// A third-party spine designer rejected its settings, such as its key, model name, or
+    /// account, or is not set up, with the reason.
     case providerRejected(String)
+    /// The backup model refused one book's request with HTTP 400, with the provider's message.
+    /// It fails only the book, unless the backup refuses several books in a row with the same
+    /// message (`SpineWorker.RefusalStreak`).
+    case providerRefused(String)
 
     var errorDescription: String? {
         switch self {
@@ -604,7 +673,7 @@ enum CompanionError: LocalizedError, Sendable {
         case .cloudConflict: "A concurrent iCloud update prevented saving."
         case .designChanged:
             "The spine was redesigned on another device, so these colors were not saved."
-        case .providerRejected(let reason): reason
+        case .providerRejected(let reason), .providerRefused(let reason): reason
         }
     }
 }

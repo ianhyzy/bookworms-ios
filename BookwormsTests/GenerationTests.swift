@@ -33,17 +33,95 @@ final class GenerationTests: XCTestCase {
     }
 
     func testProviderErrorsStopTheRunWhenEveryBookWouldFail() {
-        func failure(_ status: Int) -> CompanionError? {
+        func failure(_ status: Int, code: String? = nil) -> CompanionError? {
             BookAnalyzer.modelFailure(
-                ProviderError(provider: .anthropic, status: status, retryAfter: nil, message: "x"))
+                ProviderError(
+                    provider: .openAI, status: status, retryAfter: nil, message: "x", code: code))
         }
-        guard case .providerRejected = failure(401), case .providerRejected = failure(404),
-            case .modelBusy = failure(429), case .modelBusy = failure(503)
+        guard case .providerRejected = failure(401), case .providerRejected = failure(403),
+            case .providerRejected = failure(404),
+            case .providerRejected = failure(400, code: "API_KEY_INVALID"),
+            case .modelBusy = failure(429),
+            case .modelBusy = failure(429, code: "rate_limit_exceeded"),
+            case .modelBusy = failure(503)
         else { return XCTFail("Provider errors map to the wrong dispositions") }
-        guard
+        // An account without credit fails every book, so the run moves to the next tier.
+        guard case .providerRejected = failure(402),
+            case .providerRejected = failure(429, code: "insufficient_quota")
+        else { return XCTFail("An account without credit should move the run to the next tier") }
+        // A rejection of one request, such as a content policy's for one crop, or an empty
+        // answer fails only the book. A 400 keeps its message, so the worker can tell when
+        // it repeats.
+        guard case .providerRefused("OpenAI: x") = failure(400),
+            case .providerRefused("OpenAI: x") = failure(400, code: "invalid_request_error"),
+            case .invalidDesign = failure(422),
             case .invalidDesign = BookAnalyzer.modelFailure(
                 ProviderError(provider: .openAI, status: nil, retryAfter: nil, message: "x"))
-        else { return XCTFail("An empty answer fails only the book") }
+        else { return XCTFail("A rejection of one request should fail only the book") }
+        XCTAssertEqual(SpineWorker.disposition(of: CompanionError.providerRefused("x")), .skipBook)
+    }
+
+    func testTheSameRefusalOfThreeBooksInARowIsLasting() {
+        var streak = SpineWorker.RefusalStreak()
+        XCTAssertFalse(streak.isLasting(after: "Anthropic: Your credit balance is too low."))
+        XCTAssertFalse(streak.isLasting(after: "Anthropic: Your credit balance is too low."))
+        XCTAssertFalse(
+            streak.isLasting(after: "Anthropic: Could not process image."),
+            "Another message starts a new streak")
+        XCTAssertFalse(streak.isLasting(after: "Anthropic: Could not process image."))
+        XCTAssertTrue(streak.isLasting(after: "Anthropic: Could not process image."))
+        XCTAssertFalse(
+            streak.isLasting(after: "Anthropic: Could not process image."),
+            "A lasting refusal starts the count again")
+        XCTAssertEqual(SpineWorker.RefusalStreak.limit, 3)
+    }
+
+    func testLastingBackupRejectionsLastUntilTheSettingsChange() async {
+        SpineDesigner.forgetRejection()
+        defer { SpineDesigner.forgetRejection() }
+        // A custom endpoint needs no key, so its settings are complete without one.
+        let custom = SpineDesigner(
+            provider: .custom, model: "local-model", baseURL: "http://localhost:1234/v1")
+        let analyzer = BookAnalyzer()
+        let ready = await analyzer.status(of: .backup, designer: custom)
+        XCTAssertTrue(ready.isAvailable)
+
+        custom.rememberRejection("Custom: Unknown model.", sentKey: custom.provider.key.read())
+        let rejected = await analyzer.status(of: .backup, designer: custom)
+        XCTAssertFalse(rejected.isAvailable)
+        XCTAssertEqual(rejected.unavailableReason, "Custom: Unknown model.")
+        // Later runs start below the rejected backup and say why.
+        let best = BookAnalyzer.bestStatus(
+            pcc: ModelStatus(
+                tier: .privateCloudCompute, isAvailable: false, unavailableReason: "Off",
+                coverReader: .designModel),
+            backup: rejected,
+            onDevice: ModelStatus(
+                tier: .onDevice, isAvailable: true, unavailableReason: nil,
+                coverReader: .onDevice))
+        XCTAssertEqual(best.tier, .onDevice)
+        XCTAssertEqual(best.backupUnavailableReason, "Custom: Unknown model.")
+
+        var renamed = custom
+        renamed.model = "other-model"
+        XCTAssertNil(renamed.rejection, "Other settings get their own requests")
+        XCTAssertEqual(custom.rejection, "Custom: Unknown model.")
+        SpineDesigner.forgetRejection()
+        XCTAssertNil(custom.rejection, "Changed settings forget the rejection")
+    }
+
+    func testARejectionOfAReplacedKeyIsNotRemembered() {
+        SpineDesigner.forgetRejection()
+        defer { SpineDesigner.forgetRejection() }
+        let custom = SpineDesigner(
+            provider: .custom, model: "local-model", baseURL: "http://localhost:1234/v1")
+        // Whatever key this device holds, the late rejection's request sent another one.
+        let current = custom.provider.key.read()
+        XCTAssertFalse(
+            custom.rememberRejection("Custom: Invalid key.", sentKey: (current ?? "") + "-old"))
+        XCTAssertNil(custom.rejection, "A late rejection of a replaced key leaves the new one")
+        XCTAssertTrue(custom.rememberRejection("Custom: Invalid key.", sentKey: current))
+        XCTAssertEqual(custom.rejection, "Custom: Invalid key.")
     }
 
     func testModelErrorsMapToRunStopsOrBookFailures() {
@@ -226,9 +304,9 @@ final class GenerationTests: XCTestCase {
             quota: ModelStatus.Quota
         ) -> ModelStatus {
             ModelStatus(
-                isAvailable: available, unavailableReason: available ? nil : "Unavailable",
-                coverReader: reader, quota: quota, quotaResetDate: now,
-                limitIncreaseSuggestion: nil)
+                tier: .privateCloudCompute, isAvailable: available,
+                unavailableReason: available ? nil : "Unavailable", coverReader: reader,
+                quota: quota, quotaResetDate: now)
         }
         XCTAssertNil(SpineWorker.modelStop(status(quota: .belowLimit), mode: .background))
         XCTAssertNil(SpineWorker.modelStop(status(quota: .approachingLimit), mode: .foreground))
@@ -238,22 +316,198 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(
             SpineWorker.modelStop(status(quota: .limitReached), mode: .foreground)?.retryAfter,
             now)
-        // An unavailable model waits a day instead of downloading the library every charge.
-        let dayLater = now.addingTimeInterval(SpineWorker.lastingStopDelay)
-        XCTAssertEqual(
-            SpineWorker.modelStop(
-                status(available: false, quota: .belowLimit), mode: .background, now: now)?
-                .retryAfter, dayLater)
-        XCTAssertEqual(
-            SpineWorker.modelStop(
-                status(reader: .none, quota: .belowLimit), mode: .foreground, now: now)?
-                .retryAfter, dayLater)
+        // A tier lost during a run stops it with no retry date, so the next run, which picks
+        // the best tier again, starts when it is next scheduled.
+        let lost = SpineWorker.modelStop(
+            status(available: false, quota: .belowLimit), mode: .background)
+        XCTAssertEqual(lost?.message, "Unavailable")
+        XCTAssertNil(lost?.retryAfter)
         XCTAssertNil(
             SpineWorker.modelStop(status(reader: .onDevice, quota: .belowLimit), mode: .foreground))
-        // NO_PCC builds design from the title measurements when the on-device model lacks vision.
+        // The on-device tier designs from the title measurements when its model lacks vision.
         XCTAssertNil(
             SpineWorker.modelStop(
                 status(reader: .measurementsOnly, quota: .belowLimit), mode: .background))
+    }
+
+    func testRunsQueueUpgradesOnlyWhenTheirTierCanTakeRequests() {
+        func upgradeTier(
+            _ tier: ModelTier, available: Bool = true, quota: ModelStatus.Quota = .belowLimit,
+            mode: RunMode = .background
+        ) -> ModelTier {
+            SpineWorker.upgradeTier(
+                ModelStatus(
+                    tier: tier, isAvailable: available, unavailableReason: nil,
+                    coverReader: .designModel, quota: quota, quotaResetDate: now),
+                mode: mode)
+        }
+        XCTAssertEqual(upgradeTier(.privateCloudCompute), .privateCloudCompute)
+        XCTAssertEqual(
+            upgradeTier(.privateCloudCompute, quota: .approachingLimit, mode: .foreground),
+            .privateCloudCompute)
+        XCTAssertEqual(upgradeTier(.backup), .backup)
+        XCTAssertEqual(upgradeTier(.local), .local)
+        // A run that stops for its model queues the same books as a run without tiers.
+        XCTAssertEqual(
+            upgradeTier(.privateCloudCompute, quota: .limitReached, mode: .foreground), .local)
+        XCTAssertEqual(upgradeTier(.privateCloudCompute, quota: .approachingLimit), .local)
+        XCTAssertEqual(upgradeTier(.onDevice, available: false), .local)
+    }
+
+    func testRunsAtTheDailyLimitWaitForTheUpgradesTheyCannotQueue() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appending(path: "bookworms-ledger-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let ledger = WorkLedger(url: url)
+        let book = CloudBook(
+            id: 9, title: "A Quiet Orbit", author: "Ann Author", coverURL: nil,
+            detailCoverURL: nil)
+        let hash = CloudContract.workItemHash(accountID: "42", book: book)
+        try await ledger.recordSuccess(
+            recordName: CloudContract.designRecordName(accountID: "42", bookID: book.id),
+            workItemHash: hash, coverHash: hash, tier: .onDevice)
+        func work(tier: ModelTier, upgradeTier: ModelTier) async -> (
+            queue: [Int], upgradeWaits: Bool
+        ) {
+            let work = await SpineWorker.work(
+                [book], accountID: "42", ledger: ledger, tier: tier, upgradeTier: upgradeTier)
+            return (work.queue.map(\.id), work.upgradeWaits)
+        }
+        // At the limit, the upgrade isn't queued, but it keeps the stop and its reset date.
+        let limited = ModelStatus(
+            tier: .privateCloudCompute, isAvailable: true, unavailableReason: nil,
+            coverReader: .designModel, quota: .limitReached, quotaResetDate: now)
+        let waiting = await work(
+            tier: limited.tier, upgradeTier: SpineWorker.upgradeTier(limited, mode: .foreground))
+        XCTAssertEqual(waiting.queue, [])
+        XCTAssertTrue(waiting.upgradeWaits)
+        XCTAssertEqual(SpineWorker.modelStop(limited, mode: .foreground)?.retryAfter, now)
+        // Below the limit the upgrade is queued, and at the book's own tier nothing waits.
+        let open = await work(tier: .privateCloudCompute, upgradeTier: .privateCloudCompute)
+        XCTAssertEqual(open.queue, [9])
+        XCTAssertFalse(open.upgradeWaits)
+        let current = await work(tier: .onDevice, upgradeTier: .onDevice)
+        XCTAssertEqual(current.queue, [])
+        XCTAssertFalse(current.upgradeWaits)
+    }
+
+    func testRunsPreferPrivateCloudComputeThenTheBackupThenTheOnDeviceModelThenLocalDefaults()
+        async
+    {
+        func status(_ tier: ModelTier, available: Bool, quota: ModelStatus.Quota = .belowLimit)
+            -> ModelStatus
+        {
+            ModelStatus(
+                tier: tier, isAvailable: available,
+                unavailableReason: available ? nil : "\(tier) unavailable",
+                coverReader: .designModel, quota: quota)
+        }
+        // Private Cloud Compute over its daily limit still designs: the run waits for the reset.
+        let pcc = BookAnalyzer.bestStatus(
+            pcc: status(.privateCloudCompute, available: true, quota: .limitReached),
+            backup: status(.backup, available: true), onDevice: status(.onDevice, available: true))
+        XCTAssertEqual(pcc.tier, .privateCloudCompute)
+        XCTAssertNil(pcc.pccUnavailableReason)
+        XCTAssertNotNil(SpineWorker.modelStop(pcc, mode: .foreground))
+
+        let backup = BookAnalyzer.bestStatus(
+            pcc: status(.privateCloudCompute, available: false),
+            backup: status(.backup, available: true), onDevice: status(.onDevice, available: true))
+        XCTAssertEqual(backup.tier, .backup)
+        XCTAssertEqual(backup.pccUnavailableReason, "privateCloudCompute unavailable")
+
+        // Private Cloud Compute without image input reports itself unavailable, so the next
+        // tier designs and records its own tier.
+        var blind = status(.privateCloudCompute, available: false)
+        blind.unavailableReason = "Private Cloud Compute can't read covers on this iPhone."
+        let sighted = BookAnalyzer.bestStatus(
+            pcc: blind, backup: status(.backup, available: false),
+            onDevice: status(.onDevice, available: true))
+        XCTAssertEqual(sighted.tier, .onDevice)
+        XCTAssertEqual(sighted.provenance, ModelTier.onDeviceToken)
+        XCTAssertEqual(sighted.pccUnavailableReason, blind.unavailableReason)
+
+        // A backup that isn't set up on this device, such as one without a key, is skipped.
+        let onDevice = BookAnalyzer.bestStatus(
+            pcc: status(.privateCloudCompute, available: false),
+            backup: status(.backup, available: false), onDevice: status(.onDevice, available: true))
+        XCTAssertEqual(onDevice.tier, .onDevice)
+        XCTAssertEqual(onDevice.pccUnavailableReason, "privateCloudCompute unavailable")
+        XCTAssertNil(onDevice.backupUnavailableReason, "No backup was chosen")
+        XCTAssertNil(onDevice.onDeviceUnavailableReason)
+
+        // A backup the reader chose but didn't set up says why under the lower tier.
+        let custom = SpineDesigner(provider: .custom, model: "local-model", baseURL: "")
+        var unset = status(.backup, available: false)
+        unset.designer = custom
+        unset.unavailableReason = custom.problem
+        let skipped = BookAnalyzer.bestStatus(
+            pcc: status(.privateCloudCompute, available: false), backup: unset,
+            onDevice: status(.onDevice, available: true))
+        XCTAssertEqual(skipped.tier, .onDevice)
+        XCTAssertEqual(skipped.backupUnavailableReason, "Enter the endpoint's base URL.")
+        let pccOverUnset = BookAnalyzer.bestStatus(
+            pcc: status(.privateCloudCompute, available: true), backup: unset,
+            onDevice: status(.onDevice, available: true))
+        XCTAssertNil(pccOverUnset.backupUnavailableReason)
+
+        // With no model available, local defaults design and record why each model is missing.
+        let local = BookAnalyzer.bestStatus(
+            pcc: status(.privateCloudCompute, available: false),
+            backup: status(.backup, available: false), onDevice: status(.onDevice, available: false)
+        )
+        XCTAssertEqual(local.tier, .local)
+        XCTAssertEqual(local.coverReader, .measurementsOnly)
+        XCTAssertEqual(local.pccUnavailableReason, "privateCloudCompute unavailable")
+        XCTAssertEqual(local.onDeviceUnavailableReason, "onDevice unavailable")
+        XCTAssertEqual(local.designerName, "Local defaults")
+        XCTAssertNil(SpineWorker.modelStop(local, mode: .background))
+        let watched = await BookAnalyzer().status(of: .local, designer: .appleOnly)
+        XCTAssertTrue(watched.isAvailable, "Local defaults never stop a run")
+        XCTAssertNil(SpineWorker.modelStop(watched, mode: .background))
+
+        XCTAssertNotNil(SpineDesigner.appleOnly.problem, "No backup model is never set up")
+    }
+
+    func testDesignsRecordTheirTierAsAModelToken() {
+        let anthropic = SpineDesigner(
+            provider: .anthropic, model: "claude-haiku-5-5", baseURL: "")
+        func provenance(_ tier: ModelTier) -> String? {
+            ModelStatus(
+                tier: tier, isAvailable: true, unavailableReason: nil, coverReader: .designModel,
+                designer: anthropic
+            )
+            .provenance
+        }
+        XCTAssertNil(provenance(.privateCloudCompute))
+        XCTAssertEqual(provenance(.backup), "model:anthropic/claude-haiku-5-5")
+        XCTAssertEqual(provenance(.onDevice), "model:apple/on-device")
+        XCTAssertEqual(provenance(.local), "model:local")
+        for tier in [ModelTier.privateCloudCompute, .backup, .onDevice, .local] {
+            XCTAssertEqual(ModelTier(modelToken: provenance(tier)), tier)
+        }
+        XCTAssertLessThan(ModelTier.local, .onDevice)
+        XCTAssertLessThan(ModelTier.onDevice, .backup)
+        XCTAssertLessThan(ModelTier.backup, .privateCloudCompute)
+
+        XCTAssertEqual(
+            ModelStatus(
+                tier: .backup, isAvailable: true, unavailableReason: nil, coverReader: .designModel,
+                designer: anthropic
+            )
+            .designerName, "Anthropic backup model")
+        XCTAssertEqual(
+            SpineWorker.fallbackMessage(
+                rejection: "Anthropic: invalid x-api-key",
+                next: ModelStatus(
+                    tier: .onDevice, isAvailable: true, unavailableReason: nil,
+                    coverReader: .onDevice)),
+            "Anthropic: invalid x-api-key. Until you change the backup model, Bookworms uses Apple's on-device model. Generate now tries the backup model again."
+        )
+        XCTAssertEqual(
+            SpineWorker.fallbackMessage(rejection: "Unknown model.", next: .local),
+            "Unknown model. Until you change the backup model, Bookworms uses local defaults. Generate now tries the backup model again."
+        )
     }
 
     func testTitleNoFamilyCoversUsesTheStyleSystemTypeface() throws {
@@ -273,6 +527,150 @@ final class GenerationTests: XCTestCase {
         XCTAssertNil(design.fontFamily)
         XCTAssertNil(design.fontPostScriptName)
         XCTAssertNil(design.instanceWeight)
+    }
+
+    func testLocalDefaultsUseTheStyleSystemTypefaceWhenFontsCannotDownload() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "bookworms-fonts-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [OfflineURLProtocol.self]
+        let analyzer = BookAnalyzer(fonts: GoogleFonts(root: root, configuration: configuration))
+        // A textless cover in two dark blues, so no title line is measured.
+        let side = 64
+        var pixels = [UInt8](repeating: 255, count: side * side * 4)
+        for y in 0..<side {
+            for x in 0..<side {
+                let offset = (y * side + x) * 4
+                pixels[offset] = 20
+                pixels[offset + 1] = x < side / 2 ? 40 : 60
+                pixels[offset + 2] = 90
+            }
+        }
+        let image = try XCTUnwrap(
+            pixels.withUnsafeMutableBytes { buffer in
+                CGContext(
+                    data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8,
+                    bytesPerRow: side * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?
+                    .makeImage()
+            })
+        let hash = String(repeating: "a", count: 64)
+        let book = CloudBook(
+            id: 9, title: "A Quiet Orbit", author: "Ann Author", coverURL: nil,
+            detailCoverURL: nil, genres: ["Science Fiction"])
+        let design = try await analyzer.design(
+            book: book, accountID: "42", workItemHash: hash,
+            cover: CoverImage(image: image, hash: hash), using: .local)
+        XCTAssertNil(design.fontFamily)
+        XCTAssertNil(design.fontPostScriptName)
+        XCTAssertEqual(design.typeface, SpineFontStyle.geometricSans.fallbackTypeface)
+        XCTAssertEqual(design.weight, 700)
+        XCTAssertEqual(design.tier, .local)
+        // The design awaits its font, so a later run designs the book again.
+        XCTAssertEqual(design.provenance, "model:local font:system")
+        XCTAssertTrue(design.awaitsFont)
+        let lc = SpineContrast.apca(
+            text: try XCTUnwrap(ColorValue(hex: design.foregroundHex)),
+            background: try XCTUnwrap(ColorValue(hex: design.backgroundHex)))
+        XCTAssertGreaterThanOrEqual(abs(lc), 75)
+        // With the system typeface, a series copy of the design needs no download either.
+        let letters = try await analyzer.letters(book, with: design)
+        XCTAssertTrue(letters)
+    }
+
+    func testTitlesTheAtlasCannotRankFallBackToGenreOrHumanistFaces() throws {
+        let atlas = try XCTUnwrap(FontAtlas.shared)
+        let font = try XCTUnwrap(atlas.fonts.first { $0.family == "Oswald" && $0.weight == 400 })
+        let image = try XCTUnwrap(
+            CGContext(
+                data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?
+                .makeImage())
+        func measurement(_ text: String) throws -> TitleLettering.Measurement {
+            TitleLettering.Measurement(
+                text: text, crop: image, profile: try XCTUnwrap(font.compose("KINDRED")?.profile()),
+                ink: ColorValue(hex: "#FFFFFF")!, ground: ColorValue(hex: "#000000")!)
+        }
+        func candidates(
+            _ text: String, genres: [String]? = nil, local: Bool = true
+        ) throws -> [TitleLettering.Match] {
+            let book = CloudBook(
+                id: 9, title: text, author: "Ann Author", coverURL: nil, detailCoverURL: nil,
+                genres: genres)
+            let families =
+                local
+                ? BookAnalyzer.localFamilies(genres: genres, measured: true)
+                : BookAnalyzer.families(for: nil, playful: false)
+            return BookAnalyzer.candidates(
+                families, lettering: try measurement(text), book: book, local: local)
+        }
+        func styles(_ matches: [TitleLettering.Match]) -> Set<SpineFontStyle> {
+            Set(matches.compactMap { SpineFamily(rawValue: $0.family)?.style })
+        }
+
+        // The atlas has only Latin glyphs, so a Cyrillic title line ranks nothing.
+        let cyrillic = "ВОЙНА"
+        XCTAssertTrue(
+            TitleLettering.rank(
+                SpineFamily.allCases.map(\.rawValue), for: try measurement(cyrillic)
+            )
+            .isEmpty)
+        let local = try candidates(cyrillic)
+        XCTAssertEqual(styles(local), [.humanistSans], "Not the whole catalog")
+        XCTAssertTrue(local.allSatisfy { $0.weight == 700 })
+        XCTAssertEqual(styles(try candidates(cyrillic, genres: ["Horror"])), [.condensedSans])
+        // A model's families keep their order at regular weight.
+        let model = try candidates(cyrillic, local: false)
+        XCTAssertEqual(
+            Set(model.map(\.family)), Set(BookAnalyzer.families(for: nil, playful: false)))
+        XCTAssertTrue(model.allSatisfy { $0.weight == 400 })
+        // A Latin title line ranks the families it was given.
+        XCTAssertTrue(styles(try candidates("KINDRED")).count > 1)
+    }
+
+    func testLocalDefaultsChooseFamiliesFromTheFirstRecognizedGenre() {
+        func styles(_ genres: [String]?, measured: Bool = true) -> Set<SpineFontStyle> {
+            Set(
+                BookAnalyzer.localFamilies(genres: genres, measured: measured)
+                    .compactMap { SpineFamily(rawValue: $0)?.style })
+        }
+        XCTAssertEqual(styles(["Fantasy"]), [.classicalCaps, .bookSerif])
+        XCTAssertEqual(styles(["LitRPG"]), [.classicalCaps, .bookSerif])
+        XCTAssertEqual(styles(["Space Opera"]), [.geometricSans])
+        XCTAssertEqual(styles(["Crime Fiction"]), [.condensedSans])
+        XCTAssertEqual(styles(["Gothic"]), [.condensedSans])
+        XCTAssertEqual(styles(["Historical Fiction"]), [.bookSerif])
+        XCTAssertEqual(styles(["Memoir"]), [.humanistSans])
+        XCTAssertEqual(styles(["Young Adult"]), [.rounded])
+        XCTAssertEqual(styles(["Humor"]), [.monospace, .decorative])
+        XCTAssertTrue(
+            BookAnalyzer.localFamilies(genres: ["Satire"], measured: true)
+                .contains(SpineFamily.specialElite.rawValue))
+        // The first genre that names a recognized one decides, in Hardcover's order.
+        XCTAssertEqual(styles(["Adventure", "Mystery", "Fantasy"]), [.condensedSans])
+        XCTAssertEqual(styles(["fantasy", "Science Fiction"]), [.classicalCaps, .bookSerif])
+
+        // Without a recognized genre, the measurements rank every family but rounded faces,
+        // which need a model to judge the book playful.
+        let unranked = styles(["Adventure"])
+        XCTAssertFalse(unranked.contains(.rounded))
+        XCTAssertTrue(unranked.isSuperset(of: [.blackletter, .script, .bookSerif, .monospace]))
+        XCTAssertEqual(styles(nil), unranked)
+        // With nothing measured either, the Apple TV's general-fiction face: a humanist sans.
+        XCTAssertEqual(styles(nil, measured: false), [.humanistSans])
+        XCTAssertEqual(styles(["Adventure"], measured: false), [.humanistSans])
+        XCTAssertEqual(styles(["Horror"], measured: false), [.condensedSans])
+
+        for genres in [nil, ["Fantasy"], ["Humor"], ["Young Adult"], ["Horror"]] as [[String]?] {
+            for measured in [true, false] {
+                let families = BookAnalyzer.localFamilies(genres: genres, measured: measured)
+                XCTAssertFalse(families.isEmpty)
+                XCTAssertTrue(families.allSatisfy(BookAnalyzer.allowsFamily), "\(families)")
+            }
+        }
+        XCTAssertNil(BookAnalyzer.genreFamilies(["Adventure", "Nonfiction"]))
     }
 
     func testLetteringAnswersNarrowTheFamiliesAndNeverOfferSlantedFaces() {
@@ -504,4 +902,14 @@ extension SpineDesignV1 {
         design.fontPostScriptName = postScriptName
         return design
     }
+}
+
+/// Fails every request as an offline device does.
+private final class OfflineURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+    }
+    override func stopLoading() {}
 }

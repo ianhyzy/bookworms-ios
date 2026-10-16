@@ -4,10 +4,10 @@ import FoundationModels
 import ImageIO
 import UniformTypeIdentifiers
 
-/// Which model designs spines: Apple's Private Cloud Compute, or a third-party provider the
-/// reader chose in Settings on the Mac or from the Spines tab on the iPhone. In test builds
-/// without the managed Private Cloud Compute entitlement (`NO_PCC`), Apple's choice designs with
-/// the on-device model instead.
+/// The reader's backup model, which designs spines when Private Cloud Compute isn't available: a
+/// third-party provider chosen in Settings on the Mac or from the Spines tab on the iPhone. The
+/// `.apple` choice means no backup, so Apple's on-device model, or without it local defaults,
+/// designs when Private Cloud Compute isn't available (`ModelTier`).
 ///
 /// The choice and model name live in `UserDefaults`; each provider's API key lives in this
 /// device's Keychain (`KeychainSecret`), never synced. Third-party providers answer through
@@ -21,7 +21,7 @@ struct SpineDesigner: Hashable, Sendable {
 
         var name: String {
             switch self {
-            case .apple: SpineDesigner.appleModelName
+            case .apple: "None"
             case .anthropic: "Anthropic"
             case .openAI: "OpenAI"
             case .google: "Google Gemini"
@@ -51,28 +51,14 @@ struct SpineDesigner: Hashable, Sendable {
             }
         }
 
-        /// What each design request costs the user with this provider.
-        var cost: ModelStatus.Cost {
-            guard self == .apple else { return .apiAccount }
-            #if NO_PCC
-                return .onDevice
-            #else
-                return .dailyLimit
-            #endif
-        }
-
         /// The Keychain item that holds this provider's API key.
         var key: KeychainSecret {
             KeychainSecret(service: "gay.ian.Bookworms.ai-provider", account: rawValue)
         }
     }
 
-    /// The name of Apple's choice, which designs with the on-device model in `NO_PCC` builds.
-    #if NO_PCC
-        static let appleModelName = "Apple on-device model"
-    #else
-        static let appleModelName = "Apple Private Cloud Compute"
-    #endif
+    /// No backup model.
+    static let appleOnly = SpineDesigner(provider: .apple, model: "", baseURL: "")
 
     var provider: Provider
     var model: String
@@ -81,8 +67,9 @@ struct SpineDesigner: Hashable, Sendable {
     private static let providerKey = "SpineDesignerProvider"
     private static let modelKey = "SpineDesignerModel"
     private static let baseURLKey = "SpineDesignerBaseURL"
+    private static let rejectionKey = "SpineDesignerRejection"
 
-    /// The saved choice, or Apple's model.
+    /// The saved choice, or no backup model.
     static var current: SpineDesigner {
         let defaults = UserDefaults.standard
         let provider = defaults.string(forKey: providerKey).flatMap(Provider.init) ?? .apple
@@ -99,32 +86,74 @@ struct SpineDesigner: Hashable, Sendable {
         defaults.set(baseURL, forKey: Self.baseURLKey)
     }
 
-    /// Why this choice cannot design yet, such as a missing key or model name; `nil` when it can.
+    /// Why this choice cannot design yet, such as no backup model or a missing key or model name;
+    /// `nil` when it can. It reads the Keychain. The text names no place, because the Spines tab
+    /// shows it beside **Choose Backup Model**, which opens Settings on the Mac.
     var problem: String? {
         switch provider {
-        case .apple: return nil
+        case .apple: return "Choose a backup model."
         case .custom where URL(string: baseURL)?.scheme == nil:
-            return "Enter the endpoint's base URL in Settings."
+            return "Enter the endpoint's base URL."
         case .anthropic, .openAI, .google:
             if provider.key.read()?.isEmpty ?? true {
-                return "Add your \(provider.name) API key in Settings."
+                return "Add your \(provider.name) API key."
             }
         default: break
         }
-        return model.isEmpty ? "Enter a model name in Settings." : nil
+        return model.isEmpty ? "Enter a model name." : nil
     }
 
-    /// Records which model made a design, such as "model:anthropic/claude-haiku-5-5", in the
-    /// design's 80-character `provenance`. Private Cloud Compute's designs record none; the
-    /// on-device model's, in `NO_PCC` builds, record "model:apple/on-device".
+    /// The provider's message when it last rejected these settings for every request, such as a
+    /// revoked key, an unknown model name, or an account without credit
+    /// (`ProviderError.isLasting`); `nil` when it hasn't. It reads the Keychain.
+    ///
+    /// The rejection lasts until the reader changes the provider, model name, base URL, or key,
+    /// or starts **Generate now** (`forgetRejection()`), so runs don't send each book's first
+    /// request to a model that refuses them all.
+    var rejection: String? {
+        guard
+            let saved = UserDefaults.standard.dictionary(forKey: Self.rejectionKey)
+                as? [String: String],
+            saved["settings"] == settingsID
+        else { return nil }
+        return saved["message"]
+    }
+
+    /// Remembers `message` as the provider's lasting rejection of these settings (`rejection`),
+    /// unless this device's key is no longer `sentKey`, the key of the rejected request. A late
+    /// rejection of a key the reader has since replaced says nothing about the new key, which
+    /// the settings ID can't tell apart. The keys are compared in memory, and nothing about
+    /// them is saved. Returns whether it remembered the rejection.
+    @discardableResult func rememberRejection(_ message: String, sentKey: String?) -> Bool {
+        guard provider.key.read() == sentKey else { return false }
+        UserDefaults.standard.set(
+            ["settings": settingsID, "message": message], forKey: Self.rejectionKey)
+        return true
+    }
+
+    /// Forgets a remembered rejection, because the reader changed the settings or started
+    /// **Generate now**, and returns its message, or `nil` without one. A new key needs this: the
+    /// settings ID records only whether a key exists.
+    @discardableResult static func forgetRejection() -> String? {
+        let defaults = UserDefaults.standard
+        let message = (defaults.dictionary(forKey: rejectionKey) as? [String: String])?["message"]
+        defaults.removeObject(forKey: rejectionKey)
+        return message
+    }
+
+    /// Identifies these settings for `rejection`: the provider, model name, base URL, and
+    /// whether this device holds a key, never the key itself, which stays in the Keychain.
+    private var settingsID: String {
+        let hasKey = !(provider.key.read()?.isEmpty ?? true)
+        return [provider.rawValue, model, baseURL, hasKey ? "key" : "no key"]
+            .joined(separator: "\n")
+    }
+
+    /// The model token for a design this backup model makes, such as
+    /// "model:anthropic/claude-haiku-5-5", within `provenance`'s 80 characters; `nil` without a
+    /// backup model.
     var provenance: String? {
-        guard provider != .apple else {
-            #if NO_PCC
-                return "model:apple/on-device"
-            #else
-                return nil
-            #endif
-        }
+        guard provider != .apple else { return nil }
         return String("model:\(provider.rawValue)/\(model)".prefix(80))
     }
 }
@@ -136,11 +165,21 @@ struct ProviderError: LocalizedError {
     let status: Int?
     let retryAfter: Date?
     let message: String
+    /// The error body's `error.code`, else its `error.type`, else the first reason in Gemini's
+    /// error details, such as OpenAI's "insufficient_quota" or Gemini's "API_KEY_INVALID".
+    var code: String? = nil
 
     var errorDescription: String? { "\(provider.name): \(message)" }
 
-    /// A rejected key or account, which every later request repeats.
-    var isAuthorization: Bool { status == 401 || status == 403 }
+    /// A rejected key or model name, or an account without credit, which every later request
+    /// with these settings repeats: a 401 or 403, a 402 Payment Required, a 404, OpenAI's
+    /// `insufficient_quota`, which it sends with a 429, or Gemini's `API_KEY_INVALID`, which it
+    /// sends with a 400. Any other 400 fails one book, such as for its crop, unless the same
+    /// message refuses several books in a row (`SpineWorker.RefusalStreak`).
+    var isLasting: Bool {
+        [401, 402, 403, 404].contains(status)
+            || ["insufficient_quota", "API_KEY_INVALID"].contains(code)
+    }
     /// A rate limit or outage, which a later run can get past.
     var isTransient: Bool { status == 429 || status == 529 || (status ?? 0) >= 500 }
 }
@@ -314,18 +353,34 @@ enum ProviderHTTP {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let result: (Data, URLResponse)
+        do {
+            result = try await URLSession.shared.data(for: request)
+        } catch let error as URLError where !SpineWorker.offlineErrors.contains(error.code) {
+            // An endpoint that can't be reached, such as a local server that is off, would fail
+            // every book, so the run stops and a later run tries again.
+            throw CompanionError.modelBusy(nil)
+        }
+        let (data, response) = result
         let http = response as? HTTPURLResponse
         let status = http?.statusCode ?? 0
         let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         guard (200..<300).contains(status) else {
             let retryAfter = http?.value(forHTTPHeaderField: "Retry-After")
                 .flatMap(TimeInterval.init).map { Date.now.addingTimeInterval($0) }
-            let message =
-                ((json?["error"] as? [String: Any])?["message"] as? String)
+            let error = json?["error"] as? [String: Any]
+            var message =
+                error?["message"] as? String
                 ?? HTTPURLResponse.localizedString(forStatusCode: status)
+            // The app saves the message with the run's outcome and as a remembered rejection
+            // (`SpineDesigner.rememberRejection(_:sentKey:)`), so a key that an endpoint echoes is
+            // removed from it.
+            if !key.isEmpty { message = message.replacingOccurrences(of: key, with: "…") }
+            let details = error?["details"] as? [[String: Any]]
             throw ProviderError(
-                provider: provider, status: status, retryAfter: retryAfter, message: message)
+                provider: provider, status: status, retryAfter: retryAfter, message: message,
+                code: error?["code"] as? String ?? error?["type"] as? String
+                    ?? details?.lazy.compactMap { $0["reason"] as? String }.first)
         }
         guard let text = answer(in: json, provider: provider), !text.isEmpty else {
             throw ProviderError(

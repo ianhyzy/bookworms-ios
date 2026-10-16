@@ -267,8 +267,10 @@ enum SeriesDesigns {
     ///
     /// A group gets a look when a member has a usable saved design (`isUsableSource`) made for
     /// the book as it is now (`isCurrent(_:for:)`). The look copies the member design made
-    /// earliest (`generatedAt`, then the lower book ID), as stored, among designs that are not
-    /// series reuse copies, or among the copies when every design is one.
+    /// earliest (`generatedAt`, then the lower book ID), as stored, with its model token, among
+    /// designs that are not series reuse copies, or among the copies when every design is one. A
+    /// look copied from a design the reader recolored counts as edited
+    /// (`SeriesLookV1.init(design:key:createdAt:)`).
     static func missingLooks(
         books: [CloudBook], designs: [Int: SpineDesignV1],
         looks: [SeriesLookKey: SeriesLookV1], now: Date

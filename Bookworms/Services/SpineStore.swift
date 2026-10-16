@@ -18,9 +18,8 @@ protocol SpineStore: Sendable {
     /// so a stale result is not saved after the Apple TV changed accounts or removed the book, or
     /// the reader picked another cover.
     func isStillCurrent(_ context: WorkContext, book: CloudBook) async throws -> Bool
-    /// Saves `design` unless a design of the same work from the same generator already exists,
-    /// such as one another device's run saved first. With `replacing`, for a redesign the reader
-    /// asked for, `design` replaces such a design unless that design is no older.
+    /// Saves `design` unless the saved design outlasts it (`SpineDesignV1.outlasts(_:replacing:)`),
+    /// such as one of the same work that another device's run saved first at the same tier.
     func save(_ design: SpineDesignV1, replacing: Bool) async throws
     /// Saves `design`'s colors to the saved design that it recolors (see
     /// `SpineDesignV1.isSameDesign(as:)`), keeping the saved font and every other field. Throws
@@ -41,6 +40,12 @@ protocol SpineStore: Sendable {
     /// `look`, or the look another device saved first. Throws `CompanionError.invalidCloudData`
     /// when the group's saved look is not valid.
     func createLook(_ look: SeriesLookV1) async throws -> SeriesLookV1
+    /// Saves `look`, made from a design that outranks the group's saved look, over that look
+    /// while `look` still upgrades it (`SeriesLookV1.isUpgraded(at:awaitingFont:)`), and returns
+    /// the look the group keeps: `look`, or the saved look when the reader edited it or another
+    /// device saved one that `look` doesn't outrank first. Creates the look when the group has
+    /// none.
+    func upgradeLook(_ look: SeriesLookV1) async throws -> SeriesLookV1
     /// Saves `look` over its group's look, such as after a requested redesign remakes it.
     func save(_ look: SeriesLookV1) async throws
     /// Saves `look`'s colors and edit date over the saved look that it recolors (see
@@ -202,6 +207,20 @@ actor LocalSpineStore: SpineStore {
                 let existing = SeriesLookV1.keyed(all, accountID: look.accountID)[look.key]
             else { throw CompanionError.invalidCloudData }
             return existing
+        }
+        all[name] = look
+        try write(all, "series-looks-v1.json")
+        return look
+    }
+
+    func upgradeLook(_ look: SeriesLookV1) async throws -> SeriesLookV1 {
+        try look.validate()
+        var all = try looks()
+        let name = CloudContract.seriesLookRecordName(accountID: look.accountID, key: look.key)
+        if let saved = SeriesLookV1.keyed(all, accountID: look.accountID)[look.key],
+            !saved.isUpgraded(at: look.tier, awaitingFont: look.awaitsFont)
+        {
+            return saved
         }
         all[name] = look
         try write(all, "series-looks-v1.json")
