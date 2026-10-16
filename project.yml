@@ -41,6 +41,8 @@ targets:
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        # Lets display links and animations run above 60 Hz on ProMotion iPhones.
+        CADisableMinimumFrameDurationOnPhone: true
         UIBackgroundModes: [processing, remote-notification]
         BGTaskSchedulerPermittedIdentifiers:
           - gay.ian.Bookworms.iOS.spines
