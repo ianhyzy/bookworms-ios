@@ -57,7 +57,9 @@ struct FontFace: @unchecked Sendable, Equatable {
 /// Loads the Google Fonts faces that saved designs name, so spines render in their chosen type.
 ///
 /// Faces load after the library does, not from view bodies. Until a face arrives, spines use the
-/// design's system typeface, and they re-render once it loads.
+/// design's system typeface, and they re-render once it loads. A design without a family that
+/// names an installed face by PostScript name, such as an Apple TV look in Georgia-Bold, uses that
+/// face; without it on this device, the design's system typeface.
 @MainActor
 @Observable
 final class SpineFonts {
@@ -86,9 +88,18 @@ final class SpineFonts {
     /// retried until the next launch; a network failure retries on the next load.
     func load(_ designs: some Sequence<SpineDesignV1>) async {
         for design in designs where !Task.isCancelled {
-            guard let key = Self.key(design), let family = design.fontFamily, faces[key] == nil,
-                !unusable.contains(key)
-            else { continue }
+            guard let key = Self.key(design), faces[key] == nil, !unusable.contains(key) else {
+                continue
+            }
+            guard let family = design.fontFamily else {
+                if let face = design.fontPostScriptName.flatMap(Self.installedFace(named:)) {
+                    faces[key] = face
+                    onFaceLoaded?()
+                } else {
+                    unusable.insert(key)
+                }
+                continue
+            }
             let task = loads[key] ?? download(family: family, design: design, key: key)
             // Awaiting the task itself would ignore cancellation; the stream's iteration ends
             // when the download finishes or the caller is cancelled.
@@ -128,8 +139,19 @@ final class SpineFonts {
         return task
     }
 
+    /// The face's key: the family and weight, or the PostScript name of an installed face.
     private static func key(_ design: SpineDesignV1) -> String? {
-        design.fontFamily.map { "\($0):\(design.weight)" }
+        design.fontFamily.map { "\($0):\(design.weight)" } ?? design.fontPostScriptName
+    }
+
+    /// The upright face installed on this device under the PostScript name `name`, or `nil`.
+    nonisolated static func installedFace(named name: String) -> FontFace? {
+        // Core Text substitutes another face for a missing name, so the name must match.
+        let font = CTFontCreateWithName(name as CFString, 12, nil)
+        let descriptor = CTFontCopyFontDescriptor(font)
+        guard CTFontCopyPostScriptName(font) as String == name, GoogleFonts.isUpright(descriptor)
+        else { return nil }
+        return FontFace(descriptor: descriptor, postScriptName: name)
     }
 }
 

@@ -347,7 +347,8 @@ final class GenerationTests: XCTestCase {
         XCTAssertTrue(BookAnalyzer.allowsFamily(SpineFamily.impactReplacement.rawValue))
         XCTAssertEqual(SpineFamily.impactReplacement.style, .condensedSans)
 
-        // A design saved elsewhere that names Impact loads as the replacement.
+        // A design saved elsewhere that names Impact loads as stored and draws as the
+        // replacement.
         let saved = Data(
             """
             {"version":1,"accountID":"account","bookID":5,"workItemHash":"\(String(repeating: "a", count: 64))",
@@ -361,8 +362,11 @@ final class GenerationTests: XCTestCase {
         let book = CloudBook(
             id: 5, title: "A Title", author: "An Author", coverURL: nil, detailCoverURL: nil,
             genres: nil)
-        let loaded = try XCTUnwrap(
+        let stored = try XCTUnwrap(
             LibrarySnapshot.latestDesigns([design], accountID: "account", books: [book])[5])
+        XCTAssertEqual(stored, design, "The library keeps the record as stored")
+        XCTAssertFalse(SeriesDesigns.isUsableSource(stored), "No series look copies Impact")
+        let loaded = stored.withAllowedFont
         XCTAssertEqual(loaded.fontFamily, "Bebas Neue")
         XCTAssertNil(loaded.fontPostScriptName)
         XCTAssertNil(loaded.instanceWeight)
@@ -403,6 +407,11 @@ final class GenerationTests: XCTestCase {
             ("Dancing Script", "DancingScript-Bold", "Kalam"),
             ("Great Vibes", "GreatVibes-Regular", "Caveat"),
             ("Pacifico", nil, "Permanent Marker"),
+            // A PostScript name alone, as an Apple TV look saves it, shows its family's stand-in.
+            (nil, "DancingScript-Bold", "Kalam"),
+            (nil, "GreatVibes-Regular", "Caveat"),
+            (nil, "EBGaramond-Italic", "EB Garamond"),
+            (nil, "Georgia-Italic", nil),
         ]
         for (family, postScriptName, replacement) in expected {
             let design = loaded(family, postScriptName)

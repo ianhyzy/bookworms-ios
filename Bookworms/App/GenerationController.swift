@@ -68,13 +68,25 @@ final class GenerationController {
     }
 
     /// Starts a user-requested run, unless one is already in progress.
-    func generateNow() {
+    func generateNow() { startRun(redesigning: nil) }
+
+    /// Starts a user-requested run, unless one is already in progress, that first makes a new
+    /// model design for `book`'s design source (`AppModel.designSource(for:)`), even when its
+    /// saved design is current. When `book` draws its series' look, the look then takes the new
+    /// design's colors and type, so the whole series changes.
+    func redesign(_ book: CloudBook) {
+        let model = AppModel.shared
+        startRun(
+            redesigning: (model.designSource(for: book).id, model.lookDesigns[book.id] != nil))
+    }
+
+    private func startRun(redesigning: (bookID: Int, remakesLook: Bool)?) {
         guard userRun == nil else { return }
         isGenerating = true
         userRun = Task {
             await requestContinuedProcessing()
             let started = Date.now
-            await worker.reconcile(mode: .foreground)
+            await worker.reconcile(mode: .foreground, redesigning: redesigning)
             #if !os(macOS)
                 continuedTask?.setTaskCompleted(success: !Task.isCancelled)
                 continuedTask = nil
@@ -226,6 +238,8 @@ final class GenerationController {
             #endif
         case .saved(let design):
             AppModel.shared.apply(design)
+        case .savedLook(let look):
+            AppModel.shared.apply([look])
         }
     }
 

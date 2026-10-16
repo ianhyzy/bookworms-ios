@@ -3,10 +3,13 @@ import SwiftUI
 /// A book's details: a 3D model to turn with a drag and its title, over three tabs that switch
 /// only the content below them: **Details** (the book's description and facts on a grid of
 /// cards), **Journal** (the reader's reading dates, progress, format, and review, on the same
-/// cards), and **Style** (**Change cover**, then the spine's design and colors).
+/// cards), and **Style** (**Change cover**, then the spine's design: its series, colors, and
+/// **Redesign spine**).
 ///
-/// A book that shares its series' spine design (`AppModel.designSource(for:)`) changes the
-/// series source's cover, colors, and design under **Style**, so the whole series changes.
+/// A book that shares its series' spine design changes the series under **Style**: the series
+/// look's or source's colors, and the cover and design of the source book
+/// (`AppModel.designSource(for:)`), from which **Redesign spines** remakes the look. With **Edit**
+/// set to **This book**, the book keeps its own design and the edits change only it.
 ///
 /// With a `HostedBook`, the details draw no book, backdrop, or **Share** button of their own: a
 /// transparent stand-in takes the book's place and turns as it would, the host draws the book
@@ -19,7 +22,6 @@ struct BookDetailView: View {
     let hostedBook: HostedBook?
 
     @Environment(AppModel.self) private var model
-    @Environment(GenerationController.self) private var generation
     @State private var cover: UIImage?
     @State private var choosesCover = false
     /// When the reader last changed the cover here.
@@ -94,7 +96,11 @@ struct BookDetailView: View {
             let text = await Self.plainText(book.description)
             if !Task.isCancelled { about = text }
         }
-        .onChange(of: design?.generatedAt) {
+        // A new design of the spine's source, not a recoloring of its look or design, nor an
+        // ordinary run's copy of its series look.
+        .onChange(of: model.library?.designs[model.designSource(for: book).id]?.generatedAt) {
+            guard model.library?.designs[model.designSource(for: book).id]?.isSeriesReuse != true
+            else { return }
             designedCover = model.designSource(for: book).chosenCoverURL
         }
         .sheet(isPresented: $choosesCover) {
@@ -110,8 +116,7 @@ struct BookDetailView: View {
         #endif
     }
 
-    /// Offers a run that redesigns the spine from the new cover. The ledger rechecks a book
-    /// whose chosen cover changed, so the next run includes this book.
+    /// Offers a run that redesigns the spine from the new cover.
     private func redesignCard(series: Bool) -> some View {
         Card {
             Text(series ? "Redesign the series' spines?" : "Redesign the spine?").font(.headline)
@@ -122,31 +127,7 @@ struct BookDetailView: View {
             )
             .font(.footnote)
             .foregroundStyle(cardNote)
-            if generation.status.isRunning {
-                LabeledContent("Designing spines") { ProgressView() }
-            } else {
-                Button(
-                    series ? "Redesign spines" : "Redesign spine", systemImage: "wand.and.sparkles"
-                ) {
-                    generation.generateNow()
-                }
-                .buttonStyle(.bordered)
-                // A run since the change left the old design, for example after a quota stop or
-                // when the new cover did not load.
-                if let lastRunAt = generation.status.lastRunAt, let coverChangedAt,
-                    lastRunAt > coverChangedAt
-                {
-                    Label(
-                        generation.status.error
-                            ?? (series
-                                ? "The last run did not redesign these spines."
-                                : "The last run did not redesign this spine."),
-                        systemImage: "exclamationmark.triangle"
-                    )
-                    .font(.footnote)
-                    .foregroundStyle(cardNote)
-                }
-            }
+            RedesignButton(book: book, series: series, requestedAt: $coverChangedAt)
         }
     }
 
@@ -176,16 +157,16 @@ struct BookDetailView: View {
             journal
         case .style:
             let series = model.sharesSeriesDesign(book)
+            let coverChanged =
+                design != nil && model.designSource(for: book).chosenCoverURL != designedCover
             VStack(spacing: 24) {
                 Button(
                     series ? "Change series cover" : "Change cover",
                     systemImage: "photo.on.rectangle"
                 ) { choosesCover = true }
                 .buttonStyle(.bordered)
-                if design != nil, model.designSource(for: book).chosenCoverURL != designedCover {
-                    redesignCard(series: series)
-                }
-                designCard(look: look, design: design)
+                if coverChanged { redesignCard(series: series) }
+                designCard(look: look, design: design, offersRedesign: !coverChanged)
             }
         }
     }
@@ -213,10 +194,13 @@ struct BookDetailView: View {
         HardcoverClient.plainText(from: markup)
     }
 
-    private func designCard(look: SpineLook, design: SpineDesignV1?) -> some View {
+    private func designCard(look: SpineLook, design: SpineDesignV1?, offersRedesign: Bool)
+        -> some View
+    {
         SpineDesignCard(
-            book: book, look: look, design: design,
-            series: model.sharesSeriesDesign(book) ? model.designSource(for: book) : nil)
+            book: book, look: look, design: design, generated: model.generatedColors(for: book),
+            series: model.sharesSeriesDesign(book) ? model.designSource(for: book) : nil,
+            offersRedesign: offersRedesign)
     }
 }
 
@@ -874,8 +858,8 @@ private struct GenresCard: View {
     }
 }
 
-/// The **Spine design** card: the spine, the design's font, and its colors, which the reader can
-/// change.
+/// The **Spine design** card: the spine, the book's series choices (`SeriesRows`), the design's
+/// font, and its colors, which the reader can change, with **Redesign spine**.
 ///
 /// Each color opens the system color picker. The card's spine shows picked colors at once. The
 /// rest of the app shows them, and the library's store saves them, one second after the last
@@ -891,8 +875,13 @@ private struct SpineDesignCard: View {
     /// The look of the saved design, as the rest of the app shows it.
     let look: SpineLook
     let design: SpineDesignV1?
+    /// The colors **Reset colors** restores (`AppModel.generatedColors(for:)`).
+    let generated: SpineColors?
     /// The series source whose design `book` shares, or `nil` when the design is its own.
     let series: CloudBook?
+    /// Whether the card offers **Redesign spine**, which the details offer elsewhere after a
+    /// cover change.
+    let offersRedesign: Bool
 
     @Environment(AppModel.self) private var model
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -901,6 +890,8 @@ private struct SpineDesignCard: View {
     @State private var saveError: String?
     /// The color whose picker shows.
     @State private var picking: ColorRole?
+    /// When the reader last tapped **Redesign spine** here, until a new design arrives.
+    @State private var redesignedAt: Date?
 
     private static let cardID = "spine-design-card"
 
@@ -949,7 +940,14 @@ private struct SpineDesignCard: View {
             Task { [model, book] in try? await model.recolor(book, to: draft) }
         }
         // A new design, such as a redesign from a new cover, replaces the colors being picked.
-        .onChange(of: design?.generatedAt) { draft = nil }
+        // Recoloring a look sets its edit date, so the source's stored design tells instead; an
+        // ordinary run's copy of the series look is no new design.
+        .onChange(of: model.library?.designs[model.designSource(for: book).id]?.generatedAt) {
+            guard model.library?.designs[model.designSource(for: book).id]?.isSeriesReuse != true
+            else { return }
+            draft = nil
+            redesignedAt = nil
+        }
         #if DEBUG
             .onAppear(perform: applyDebugColors)
         #endif
@@ -961,6 +959,7 @@ private struct SpineDesignCard: View {
             SpineView(book: book, look: look(with: shown))
                 .frame(height: book.slabThickness)
                 .accessibilityHidden(true)
+            SeriesRows(book: book)
             if let design {
                 // Under the spine, so the note shows above the picker's sheet.
                 if !shown.isReadable {
@@ -995,12 +994,15 @@ private struct SpineDesignCard: View {
                         .foregroundStyle(cardNote)
                     }
                 }
-                if let generated = design.generatedColors ?? design.colors, shown != generated {
+                if let generated, shown != generated {
                     Button("Reset colors", systemImage: "arrow.uturn.backward") {
                         draft = generated
                         Task { await save(generated) }
                     }
                     .buttonStyle(.bordered)
+                }
+                if offersRedesign {
+                    RedesignButton(book: book, series: series != nil, requestedAt: $redesignedAt)
                 }
                 Divider()
             }
@@ -1014,7 +1016,8 @@ private struct SpineDesignCard: View {
                     .font(.footnote)
                     .foregroundStyle(cardNote)
                 }
-                Text("Created \(design.generatedAt, format: .dateTime.year().month().day())")
+                let created = model.drawnLook(of: book)?.createdAt ?? design.generatedAt
+                Text("Created \(created, format: .dateTime.year().month().day())")
                     .font(.footnote)
                     .foregroundStyle(cardNote)
             } else {
@@ -1072,6 +1075,180 @@ private struct SpineDesignCard: View {
             draft = SpineColors(background: background, foreground: foreground, accent: accent)
         }
     #endif
+}
+
+/// The **Series** menu and the **Edit** choice of a book's spine design, saved as the book's
+/// `SeriesLinkV1` (`AppModel.setSeriesLink(for:linkedSeriesID:standsAlone:ownLook:)`).
+///
+/// **Series** chooses the series whose look the book draws: by default its shortest series
+/// (`SeriesDesigns.styleSeries(of:link:)`), or another of its Hardcover series, or none. It shows
+/// when the book has a series or a link. **Edit** chooses whether recoloring, **Reset colors**,
+/// and **Redesign spine** change the series' look or only this book, which then draws its own
+/// design. It shows when the book's look group has a saved look or another book
+/// (`AppModel.choosesEditScope(for:)`). A choice shows at once and stays while it saves; a failed
+/// save shows a toast and the saved choice again. The rows take no other choice until a save
+/// ends, so saves never overlap and the last choice is the one iCloud keeps.
+private struct SeriesRows: View {
+    /// A book's series choice, as the rows show it.
+    struct Choice: Equatable {
+        enum Series: Hashable {
+            /// The book's shortest series.
+            case standard
+            case linked(Int)
+            case alone
+        }
+
+        var series: Series
+        var ownLook: Bool
+
+        init(_ link: SeriesLinkV1?) {
+            series =
+                if link?.standsAlone == true {
+                    .alone
+                } else if let id = link?.linkedSeriesID {
+                    .linked(id)
+                } else {
+                    .standard
+                }
+            ownLook = link?.ownLook == true
+        }
+    }
+
+    let book: CloudBook
+
+    @Environment(AppModel.self) private var model
+    /// The choice being saved, shown until the library has it.
+    @State private var saving: Choice?
+
+    var body: some View {
+        let choice = saving ?? Choice(book.seriesLink)
+        var seen = Set<Int>()
+        let memberships = (book.seriesMemberships ?? [])
+            .filter { seen.insert($0.seriesID).inserted }
+        if !memberships.isEmpty || book.seriesID != nil || book.seriesLink != nil {
+            LabeledContent("Series") {
+                Picker(
+                    "Series",
+                    selection: Binding {
+                        choice.series
+                    } set: {
+                        var new = choice
+                        new.series = $0
+                        choose(new)
+                    }
+                ) {
+                    Text(standardTitle(memberships)).tag(Choice.Series.standard)
+                    ForEach(memberships, id: \.seriesID) {
+                        Text(Self.title(of: $0)).tag(Choice.Series.linked($0.seriesID))
+                    }
+                    // A link to a series that Hardcover no longer lists for the book.
+                    if case .linked(let id) = choice.series,
+                        !memberships.contains(where: { $0.seriesID == id })
+                    {
+                        Text("Linked series").tag(choice.series)
+                    }
+                    Text("Not in a series").tag(Choice.Series.alone)
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .disabled(saving != nil)
+            }
+        }
+        if model.choosesEditScope(for: book) {
+            LabeledContent("Edit") {
+                Picker(
+                    "Edit",
+                    selection: Binding {
+                        choice.ownLook
+                    } set: {
+                        var new = choice
+                        new.ownLook = $0
+                        choose(new)
+                    }
+                ) {
+                    Text("Series").tag(false)
+                    Text("This book").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .disabled(saving != nil)
+            }
+        }
+    }
+
+    /// "Default", with the name of the series the book draws without a link.
+    private func standardTitle(_ memberships: [SeriesMembership]) -> String {
+        let id = SeriesDesigns.styleSeries(of: book, link: nil)?.id
+        let name =
+            memberships.first { $0.seriesID == id }?.name
+            ?? (id != nil && id == book.seriesID ? book.seriesName : nil)
+        return name.map { "Default — \($0)" } ?? "Default"
+    }
+
+    private static func title(of series: SeriesMembership) -> String {
+        switch series.size {
+        case nil: series.name
+        case 1: "\(series.name) (1 book)"
+        case let size?: "\(series.name) (\(size) books)"
+        }
+    }
+
+    private func choose(_ new: Choice) {
+        saving = new
+        var linked: Int?
+        if case .linked(let id) = new.series { linked = id }
+        Task {
+            do {
+                try await model.setSeriesLink(
+                    for: book, linkedSeriesID: linked, standsAlone: new.series == .alone,
+                    ownLook: new.ownLook)
+            } catch {
+                model.toasts.show(.failure("Couldn't save the series choice"))
+            }
+            if saving == new { saving = nil }
+        }
+    }
+}
+
+/// **Redesign spine** for a book (`GenerationController.redesign(_:)`), or the run's progress
+/// while one runs. A run that ends after `requestedAt` while it is still set, because no new
+/// design arrived, leaves a note with the run's error, for example after a quota stop or when
+/// the cover did not load.
+private struct RedesignButton: View {
+    let book: CloudBook
+    /// Whether the redesign changes the book's whole series.
+    let series: Bool
+    /// When the reader asked for a new design, by this button or a new cover.
+    @Binding var requestedAt: Date?
+
+    @Environment(GenerationController.self) private var generation
+
+    var body: some View {
+        if generation.status.isRunning {
+            LabeledContent("Designing spines") { ProgressView() }
+        } else {
+            Button(series ? "Redesign spines" : "Redesign spine", systemImage: "wand.and.sparkles")
+            {
+                requestedAt = .now
+                generation.redesign(book)
+            }
+            .buttonStyle(.bordered)
+            if let lastRunAt = generation.status.lastRunAt, let requestedAt,
+                lastRunAt > requestedAt
+            {
+                Label(
+                    generation.status.error
+                        ?? (series
+                            ? "The last run did not redesign these spines."
+                            : "The last run did not redesign this spine."),
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.footnote)
+                .foregroundStyle(cardNote)
+            }
+        }
+    }
 }
 
 /// A spine color the reader can change.

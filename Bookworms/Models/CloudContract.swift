@@ -19,6 +19,14 @@ enum CloudContract {
         "cover-choice-v1-" + digest("\(accountID):\(bookID)")
     }
 
+    static func seriesLookRecordName(accountID: String, key: SeriesLookKey) -> String {
+        "series-look-v1-" + digest("\(accountID):\(key.seriesID):\(key.group)")
+    }
+
+    static func seriesLinkRecordName(accountID: String, bookID: Int) -> String {
+        "series-link-v1-" + digest("\(accountID):\(bookID)")
+    }
+
     static func workItemHash(accountID: String, book: CloudBook) -> String {
         digest(
             accountID + "\n" + String(book.id) + "\n" + book.title + "\n" + book.author
@@ -121,6 +129,10 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
     /// TV archive. An archive the Apple TV saved before it fetched series names leaves it out
     /// until the TV syncs again.
     var seriesName: String? = nil
+    /// Every Hardcover series the book belongs to, which decide its series look
+    /// (`SeriesDesigns.styleSeries(of:link:)`). Archives and caches saved before memberships
+    /// existed leave it out; such a book's look follows `seriesID`.
+    var seriesMemberships: [SeriesMembership]? = nil
     var pages: Int? = nil
     /// The finish date as `yyyy-MM-dd`.
     var finished: String? = nil
@@ -149,6 +161,9 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
     /// The cover the reader chose (`CoverChoiceV1`), which neither the archive nor
     /// `workItemHash` includes, so designs keep matching the Apple TV's hash.
     var chosenCoverURL: URL? = nil
+    /// The reader's series choice for the book (`SeriesLinkV1`), which, like `chosenCoverURL`,
+    /// neither the archive nor `workItemHash` includes.
+    var seriesLink: SeriesLinkV1? = nil
 
     /// The covers to try in order: the reader's choice, then the default covers.
     var coverCandidates: [URL] {
@@ -172,6 +187,20 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
         guard let finished, finished.count >= 10 else { return nil }
         return try? Date(String(finished.prefix(10)) + "T12:00:00Z", strategy: .iso8601)
     }
+}
+
+/// One Hardcover series that a book belongs to, as the `seriesMemberships` of a book in the Apple
+/// TV archive and in this app's caches.
+///
+/// `size` is the series' count of primary books, else of all its books, and is absent when
+/// Hardcover gives neither. `position` is the book's place in the series, when it has one.
+struct SeriesMembership: Codable, Sendable, Hashable {
+    let seriesID: Int
+    let name: String
+    var position: Double? = nil
+    let featured: Bool
+    let compilation: Bool
+    var size: Int? = nil
 }
 
 /// The number of Hardcover readers who gave a book one rating, such as 4.5.
@@ -280,6 +309,183 @@ struct CoverChoiceV1: Codable, Sendable, Hashable {
     }
 }
 
+/// The look that every book of one look group draws (`SeriesDesigns.lookKey(of:link:)`), shared
+/// through iCloud so every device draws the same series alike.
+///
+/// A `SeriesLookV1` record in the private database's default zone, named by
+/// `CloudContract.seriesLookRecordName(accountID:key:)`, holds this JSON in its `payload` Bytes
+/// field, with dates in `JSONEncoder`'s default encoding. The first look saved for a group decides
+/// it: devices create the record only when it is missing (see `SpineStore.createLook(_:)`). Later
+/// edits replace the colors and set `editedAt`, keeping `origin`, the generator of the design or
+/// look the record was made from, such as "ios-pcc-v2" or the Apple TV's "tvos-local-v1".
+/// `sourceBookID` is the book whose design or look it was made from. Readers ignore a record that
+/// fails `validate()` or names another account or group than its record name.
+struct SeriesLookV1: Codable, Sendable, Hashable {
+    /// The hash a look's design carries in place of a book's own work-item or cover hash.
+    static let placeholderHash = String(repeating: "0", count: 64)
+
+    let version: Int
+    let accountID: String
+    let seriesID: Int
+    let group: String
+    let sourceBookID: Int
+    let origin: String
+    let createdAt: Date
+    var editedAt: Date? = nil
+    var backgroundHex: String
+    var foregroundHex: String
+    var accentHex: String
+    let typeface: String
+    let weight: Int
+    let uppercase: Bool
+    var fontFamily: String? = nil
+    var fontPostScriptName: String? = nil
+    var instanceWeight: Int? = nil
+
+    var key: SeriesLookKey { SeriesLookKey(seriesID: seriesID, group: group) }
+
+    /// Checks the record's own fields, then the design rules for colors and type that
+    /// `SpineDesignV1.validate()` applies to the look's design.
+    func validate() throws {
+        guard version == 1, !accountID.isEmpty, accountID.count <= 512, seriesID > 0,
+            sourceBookID > 0, group.count <= 200,
+            !origin.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, origin.count <= 80,
+            !origin.contains(where: \.isNewline),
+            createdAt.timeIntervalSince1970.isFinite,
+            editedAt.map({ $0.timeIntervalSince1970.isFinite }) ?? true
+        else { throw CompanionError.invalidCloudData }
+        try storedDesign(bookID: sourceBookID, hashesFrom: nil).validate()
+    }
+
+    /// The look as a design of the book `bookID`, which draws and series reuse treat like a saved
+    /// design: the look's colors and type in an allowed upright face
+    /// (`SpineDesignV1.withAllowedFont`), `origin` as the generator, and the last edit or
+    /// creation as the design date. The work-item and cover hashes come from `saved`, the book's
+    /// own saved design, or are `placeholderHash`.
+    func design(bookID: Int, hashesFrom saved: SpineDesignV1? = nil) -> SpineDesignV1 {
+        storedDesign(bookID: bookID, hashesFrom: saved).withAllowedFont
+    }
+
+    /// `design(bookID:hashesFrom:)` with the stored font, which validation checks.
+    private func storedDesign(bookID: Int, hashesFrom saved: SpineDesignV1?) -> SpineDesignV1 {
+        SpineDesignV1(
+            version: 1, accountID: accountID, bookID: bookID,
+            workItemHash: saved?.workItemHash ?? Self.placeholderHash,
+            coverHash: saved?.coverHash ?? Self.placeholderHash, generatorVersion: origin,
+            generatedAt: editedAt ?? createdAt, backgroundHex: backgroundHex,
+            foregroundHex: foregroundHex, accentHex: accentHex, typeface: typeface, weight: weight,
+            uppercase: uppercase, fontFamily: fontFamily, fontPostScriptName: fontPostScriptName,
+            instanceWeight: instanceWeight)
+    }
+
+    /// Whether `other` is this look or a recoloring of it: every field but the colors and
+    /// `editedAt` matches, so no device remade the look in between.
+    func isSameLook(as other: SeriesLookV1) -> Bool {
+        var look = other
+        look.backgroundHex = backgroundHex
+        look.foregroundHex = foregroundHex
+        look.accentHex = accentHex
+        look.editedAt = editedAt
+        return look == self
+    }
+
+    /// Returns the look with `colors`, edited at `date`.
+    func recolored(_ colors: SpineColors, at date: Date) -> SeriesLookV1 {
+        var look = self
+        look.backgroundHex = colors.background.hex
+        look.foregroundHex = colors.foreground.hex
+        look.accentHex = colors.accent.hex
+        look.editedAt = date
+        return look
+    }
+
+    /// Returns the look made again from `design`, a new design of one of its books, at `date`:
+    /// `design`'s colors and type, book, and generator, with the look's creation date.
+    func remade(from design: SpineDesignV1, at date: Date) -> SeriesLookV1 {
+        var look = SeriesLookV1(design: design, key: key, createdAt: createdAt)
+        look.editedAt = date
+        return look
+    }
+
+    /// Returns the valid looks for `accountID` among `looks`, which maps record names to
+    /// payloads, keyed by look group. A look counts only under its own record name.
+    static func keyed(_ looks: [String: SeriesLookV1], accountID: String)
+        -> [SeriesLookKey: SeriesLookV1]
+    {
+        var keyed: [SeriesLookKey: SeriesLookV1] = [:]
+        for (name, look) in looks
+        where look.accountID == accountID
+            && name == CloudContract.seriesLookRecordName(accountID: accountID, key: look.key)
+            && (try? look.validate()) != nil
+        {
+            keyed[look.key] = look
+        }
+        return keyed
+    }
+}
+
+extension SeriesLookV1 {
+    /// A new look for the group `key`, made from `design`'s colors and type.
+    init(design: SpineDesignV1, key: SeriesLookKey, createdAt: Date) {
+        self.init(
+            version: 1, accountID: design.accountID, seriesID: key.seriesID, group: key.group,
+            sourceBookID: design.bookID, origin: design.generatorVersion, createdAt: createdAt,
+            backgroundHex: design.backgroundHex, foregroundHex: design.foregroundHex,
+            accentHex: design.accentHex, typeface: design.typeface, weight: design.weight,
+            uppercase: design.uppercase, fontFamily: design.fontFamily,
+            fontPostScriptName: design.fontPostScriptName, instanceWeight: design.instanceWeight)
+    }
+}
+
+/// The reader's series choice for one book, shared through iCloud so every device groups the book
+/// the same way.
+///
+/// A `SeriesLinkV1` record in the private database's default zone, named by
+/// `CloudContract.seriesLinkRecordName(accountID:bookID:)`, holds this JSON in its `payload` Bytes
+/// field; `chosenAt` uses `JSONEncoder`'s default date encoding. `linkedSeriesID` names the series
+/// whose look the book draws instead of its shortest one, `standsAlone` takes the book out of every
+/// series, and `ownLook` keeps the book's own design instead of its series' look. A choice that
+/// sets none of them deletes the record. Readers ignore a record that fails `validate()` or names
+/// another account or book than its record name.
+struct SeriesLinkV1: Codable, Sendable, Hashable {
+    let version: Int
+    let accountID: String
+    let bookID: Int
+    var linkedSeriesID: Int? = nil
+    var standsAlone: Bool
+    var ownLook: Bool
+    let chosenAt: Date
+
+    /// Whether the link leaves the book as it is without one, so it is deleted, not saved.
+    var changesNothing: Bool { linkedSeriesID == nil && !standsAlone && !ownLook }
+
+    func validate() throws {
+        guard version == 1, !accountID.isEmpty, accountID.count <= 512, bookID > 0,
+            linkedSeriesID.map({ $0 > 0 }) ?? true, chosenAt.timeIntervalSince1970.isFinite
+        else { throw CompanionError.invalidCloudData }
+    }
+
+    /// Returns `books` with each book's link set as `seriesLink`. `links` maps record names to
+    /// payloads; only valid links for `accountID` stored under their own record name count.
+    static func apply(
+        _ links: [String: SeriesLinkV1], accountID: String, to books: [CloudBook]
+    ) -> [CloudBook] {
+        var chosen: [Int: SeriesLinkV1] = [:]
+        for (name, link) in links
+        where link.accountID == accountID
+            && name == CloudContract.seriesLinkRecordName(accountID: accountID, bookID: link.bookID)
+            && (try? link.validate()) != nil
+        {
+            chosen[link.bookID] = link
+        }
+        return books.map { book in
+            var book = book
+            book.seriesLink = chosen[book.id]
+            return book
+        }
+    }
+}
+
 /// One reconciliation's input: the account, its snapshot date, and the books to design.
 struct WorkContext: Sendable {
     let accountID: String
@@ -292,26 +498,30 @@ struct WorkContext: Sendable {
     let cloudUserRecordName: String
 }
 
-/// The active account's library and saved designs, as the viewer and share images show them.
+/// The active account's library, saved designs, and series looks, as the viewer and share images
+/// show them.
 struct LibrarySnapshot: Codable, Sendable {
     var accountID: String
     var syncedAt: Date
     var books: [CloudBook]
-    /// Valid designs for this account, keyed by book ID, from any generator.
+    /// Valid designs for this account, keyed by book ID, from any generator, as stored.
     var designs: [Int: SpineDesignV1]
+    /// Valid series looks of the books' look groups, keyed by group.
+    var looks: [SeriesLookKey: SeriesLookV1] = [:]
 
     /// Keeps the newest valid design per book for `accountID` and `books`.
     ///
     /// Designs from any generator count, so Mac and older designs show until a newer one replaces
     /// them. A design whose work-item hash no longer matches still shows: its colors and font stay
-    /// usable after small metadata edits. A blocked font, such as Impact, loads as its
+    /// usable after small metadata edits. Designs keep their stored fonts, so series rules and new
+    /// looks see what other devices see; `AppModel` draws a blocked font, such as Impact, in its
     /// replacement (`SpineDesignV1.withAllowedFont`).
     static func latestDesigns(
         _ designs: some Sequence<SpineDesignV1>, accountID: String, books: [CloudBook]
     ) -> [Int: SpineDesignV1] {
         let ids = Set(books.map(\.id))
         var latest: [Int: SpineDesignV1] = [:]
-        for design in designs.lazy.map(\.withAllowedFont)
+        for design in designs
         where design.accountID == accountID && ids.contains(design.bookID)
             && (try? design.validate()) != nil
         {
@@ -321,6 +531,20 @@ struct LibrarySnapshot: Codable, Sendable {
             latest[design.bookID] = design
         }
         return latest
+    }
+}
+
+extension LibrarySnapshot {
+    /// Decodes a snapshot, including a launch cache saved before series looks existed.
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        accountID = try container.decode(String.self, forKey: .accountID)
+        syncedAt = try container.decode(Date.self, forKey: .syncedAt)
+        books = try container.decode([CloudBook].self, forKey: .books)
+        designs = try container.decode([Int: SpineDesignV1].self, forKey: .designs)
+        looks =
+            try container.decodeIfPresent([SeriesLookKey: SeriesLookV1].self, forKey: .looks)
+            ?? [:]
     }
 }
 

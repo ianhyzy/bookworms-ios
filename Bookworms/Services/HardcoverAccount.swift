@@ -238,9 +238,9 @@ struct PhoneLibrary: Codable, Equatable, Sendable {
     let syncedAt: Date
     let books: [CloudBook]
 
-    /// Named for its format: books gained `description` and `ratingDistribution`, so a copy saved
-    /// before then is not read, and the next sync downloads the library again.
-    static let url = URL.cachesDirectory.appending(path: "Bookworms/hardcover-library-4.json")
+    /// Named for its format: books gained `seriesMemberships`, so a copy saved before then is not
+    /// read, and the next sync downloads the library again.
+    static let url = URL.cachesDirectory.appending(path: "Bookworms/hardcover-library-5.json")
 
     /// Returns the cached library, or `nil` when signed out or before the first sync.
     static func load() -> PhoneLibrary? {
@@ -254,8 +254,17 @@ struct PhoneLibrary: Codable, Equatable, Sendable {
         try JSONEncoder().encode(self).write(to: url, options: .atomic)
     }
 
+    /// Deletes the cached library at `url` and the copies that earlier formats left beside it,
+    /// which hold the same reading history.
     static func delete(at url: URL = Self.url) {
         try? FileManager.default.removeItem(at: url)
+        let folder = url.deletingLastPathComponent()
+        for old in [
+            "hardcover-library.json", "hardcover-library-2.json", "hardcover-library-3.json",
+            "hardcover-library-4.json",
+        ] {
+            try? FileManager.default.removeItem(at: folder.appending(path: old))
+        }
     }
 }
 

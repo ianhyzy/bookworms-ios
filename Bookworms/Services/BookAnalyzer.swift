@@ -406,23 +406,30 @@ actor BookAnalyzer {
         return capitalLines.count * 2 >= lines.count
     }
 
-    /// Applies a series sibling's typography and generated colors to `book` without a model
-    /// request.
+    /// Applies the typography and colors of `source`, a series look's design or a series
+    /// sibling's saved design, to `book` without a model request.
     ///
-    /// Colors the reader chose for the sibling stay with the sibling: `book` gets the colors the
-    /// generator chose. Returns `nil` when the sibling has an invalid color, or when its font is
-    /// not allowed or lacks a glyph that this book's title or author needs, so the caller can
-    /// analyze the cover instead.
+    /// Colors the reader chose for a sibling stay with the sibling: `book` gets the colors the
+    /// generator chose. A look's design has no generator's colors of its own, so `book` gets the
+    /// look's colors. Returns `nil` when `source` has an invalid color, or when its font is not
+    /// allowed or lacks a glyph that this book's title or author needs, so the caller can analyze
+    /// the cover instead. A source without a family that names a face installed on this device
+    /// (`SpineFonts.installedFace(named:)`) needs that face's glyphs; without the face, readers
+    /// draw the system typeface, which letters any book.
     func seriesDesign(
         from source: SpineDesignV1, book: CloudBook, accountID: String, workItemHash: String,
         coverHash: String
     ) async throws -> SpineDesignV1? {
         guard let colors = source.generatedColors ?? source.colors else { return nil }
+        let text = Self.renderedText(of: book, uppercase: source.uppercase)
         if let family = source.fontFamily {
-            let text = Self.renderedText(of: book, uppercase: source.uppercase)
             guard let font = try await downloadedFont(family, weight: source.weight),
                 font.covers(text)
             else { return nil }
+        } else if let face = source.fontPostScriptName.flatMap(SpineFonts.installedFace(named:)),
+            !face.covers(text)
+        {
+            return nil
         }
         let design = SpineDesignV1(
             version: 1, accountID: accountID, bookID: book.id,

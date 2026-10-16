@@ -95,16 +95,20 @@ extension SpineDesignV1 {
     /// What a generation run does with this saved design for a book whose work-item hash is
     /// `workItemHash` and whose cover, downloaded for this run, hashes to `coverHash`.
     /// `readerChoseCover` tells whether the reader chose another cover since the book's last
-    /// check, such as with **Change cover**.
+    /// check, such as with **Change cover**. `drawsSeriesLook` tells whether the book draws its
+    /// look group's `SeriesLookV1` instead of this design.
     ///
     /// The reader's colors outlast generator, metadata, and cover-image changes: only a cover the
     /// reader chose, with new image bytes, redesigns a recolored spine. Otherwise a recolored
     /// design whose hashes changed is saved again under the new hashes, with its colors and
-    /// `generatedAt`. A design with the generator's colors is kept while it comes from this
-    /// generator and both hashes match.
-    func action(workItemHash: String, coverHash: String, readerChoseCover: Bool)
-        -> SavedDesignAction
-    {
+    /// `generatedAt`. A design with the generator's colors is kept while both hashes match and it
+    /// comes from this generator or the book draws a series look. A look can come from another
+    /// generator, such as the Apple TV's, and redesigning a book that draws it changes nothing on
+    /// the shelf.
+    func action(
+        workItemHash: String, coverHash: String, readerChoseCover: Bool,
+        drawsSeriesLook: Bool = false
+    ) -> SavedDesignAction {
         let newCover = self.coverHash != coverHash
         let isCurrent = !newCover && self.workItemHash == workItemHash
         if generatedColors != nil, let colors, !(readerChoseCover && newCover) {
@@ -114,7 +118,8 @@ extension SpineDesignV1 {
                     workItemHash: workItemHash, coverHash: coverHash, colors: colors,
                     provenance: provenance))
         }
-        return isCurrent && generatorVersion == CloudContract.generatorVersion ? .keep : .redesign
+        let isKept = generatorVersion == CloudContract.generatorVersion || drawsSeriesLook
+        return isCurrent && isKept ? .keep : .redesign
     }
 
     private func rebuilt(
