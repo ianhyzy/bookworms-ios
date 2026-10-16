@@ -266,7 +266,6 @@ final class HardcoverAccount {
             } ?? true
         var archiveWasRead = false
         if let cloud, checksCloud {
-            lastCloudCheck = .now
             let revision = libraryRevision
             var copy: CloudSourceSnapshot?
             do {
@@ -275,6 +274,9 @@ final class HardcoverAccount {
             } catch {}
             guard !isSyncing else { return }
             guard revision == libraryRevision else { return await syncIfStale() }
+            // Only a read that finished for the current library counts, so a failed read, or one
+            // a sign-in overtook, doesn't delay the next check by `cloudCheckInterval`.
+            if archiveWasRead { lastCloudCheck = .now }
             if let copy, copy.syncedAt > newest ?? .distantPast {
                 let library = PhoneLibrary(copy, username: summary?.username)
                 if (try? library.save(to: libraryURL)) != nil {

@@ -104,6 +104,21 @@ final class LibraryArchiveTests: XCTestCase {
                 return XCTFail("Unexpected error: \(error)")
             }
         }
+
+        // A stored date in another format could hide a newer copy, so the write stops.
+        var unreadable = try object(stored)
+        var sources = try XCTUnwrap(unreadable["sources"] as? [[String: Any]])
+        let index = try XCTUnwrap(sources.firstIndex { $0["accountID"] as? String == "42" })
+        sources[index]["syncedAt"] = "2026-10-16T12:00:00Z"
+        unreadable["sources"] = sources
+        XCTAssertThrowsError(
+            try CloudLibraryArchive.splice(
+                newer, into: try JSONSerialization.data(withJSONObject: unreadable))
+        ) { error in
+            guard case CompanionError.invalidCloudData = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
     }
 
     /// A Hardcover snapshot as this app writes it, with a book that carries a review, a chosen

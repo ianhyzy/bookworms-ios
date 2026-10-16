@@ -180,7 +180,7 @@ final class HardcoverTests: XCTestCase {
 
     @MainActor
     func testRejectedLoginAsksToReconnectAndKeepsTheLogin() async throws {
-        let (tokens, defaults, library) = try Self.signedInStores()
+        let (tokens, defaults, library) = try signedInStores()
         defer { tokens.delete() }
         let account = HardcoverAccount(
             tokens: tokens, client: HardcoverClient(transport: Self.reply(401, "")),
@@ -198,7 +198,7 @@ final class HardcoverTests: XCTestCase {
     @MainActor
     func testLoginWithoutItsAccountSummaryIsSignedOut() throws {
         // The Keychain keeps a login after the app is deleted; user defaults do not.
-        let (tokens, defaults, library) = try Self.signedInStores()
+        let (tokens, defaults, library) = try signedInStores()
         defer { tokens.delete() }
         defaults.removeObject(forKey: HardcoverAccount.summaryKey)
         try PhoneLibrary(accountID: "4242", username: nil, syncedAt: .now, books: [])
@@ -391,7 +391,7 @@ final class HardcoverTests: XCTestCase {
 
     @MainActor
     func testSyncAdoptsANewerICloudCopyWithoutAskingHardcover() async throws {
-        let (tokens, defaults, library) = try Self.signedInStores()
+        let (tokens, defaults, library) = try signedInStores()
         defer { tokens.delete() }
         try Self.cache(
             PhoneLibrary(
@@ -405,7 +405,7 @@ final class HardcoverTests: XCTestCase {
         let copy = CloudSourceSnapshot(
             source: "hardcover", accountID: "4242", books: [book], syncedAt: Self.hoursAgo(1),
             series: [SeriesInfo(id: 9, name: "The Lantern Cycle", books: [])])
-        let folder = try Self.archiveFolder(with: [copy])
+        let folder = try archiveFolder(with: [copy])
         let account = HardcoverAccount(
             tokens: tokens,
             client: HardcoverClient { request in
@@ -434,7 +434,7 @@ final class HardcoverTests: XCTestCase {
 
     @MainActor
     func testSyncAsksHardcoverOnceTheNewestCopyIsADayOldAndPublishesTheLibrary() async throws {
-        let (tokens, defaults, library) = try Self.signedInStores()
+        let (tokens, defaults, library) = try signedInStores()
         defer { tokens.delete() }
         try Self.cache(
             PhoneLibrary(
@@ -447,7 +447,7 @@ final class HardcoverTests: XCTestCase {
             id: 101, title: "The Lantern Keeper", author: "Mara Quill",
             coverURL: URL(string: "https://covers.example.com/saved-alternate-101.jpg"),
             detailCoverURL: URL(string: "https://covers.example.com/saved-101.jpg"))
-        let folder = try Self.archiveFolder(with: [
+        let folder = try archiveFolder(with: [
             CloudSourceSnapshot(
                 source: "hardcover", accountID: "4242", books: [saved],
                 syncedAt: Self.hoursAgo(25)),
@@ -481,14 +481,14 @@ final class HardcoverTests: XCTestCase {
 
     @MainActor
     func testADueDownloadReadsICloudFirstEvenRightAfterACheck() async throws {
-        let (tokens, defaults, library) = try Self.signedInStores()
+        let (tokens, defaults, library) = try signedInStores()
         defer { tokens.delete() }
         try Self.cache(
             PhoneLibrary(
                 accountID: "4242", username: "fictional_reader", syncedAt: Self.hoursAgo(30),
                 books: []),
             at: library, defaults: defaults)
-        let folder = try Self.archiveFolder(with: [
+        let folder = try archiveFolder(with: [
             CloudSourceSnapshot(
                 source: "hardcover", accountID: "7", books: [], syncedAt: Self.hoursAgo(1))
         ])
@@ -524,13 +524,13 @@ final class HardcoverTests: XCTestCase {
 
     @MainActor
     func testSyncNowKeepsTheArchivedCoversWithoutACopyOnThisDevice() async throws {
-        let (tokens, defaults, library) = try Self.signedInStores()
+        let (tokens, defaults, library) = try signedInStores()
         defer { tokens.delete() }
         let saved = CloudBook(
             id: 101, title: "The Lantern Keeper", author: "Mara Quill",
             coverURL: URL(string: "https://covers.example.com/saved-alternate-101.jpg"),
             detailCoverURL: URL(string: "https://covers.example.com/saved-101.jpg"))
-        let folder = try Self.archiveFolder(with: [
+        let folder = try archiveFolder(with: [
             CloudSourceSnapshot(
                 source: "hardcover", accountID: "4242", books: [saved],
                 syncedAt: Self.hoursAgo(1))
@@ -566,14 +566,14 @@ final class HardcoverTests: XCTestCase {
 
     @MainActor
     func testReconnectingTheSameAccountKeepsTheCopysSyncDate() async throws {
-        let (tokens, defaults, library) = try Self.signedInStores()
+        let (tokens, defaults, library) = try signedInStores()
         defer { tokens.delete() }
         let kept = PhoneLibrary(
             accountID: "4242", username: "fictional_reader", syncedAt: Self.hoursAgo(5),
             books: [])
         try Self.cache(kept, at: library, defaults: defaults)
         // An older copy in iCloud, as after this device's upload failed.
-        let folder = try Self.archiveFolder(with: [
+        let folder = try archiveFolder(with: [
             CloudSourceSnapshot(
                 source: "hardcover", accountID: "4242", books: [], syncedAt: Self.hoursAgo(9))
         ])
@@ -691,10 +691,12 @@ final class HardcoverTests: XCTestCase {
     /// that only these tests use, and a library file path of the test's own, so no test touches
     /// the host app's cached library.
     @MainActor
-    private static func signedInStores() throws -> (KeychainSecret, UserDefaults, URL) {
+    /// A test login, settings suite, and library path, all removed when the test ends.
+    private func signedInStores() throws -> (KeychainSecret, UserDefaults, URL) {
         let tokens = KeychainSecret(
             service: "gay.ian.Bookworms.iOS.tests.\(UUID().uuidString)")
         try tokens.save("fictional-token")
+        addTeardownBlock { tokens.delete() }
         let suite = "gay.ian.Bookworms.iOS.tests.HardcoverAccount"
         UserDefaults.standard.removePersistentDomain(forName: suite)
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -705,6 +707,10 @@ final class HardcoverTests: XCTestCase {
             forKey: HardcoverAccount.summaryKey)
         let library = URL.temporaryDirectory.appending(
             path: "hardcover-library-\(UUID().uuidString).json")
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: library)
+            UserDefaults.standard.removePersistentDomain(forName: suite)
+        }
         return (tokens, defaults, library)
     }
 
@@ -721,9 +727,11 @@ final class HardcoverTests: XCTestCase {
     }
 
     /// A new folder whose `library-v1.json` holds `snapshots`, for a `LocalSpineStore`.
-    private static func archiveFolder(with snapshots: [CloudSourceSnapshot]) throws -> URL {
+    /// A temporary folder holding an archive of `snapshots`, removed when the test ends.
+    private func archiveFolder(with snapshots: [CloudSourceSnapshot]) throws -> URL {
         let folder = URL.temporaryDirectory.appending(path: "library-archive-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
         var archive: Data?
         for snapshot in snapshots {
             archive = try CloudLibraryArchive.splice(snapshot, into: archive)

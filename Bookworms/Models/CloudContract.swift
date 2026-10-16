@@ -156,11 +156,12 @@ extension CloudLibraryArchive {
                 && $0["accountID"] as? String == snapshot.accountID
         }) {
             let existing = sources[index]
-            if let date = existing["syncedAt"] as? Double,
-                Date(timeIntervalSinceReferenceDate: date) >= snapshot.syncedAt
-            {
-                return nil
+            // A date the default decoder can't read means another writer's format; replacing the
+            // entry could discard a newer copy, so the write stops instead.
+            guard let date = existing["syncedAt"] as? Double else {
+                throw CompanionError.invalidCloudData
             }
+            if Date(timeIntervalSinceReferenceDate: date) >= snapshot.syncedAt { return nil }
             if entry["series"] == nil { entry["series"] = existing["series"] }
             sources[index] = entry
         } else {
