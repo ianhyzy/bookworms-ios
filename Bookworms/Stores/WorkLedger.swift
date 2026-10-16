@@ -1,14 +1,18 @@
 import Foundation
 
-/// Remembers which books were checked or failed, so a run spends cover downloads and model
-/// requests only on books that need them.
+/// Remembers which books were checked or failed, so a run spends iCloud reads, cover downloads,
+/// and model requests only on books that need them.
 ///
 /// A book is rechecked when it has no entry, its work-item hash, chosen cover, or the generator
 /// changed, its last check ran at a model tier below the run's, or its last check is seven days
 /// old, or one day old when it saved a design that awaits its font
-/// (`SpineDesignV1.awaitsFont`). A failed book waits 24 hours unless its work-item hash or chosen
-/// cover changed. An Apple TV sync alone does not trigger a recheck: on a phone, re-downloading
-/// every cover after each sync costs too much time and data.
+/// (`SpineDesignV1.awaitsFont`). A recheck reads the book's saved design first and downloads the
+/// cover only when the run would not keep that design or the reader chose the cover
+/// (`SpineWorker`). So a weekly recheck of a current design downloads no default cover, and a
+/// design deleted from iCloud is still made again within a week. A failed book waits 24 hours
+/// unless its work-item hash or chosen cover changed. A library sync alone does not trigger a
+/// recheck: it would read every book's design from iCloud, and download every chosen cover,
+/// after each sync.
 actor WorkLedger {
     private struct LedgerState: Codable {
         var cloudUserRecordName: String?
