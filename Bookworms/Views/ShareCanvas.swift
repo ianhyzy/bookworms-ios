@@ -9,18 +9,16 @@ import SwiftUI
 
 /// A share image layout.
 enum ShareTemplate: String, CaseIterable, Identifiable {
-    case yearStack, yearInBooks, topFive, hotTakes, spectrum, pile, justFinished, review
+    case yearInBooks, topFive, hotTakes, pile, justFinished, review
     case currentlyReading, tasteMatch, bookSwap
 
     var id: Self { self }
 
     var title: String {
         switch self {
-        case .yearStack: "Year Stack"
         case .yearInBooks: "Year in Books"
         case .topFive: "Top Five"
         case .hotTakes: "Hot Takes"
-        case .spectrum: "Spine Spectrum"
         case .pile: "Desk"
         case .justFinished: "Just Finished"
         case .review: "Review"
@@ -32,11 +30,9 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
-        case .yearStack: "square.stack.3d.up"
         case .yearInBooks: "chart.bar.xaxis"
         case .topFive: "trophy"
         case .hotTakes: "flame"
-        case .spectrum: "barcode"
         case .pile: "square.stack.3d.down.right"
         case .justFinished: "book.closed"
         case .review: "quote.bubble"
@@ -53,9 +49,8 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
     /// Whether the card features one book, which the reader can choose.
     var isSingleBook: Bool { self == .justFinished || self == .review || self == .currentlyReading }
 
-    /// Whether the card draws covers that can be 3D books or flat. Year Stack and Spine Spectrum
-    /// draw no covers, and a pile's books are always 3D.
-    var hasCoverStyle: Bool { self != .yearStack && self != .spectrum && self != .pile }
+    /// Whether the card draws covers that can be 3D books or flat. A pile's books are always 3D.
+    var hasCoverStyle: Bool { self != .pile }
 
     /// Whether the card shows the reader's ratings, which the studio can hide. Hot Takes is
     /// about ratings, so it always shows them.
@@ -85,10 +80,10 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
     ///
     /// A single-book card draws the book with `bookID` when it is one of its `choices`, else the
     /// first choice. Just Finished also draws a chosen book from outside the frame, so a book
-    /// shared from its details always shows. Year Stack, Year in Books, and Spine Spectrum draw
-    /// the books finished in `frame`, oldest first. Pile draws them newest first, as the shelf
-    /// lists them, so the newest books land on top. Top Five draws up to five of them, highest
-    /// rated first, then most recently finished. Hot Takes draws up to three whose rating
+    /// shared from its details always shows. Year in Books draws the books finished in `frame`,
+    /// oldest first. Pile draws them newest first, as the shelf lists them, so the newest books
+    /// land on top. Top Five draws up to five of them, highest rated first, then most recently
+    /// finished. Hot Takes draws up to three whose rating
     /// differs most from Hardcover's average in `direction`, or with a `match`, from the other
     /// reader's rating (`TasteMatch.hotTakes(in:direction:)`). Taste Match draws the match's
     /// agreements and fights when it has a score, and Book Swap its picks for each reader;
@@ -265,8 +260,6 @@ struct ShareInput {
     var social: ShareSocial?
     /// Varies tilts, offsets, and lengths.
     var seed: UInt64 = 0
-    /// The page to draw, from 0, when the card spans several images (`pageCount`).
-    var page = 0
 
     func look(for book: CloudBook) -> SpineLook {
         looks[book.id] ?? SpineLook(book: book, design: nil, face: nil)
@@ -284,12 +277,7 @@ struct ShareInput {
         return first == last ? String(first) : "\(first)–\(last)"
     }
 
-    /// The number of images the card spans: a Year Stack's pages, else one.
-    var pageCount: Int {
-        template == .yearStack ? YearStackCard.pages(for: self).pages.count : 1
-    }
-
-    /// Draws `page` at exactly `aspect.size` pixels, without the credit, which sharing adds
+    /// Draws the card at exactly `aspect.size` pixels, without the credit, which sharing adds
     /// (`UIImage.withShareCredit()`). Piles need `PileSnapshotRenderer` instead; here they draw
     /// nothing.
     @MainActor
@@ -312,11 +300,9 @@ struct ShareCanvas: View {
     var body: some View {
         Group {
             switch input.template {
-            case .yearStack: YearStackCard(input: input)
             case .yearInBooks: YearInBooksCard(input: input)
             case .topFive: TopFiveCard(input: input)
             case .hotTakes: HotTakesCard(input: input)
-            case .spectrum: SpectrumCard(input: input)
             // `PileSnapshotRenderer` draws piles: `ImageRenderer` cannot capture RealityKit.
             case .pile: EmptyView()
             case .justFinished, .currentlyReading: FeaturedBookCard(input: input)
