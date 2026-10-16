@@ -629,7 +629,8 @@ enum CompanionError: LocalizedError, Sendable {
     /// iCloud holds another design than the one the reader recolored, such as a redesign from
     /// another device.
     case designChanged
-    /// A third-party spine designer rejected the request or is not set up, with its reason.
+    /// A third-party spine designer rejected its key, model name, or account, or is not set up,
+    /// with the reason.
     case providerRejected(String)
 
     var errorDescription: String? {

@@ -222,8 +222,10 @@ actor SpineWorker {
                 let workHash = CloudContract.workItemHash(accountID: accountID, book: book)
                 let recordName = Self.recordName(accountID, book)
                 let redesigned = redesign?.bookID == book.id ? redesign : nil
-                // After the backup model's rejection moved the run to a lower tier, a book queued
-                // only to upgrade to the backup's tier is skipped without downloading its cover.
+                // After the backup model's lasting rejection moved the run to a lower tier
+                // (`newDesign`), a book queued only to upgrade to the backup's tier is skipped
+                // without downloading its cover. A rejection of one book's request leaves the
+                // run's tier, so the other books still upgrade.
                 if redesigned == nil, let tier = runModel?.tier, tier < upgradeTier,
                     !(await ledger.needsCheck(
                         recordName: recordName, workItemHash: workHash,
@@ -386,11 +388,14 @@ actor SpineWorker {
 
     /// Designs `book` at the run's tier.
     ///
-    /// A lasting rejection by the backup model, such as a revoked key or an unknown model name,
-    /// would repeat for every book, so the rest of the run designs with the best tier below the
-    /// backup, down to local defaults, and the Spines tab shows the rejection. The next run tries
-    /// the backup again. When the tier found can take no request now, such as Private Cloud
-    /// Compute at its daily limit, the rejection stops the run.
+    /// A lasting rejection by the backup model, such as a revoked key, an unknown model name, or
+    /// an account without credit (`ProviderError.isLasting`), would repeat for every book. The
+    /// app remembers it until the reader changes the backup model's settings
+    /// (`SpineDesigner.rejection`), so this run and later ones design with the best tier below
+    /// the backup, down to local defaults, and the Spines tab shows the rejection. When the tier
+    /// found can take no request now, such as Private Cloud Compute at its daily limit, the
+    /// rejection stops the run. A rejection of one request, such as a 400 for this book's crop,
+    /// fails only this book (`BookAnalyzer.modelFailure(_:)`).
     private func newDesign(
         for book: CloudBook, cover: CoverImage, workHash: String, accountID: String,
         mode: RunMode
@@ -401,7 +406,9 @@ actor SpineWorker {
                 book: book, accountID: accountID, workItemHash: workHash, cover: cover,
                 using: model)
         } catch CompanionError.providerRejected(let reason) where model.tier == .backup {
-            let next = await analyzer.status(for: .appleOnly)
+            model.designer.rememberRejection(reason)
+            var next = await analyzer.status(for: .appleOnly)
+            next.backupUnavailableReason = reason
             guard Self.modelStop(next, mode: mode) == nil else {
                 throw CompanionError.providerRejected(reason)
             }
@@ -415,7 +422,7 @@ actor SpineWorker {
         }
     }
 
-    /// The Spines tab's message when the backup model's `rejection` moves the run to `next`.
+    /// The Spines tab's message when the backup model's `rejection` moves runs to `next`.
     static func fallbackMessage(rejection: String, next: ModelStatus) -> String {
         let sentence = rejection.hasSuffix(".") ? rejection : rejection + "."
         let tier =
@@ -425,7 +432,7 @@ actor SpineWorker {
             case .onDevice: "Apple's on-device model"
             case .local: "local defaults"
             }
-        return "\(sentence) The rest of this run uses \(tier)."
+        return "\(sentence) Until you change the backup model, Bookworms uses \(tier)."
     }
 
     /// Returns the series look `book` draws: its look group's saved look, unless its link keeps

@@ -67,6 +67,7 @@ struct SpineDesigner: Hashable, Sendable {
     private static let providerKey = "SpineDesignerProvider"
     private static let modelKey = "SpineDesignerModel"
     private static let baseURLKey = "SpineDesignerBaseURL"
+    private static let rejectionKey = "SpineDesignerRejection"
 
     /// The saved choice, or no backup model.
     static var current: SpineDesigner {
@@ -102,6 +103,42 @@ struct SpineDesigner: Hashable, Sendable {
         return model.isEmpty ? "Enter a model name." : nil
     }
 
+    /// The provider's message when it last rejected these settings for every request, such as a
+    /// revoked key, an unknown model name, or an account without credit
+    /// (`ProviderError.isLasting`); `nil` when it hasn't. It reads the Keychain.
+    ///
+    /// The rejection lasts until the reader changes the provider, model name, base URL, or key
+    /// (`forgetRejection()`), so runs don't send each book's first request to a model that
+    /// refuses them all.
+    var rejection: String? {
+        guard
+            let saved = UserDefaults.standard.dictionary(forKey: Self.rejectionKey)
+                as? [String: String],
+            saved["settings"] == settingsID
+        else { return nil }
+        return saved["message"]
+    }
+
+    /// Remembers `message` as the provider's lasting rejection of these settings (`rejection`).
+    func rememberRejection(_ message: String) {
+        UserDefaults.standard.set(
+            ["settings": settingsID, "message": message], forKey: Self.rejectionKey)
+    }
+
+    /// Forgets a remembered rejection, because the reader changed the settings. A new key needs
+    /// this: the settings ID records only whether a key exists.
+    static func forgetRejection() {
+        UserDefaults.standard.removeObject(forKey: rejectionKey)
+    }
+
+    /// Identifies these settings for `rejection`: the provider, model name, base URL, and
+    /// whether this device holds a key, never the key itself, which stays in the Keychain.
+    private var settingsID: String {
+        let hasKey = !(provider.key.read()?.isEmpty ?? true)
+        return [provider.rawValue, model, baseURL, hasKey ? "key" : "no key"]
+            .joined(separator: "\n")
+    }
+
     /// The model token for a design this backup model makes, such as
     /// "model:anthropic/claude-haiku-5-5", within `provenance`'s 80 characters; `nil` without a
     /// backup model.
@@ -118,17 +155,19 @@ struct ProviderError: LocalizedError {
     let status: Int?
     let retryAfter: Date?
     let message: String
-    /// The error body's `error.code`, or its `error.type` without one, such as OpenAI's
-    /// "insufficient_quota".
+    /// The error body's `error.code`, else its `error.type`, else the first reason in Gemini's
+    /// error details, such as OpenAI's "insufficient_quota" or Gemini's "API_KEY_INVALID".
     var code: String? = nil
 
     var errorDescription: String? { "\(provider.name): \(message)" }
 
-    /// A rejected key, model name, or request, or an account without credit, which every later
-    /// request repeats: a 401 or 403, a 400, a 402 Payment Required, a 404, or OpenAI's
-    /// `insufficient_quota`, which it sends with a 429.
+    /// A rejected key or model name, or an account without credit, which every later request
+    /// with these settings repeats: a 401 or 403, a 402 Payment Required, a 404, OpenAI's
+    /// `insufficient_quota`, which it sends with a 429, or Gemini's `API_KEY_INVALID`, which it
+    /// sends with a 400. Any other 400 rejects one request, such as one book's crop.
     var isLasting: Bool {
-        [400, 401, 402, 403, 404].contains(status) || code == "insufficient_quota"
+        [401, 402, 403, 404].contains(status)
+            || ["insufficient_quota", "API_KEY_INVALID"].contains(code)
     }
     /// A rate limit or outage, which a later run can get past.
     var isTransient: Bool { status == 429 || status == 529 || (status ?? 0) >= 500 }
@@ -319,11 +358,18 @@ enum ProviderHTTP {
             let retryAfter = http?.value(forHTTPHeaderField: "Retry-After")
                 .flatMap(TimeInterval.init).map { Date.now.addingTimeInterval($0) }
             let error = json?["error"] as? [String: Any]
+            var message =
+                error?["message"] as? String
+                ?? HTTPURLResponse.localizedString(forStatusCode: status)
+            // The app saves the message with the run's outcome and as a remembered rejection
+            // (`SpineDesigner.rememberRejection(_:)`), so a key that an endpoint echoes is
+            // removed from it.
+            if !key.isEmpty { message = message.replacingOccurrences(of: key, with: "…") }
+            let details = error?["details"] as? [[String: Any]]
             throw ProviderError(
-                provider: provider, status: status, retryAfter: retryAfter,
-                message: error?["message"] as? String
-                    ?? HTTPURLResponse.localizedString(forStatusCode: status),
-                code: error?["code"] as? String ?? error?["type"] as? String)
+                provider: provider, status: status, retryAfter: retryAfter, message: message,
+                code: error?["code"] as? String ?? error?["type"] as? String
+                    ?? details?.lazy.compactMap { $0["reason"] as? String }.first)
         }
         guard let text = answer(in: json, provider: provider), !text.isEmpty else {
             throw ProviderError(

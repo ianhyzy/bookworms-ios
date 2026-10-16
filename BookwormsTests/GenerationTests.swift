@@ -38,8 +38,10 @@ final class GenerationTests: XCTestCase {
                 ProviderError(
                     provider: .openAI, status: status, retryAfter: nil, message: "x", code: code))
         }
-        guard case .providerRejected = failure(401), case .providerRejected = failure(404),
-            case .providerRejected = failure(400), case .modelBusy = failure(429),
+        guard case .providerRejected = failure(401), case .providerRejected = failure(403),
+            case .providerRejected = failure(404),
+            case .providerRejected = failure(400, code: "API_KEY_INVALID"),
+            case .modelBusy = failure(429),
             case .modelBusy = failure(429, code: "rate_limit_exceeded"),
             case .modelBusy = failure(503)
         else { return XCTFail("Provider errors map to the wrong dispositions") }
@@ -47,10 +49,47 @@ final class GenerationTests: XCTestCase {
         guard case .providerRejected = failure(402),
             case .providerRejected = failure(429, code: "insufficient_quota")
         else { return XCTFail("An account without credit should move the run to the next tier") }
-        guard
+        // A rejection of one request, such as a content policy's for one crop, or an empty
+        // answer fails only the book.
+        guard case .invalidDesign = failure(400),
+            case .invalidDesign = failure(400, code: "invalid_request_error"),
             case .invalidDesign = BookAnalyzer.modelFailure(
                 ProviderError(provider: .openAI, status: nil, retryAfter: nil, message: "x"))
-        else { return XCTFail("An empty answer fails only the book") }
+        else { return XCTFail("A rejection of one request should fail only the book") }
+    }
+
+    func testLastingBackupRejectionsLastUntilTheSettingsChange() async {
+        SpineDesigner.forgetRejection()
+        defer { SpineDesigner.forgetRejection() }
+        // A custom endpoint needs no key, so its settings are complete without one.
+        let custom = SpineDesigner(
+            provider: .custom, model: "local-model", baseURL: "http://localhost:1234/v1")
+        let analyzer = BookAnalyzer()
+        let ready = await analyzer.status(of: .backup, designer: custom)
+        XCTAssertTrue(ready.isAvailable)
+
+        custom.rememberRejection("Custom: Unknown model.")
+        let rejected = await analyzer.status(of: .backup, designer: custom)
+        XCTAssertFalse(rejected.isAvailable)
+        XCTAssertEqual(rejected.unavailableReason, "Custom: Unknown model.")
+        // Later runs start below the rejected backup and say why.
+        let best = BookAnalyzer.bestStatus(
+            pcc: ModelStatus(
+                tier: .privateCloudCompute, isAvailable: false, unavailableReason: "Off",
+                coverReader: .designModel),
+            backup: rejected,
+            onDevice: ModelStatus(
+                tier: .onDevice, isAvailable: true, unavailableReason: nil,
+                coverReader: .onDevice))
+        XCTAssertEqual(best.tier, .onDevice)
+        XCTAssertEqual(best.backupUnavailableReason, "Custom: Unknown model.")
+
+        var renamed = custom
+        renamed.model = "other-model"
+        XCTAssertNil(renamed.rejection, "Other settings get their own requests")
+        XCTAssertEqual(custom.rejection, "Custom: Unknown model.")
+        SpineDesigner.forgetRejection()
+        XCTAssertNil(custom.rejection, "Changed settings forget the rejection")
     }
 
     func testModelErrorsMapToRunStopsOrBookFailures() {
@@ -394,10 +433,11 @@ final class GenerationTests: XCTestCase {
                 next: ModelStatus(
                     tier: .onDevice, isAvailable: true, unavailableReason: nil,
                     coverReader: .onDevice)),
-            "Anthropic: invalid x-api-key. The rest of this run uses Apple's on-device model.")
+            "Anthropic: invalid x-api-key. Until you change the backup model, Bookworms uses Apple's on-device model."
+        )
         XCTAssertEqual(
             SpineWorker.fallbackMessage(rejection: "Unknown model.", next: .local),
-            "Unknown model. The rest of this run uses local defaults.")
+            "Unknown model. Until you change the backup model, Bookworms uses local defaults.")
     }
 
     func testTitleNoFamilyCoversUsesTheStyleSystemTypeface() throws {

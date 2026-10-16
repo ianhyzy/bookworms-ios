@@ -178,8 +178,9 @@ actor BookAnalyzer {
     ///
     /// Private Cloud Compute designs whenever the system reports it available with image input,
     /// even over its daily limit, so the run waits for the reset instead of switching models
-    /// each day. Without it, the backup model designs when it is set up on this device, then
-    /// the on-device model, and otherwise local defaults. A lower tier's status records why
+    /// each day. Without it, the backup model designs when it is set up on this device and its
+    /// provider hasn't rejected these settings, then the on-device model, and otherwise local
+    /// defaults. A lower tier's status records why
     /// Private Cloud Compute, a backup model the reader chose, and, for local defaults, the
     /// on-device model are unavailable.
     static func bestStatus(
@@ -202,9 +203,10 @@ actor BookAnalyzer {
         return status
     }
 
-    /// Whether the backup model is set up on this device. It reads each cover itself.
+    /// Whether the backup model is set up on this device and its provider hasn't rejected these
+    /// settings (`SpineDesigner.rejection`). It reads each cover itself.
     private static func backupStatus(_ designer: SpineDesigner) -> ModelStatus {
-        let problem = designer.problem
+        let problem = designer.problem ?? designer.rejection
         return ModelStatus(
             tier: .backup, isAvailable: problem == nil, unavailableReason: problem,
             coverReader: .designModel, designer: designer)
@@ -272,7 +274,7 @@ actor BookAnalyzer {
     ///
     /// Throws `CompanionError.quotaReached`, `.modelBusy`, or `.fontServiceUnavailable`, or an
     /// offline `URLError`, when the run should stop; `.providerRejected` when the backup model
-    /// rejects the request or is not set up; `.modelUnavailable` when the tier's model is
+    /// rejects its key, model name, or account (`ProviderError.isLasting`) or is not set up; `.modelUnavailable` when the tier's model is
     /// unavailable; and `.invalidDesign` when this book cannot get a valid design.
     func design(
         book: CloudBook, accountID: String, workItemHash: String, cover: CoverImage,
@@ -413,8 +415,9 @@ actor BookAnalyzer {
             default: return .invalidDesign
             }
         case let error as ProviderError:
-            // A rejected key, model name, request, or account without credit repeats for every
-            // book, so the run moves to the next tier.
+            // A rejected key, model name, or account without credit repeats for every book, so
+            // the run moves to the next tier. Another rejection, such as a 400 for this book's
+            // crop, fails only this book.
             if error.isLasting { return .providerRejected(error.localizedDescription) }
             if error.isTransient { return .modelBusy(error.retryAfter) }
             return .invalidDesign

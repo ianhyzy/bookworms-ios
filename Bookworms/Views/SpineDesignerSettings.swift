@@ -72,10 +72,13 @@ struct SpineDesignerSettings: View {
     private static let localNote =
         "With no model available, spines come from the cover's colors and lettering and the book's genres."
     private static let providerDetails =
-        "If the provider rejects the key or model name, Apple's on-device model or local defaults design the rest of that run. The provider receives each cover, its title and author, and the colors and font families to choose from. Requests are billed to your API account. Press Return to save a key; it stays in this device's Keychain."
+        "If the provider rejects the key or model name, or the account has no credit, Apple's on-device model or local defaults design until you change these settings. The provider receives each cover, its title and author, and the colors and font families to choose from. Requests are billed to your API account. Press Return to save a key; it stays in this device's Keychain."
 
+    /// Saves the settings and forgets the provider's rejection of the old ones, so the next run
+    /// tries the backup again.
     private func refresh() {
         designer.save()
+        SpineDesigner.forgetRejection()
         hasKey = designer.provider.key.read() != nil
         Task { await generation.refreshModelStatus() }
     }
