@@ -197,7 +197,7 @@ struct GenerationView: View {
     }
 
     private static let upgradeNote =
-        "Runs recheck each book weekly and redesign it once a better model is available."
+        "Once a better model is available, runs redesign the spines a weaker model made."
 
     /// The best tier this build could use: Private Cloud Compute, or in `NO_PCC` builds the saved
     /// backup model or the on-device model. It reads no Keychain item, so it doesn't know whether

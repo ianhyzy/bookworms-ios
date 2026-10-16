@@ -52,6 +52,49 @@ final class CompanionContractTests: XCTestCase {
         XCTAssertTrue(removedBook)
     }
 
+    func testLedgerRechecksAtOnceForABetterTierButNotForAnUnknownOne() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appending(path: "bookworms-ledger-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        // An entry saved without a tier, as an older ledger holds.
+        let saved = """
+            {"cloudUserRecordName":"user","entries":{"record":{"workItemHash":"work",\
+            "coverHash":"cover","generatorVersion":"\(CloudContract.generatorVersion)",\
+            "checkedAt":\(now.timeIntervalSinceReferenceDate)}}}
+            """
+        try Data(saved.utf8).write(to: url)
+        let ledger = WorkLedger(url: url)
+        try await ledger.useCloudUser("user")
+        func needsCheck(at tier: ModelTier) async -> Bool {
+            await ledger.needsCheck(
+                recordName: "record", workItemHash: "work", runTier: tier,
+                now: now.addingTimeInterval(60))
+        }
+        let unknownTier = await needsCheck(at: .privateCloudCompute)
+        XCTAssertFalse(unknownTier, "An entry without a tier waits for the weekly recheck")
+
+        try await ledger.recordSuccess(
+            recordName: "record", workItemHash: "work", coverHash: "cover", tier: .onDevice,
+            now: now)
+        let sameTier = await needsCheck(at: .onDevice)
+        let lowerTier = await needsCheck(at: .local)
+        let betterTier = await needsCheck(at: .backup)
+        XCTAssertFalse(sameTier)
+        XCTAssertFalse(lowerTier)
+        XCTAssertTrue(betterTier)
+        let persisted = await WorkLedger(url: url)
+            .needsCheck(
+                recordName: "record", workItemHash: "work", runTier: .privateCloudCompute,
+                now: now.addingTimeInterval(60))
+        XCTAssertTrue(persisted)
+
+        // A failure waits out its backoff even for a better tier.
+        try await ledger.recordFailure(recordName: "record", workItemHash: "work", now: now)
+        let backingOff = await needsCheck(at: .privateCloudCompute)
+        XCTAssertFalse(backingOff)
+    }
+
     func testWorkSourceFollowsWorklistAccountAndSyncDate() throws {
         let synced = Date(timeIntervalSince1970: 2_000)
         let one = CloudBook(

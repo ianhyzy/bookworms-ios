@@ -92,8 +92,9 @@ actor SpineWorker {
     private var looks: [SeriesLookKey: SeriesLookV1?] = [:]
     /// The book that the reader asked to design anew in this run, until the run tries it.
     private var redesign: (bookID: Int, remakesLook: Bool)?
-    /// The model this run designs with: the best tier when the run first found work, or the
-    /// best one below the backup model after the backup rejected a request. `nil` between runs.
+    /// The model this run designs with: the best tier when the run first loaded the library, or
+    /// the best one below the backup model after the backup rejected a request. `nil` between
+    /// runs.
     private var runModel: ModelStatus?
 
     static let busyRetryDelay: TimeInterval = 15 * 60
@@ -187,12 +188,16 @@ actor SpineWorker {
             lookGroups = SeriesDesigns.lookGroups(context.books)
             let books = context.books.filter { !$0.coverCandidates.isEmpty }
             try await ledger.retain(Set(books.map { Self.recordName(accountID, $0) }))
+            // The status read sends no model request. It comes before the queue so that a better
+            // tier queues the books a weaker tier last checked.
+            let model = await readModel()
+            let upgradeTier = Self.upgradeTier(model, mode: mode)
             var queue: [CloudBook] = []
             for book in books {
                 let workHash = CloudContract.workItemHash(accountID: accountID, book: book)
                 if await ledger.needsCheck(
                     recordName: Self.recordName(accountID, book), workItemHash: workHash,
-                    chosenCover: book.chosenCoverURL)
+                    chosenCover: book.chosenCoverURL, runTier: upgradeTier)
                 {
                     queue.append(book)
                 }
@@ -207,23 +212,30 @@ actor SpineWorker {
                 snapshot.phase = "All spines are up to date"
                 return false
             }
-            // Checked only when there is work, so an idle library never reports the model.
-            if await stopForModel(mode: mode) { return false }
-            if let model = runModel {
-                generationLog.info(
-                    "Run started with \(queue.count) books; tier \(String(describing: model.tier), privacy: .public); covers read by \(String(describing: model.coverReader), privacy: .public); quota \(String(describing: model.quota), privacy: .public)"
-                )
-            }
+            if stopForModel(model, mode: mode) { return false }
+            generationLog.info(
+                "Run started with \(queue.count) books; tier \(String(describing: model.tier), privacy: .public); covers read by \(String(describing: model.coverReader), privacy: .public); quota \(String(describing: model.quota), privacy: .public)"
+            )
             let covers = mode == .foreground ? self.covers : backgroundCovers
             for book in queue {
                 try Task.checkCancellation()
+                let workHash = CloudContract.workItemHash(accountID: accountID, book: book)
+                let recordName = Self.recordName(accountID, book)
+                let redesigned = redesign?.bookID == book.id ? redesign : nil
+                // After the backup model's rejection moved the run to a lower tier, a book queued
+                // only to upgrade to the backup's tier is skipped without downloading its cover.
+                if redesigned == nil, let tier = runModel?.tier, tier < upgradeTier,
+                    !(await ledger.needsCheck(
+                        recordName: recordName, workItemHash: workHash,
+                        chosenCover: book.chosenCoverURL, runTier: tier))
+                {
+                    snapshot.queue -= 1
+                    continue
+                }
                 snapshot.phase = "Designing spines"
                 snapshot.currentBook = book
                 publish()
-                let workHash = CloudContract.workItemHash(accountID: accountID, book: book)
-                let recordName = Self.recordName(accountID, book)
                 let start = ContinuousClock.now
-                let redesigned = redesign?.bookID == book.id ? redesign : nil
                 do {
                     let cover = try await covers.fetch(book.coverCandidates)
                     if let made = try await design(
@@ -248,7 +260,7 @@ actor SpineWorker {
                     }
                     try await ledger.recordSuccess(
                         recordName: recordName, workItemHash: workHash, coverHash: cover.hash,
-                        chosenCover: book.chosenCoverURL)
+                        chosenCover: book.chosenCoverURL, tier: runModel?.tier)
                     snapshot.completed += 1
                 } catch {
                     try Task.checkCancellation()
@@ -279,7 +291,7 @@ actor SpineWorker {
                 }
                 if redesigned != nil { redesign = nil }
                 snapshot.queue -= 1
-                if await stopForModel(mode: mode) { return false }
+                if stopForModel(await readModel(), mode: mode) { return false }
             }
             snapshot.phase = "Finished"
         } catch {
@@ -513,12 +525,13 @@ actor SpineWorker {
         return source.flatMap { designs[$0] }
     }
 
-    /// Reads the run's model status and stops the run when it should send no more requests.
+    /// Reads the run's model status, which sends no model request, and shows it in the snapshot.
     ///
-    /// A run's first check picks its tier (`BookAnalyzer.status(for:)`). Later checks keep that
+    /// A run's first read picks its tier (`BookAnalyzer.status(for:)`). Later reads keep that
     /// tier and watch its availability and quota. Only the backup model's lasting rejection
-    /// moves a run to a lower tier (`newDesign`); a tier that becomes unavailable stops the run.
-    private func stopForModel(mode: RunMode) async -> Bool {
+    /// moves a run to a lower tier (`newDesign`); a tier that becomes unavailable stops the run
+    /// (`stopForModel(_:mode:)`).
+    private func readModel() async -> ModelStatus {
         var status: ModelStatus
         if let runModel {
             status = await analyzer.status(of: runModel.tier, designer: runModel.designer)
@@ -529,9 +542,23 @@ actor SpineWorker {
         }
         runModel = status
         snapshot.model = status
+        return status
+    }
+
+    /// Stops the run when `status` says its model should get no more requests.
+    private func stopForModel(_ status: ModelStatus, mode: RunMode) -> Bool {
         guard let reason = Self.modelStop(status, mode: mode) else { return false }
         stop(reason.message, retryAfter: reason.retryAfter)
         return true
+    }
+
+    /// The tier a run passes to `WorkLedger.needsCheck`, so that a book whose last check ran at
+    /// a lower tier is checked again at once: the run's tier, or `.local`, which queues no
+    /// upgrade, when the run would stop for its model (`modelStop(_:mode:)`), such as at Private
+    /// Cloud Compute's daily limit. That run queues the books it would without tiers, and the
+    /// daily limit stops a run partway through upgrades until the reset.
+    static func upgradeTier(_ status: ModelStatus, mode: RunMode) -> ModelTier {
+        modelStop(status, mode: mode) == nil ? status.tier : .local
     }
 
     private func stop(_ message: String, retryAfter: Date?) {

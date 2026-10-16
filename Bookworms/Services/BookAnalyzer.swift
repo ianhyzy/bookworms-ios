@@ -8,8 +8,9 @@ import Vision
 ///
 /// Each run designs with the best tier available on this device when it starts
 /// (`BookAnalyzer.status(for:)`), and each design records its tier as a `provenance` model token
-/// (`SpineDesignV1.tier`), so a later run at a better tier redesigns it.
-enum ModelTier: Int, Comparable, Sendable {
+/// (`SpineDesignV1.tier`), so a later run at a better tier redesigns it. `WorkLedger` saves the
+/// raw values, which also order the tiers.
+enum ModelTier: Int, Codable, Comparable, Sendable {
     /// No model: local defaults from the cover's colors and title measurements and the book's
     /// genres (`BookAnalyzer.localFamilies(genres:measured:)`). It is always available. The
     /// Apple TV's own looks (`CloudContract.appleTVGeneratorVersion`) count as this tier.

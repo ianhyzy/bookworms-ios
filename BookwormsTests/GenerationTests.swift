@@ -259,6 +259,30 @@ final class GenerationTests: XCTestCase {
                 status(reader: .measurementsOnly, quota: .belowLimit), mode: .background))
     }
 
+    func testRunsQueueUpgradesOnlyWhenTheirTierCanTakeRequests() {
+        func upgradeTier(
+            _ tier: ModelTier, available: Bool = true, quota: ModelStatus.Quota = .belowLimit,
+            mode: RunMode = .background
+        ) -> ModelTier {
+            SpineWorker.upgradeTier(
+                ModelStatus(
+                    tier: tier, isAvailable: available, unavailableReason: nil,
+                    coverReader: .designModel, quota: quota, quotaResetDate: now),
+                mode: mode)
+        }
+        XCTAssertEqual(upgradeTier(.privateCloudCompute), .privateCloudCompute)
+        XCTAssertEqual(
+            upgradeTier(.privateCloudCompute, quota: .approachingLimit, mode: .foreground),
+            .privateCloudCompute)
+        XCTAssertEqual(upgradeTier(.backup), .backup)
+        XCTAssertEqual(upgradeTier(.local), .local)
+        // A run that stops for its model queues the same books as a run without tiers.
+        XCTAssertEqual(
+            upgradeTier(.privateCloudCompute, quota: .limitReached, mode: .foreground), .local)
+        XCTAssertEqual(upgradeTier(.privateCloudCompute, quota: .approachingLimit), .local)
+        XCTAssertEqual(upgradeTier(.onDevice, available: false), .local)
+    }
+
     func testRunsPreferPrivateCloudComputeThenTheBackupThenTheOnDeviceModelThenLocalDefaults()
         async
     {

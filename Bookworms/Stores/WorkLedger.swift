@@ -4,8 +4,8 @@ import Foundation
 /// requests only on books that need them.
 ///
 /// A book is rechecked when it has no entry, its work-item hash, chosen cover, or the generator
-/// changed, or its last check is seven days old. A failed book waits 24 hours unless its work-item
-/// hash or chosen cover changed. An Apple TV sync alone does not trigger a recheck: on a phone,
+/// changed, its last check ran at a model tier below the run's, or its last check is seven days
+/// old. A failed book waits 24 hours unless its work-item hash or chosen cover changed. An Apple TV sync alone does not trigger a recheck: on a phone,
 /// re-downloading every cover after each sync costs too much time and data.
 actor WorkLedger {
     private struct LedgerState: Codable {
@@ -24,6 +24,9 @@ actor WorkLedger {
         let checkedAt: Date
         /// When the last attempt failed; `nil` after a success.
         var failedAt: Date?
+        /// The run's model tier at the last successful check. `nil` when unknown, as after a
+        /// failure or in an entry saved without it, and an unknown tier never forces a recheck.
+        var tier: ModelTier?
     }
 
     static let recheckInterval: TimeInterval = 7 * 24 * 60 * 60
@@ -54,8 +57,12 @@ actor WorkLedger {
         try persist()
     }
 
+    /// Whether a run at `runTier` should check the book. A last check at a lower tier makes a
+    /// better tier recheck the book at once, rather than after `recheckInterval`; `.local`, the
+    /// lowest tier, forces no recheck.
     func needsCheck(
-        recordName: String, workItemHash: String, chosenCover: URL? = nil, now: Date = Date()
+        recordName: String, workItemHash: String, chosenCover: URL? = nil,
+        runTier: ModelTier = .local, now: Date = Date()
     ) -> Bool {
         guard let entry = entries[recordName], entry.workItemHash == workItemHash,
             entry.chosenCover == chosenCover,
@@ -64,6 +71,7 @@ actor WorkLedger {
         if let failedAt = entry.failedAt {
             return now.timeIntervalSince(failedAt) >= Self.failureBackoff
         }
+        if let tier = entry.tier, tier < runTier { return true }
         return now.timeIntervalSince(entry.checkedAt) >= Self.recheckInterval
     }
 
@@ -74,14 +82,15 @@ actor WorkLedger {
         entries[recordName].map { $0.chosenCover != chosenCover } ?? false
     }
 
+    /// Records a successful check by a run at `tier`.
     func recordSuccess(
         recordName: String, workItemHash: String, coverHash: String, chosenCover: URL? = nil,
-        now: Date = Date()
+        tier: ModelTier? = nil, now: Date = Date()
     ) throws {
         entries[recordName] = Entry(
             workItemHash: workItemHash, coverHash: coverHash,
             generatorVersion: CloudContract.generatorVersion, chosenCover: chosenCover,
-            checkedAt: now)
+            checkedAt: now, tier: tier)
         try persist()
     }
 
