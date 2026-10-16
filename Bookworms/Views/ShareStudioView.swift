@@ -178,7 +178,8 @@ struct ShareStudioView: View {
             periods = TimeFrame.periods(in: books)
         }
         .onChange(of: mode) { _, mode in
-            if !mode.templates.contains(template) { template = mode.templates[0] }
+            guard !mode.templates.contains(template) else { return }
+            template = mode == .mine ? .topFive : mode.templates[0]
         }
         .task(id: shownReader?.id) {
             // A reader outside the refresh's limit downloads once shown; a refresh in progress
