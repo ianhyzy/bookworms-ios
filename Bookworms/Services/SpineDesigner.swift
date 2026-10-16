@@ -86,19 +86,20 @@ struct SpineDesigner: Hashable, Sendable {
     }
 
     /// Why this choice cannot design yet, such as no backup model or a missing key or model name;
-    /// `nil` when it can.
+    /// `nil` when it can. It reads the Keychain. The text names no place, because the Spines tab
+    /// shows it beside **Choose Backup Model**, which opens Settings on the Mac.
     var problem: String? {
         switch provider {
-        case .apple: return "Choose a backup model in Settings."
+        case .apple: return "Choose a backup model."
         case .custom where URL(string: baseURL)?.scheme == nil:
-            return "Enter the endpoint's base URL in Settings."
+            return "Enter the endpoint's base URL."
         case .anthropic, .openAI, .google:
             if provider.key.read()?.isEmpty ?? true {
-                return "Add your \(provider.name) API key in Settings."
+                return "Add your \(provider.name) API key."
             }
         default: break
         }
-        return model.isEmpty ? "Enter a model name in Settings." : nil
+        return model.isEmpty ? "Enter a model name." : nil
     }
 
     /// The model token for a design this backup model makes, such as

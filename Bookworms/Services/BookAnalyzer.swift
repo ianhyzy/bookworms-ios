@@ -86,6 +86,9 @@ struct ModelStatus: Sendable {
     var designer = SpineDesigner.appleOnly
     /// Why Private Cloud Compute is unavailable, when a lower tier designs instead.
     var pccUnavailableReason: String?
+    /// Why the backup model the reader chose isn't set up, such as a missing key or model name,
+    /// when a lower tier designs instead.
+    var backupUnavailableReason: String?
     /// Why Apple's on-device model is unavailable, when local defaults design instead.
     var onDeviceUnavailableReason: String?
 
@@ -177,13 +180,15 @@ actor BookAnalyzer {
     /// even over its daily limit, so the run waits for the reset instead of switching models
     /// each day. Without it, the backup model designs when it is set up on this device, then
     /// the on-device model, and otherwise local defaults. A lower tier's status records why
-    /// Private Cloud Compute and, for local defaults, the on-device model are unavailable.
+    /// Private Cloud Compute, a backup model the reader chose, and, for local defaults, the
+    /// on-device model are unavailable.
     static func bestStatus(
         pcc: ModelStatus, backup: @autoclosure () -> ModelStatus,
         onDevice: @autoclosure () -> ModelStatus
     ) -> ModelStatus {
         guard !pcc.isAvailable else { return pcc }
-        var status = backup()
+        let backup = backup()
+        var status = backup
         if !status.isAvailable { status = onDevice() }
         if !status.isAvailable {
             let reason = status.unavailableReason
@@ -191,6 +196,9 @@ actor BookAnalyzer {
             status.onDeviceUnavailableReason = reason
         }
         status.pccUnavailableReason = pcc.unavailableReason
+        if !backup.isAvailable, backup.designer.provider != .apple {
+            status.backupUnavailableReason = backup.unavailableReason
+        }
         return status
     }
 

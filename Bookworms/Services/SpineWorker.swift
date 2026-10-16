@@ -536,6 +536,7 @@ actor SpineWorker {
         if let runModel {
             status = await analyzer.status(of: runModel.tier, designer: runModel.designer)
             status.pccUnavailableReason = runModel.pccUnavailableReason
+            status.backupUnavailableReason = runModel.backupUnavailableReason
             status.onDeviceUnavailableReason = runModel.onDeviceUnavailableReason
         } else {
             status = await analyzer.status()

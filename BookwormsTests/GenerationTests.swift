@@ -325,8 +325,23 @@ final class GenerationTests: XCTestCase {
             backup: status(.backup, available: false), onDevice: status(.onDevice, available: true))
         XCTAssertEqual(onDevice.tier, .onDevice)
         XCTAssertEqual(onDevice.pccUnavailableReason, "privateCloudCompute unavailable")
-
+        XCTAssertNil(onDevice.backupUnavailableReason, "No backup was chosen")
         XCTAssertNil(onDevice.onDeviceUnavailableReason)
+
+        // A backup the reader chose but didn't set up says why under the lower tier.
+        let custom = SpineDesigner(provider: .custom, model: "local-model", baseURL: "")
+        var unset = status(.backup, available: false)
+        unset.designer = custom
+        unset.unavailableReason = custom.problem
+        let skipped = BookAnalyzer.bestStatus(
+            pcc: status(.privateCloudCompute, available: false), backup: unset,
+            onDevice: status(.onDevice, available: true))
+        XCTAssertEqual(skipped.tier, .onDevice)
+        XCTAssertEqual(skipped.backupUnavailableReason, "Enter the endpoint's base URL.")
+        let pccOverUnset = BookAnalyzer.bestStatus(
+            pcc: status(.privateCloudCompute, available: true), backup: unset,
+            onDevice: status(.onDevice, available: true))
+        XCTAssertNil(pccOverUnset.backupUnavailableReason)
 
         // With no model available, local defaults design and record why each model is missing.
         let local = BookAnalyzer.bestStatus(
