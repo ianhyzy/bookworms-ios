@@ -423,7 +423,8 @@ enum ShareStyle {
     static func titles(_ book: CloudBook) -> [String] {
         // An Apple TV archive can carry an empty or padded name, and an empty
         // prefix would match every parenthetical.
-        let series = book.seriesName.map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+        let series = book.seriesName
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             .flatMap { $0.isEmpty ? nil : $0 }
         var title = book.title.trimmingCharacters(in: .whitespaces)
         if let tag = title.firstMatch(of: /\s*\(([^()]*)\)$/),

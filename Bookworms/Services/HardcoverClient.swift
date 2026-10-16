@@ -641,7 +641,8 @@ actor HardcoverClient {
                     } ?? true)
             let membership = source.bookSeries?
                 .sorted { ($0.featured ?? false) && !($1.featured ?? false) }.first
-            let seriesName = membership?.series?.name?.trimmingCharacters(in: .whitespaces)
+            let seriesName = membership?.series?.name?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             let isReading = row.statusID == currentlyReadingStatus
             let current = row.currentReads?.first
             let book = CloudBook(
