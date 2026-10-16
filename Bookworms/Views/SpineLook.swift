@@ -145,7 +145,7 @@ final class SpineFonts {
     }
 
     /// The upright face installed on this device under the PostScript name `name`, or `nil`.
-    private static func installedFace(named name: String) -> FontFace? {
+    nonisolated static func installedFace(named name: String) -> FontFace? {
         // Core Text substitutes another face for a missing name, so the name must match.
         let font = CTFontCreateWithName(name as CFString, 12, nil)
         let descriptor = CTFontCopyFontDescriptor(font)

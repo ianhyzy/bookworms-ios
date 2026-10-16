@@ -169,6 +169,35 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertEqual(reused?.provenance, "series-reuse:7")
     }
 
+    func testSeriesReuseNeedsTheGlyphsOfAnInstalledFaceWithoutAFamily() async throws {
+        func source(_ postScriptName: String) -> SpineDesignV1 {
+            SpineDesignV1(
+                version: 1, accountID: "42", bookID: 7, workItemHash: work, coverHash: cover,
+                generatorVersion: "tvos-local-v1",
+                generatedAt: Date(timeIntervalSince1970: 1_000_000), backgroundHex: "#000000",
+                foregroundHex: "#FFFFFF", accentHex: "#FF0000", typeface: "serif", weight: 700,
+                uppercase: false, fontPostScriptName: postScriptName)
+        }
+        func reuse(_ source: SpineDesignV1, title: String) async throws -> SpineDesignV1? {
+            try await BookAnalyzer()
+                .seriesDesign(
+                    from: source,
+                    book: CloudBook(
+                        id: 8, title: title, author: "An Author", coverURL: nil,
+                        detailCoverURL: nil),
+                    accountID: "42", workItemHash: work, coverHash: cover)
+        }
+        let georgia = source("Georgia-Bold")
+        let latin = try await reuse(georgia, title: "Fictional Sequel")
+        XCTAssertEqual(latin?.fontPostScriptName, "Georgia-Bold")
+        // Georgia has no glyphs for this title, so the book gets a model design.
+        let tokyo = try await reuse(georgia, title: "東京物語")
+        XCTAssertNil(tokyo)
+        // Without the face, readers draw the system typeface, which letters any title.
+        let missing = try await reuse(source("NoSuchFace-Bold"), title: "東京物語")
+        XCTAssertNotNil(missing)
+    }
+
     private func seriesBook(
         _ id: Int, by author: String = "Ann Author", series: Int? = 5, position: Double? = nil,
         finished: String? = nil, title: String = "Fictional Volume"
