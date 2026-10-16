@@ -237,29 +237,31 @@ actor SpineWorker {
                 let start = ContinuousClock.now
                 do {
                     let cover = try await covers.fetch(book.coverCandidates)
-                    if let made = try await design(
+                    let outcome = try await design(
                         for: book, cover: cover, workHash: workHash, context: context,
                         forced: redesigned != nil, mode: mode)
-                    {
+                    if case .save(let made, let isNew) = outcome {
                         guard try await store.isStillCurrent(context, book: book) else {
                             return true
                         }
-                        try await store.save(made.design, replacing: redesigned != nil)
-                        continuation.yield(.saved(made.design))
-                        bookDesigns[book.id] = made.design
+                        try await store.save(made, replacing: redesigned != nil)
+                        continuation.yield(.saved(made))
+                        bookDesigns[book.id] = made
                         checkedBooks.insert(book.id)
-                        if made.isNewDesign {
+                        if isNew {
                             await saveLook(
-                                from: made.design, for: book,
-                                replacing: redesigned?.remakesLook == true)
+                                from: made, for: book, replacing: redesigned?.remakesLook == true)
                         }
                         generationLog.info(
                             "Book \(book.id, privacy: .private(mask: .hash)) designed in \(start.duration(to: .now), privacy: .public)"
                         )
                     }
+                    // A design from a better tier than the run's, such as a kept Private Cloud
+                    // Compute design, needs no recheck when that tier runs.
                     try await ledger.recordSuccess(
                         recordName: recordName, workItemHash: workHash, coverHash: cover.hash,
-                        chosenCover: book.chosenCoverURL, tier: runModel?.tier)
+                        chosenCover: book.chosenCoverURL,
+                        tier: runModel.map { max($0.tier, outcome.design.tier) })
                     snapshot.completed += 1
                 } catch {
                     try Task.checkCancellation()
@@ -305,9 +307,23 @@ actor SpineWorker {
         return false
     }
 
-    /// Returns the design to save for `book`, and whether the run's tier made it from the cover
-    /// rather than copying a saved design or look, or `nil` when iCloud already has this work at
-    /// the run's tier or better, or a design whose colors the reader chose (see
+    /// What a run does with a book's design (`design(for:cover:workHash:context:forced:mode:)`).
+    private enum Outcome {
+        /// Leaves this design, iCloud's, in place.
+        case keep(SpineDesignV1)
+        /// Saves this design. `isNew` tells whether the run's tier made it from the cover rather
+        /// than copying a saved design or look.
+        case save(SpineDesignV1, isNew: Bool)
+
+        var design: SpineDesignV1 {
+            switch self {
+            case .keep(let design), .save(let design, _): design
+            }
+        }
+    }
+
+    /// Returns the design to save for `book`, or the saved design to keep when iCloud already
+    /// has this work at the run's tier or better, or a design whose colors the reader chose (see
     /// `SpineDesignV1.action(workItemHash:coverHash:readerChoseCover:runTier:drawsSeriesLook:)`).
     /// `forced` always makes a new design.
     ///
@@ -319,7 +335,7 @@ actor SpineWorker {
     private func design(
         for book: CloudBook, cover: CoverImage, workHash: String, context: WorkContext,
         forced: Bool, mode: RunMode
-    ) async throws -> (design: SpineDesignV1, isNewDesign: Bool)? {
+    ) async throws -> Outcome {
         // Looked up even when forced, so `saveLook` knows whether the group has a look.
         let savedLook = try await seriesLook(for: book, accountID: context.accountID)
         let runTier = runModel?.tier ?? .local
@@ -348,14 +364,14 @@ actor SpineWorker {
             {
                 savedAction = .keep
             }
-            switch savedAction {
-            case .keep:
-                if upgradesLook, let saved, saved.generatedColors == nil {
+            switch (savedAction, saved) {
+            case (.keep, let saved?):
+                if upgradesLook, saved.generatedColors == nil {
                     await saveLook(from: saved, for: book, replacing: false)
                 }
-                return nil
-            case .save(let design): return (design, false)
-            case .redesign: break
+                return .keep(saved)
+            case (.save(let design), _): return .save(design, isNew: false)
+            default: break
             }
             // Books in one look group share a design so their spines match on the shelf. A book
             // that draws its group's look saves a copy of it, whichever device made the look.
@@ -372,15 +388,14 @@ actor SpineWorker {
                     from: source, book: book, accountID: context.accountID,
                     workItemHash: workHash, coverHash: cover.hash)
             {
-                return (reused, false)
+                return .save(reused, isNew: false)
             }
         }
-        return (
+        return .save(
             try await newDesign(
                 for: book, cover: cover, workHash: workHash, accountID: context.accountID,
                 mode: mode),
-            true
-        )
+            isNew: true)
     }
 
     /// Designs `book` at the run's tier.

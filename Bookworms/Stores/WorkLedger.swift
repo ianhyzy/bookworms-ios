@@ -24,8 +24,9 @@ actor WorkLedger {
         let checkedAt: Date
         /// When the last attempt failed; `nil` after a success.
         var failedAt: Date?
-        /// The run's model tier at the last successful check. `nil` when unknown, as after a
-        /// failure or in an entry saved without it, and an unknown tier never forces a recheck.
+        /// The last successful check's tier: the run's model tier, or the tier of the design it
+        /// kept or saved when that tier is better. `nil` when unknown, as after a failure or in
+        /// an entry saved without it, and an unknown tier never forces a recheck.
         var tier: ModelTier?
     }
 
@@ -82,7 +83,7 @@ actor WorkLedger {
         entries[recordName].map { $0.chosenCover != chosenCover } ?? false
     }
 
-    /// Records a successful check by a run at `tier`.
+    /// Records a successful check at `tier` (`Entry.tier`).
     func recordSuccess(
         recordName: String, workItemHash: String, coverHash: String, chosenCover: URL? = nil,
         tier: ModelTier? = nil, now: Date = Date()

@@ -127,7 +127,7 @@ Local defaults pick families from the book's first Hardcover genre that the tabl
 
 The Apple TV has no model of its own: an iPhone or Mac designs the books its worklist lists, each at its own best tier.
 
-Each design records its tier in `provenance` (see [iCloud contract](#icloud-contract)), and the app records the tier of each book's last check on this device, so a run at a better tier rechecks those books at once instead of after seven days (see [Spine generation](#spine-generation)). When a run rechecks a book whose current design comes from a weaker tier, it designs the book again, unless you chose its colors, and its save replaces the weaker design. A design from the run's tier or a better one stays, so a run with the backup model keeps Private Cloud Compute's designs. Series looks from a weaker tier move up the same way (see [Series designs](#series-designs)).
+Each design records its tier in `provenance` (see [iCloud contract](#icloud-contract)), and the app records the tier of each book's last check on this device, or of the design that check kept when it comes from a better tier, so a run at a better tier rechecks those books at once instead of after seven days (see [Spine generation](#spine-generation)). When a run rechecks a book whose current design comes from a weaker tier, it designs the book again, unless you chose its colors, and its save replaces the weaker design. A design from the run's tier or a better one stays, so a run with the backup model keeps Private Cloud Compute's designs. Series looks from a weaker tier move up the same way (see [Series designs](#series-designs)).
 
 ### On the Mac
 
