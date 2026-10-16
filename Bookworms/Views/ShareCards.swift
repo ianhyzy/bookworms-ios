@@ -137,6 +137,7 @@ struct TopFiveCard: View {
         let aspect = input.aspect
         let books = input.books
         let theme = input.theme
+        let shortenable = Self.subtitleOrder(books)
         ZStack {
             LinearGradient(
                 colors: [theme.backdropLight.color, theme.backdropDark.color],
@@ -145,22 +146,55 @@ struct TopFiveCard: View {
             RadialGradient(
                 colors: [theme.glow.color, .clear], center: UnitPoint(x: 0.5, y: 0.42),
                 startRadius: 0, endRadius: aspect.size.width * 0.75)
-            VStack(spacing: aspect == .story ? 48 : 32) {
-                Text(heading)
-                    .font(ShareStyle.serif(aspect == .story ? 84 : 68, .semibold))
-                    .foregroundStyle(ShareStyle.cream.color)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-                fan(books)
-                VStack(spacing: aspect == .story ? 22 : 14) {
-                    ForEach(Array(books.enumerated()), id: \.element.id) { index, book in
-                        row(rank: index + 1, book: book, showsAuthor: aspect != .square)
+            // Titles keep their subtitles while the fan keeps its minimum height. Past that, the
+            // longest titles give theirs up one at a time, and only once every title has given
+            // its subtitle up does the fan shrink below its minimum.
+            ViewThatFits(in: .vertical) {
+                ForEach(0...shortenable.count, id: \.self) { shortened in
+                    VStack(spacing: aspect == .story ? 48 : 32) {
+                        Text(heading)
+                            .font(ShareStyle.serif(aspect == .story ? 84 : 68, .semibold))
+                            .foregroundStyle(ShareStyle.cream.color)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
+                        fan(books)
+                            .frame(
+                                minHeight: shortened < shortenable.count ? minimumFanHeight : nil)
+                        VStack(spacing: aspect == .story ? 22 : 14) {
+                            ForEach(Array(books.enumerated()), id: \.element.id) { index, book in
+                                row(
+                                    rank: index + 1, book: book, showsAuthor: aspect != .square,
+                                    keepsSubtitle: !shortenable.prefix(shortened).contains(index))
+                            }
+                        }
+                        .layoutPriority(1)
                     }
                 }
-                .layoutPriority(1)
             }
             .padding(aspect.insets)
         }
+    }
+
+    /// The least height the fan keeps while titles show their subtitles, below which its covers
+    /// get too small to recognize on a phone. Every size shows its 1,080-pixel width across the
+    /// screen, so the shorter Portrait and Square keep a larger share of their height, which
+    /// still leaves their covers smaller than a Story's.
+    private var minimumFanHeight: CGFloat {
+        let share: CGFloat =
+            switch input.aspect {
+            case .story: 0.22
+            case .portrait: 0.25
+            case .square: 0.28
+            }
+        return input.aspect.size.height * share
+    }
+
+    /// The indexes of `books` whose titles have a shorter form, in the order they give up their
+    /// subtitles to make room for the fan: the longest whole title first.
+    static func subtitleOrder(_ books: [CloudBook]) -> [Int] {
+        let forms = books.map(ShareStyle.titles)
+        return forms.indices.filter { forms[$0].count > 1 }
+            .sorted { forms[$0][0].count > forms[$1][0].count }
     }
 
     /// "My top 5 of 2025", "My top book of August 2025", or "My all-time top 5".
@@ -248,7 +282,9 @@ struct TopFiveCard: View {
     }
 
     /// A ranked book: its rank, title, author, and stars.
-    private func row(rank: Int, book: CloudBook, showsAuthor: Bool) -> some View {
+    private func row(
+        rank: Int, book: CloudBook, showsAuthor: Bool, keepsSubtitle: Bool
+    ) -> some View {
         // The rank and stars line up with the title's first line when it wraps.
         HStack(alignment: .firstTextBaseline, spacing: 20) {
             Text(String(rank))
@@ -256,7 +292,7 @@ struct TopFiveCard: View {
                 .foregroundStyle(ShareStyle.gold)
                 .frame(width: 44)
             VStack(alignment: .leading, spacing: 0) {
-                title(book)
+                title(book, keepsSubtitle: keepsSubtitle)
                 if showsAuthor {
                     Text(SpineView.shortAuthor(book.author))
                         .font(ShareStyle.serif(32))
@@ -272,23 +308,32 @@ struct TopFiveCard: View {
         .foregroundStyle(ShareStyle.cream.color)
     }
 
-    /// A ranked book's title at 40 pixels or more, so it stays legible on a phone. It drops a
-    /// subtitle or series name to fit on one line, and wraps to a second line only when its
-    /// shortest form doesn't fit, which keeps the list from crowding the fan.
-    private func title(_ book: CloudBook) -> some View {
+    /// A ranked book's title at 40 pixels or more, so it stays legible on a phone.
+    ///
+    /// With `keepsSubtitle`, the whole title wraps to as many as three lines, and drops its
+    /// subtitle or series name only when it needs more. Otherwise the title drops them to fit on
+    /// one line, and wraps to a second line only when its shortest form doesn't fit.
+    @ViewBuilder
+    private func title(_ book: CloudBook, keepsSubtitle: Bool) -> some View {
         let forms = ShareStyle.titles(book)
-        let options = forms.flatMap { form in [44, 40].map { (form: form, size: CGFloat($0)) } }
-        return ViewThatFits(in: .horizontal) {
-            ForEach(options.indices, id: \.self) { index in
-                BookText(options[index].form, of: book)
-                    .font(ShareStyle.serif(options[index].size, .semibold))
-                    .lineLimit(1)
-            }
-            ShareFittingText(
-                forms: Array(forms.suffix(1)), size: 44, minimumScale: 40 / 44, lines: 2,
-                book: book
-            ) {
+        if keepsSubtitle {
+            ShareFittingText(forms: forms, size: 44, minimumScale: 40 / 44, lines: 3, book: book) {
                 ShareStyle.serif($0, .semibold)
+            }
+        } else {
+            let options = forms.flatMap { form in [44, 40].map { (form: form, size: CGFloat($0)) } }
+            ViewThatFits(in: .horizontal) {
+                ForEach(options.indices, id: \.self) { index in
+                    BookText(options[index].form, of: book)
+                        .font(ShareStyle.serif(options[index].size, .semibold))
+                        .lineLimit(1)
+                }
+                ShareFittingText(
+                    forms: Array(forms.suffix(1)), size: 44, minimumScale: 40 / 44, lines: 2,
+                    book: book
+                ) {
+                    ShareStyle.serif($0, .semibold)
+                }
             }
         }
     }

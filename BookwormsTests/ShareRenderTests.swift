@@ -195,6 +195,23 @@ final class ShareRenderTests: XCTestCase {
         }
     }
 
+    /// Top Five's titles give up their subtitles longest first, and a title without a shorter
+    /// form, such as one with only a series tag, gives up nothing.
+    @MainActor
+    func testTopFiveDropsLongestSubtitlesFirst() {
+        let titles = [
+            "Fictional Title", "Fictional Title: A Subtitle",
+            "Fictional Title: A Much Longer Subtitle", "Fictional Title (Fictional Series, #2)",
+        ]
+        let books = titles.enumerated()
+            .map {
+                CloudBook(
+                    id: $0.offset, title: $0.element, author: "Author", coverURL: nil,
+                    detailCoverURL: nil)
+            }
+        XCTAssertEqual(TopFiveCard.subtitleOrder(books), [2, 1])
+    }
+
     /// The Pile template offers every time frame kind, draws the frame's finished books newest
     /// first so they land on top, and heads the image with the frame's name.
     func testPileTemplateDrawsEachTimeFrameNewestFirst() {
