@@ -59,8 +59,8 @@ final class DeskScenes {
         didSet { if viewport != oldValue { wake() } }
     }
     /// Set under heat or in Low Power Mode, when the desk draws no dust and no soft shadows
-    /// (see `updatePowerState()`).
-    private(set) var reducesEffects = false
+    /// under the books (see `updatePowerState()`).
+    @ObservationIgnored private var reducesEffects = false
     /// Set while the Desk scene rests and its still shows in place of the view.
     private(set) var isPaused = false
     /// The view as the pile came to rest, which shows while the desk pauses and under the view
@@ -70,6 +70,7 @@ final class DeskScenes {
     let pile: BookPileScene
     let dominoes: DominoScene
     @ObservationIgnored private let stage: DeskStage
+    @ObservationIgnored private let factory: BookFactory
     @ObservationIgnored private weak var view: ARView?
     /// Counts pauses and wakes, so a still that arrives after the pile stirred is dropped.
     @ObservationIgnored private var restRequest = 0
@@ -82,6 +83,7 @@ final class DeskScenes {
         let factory = BookFactory()
         let stage = DeskStage()
         self.stage = stage
+        self.factory = factory
         pile = BookPileScene(factory: factory, stage: stage)
         dominoes = DominoScene(factory: factory, stage: stage)
         factory.coverArrived = { [weak pile, weak dominoes] id, material in
@@ -177,8 +179,9 @@ final class DeskScenes {
     }
 
     /// Saves power while the device asks apps to: in Low Power Mode, or while its thermal state
-    /// is serious or critical. Then the desk drops its dust and its soft shadows, until the
-    /// condition passes. In Debug builds, `-BookwormsReducedEffects YES` saves power throughout.
+    /// is serious or critical. Then the desk drops its dust and the soft shadows under its
+    /// books, in both scenes, until the condition passes. In Debug builds,
+    /// `-BookwormsReducedEffects YES` saves power throughout.
     func updatePowerState() {
         let info = ProcessInfo.processInfo
         var reduces: Bool
@@ -193,6 +196,7 @@ final class DeskScenes {
         guard reduces != reducesEffects else { return }
         reducesEffects = reduces
         stage.setReducesEffects(reduces)
+        factory.setGroundingShadows(!reduces, under: [pile.root, dominoes.root])
         wake()
     }
 

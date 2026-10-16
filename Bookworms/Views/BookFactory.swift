@@ -69,6 +69,8 @@ final class BookFactory {
 
     /// The name of a current read's ribbon entity, a child of the book's model entity.
     static let ribbonName = "ribbon"
+    /// The name of a book's model entity, the child of its rigid body.
+    static let modelName = "book model"
     static let spineLength: CGFloat = 384
 
     /// The texture scale of a 24-centimeter book, which `textureScale(forLength:)` scales.
@@ -76,6 +78,9 @@ final class BookFactory {
     /// Called with a book's ID and new cover material when its cover arrives after the book was
     /// built, so the scene can retexture the book.
     var coverArrived: ((Int, any RealityKit.Material) -> Void)?
+    /// Whether the books `makeBook` makes have a soft shadow right under them, which
+    /// `setGroundingShadows(_:under:)` changes.
+    private(set) var groundsBooks = true
 
     private(set) var parts: [Int: Parts] = [:]
     private var meshes: [BookShape: Task<MeshResource?, Never>] = [:]
@@ -261,10 +266,10 @@ final class BookFactory {
         body.angularDamping = 0.3
         book.components.set(body)
         let model = Entity()
+        model.name = Self.modelName
         model.components.set(ModelComponent(mesh: parts.mesh, materials: parts.materials))
         model.components.set(ImageBasedLightReceiverComponent(imageBasedLight: lighting))
-        // A soft shadow right under the book, so a book on the table or the pile sits on it.
-        model.components.set(GroundingShadowComponent(castsShadow: true, receivesShadow: true))
+        Self.setGroundingShadow(groundsBooks, on: model)
         book.addChild(model)
         if let ribbon = parts.ribbon {
             let entity = Entity()
@@ -274,6 +279,31 @@ final class BookFactory {
             model.addChild(entity)
         }
         return book
+    }
+
+    /// Gives the books under `roots`, and the books `makeBook` makes from now on, a soft shadow
+    /// right under them while `grounds`, and takes it away otherwise.
+    func setGroundingShadows(_ grounds: Bool, under roots: [Entity]) {
+        groundsBooks = grounds
+        func update(_ entity: Entity) {
+            if entity.name == Self.modelName {
+                Self.setGroundingShadow(grounds, on: entity)
+            } else {
+                entity.children.forEach(update)
+            }
+        }
+        roots.forEach(update)
+    }
+
+    /// Gives a book's `model` a soft shadow right under it while `grounds`, so a book on the
+    /// table or the pile sits on it, and otherwise removes the component, which can cost
+    /// rendering time even while it casts nothing.
+    private static func setGroundingShadow(_ grounds: Bool, on model: Entity) {
+        if grounds {
+            model.components.set(GroundingShadowComponent(castsShadow: true, receivesShadow: true))
+        } else {
+            model.components.remove(GroundingShadowComponent.self)
+        }
     }
 
     /// Drops the parts of books not in `ids`, and the meshes no remaining book uses. With no

@@ -176,7 +176,7 @@ private struct DeskCanvas: View {
                 .accessibilityHidden(true)
         }
         if !desk.hidesView && !desk.isPaused {
-            DeskSceneView(reducesEffects: desk.reducesEffects) { desk.attach(to: $0) }
+            DeskSceneView { desk.attach(to: $0) }
                 .ignoresSafeArea()
                 .accessibilityHidden(true)
         }

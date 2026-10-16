@@ -15,7 +15,7 @@ import SwiftUI
 /// An image-based light, a dim room drawn in code with the lamp's glow in it, lights the
 /// shadows and gives the jackets' sheen something to reflect. Each lit entity receives it through
 /// `light(_:)`. Dust motes drift through the beam while `setDust(true)`. Under heat or in Low
-/// Power Mode (`setReducesEffects(_:)`), the dust thins out and the lamp's shadows turn hard.
+/// Power Mode (`setReducesEffects(_:)`), the dust stops and fades out.
 ///
 /// Scene units are decimeters, but RealityKit treats them as meters, so the lamp's intensity
 /// grows with the square of its distance in those units to keep the pool equally bright.
@@ -115,10 +115,8 @@ final class DeskStage {
         shadow.depthBias = 2
         shadow.zNear = .fixed(2)
         shadow.zFar = .fixed(placement.distance + radius * 1.5)
-        // A lamp shade's opening, about 15 cm across, softens the shadows' edges. `lightSize` is
-        // the light's diameter, and only `.medium` or `.high` quality draws the softening.
+        // A lamp shade's opening, about 15 cm across, softens the shadows' edges.
         shadow.lightSize = 1.5
-        shadow.quality = reducesEffects ? .low : .medium
         lamp.shadow = shadow
         lamp.look(at: placement.aim, from: placement.position, relativeTo: nil)
         dust.position = center + [0, 3.5, 0]
@@ -168,13 +166,11 @@ final class DeskStage {
     }
 
     /// Saves power while `reduces`, as Apple asks of apps under heat or in Low Power Mode: no
-    /// new dust drifts into the beam, and the lamp casts hard-edged shadows, which take fewer
-    /// samples than soft ones. Turning it off restores both.
+    /// new dust drifts into the beam. Turning it off lets the dust drift in again.
     func setReducesEffects(_ reduces: Bool) {
         guard reduces != reducesEffects else { return }
         reducesEffects = reduces
         updateDust()
-        lamp.shadow?.quality = reduces ? .low : .medium
     }
 
     /// Adds the dust while it shows and removes it otherwise, and keeps it emitting unless the
