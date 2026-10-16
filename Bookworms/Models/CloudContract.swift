@@ -302,13 +302,14 @@ struct LibrarySnapshot: Codable, Sendable {
     ///
     /// Designs from any generator count, so Mac and older designs show until a newer one replaces
     /// them. A design whose work-item hash no longer matches still shows: its colors and font stay
-    /// usable after small metadata edits.
+    /// usable after small metadata edits. A blocked font, such as Impact, loads as its
+    /// replacement (`SpineDesignV1.withAllowedFont`).
     static func latestDesigns(
         _ designs: some Sequence<SpineDesignV1>, accountID: String, books: [CloudBook]
     ) -> [Int: SpineDesignV1] {
         let ids = Set(books.map(\.id))
         var latest: [Int: SpineDesignV1] = [:]
-        for design in designs
+        for design in designs.lazy.map(\.withAllowedFont)
         where design.accountID == accountID && ids.contains(design.bookID)
             && (try? design.validate()) != nil
         {

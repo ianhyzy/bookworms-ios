@@ -74,9 +74,7 @@ actor GoogleFonts {
                 let traits =
                     CTFontDescriptorCopyAttribute(descriptor, kCTFontTraitsAttribute)
                     as? [CFString: Any]
-                let symbolic = (traits?[kCTFontSymbolicTrait] as? NSNumber)?.uint32Value ?? 0
-                guard symbolic & CTFontSymbolicTraits.traitItalic.rawValue == 0,
-                    let name = Self.postScriptName(of: descriptor)
+                guard Self.isUpright(descriptor), let name = Self.postScriptName(of: descriptor)
                 else { return nil }
                 let trait = (traits?[kCTFontWeightTrait] as? NSNumber)?.doubleValue ?? 0
                 return (Self.cssWeight(forTrait: trait), name)
@@ -92,6 +90,25 @@ actor GoogleFonts {
 
     static func descriptors(at url: URL) -> [CTFontDescriptor] {
         CTFontManagerCreateFontDescriptorsFromURL(url as CFURL) as? [CTFontDescriptor] ?? []
+    }
+
+    /// Returns whether a face is upright: it has neither the italic trait nor a slant.
+    static func isUpright(_ descriptor: CTFontDescriptor) -> Bool {
+        let traits =
+            CTFontDescriptorCopyAttribute(descriptor, kCTFontTraitsAttribute) as? [CFString: Any]
+        let symbolic = (traits?[kCTFontSymbolicTrait] as? NSNumber)?.uint32Value ?? 0
+        let slant = (traits?[kCTFontSlantTrait] as? NSNumber)?.doubleValue ?? 0
+        return symbolic & CTFontSymbolicTraits.traitItalic.rawValue == 0 && abs(slant) < 0.01
+    }
+
+    /// Returns the first upright face named in `names`, else the first upright face, else `nil`.
+    static func uprightDescriptor(
+        preferring names: [String?], in descriptors: [CTFontDescriptor]
+    ) -> CTFontDescriptor? {
+        let upright = descriptors.filter(isUpright)
+        let named = names.compactMap { $0 }.lazy
+            .compactMap { name in upright.first { postScriptName(of: $0) == name } }.first
+        return named ?? upright.first
     }
 
     static func postScriptName(of descriptor: CTFontDescriptor) -> String? {
