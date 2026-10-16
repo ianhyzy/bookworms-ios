@@ -177,9 +177,14 @@ struct ShareStudioView: View {
         .onChange(of: model.books, initial: true) { _, books in
             periods = TimeFrame.periods(in: books)
         }
-        .onChange(of: mode) { _, mode in
-            guard !mode.templates.contains(template) else { return }
-            template = mode == .mine ? .topFive : mode.templates[0]
+        .onChange(of: mode) { oldMode, mode in
+            if mode == .mine, oldMode.templates.contains(template) {
+                // My reading opens on Top Five, even from Hot takes, which both modes offer. A
+                // detail's Share picks its template along with the mode, so that one stays.
+                template = .topFive
+            } else if !mode.templates.contains(template) {
+                template = mode == .mine ? .topFive : mode.templates[0]
+            }
         }
         .task(id: shownReader?.id) {
             // A reader outside the refresh's limit downloads once shown; a refresh in progress
