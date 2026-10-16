@@ -36,8 +36,9 @@ struct HardcoverAccountView: View {
                 } else {
                     signedOut
                 }
-                // Preview mode ignores the sign-in.
-                if model.isPreview || (account.signIn == nil && !account.isSignedIn) {
+                // Preview mode ignores the sign-in. The library without a sign-in stays visible
+                // while a sign-in is in progress, until it finishes.
+                if model.isPreview || !account.isSignedIn {
                     libraryWithoutSignIn
                 }
             }
@@ -212,9 +213,14 @@ struct HardcoverAccountView: View {
                             ?? "Not yet")
                 }
             }
-            // A design load from iCloud can fail while the Hardcover sync works. In preview mode,
-            // the preview library's section shows the load error instead.
-            if let error = account.syncError ?? (model.isPreview ? nil : model.loadError) {
+            // A download from Hardcover and a design load from iCloud fail independently, so each
+            // error shows on its own. In preview mode, the preview library's section shows the load
+            // error instead.
+            if let error = account.syncError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.secondary)
+            }
+            if !model.isPreview, let error = model.loadError, error != account.syncError {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.secondary)
             }
