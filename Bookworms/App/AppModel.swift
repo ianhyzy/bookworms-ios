@@ -31,6 +31,8 @@ final class AppModel {
     /// so drawing reads them without remapping. Recomputed when the library's designs change.
     private var allowedDesigns: [Int: SpineDesignV1] = [:]
     private(set) var isLoading = false
+    /// Why the last load from iCloud or the preview folder failed; a successful load clears it.
+    /// A failed Hardcover download is `account.syncError`.
     private(set) var loadError: String?
     /// The visible tab. Other features switch it, such as **Share** from a book's details.
     var selectedTab = AppTab.share
@@ -240,7 +242,7 @@ final class AppModel {
                     needsReload = false
                 }
                 lastReload = .now
-                loadError = isPreview ? nil : account.syncError
+                loadError = nil
             }
         } catch CompanionError.noICloudAccount, CompanionError.iCloudRestricted {
             clearLibrary()

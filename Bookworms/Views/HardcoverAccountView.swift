@@ -11,7 +11,7 @@ import SwiftUI
 
 /// The Hardcover account sheet: why to connect, the device-code sign-in, and the signed-in
 /// account with **Sync now** and **Sign out**. It is the one place that shows when the library
-/// last synced and why it failed to load, from Hardcover or, without a sign-in, from the Apple TV.
+/// last synced, from Hardcover or, without a sign-in, from iCloud.
 ///
 /// Hardcover's approval page opens in Safari over this sheet, with the code already copied, and
 /// closes when polling sees the approval. The device flow has no redirect back to the app, which is
@@ -114,8 +114,8 @@ struct HardcoverAccountView: View {
         }
     }
 
-    /// The library shown without a Hardcover sign-in: the Apple TV's iCloud upload, or in
-    /// preview mode the local folder. Load errors show even while an older copy shows.
+    /// The library shown without a Hardcover sign-in: the one in iCloud, or in preview mode the
+    /// local folder. Load errors show even while an older copy shows.
     private var libraryWithoutSignIn: some View {
         Section {
             if let library = model.library {
@@ -123,14 +123,14 @@ struct HardcoverAccountView: View {
                     "Last synced",
                     value: library.syncedAt.formatted(.relative(presentation: .named)))
             } else if model.loadError == nil, !model.isPreview {
-                Text("Waiting for the Apple TV to upload its library to iCloud.")
+                Text("No library in iCloud yet.")
             }
             if let error = model.loadError {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.secondary)
             }
         } header: {
-            Text(model.isPreview ? "Preview library" : "Apple TV library")
+            Text(model.isPreview ? "Preview library" : "iCloud library")
         } footer: {
             if model.isPreview {
                 Text("Preview mode reads a local library. Designs stay on this \(ThisDevice.name).")
@@ -212,8 +212,9 @@ struct HardcoverAccountView: View {
                             ?? "Not yet")
                 }
             }
-            // A design load from iCloud can fail while the Hardcover sync works.
-            if let error = account.syncError ?? model.loadError {
+            // A design load from iCloud can fail while the Hardcover sync works. In preview mode,
+            // the preview library's section shows the load error instead.
+            if let error = account.syncError ?? (model.isPreview ? nil : model.loadError) {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.secondary)
             }

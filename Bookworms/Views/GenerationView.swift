@@ -37,11 +37,9 @@ struct GenerationView: View {
                     }
                 }
             }
-            #if os(iOS)
-                // The first section has no header, so the default top margin under an inline
-                // title reads as a gap.
-                .contentMargins(.top, 8, for: .scrollContent)
-            #endif
+            // The first section has no header, so the default top margin reads as a gap. Share
+            // uses the same margin.
+            .contentMargins(.top, 4, for: .scrollContent)
             .navigationTitle("Spines")
             // The tab bar already names the tab, so an inline title leaves the form more room.
             .navigationBarTitleDisplayMode(.inline)
@@ -84,6 +82,10 @@ struct GenerationView: View {
                 Text("\(designed) of \(total) books designed")
                     .font(.headline)
             }
+            if model.library == nil {
+                Text("No library yet. Open your Hardcover account to connect or check its status.")
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -116,7 +118,7 @@ struct GenerationView: View {
     private var progress: some View {
         let status = generation.status
         let done = status.completed + status.failed
-        return Section("Generation") {
+        return Section {
             if status.isRunning {
                 ProgressView(value: Double(done), total: Double(max(done + status.queue, 1))) {
                     Text(status.phase)
@@ -146,6 +148,15 @@ struct GenerationView: View {
             } else {
                 Button("Generate now") { generation.generateNow() }
                     .disabled(status.isRunning)
+            }
+        } header: {
+            Text("Generation")
+        } footer: {
+            // The worklist choice explains why a run may design books the summary doesn't count.
+            if model.account.isSignedIn, !model.isPreview {
+                Text(
+                    "When your Apple TV lists books to design, Bookworms designs those instead of your Hardcover library."
+                )
             }
         }
     }
@@ -222,10 +233,11 @@ struct GenerationView: View {
         #endif
     }
 
-    /// Whether the account sheet shows a problem: Hardcover rejected the saved login, or the
-    /// library failed to load, also while an older copy shows.
+    /// Whether the account sheet shows a problem: Hardcover rejected the saved login, the library
+    /// failed to download or load, also while an older copy shows.
     private var accountNeedsAttention: Bool {
-        model.account.needsReconnect || model.loadError != nil
+        let account = model.account
+        return account.needsReconnect || account.syncError != nil || model.loadError != nil
     }
 
     /// The toolbar's account symbol, badged when the account sheet shows a problem.
