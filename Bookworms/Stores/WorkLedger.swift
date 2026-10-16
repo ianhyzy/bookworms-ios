@@ -1,7 +1,7 @@
 import Foundation
 
-/// Remembers which books were checked or failed, so a run spends cover downloads and Private
-/// Cloud Compute requests only on books that need them.
+/// Remembers which books were checked or failed, so a run spends cover downloads and model
+/// requests only on books that need them.
 ///
 /// A book is rechecked when it has no entry, its work-item hash, chosen cover, or the generator
 /// changed, or its last check is seven days old. A failed book waits 24 hours unless its work-item

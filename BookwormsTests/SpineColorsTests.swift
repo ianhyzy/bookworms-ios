@@ -142,6 +142,21 @@ final class SpineColorsTests: XCTestCase {
                 drawsSeriesLook: true), .redesign)
     }
 
+    func testDesignsReadTheirTierFromProvenance() {
+        XCTAssertEqual(design().tier, .privateCloudCompute)
+        XCTAssertNil(design().modelToken)
+        XCTAssertEqual(design(provenance: "series-reuse:12").tier, .privateCloudCompute)
+        XCTAssertEqual(
+            design(provenance: "model:apple/on-device generated-colors:000000,FFFFFF,FF0000")
+                .tier, .onDevice)
+        XCTAssertEqual(design(provenance: "series-reuse:4 model:local").tier, .local)
+        XCTAssertEqual(design(provenance: "model:custom/llama 4").tier, .backup)
+        // An Apple TV look's design names no model but comes from none.
+        let television = design(generator: CloudContract.appleTVGeneratorVersion)
+        XCTAssertEqual(television.modelToken, "model:local")
+        XCTAssertEqual(television.tier, .local)
+    }
+
     func testLedgerTellsWhetherTheReaderChoseAnotherCover() async throws {
         let url = FileManager.default.temporaryDirectory
             .appending(path: "bookworms-ledger-\(UUID().uuidString).json")
@@ -178,6 +193,16 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertEqual(reused?.colors, generated.colors)
         XCTAssertNil(reused?.generatedColors)
         XCTAssertEqual(reused?.provenance, "series-reuse:7")
+
+        // The copy keeps its source's tier.
+        var onDevice = generated
+        onDevice.provenance = "model:apple/on-device"
+        let reusedOnDevice = try await BookAnalyzer()
+            .seriesDesign(
+                from: onDevice.recolored(reader), book: sibling, accountID: "42",
+                workItemHash: work, coverHash: cover)
+        XCTAssertEqual(reusedOnDevice?.provenance, "series-reuse:7 model:apple/on-device")
+        XCTAssertEqual(reusedOnDevice?.tier, .onDevice)
     }
 
     func testSeriesReuseNeedsTheGlyphsOfAnInstalledFaceWithoutAFamily() async throws {

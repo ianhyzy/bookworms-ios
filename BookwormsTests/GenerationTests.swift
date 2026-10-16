@@ -226,9 +226,9 @@ final class GenerationTests: XCTestCase {
             quota: ModelStatus.Quota
         ) -> ModelStatus {
             ModelStatus(
-                isAvailable: available, unavailableReason: available ? nil : "Unavailable",
-                coverReader: reader, quota: quota, quotaResetDate: now,
-                limitIncreaseSuggestion: nil)
+                tier: .privateCloudCompute, isAvailable: available,
+                unavailableReason: available ? nil : "Unavailable", coverReader: reader,
+                quota: quota, quotaResetDate: now)
         }
         XCTAssertNil(SpineWorker.modelStop(status(quota: .belowLimit), mode: .background))
         XCTAssertNil(SpineWorker.modelStop(status(quota: .approachingLimit), mode: .foreground))
@@ -250,10 +250,89 @@ final class GenerationTests: XCTestCase {
                 .retryAfter, dayLater)
         XCTAssertNil(
             SpineWorker.modelStop(status(reader: .onDevice, quota: .belowLimit), mode: .foreground))
-        // NO_PCC builds design from the title measurements when the on-device model lacks vision.
+        // The on-device tier designs from the title measurements when its model lacks vision.
         XCTAssertNil(
             SpineWorker.modelStop(
                 status(reader: .measurementsOnly, quota: .belowLimit), mode: .background))
+    }
+
+    func testRunsPreferPrivateCloudComputeThenTheBackupThenTheOnDeviceModel() {
+        func status(_ tier: ModelTier, available: Bool, quota: ModelStatus.Quota = .belowLimit)
+            -> ModelStatus
+        {
+            ModelStatus(
+                tier: tier, isAvailable: available,
+                unavailableReason: available ? nil : "\(tier) unavailable",
+                coverReader: .designModel, quota: quota)
+        }
+        // Private Cloud Compute over its daily limit still designs: the run waits for the reset.
+        let pcc = BookAnalyzer.bestStatus(
+            pcc: status(.privateCloudCompute, available: true, quota: .limitReached),
+            backup: status(.backup, available: true), onDevice: status(.onDevice, available: true))
+        XCTAssertEqual(pcc.tier, .privateCloudCompute)
+        XCTAssertNil(pcc.pccUnavailableReason)
+        XCTAssertNotNil(SpineWorker.modelStop(pcc, mode: .foreground))
+
+        let backup = BookAnalyzer.bestStatus(
+            pcc: status(.privateCloudCompute, available: false),
+            backup: status(.backup, available: true), onDevice: status(.onDevice, available: true))
+        XCTAssertEqual(backup.tier, .backup)
+        XCTAssertEqual(backup.pccUnavailableReason, "privateCloudCompute unavailable")
+
+        // A backup that isn't set up on this device, such as one without a key, is skipped.
+        let onDevice = BookAnalyzer.bestStatus(
+            pcc: status(.privateCloudCompute, available: false),
+            backup: status(.backup, available: false), onDevice: status(.onDevice, available: true))
+        XCTAssertEqual(onDevice.tier, .onDevice)
+        XCTAssertEqual(onDevice.pccUnavailableReason, "privateCloudCompute unavailable")
+
+        // With no tier available, the on-device model's reason explains the stop.
+        let none = BookAnalyzer.bestStatus(
+            pcc: status(.privateCloudCompute, available: false),
+            backup: status(.backup, available: false), onDevice: status(.onDevice, available: false)
+        )
+        XCTAssertEqual(none.tier, .onDevice)
+        XCTAssertEqual(
+            SpineWorker.modelStop(none, mode: .foreground, now: now)?.message,
+            "onDevice unavailable")
+
+        XCTAssertNotNil(SpineDesigner.appleOnly.problem, "No backup model is never set up")
+    }
+
+    func testDesignsRecordTheirTierAsAModelToken() {
+        let anthropic = SpineDesigner(
+            provider: .anthropic, model: "claude-haiku-5-5", baseURL: "")
+        func provenance(_ tier: ModelTier) -> String? {
+            ModelStatus(
+                tier: tier, isAvailable: true, unavailableReason: nil, coverReader: .designModel,
+                designer: anthropic
+            )
+            .provenance
+        }
+        XCTAssertNil(provenance(.privateCloudCompute))
+        XCTAssertEqual(provenance(.backup), "model:anthropic/claude-haiku-5-5")
+        XCTAssertEqual(provenance(.onDevice), "model:apple/on-device")
+        XCTAssertEqual(provenance(.local), "model:local")
+        for tier in [ModelTier.privateCloudCompute, .backup, .onDevice, .local] {
+            XCTAssertEqual(ModelTier(modelToken: provenance(tier)), tier)
+        }
+        XCTAssertLessThan(ModelTier.local, .onDevice)
+        XCTAssertLessThan(ModelTier.onDevice, .backup)
+        XCTAssertLessThan(ModelTier.backup, .privateCloudCompute)
+
+        XCTAssertEqual(
+            ModelStatus(
+                tier: .backup, isAvailable: true, unavailableReason: nil, coverReader: .designModel,
+                designer: anthropic
+            )
+            .designerName, "Anthropic backup model")
+        XCTAssertEqual(
+            SpineWorker.fallbackMessage(
+                rejection: "Anthropic: invalid x-api-key",
+                next: ModelStatus(
+                    tier: .onDevice, isAvailable: true, unavailableReason: nil,
+                    coverReader: .onDevice)),
+            "Anthropic: invalid x-api-key. Apple on-device model designs the rest of this run.")
     }
 
     func testTitleNoFamilyCoversUsesTheStyleSystemTypeface() throws {

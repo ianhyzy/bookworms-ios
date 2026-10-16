@@ -3,8 +3,55 @@ import Foundation
 import FoundationModels
 import Vision
 
-/// The spine designer's availability and, for Private Cloud Compute, the user's daily quota, as
-/// the Spines tab shows them.
+/// The models that can design spines, from weakest to best: none, Apple's on-device model, the
+/// reader's backup model from a third-party provider, and Private Cloud Compute.
+///
+/// Each run designs with the best tier available on this device when it starts
+/// (`BookAnalyzer.status(for:)`), and each design records its tier as a `provenance` model token
+/// (`SpineDesignV1.tier`), so a later run at a better tier redesigns it.
+enum ModelTier: Int, Comparable, Sendable {
+    /// No model, from what the device has locally. The Apple TV's own looks
+    /// (`CloudContract.appleTVGeneratorVersion`) count as this tier. This app doesn't design at
+    /// this tier yet.
+    case local
+    /// Apple's on-device model (`SystemLanguageModel.default`).
+    case onDevice
+    /// The reader's backup model from a third-party provider (`SpineDesigner`).
+    case backup
+    /// Apple's Private Cloud Compute, in builds with its managed entitlement.
+    case privateCloudCompute
+
+    static let onDeviceToken = "model:apple/on-device"
+    static let localToken = "model:local"
+
+    static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+
+    /// The tier that a `provenance` model token names (`SpineDesignV1.modelToken`): no token is
+    /// Private Cloud Compute, and another provider's token, such as
+    /// "model:anthropic/claude-haiku-5-5", is the backup model.
+    init(modelToken: String?) {
+        switch modelToken {
+        case nil: self = .privateCloudCompute
+        case Self.onDeviceToken?: self = .onDevice
+        case Self.localToken?: self = .local
+        default: self = .backup
+        }
+    }
+
+    /// The tier's name as the Spines tab shows it, naming `designer`'s provider for the backup
+    /// model.
+    func name(backup designer: SpineDesigner) -> String {
+        switch self {
+        case .privateCloudCompute: "Private Cloud Compute"
+        case .backup: "\(designer.provider.name) backup model"
+        case .onDevice: "Apple on-device model"
+        case .local: "Local defaults"
+        }
+    }
+}
+
+/// A model tier's availability and, for Private Cloud Compute, the user's daily quota, as the
+/// Spines tab shows them.
 struct ModelStatus: Sendable {
     enum Quota: Sendable, Equatable {
         case belowLimit, approachingLimit, limitReached
@@ -15,39 +62,45 @@ struct ModelStatus: Sendable {
         /// The designing model reads the cover itself.
         case designModel
         /// The on-device model reads the cover, without a reasoning level: for a designing model
-        /// without image input, or as the designing model itself in `NO_PCC` builds.
+        /// without image input, or when the on-device model designs.
         case onDevice
         /// No model reads the cover, and the design comes from the title measurements alone, as
-        /// when a guardrail rejects the crop. Only `NO_PCC` builds design this way, when the
+        /// when a guardrail rejects the crop. Only the on-device tier designs this way, when the
         /// on-device model lacks image input.
         case measurementsOnly
         /// No model reads the cover, so the run stops.
         case none
     }
 
-    /// What each design request costs the user.
-    enum Cost: Sendable {
-        /// The request counts against Private Cloud Compute's daily limit.
-        case dailyLimit
-        /// The third-party provider bills the user's API account.
-        case apiAccount
-        /// The on-device model answers at no cost.
-        case onDevice
-    }
-
+    var tier: ModelTier
     var isAvailable: Bool
-    /// Why the designing model is unavailable, in plain language; `nil` when it is available.
+    /// Why `tier` is unavailable, in plain language; `nil` when it is available.
     var unavailableReason: String?
     var coverReader: CoverReader
-    var quota: Quota
+    var quota = Quota.belowLimit
     /// When the daily quota resets. The system reports it only near or at the limit.
     var quotaResetDate: Date?
     /// The system flow that raises the limit, such as an iCloud+ upgrade, when one exists.
     var limitIncreaseSuggestion:
         PrivateCloudComputeLanguageModel.QuotaUsage.LimitIncreaseSuggestion?
-    /// The designing model's provider, as the Spines tab names it.
-    var designerName = SpineDesigner.appleModelName
-    var cost = SpineDesigner.Provider.apple.cost
+    /// The backup model, which designs when `tier` is `.backup`.
+    var designer = SpineDesigner.appleOnly
+    /// Why Private Cloud Compute is unavailable, when a lower tier designs instead.
+    var pccUnavailableReason: String?
+
+    /// The designing model, as the Spines tab names it.
+    var designerName: String { tier.name(backup: designer) }
+
+    /// The model token that a design made at this tier records in `provenance`, or `nil` for
+    /// Private Cloud Compute, whose designs record none.
+    var provenance: String? {
+        switch tier {
+        case .privateCloudCompute: nil
+        case .backup: designer.provenance
+        case .onDevice: ModelTier.onDeviceToken
+        case .local: ModelTier.localToken
+        }
+    }
 }
 
 /// Designs a spine from a cover with local OCR, the cover's title colors, one model request, and
@@ -57,9 +110,12 @@ struct ModelStatus: Sendable {
 /// model answers reliably: whether it is hand-drawn, whether it has serifs, and any special
 /// treatment. `TitleLettering` then ranks the families those answers allow by measuring the
 /// lettering itself. The on-device model also judges, from the book's text, whether the book is
-/// playful enough for rounded faces. A book costs one Private Cloud Compute request, which
-/// counts against the user's daily quota. Test builds without the managed Private Cloud Compute
-/// entitlement (`NO_PCC`) never create that model: the on-device model designs instead.
+/// playful enough for rounded faces.
+///
+/// The run's model tier (`ModelTier`) answers. Private Cloud Compute's request counts against the
+/// user's daily quota, and the backup model's request is billed to the reader's API account.
+/// Test builds without the managed Private Cloud Compute entitlement (`NO_PCC`) never create that
+/// model.
 actor BookAnalyzer {
     private let fonts = GoogleFonts()
     /// Created on first use rather than at launch, because creating the model without the
@@ -74,26 +130,67 @@ actor BookAnalyzer {
         choices.
         """
 
-    /// Reads `designer`'s availability: a third-party provider's settings, the on-device
-    /// model's availability in `NO_PCC` builds, or Private Cloud Compute's availability and
-    /// quota, creating the model on first use.
+    /// Reads the best tier available now, with `designer` as the backup model
+    /// (`bestStatus(pcc:backup:onDevice:)`), creating the Private Cloud Compute model on first
+    /// use.
     func status(for designer: SpineDesigner = .current) -> ModelStatus {
-        guard designer.provider == .apple else {
-            return ModelStatus(
-                isAvailable: designer.problem == nil, unavailableReason: designer.problem,
-                coverReader: .designModel, quota: .belowLimit, quotaResetDate: nil,
-                limitIncreaseSuggestion: nil, designerName: designer.provider.name,
-                cost: designer.provider.cost)
-        }
-        #if NO_PCC
-            return Self.onDeviceStatus()
-        #else
-            return pccStatus()
-        #endif
+        Self.bestStatus(
+            pcc: status(of: .privateCloudCompute, designer: designer),
+            backup: Self.backupStatus(designer), onDevice: Self.onDeviceStatus())
     }
 
-    /// The on-device model's availability, for builds that design with it. It has no daily
-    /// limit, and without image input the design comes from the title measurements alone.
+    /// Reads `tier`'s availability now, without falling to another tier, so a run can watch its
+    /// own tier's availability and quota.
+    func status(of tier: ModelTier, designer: SpineDesigner) -> ModelStatus {
+        switch tier {
+        case .privateCloudCompute:
+            #if NO_PCC
+                // Builds without the managed entitlement must never create the model.
+                return ModelStatus(
+                    tier: .privateCloudCompute, isAvailable: false,
+                    unavailableReason:
+                        "This test build leaves out Private Cloud Compute until Apple grants the entitlement.",
+                    coverReader: .none)
+            #else
+                return pccStatus()
+            #endif
+        case .backup: return Self.backupStatus(designer)
+        case .onDevice: return Self.onDeviceStatus()
+        case .local:
+            return ModelStatus(
+                tier: .local, isAvailable: false,
+                unavailableReason: "Bookworms needs a model to design spines.", coverReader: .none)
+        }
+    }
+
+    /// Picks the run's tier from each tier's status, best first.
+    ///
+    /// Private Cloud Compute designs whenever the system reports it available, even over its
+    /// daily limit, so the run waits for the reset instead of switching models each day. Without
+    /// it, the backup model designs when it is set up on this device, and otherwise the on-device
+    /// model, whose status explains the stop when it is unavailable too. A lower tier's status
+    /// records why Private Cloud Compute is unavailable.
+    static func bestStatus(
+        pcc: ModelStatus, backup: @autoclosure () -> ModelStatus,
+        onDevice: @autoclosure () -> ModelStatus
+    ) -> ModelStatus {
+        guard !pcc.isAvailable else { return pcc }
+        var status = backup()
+        if !status.isAvailable { status = onDevice() }
+        status.pccUnavailableReason = pcc.unavailableReason
+        return status
+    }
+
+    /// Whether the backup model is set up on this device. It reads each cover itself.
+    private static func backupStatus(_ designer: SpineDesigner) -> ModelStatus {
+        let problem = designer.problem
+        return ModelStatus(
+            tier: .backup, isAvailable: problem == nil, unavailableReason: problem,
+            coverReader: .designModel, designer: designer)
+    }
+
+    /// The on-device model's availability. It has no daily limit, and without image input the
+    /// design comes from the title measurements alone.
     private static func onDeviceStatus() -> ModelStatus {
         let model = SystemLanguageModel.default
         let reason: String? =
@@ -108,9 +205,8 @@ actor BookAnalyzer {
             case .unavailable: "Apple's on-device model is unavailable."
             }
         return ModelStatus(
-            isAvailable: model.isAvailable, unavailableReason: reason,
-            coverReader: model.capabilities.contains(.vision) ? .onDevice : .measurementsOnly,
-            quota: .belowLimit, quotaResetDate: nil, limitIncreaseSuggestion: nil, cost: .onDevice)
+            tier: .onDevice, isAvailable: model.isAvailable, unavailableReason: reason,
+            coverReader: model.capabilities.contains(.vision) ? .onDevice : .measurementsOnly)
     }
 
     private func pccStatus() -> ModelStatus {
@@ -141,12 +237,13 @@ actor BookAnalyzer {
                 .none
             }
         return ModelStatus(
-            isAvailable: model.isAvailable, unavailableReason: reason, coverReader: reader,
-            quota: quota, quotaResetDate: usage.resetDate,
-            limitIncreaseSuggestion: usage.limitIncreaseSuggestion)
+            tier: .privateCloudCompute, isAvailable: model.isAvailable,
+            unavailableReason: reason, coverReader: reader, quota: quota,
+            quotaResetDate: usage.resetDate, limitIncreaseSuggestion: usage.limitIncreaseSuggestion)
     }
 
-    /// Designs a spine for `book` from its cover.
+    /// Designs a spine for `book` from its cover with `model`, the run's tier, which records
+    /// itself in the design's `provenance` (`ModelStatus.provenance`).
     ///
     /// The model reads only the crop of the title line, so cover art and book data do not
     /// anchor its answers. Up to six families, best match first, are downloaded and
@@ -155,15 +252,18 @@ actor BookAnalyzer {
     /// match's system typeface instead of a Google Fonts family.
     ///
     /// Throws `CompanionError.quotaReached`, `.modelBusy`, or `.fontServiceUnavailable`, or an
-    /// offline `URLError`, when the run should stop; `.modelUnavailable` when Apple's model is
+    /// offline `URLError`, when the run should stop; `.providerRejected` when the backup model
+    /// rejects the request or is not set up; `.modelUnavailable` when the tier's model is
     /// unavailable or no model can read the cover; and `.invalidDesign` when this book cannot get
     /// a valid design.
     func design(
-        book: CloudBook, accountID: String, workItemHash: String, cover: CoverImage
+        book: CloudBook, accountID: String, workItemHash: String, cover: CoverImage,
+        using model: ModelStatus
     ) async throws -> SpineDesignV1 {
         do {
             return try await makeDesign(
-                book: book, accountID: accountID, workItemHash: workItemHash, cover: cover)
+                book: book, accountID: accountID, workItemHash: workItemHash, cover: cover,
+                using: model)
         } catch {
             // The mapped error loses the framework's detail, which diagnoses device failures. The
             // detail can quote book content, so only its domain and code are public.
@@ -179,18 +279,15 @@ actor BookAnalyzer {
     }
 
     private func makeDesign(
-        book: CloudBook, accountID: String, workItemHash: String, cover: CoverImage
+        book: CloudBook, accountID: String, workItemHash: String, cover: CoverImage,
+        using status: ModelStatus
     ) async throws -> SpineDesignV1 {
-        let designer = SpineDesigner.current
         let model: any LanguageModel
-        if designer.provider == .apple {
+        switch status.tier {
+        case .privateCloudCompute:
             #if NO_PCC
-                // Device builds without the managed entitlement must never create the Private
-                // Cloud Compute model, so the on-device model designs.
-                guard SystemLanguageModel.default.isAvailable else {
-                    throw CompanionError.modelUnavailable
-                }
-                model = SystemLanguageModel.default
+                // Builds without the managed entitlement must never create the model.
+                throw CompanionError.modelUnavailable
             #else
                 let pcc = pccModel()
                 guard pcc.isAvailable else { throw CompanionError.modelUnavailable }
@@ -198,9 +295,18 @@ actor BookAnalyzer {
                 if usage.isLimitReached { throw CompanionError.quotaReached(usage.resetDate) }
                 model = pcc
             #endif
-        } else {
-            if let problem = designer.problem { throw CompanionError.providerRejected(problem) }
-            model = ProviderModel(designer: designer)
+        case .backup:
+            if let problem = status.designer.problem {
+                throw CompanionError.providerRejected(problem)
+            }
+            model = ProviderModel(designer: status.designer)
+        case .onDevice:
+            guard SystemLanguageModel.default.isAvailable else {
+                throw CompanionError.modelUnavailable
+            }
+            model = SystemLanguageModel.default
+        case .local:
+            throw CompanionError.modelUnavailable
         }
         let palette = try CoverPalette.sample(cover.image)
         let lines = try recognizeText(in: cover.image)
@@ -208,9 +314,9 @@ actor BookAnalyzer {
         let lettering = TitleLettering.measure(cover.image, lines: lines, title: book.title)
         let crop = lettering?.crop ?? cover.image
         let reading: LetteringReading?
-        // The designer captured above picks the cover reader, so a provider change during this
-        // design cannot pair one provider's model with another's reading options.
-        switch status(for: designer).coverReader {
+        // The run's status picks the cover reader, so a provider change during this design
+        // cannot pair one provider's model with another's reading options.
+        switch status.coverReader {
         case .designModel:
             reading = try await Self.readLettering(
                 crop, model: model,
@@ -251,7 +357,7 @@ actor BookAnalyzer {
                         style: family.style, font: (family, font), uppercase: uppercase,
                         palette: palette, book: book, accountID: accountID,
                         workItemHash: workItemHash, coverHash: cover.hash,
-                        provenance: designer.provenance)
+                        provenance: status.provenance)
                 }
                 missingGlyphs = true
             }
@@ -264,7 +370,7 @@ actor BookAnalyzer {
             choice: Self.choice(lettering, palette: palette, weight: best.weight),
             style: bestFamily.style, font: nil, uppercase: uppercase, palette: palette, book: book,
             accountID: accountID, workItemHash: workItemHash, coverHash: cover.hash,
-            provenance: designer.provenance)
+            provenance: status.provenance)
     }
 
     /// Maps a model framework error to the companion's error, or returns `nil` for other errors.
@@ -457,7 +563,8 @@ actor BookAnalyzer {
     /// allowed or lacks a glyph that this book's title or author needs, so the caller can analyze
     /// the cover instead. A source without a family that names a face installed on this device
     /// (`SpineFonts.installedFace(named:)`) needs that face's glyphs; without the face, readers
-    /// draw the system typeface, which letters any book.
+    /// draw the system typeface, which letters any book. The copy keeps `source`'s model token
+    /// (`SpineDesignV1.modelToken`), so it has its source's tier.
     func seriesDesign(
         from source: SpineDesignV1, book: CloudBook, accountID: String, workItemHash: String,
         coverHash: String
@@ -481,7 +588,9 @@ actor BookAnalyzer {
             accentHex: colors.accent.hex, typeface: source.typeface, weight: source.weight,
             uppercase: source.uppercase, fontFamily: source.fontFamily,
             fontPostScriptName: source.fontPostScriptName, instanceWeight: source.instanceWeight,
-            provenance: "series-reuse:\(source.bookID)")
+            provenance: String(
+                (["series-reuse:\(source.bookID)"] + [source.modelToken].compactMap { $0 })
+                    .joined(separator: " ").prefix(80)))
         try design.validate()
         return design
     }

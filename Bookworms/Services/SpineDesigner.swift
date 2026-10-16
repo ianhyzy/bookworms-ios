@@ -4,10 +4,10 @@ import FoundationModels
 import ImageIO
 import UniformTypeIdentifiers
 
-/// Which model designs spines: Apple's Private Cloud Compute, or a third-party provider the
-/// reader chose in Settings on the Mac or from the Spines tab on the iPhone. In test builds
-/// without the managed Private Cloud Compute entitlement (`NO_PCC`), Apple's choice designs with
-/// the on-device model instead.
+/// The reader's backup model, which designs spines when Private Cloud Compute isn't available: a
+/// third-party provider chosen in Settings on the Mac or from the Spines tab on the iPhone. The
+/// `.apple` choice means no backup, so Apple's on-device model designs when Private Cloud
+/// Compute isn't available (`ModelTier`).
 ///
 /// The choice and model name live in `UserDefaults`; each provider's API key lives in this
 /// device's Keychain (`KeychainSecret`), never synced. Third-party providers answer through
@@ -21,7 +21,7 @@ struct SpineDesigner: Hashable, Sendable {
 
         var name: String {
             switch self {
-            case .apple: SpineDesigner.appleModelName
+            case .apple: "None"
             case .anthropic: "Anthropic"
             case .openAI: "OpenAI"
             case .google: "Google Gemini"
@@ -51,28 +51,14 @@ struct SpineDesigner: Hashable, Sendable {
             }
         }
 
-        /// What each design request costs the user with this provider.
-        var cost: ModelStatus.Cost {
-            guard self == .apple else { return .apiAccount }
-            #if NO_PCC
-                return .onDevice
-            #else
-                return .dailyLimit
-            #endif
-        }
-
         /// The Keychain item that holds this provider's API key.
         var key: KeychainSecret {
             KeychainSecret(service: "gay.ian.Bookworms.ai-provider", account: rawValue)
         }
     }
 
-    /// The name of Apple's choice, which designs with the on-device model in `NO_PCC` builds.
-    #if NO_PCC
-        static let appleModelName = "Apple on-device model"
-    #else
-        static let appleModelName = "Apple Private Cloud Compute"
-    #endif
+    /// No backup model.
+    static let appleOnly = SpineDesigner(provider: .apple, model: "", baseURL: "")
 
     var provider: Provider
     var model: String
@@ -82,7 +68,7 @@ struct SpineDesigner: Hashable, Sendable {
     private static let modelKey = "SpineDesignerModel"
     private static let baseURLKey = "SpineDesignerBaseURL"
 
-    /// The saved choice, or Apple's model.
+    /// The saved choice, or no backup model.
     static var current: SpineDesigner {
         let defaults = UserDefaults.standard
         let provider = defaults.string(forKey: providerKey).flatMap(Provider.init) ?? .apple
@@ -99,10 +85,11 @@ struct SpineDesigner: Hashable, Sendable {
         defaults.set(baseURL, forKey: Self.baseURLKey)
     }
 
-    /// Why this choice cannot design yet, such as a missing key or model name; `nil` when it can.
+    /// Why this choice cannot design yet, such as no backup model or a missing key or model name;
+    /// `nil` when it can.
     var problem: String? {
         switch provider {
-        case .apple: return nil
+        case .apple: return "Choose a backup model in Settings."
         case .custom where URL(string: baseURL)?.scheme == nil:
             return "Enter the endpoint's base URL in Settings."
         case .anthropic, .openAI, .google:
@@ -114,17 +101,11 @@ struct SpineDesigner: Hashable, Sendable {
         return model.isEmpty ? "Enter a model name in Settings." : nil
     }
 
-    /// Records which model made a design, such as "model:anthropic/claude-haiku-5-5", in the
-    /// design's 80-character `provenance`. Private Cloud Compute's designs record none; the
-    /// on-device model's, in `NO_PCC` builds, record "model:apple/on-device".
+    /// The model token for a design this backup model makes, such as
+    /// "model:anthropic/claude-haiku-5-5", within `provenance`'s 80 characters; `nil` without a
+    /// backup model.
     var provenance: String? {
-        guard provider != .apple else {
-            #if NO_PCC
-                return "model:apple/on-device"
-            #else
-                return nil
-            #endif
-        }
+        guard provider != .apple else { return nil }
         return String("model:\(provider.rawValue)/\(model)".prefix(80))
     }
 }

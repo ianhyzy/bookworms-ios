@@ -92,6 +92,9 @@ actor SpineWorker {
     private var looks: [SeriesLookKey: SeriesLookV1?] = [:]
     /// The book that the reader asked to design anew in this run, until the run tries it.
     private var redesign: (bookID: Int, remakesLook: Bool)?
+    /// The model this run designs with: the best tier when the run first found work, or the
+    /// best one below the backup model after the backup rejected a request. `nil` between runs.
+    private var runModel: ModelStatus?
 
     static let busyRetryDelay: TimeInterval = 15 * 60
     /// How long a stop waits when its cause needs the user, such as a full iCloud storage plan
@@ -111,9 +114,10 @@ actor SpineWorker {
         (updates, continuation) = AsyncStream.makeStream()
     }
 
-    /// Reads and publishes the designing model's availability and quota.
+    /// Reads and publishes the best model tier's availability and quota. A run in progress keeps
+    /// showing its own tier, which it publishes after each book.
     func refreshModelStatus() async {
-        snapshot.model = await analyzer.status()
+        if runModel == nil { snapshot.model = await analyzer.status() }
         snapshot.dropExpiredStop()
         publish()
     }
@@ -135,6 +139,7 @@ actor SpineWorker {
         }
         isRunning = true
         redesign = redesigning
+        runModel = nil
         snapshot.isRunning = true
         snapshot.error = nil
         snapshot.retryAfter = nil
@@ -151,6 +156,7 @@ actor SpineWorker {
         snapshot.currentBook = nil
         snapshot.lastRunAt = Date()
         redesign = nil
+        runModel = nil
         isRunning = false
         publish()
     }
@@ -203,9 +209,9 @@ actor SpineWorker {
             }
             // Checked only when there is work, so an idle library never reports the model.
             if await stopForModel(mode: mode) { return false }
-            if let model = snapshot.model {
+            if let model = runModel {
                 generationLog.info(
-                    "Run started with \(queue.count) books; covers read by \(String(describing: model.coverReader), privacy: .public); quota \(String(describing: model.quota), privacy: .public)"
+                    "Run started with \(queue.count) books; tier \(String(describing: model.tier), privacy: .public); covers read by \(String(describing: model.coverReader), privacy: .public); quota \(String(describing: model.quota), privacy: .public)"
                 )
             }
             let covers = mode == .foreground ? self.covers : backgroundCovers
@@ -222,7 +228,7 @@ actor SpineWorker {
                     let cover = try await covers.fetch(book.coverCandidates)
                     if let made = try await design(
                         for: book, cover: cover, workHash: workHash, context: context,
-                        forced: redesigned != nil)
+                        forced: redesigned != nil, mode: mode)
                     {
                         guard try await store.isStillCurrent(context, book: book) else {
                             return true
@@ -265,8 +271,11 @@ actor SpineWorker {
                         stop(Self.message(for: error), retryAfter: nil)
                         return false
                     }
-                    snapshot.error =
-                        "Some books could not be designed. Bookworms tries them again tomorrow."
+                    // A backup model's rejection, which needs the reader, stays in view.
+                    if snapshot.error == nil {
+                        snapshot.error =
+                            "Some books could not be designed. Bookworms tries them again tomorrow."
+                    }
                 }
                 if redesigned != nil { redesign = nil }
                 snapshot.queue -= 1
@@ -291,7 +300,7 @@ actor SpineWorker {
     /// `forced` always makes a model design.
     private func design(
         for book: CloudBook, cover: CoverImage, workHash: String, context: WorkContext,
-        forced: Bool
+        forced: Bool, mode: RunMode
     ) async throws -> (design: SpineDesignV1, isModelDesign: Bool)? {
         // Looked up even when forced, so `saveLook` knows whether the group has a look.
         let look = try await seriesLook(for: book, accountID: context.accountID)
@@ -327,10 +336,47 @@ actor SpineWorker {
             }
         }
         return (
-            try await analyzer.design(
-                book: book, accountID: context.accountID, workItemHash: workHash, cover: cover),
+            try await modelDesign(
+                for: book, cover: cover, workHash: workHash, accountID: context.accountID,
+                mode: mode),
             true
         )
+    }
+
+    /// Designs `book` with the run's model.
+    ///
+    /// A lasting rejection by the backup model, such as a revoked key or an unknown model name,
+    /// would repeat for every book, so the rest of the run designs with the best tier below the
+    /// backup, and the Spines tab shows the rejection. The next run tries the backup again. When
+    /// no tier below can design, the rejection stops the run.
+    private func modelDesign(
+        for book: CloudBook, cover: CoverImage, workHash: String, accountID: String,
+        mode: RunMode
+    ) async throws -> SpineDesignV1 {
+        guard let model = runModel else { throw CompanionError.modelUnavailable }
+        do {
+            return try await analyzer.design(
+                book: book, accountID: accountID, workItemHash: workHash, cover: cover,
+                using: model)
+        } catch CompanionError.providerRejected(let reason) where model.tier == .backup {
+            let next = await analyzer.status(for: .appleOnly)
+            guard Self.modelStop(next, mode: mode) == nil else {
+                throw CompanionError.providerRejected(reason)
+            }
+            runModel = next
+            snapshot.model = next
+            snapshot.error = Self.fallbackMessage(rejection: reason, next: next)
+            publish()
+            return try await analyzer.design(
+                book: book, accountID: accountID, workItemHash: workHash, cover: cover,
+                using: next)
+        }
+    }
+
+    /// The Spines tab's message when the backup model's `rejection` moves the run to `next`.
+    static func fallbackMessage(rejection: String, next: ModelStatus) -> String {
+        let sentence = rejection.hasSuffix(".") ? rejection : rejection + "."
+        return "\(sentence) \(next.designerName) designs the rest of this run."
     }
 
     /// Returns the series look `book` draws: its look group's saved look, unless its link keeps
@@ -410,9 +456,19 @@ actor SpineWorker {
         return source.flatMap { designs[$0] }
     }
 
-    /// Reads the model status and stops the run when it should send no more requests.
+    /// Reads the run's model status and stops the run when it should send no more requests.
+    ///
+    /// A run's first check picks its tier (`BookAnalyzer.status(for:)`). Later checks keep that
+    /// tier and watch its availability and quota, so the run never switches models on its own.
     private func stopForModel(mode: RunMode) async -> Bool {
-        let status = await analyzer.status()
+        var status: ModelStatus
+        if let runModel {
+            status = await analyzer.status(of: runModel.tier, designer: runModel.designer)
+            status.pccUnavailableReason = runModel.pccUnavailableReason
+        } else {
+            status = await analyzer.status()
+        }
+        runModel = status
         snapshot.model = status
         guard let reason = Self.modelStop(status, mode: mode) else { return false }
         stop(reason.message, retryAfter: reason.retryAfter)
@@ -427,7 +483,8 @@ actor SpineWorker {
 
     private func publish() { continuation.yield(.status(snapshot)) }
 
-    /// Returns why the model should get no more requests in this run, or `nil` to continue.
+    /// Returns why the run's model should get no more requests in this run, or `nil` to continue.
+    /// Only Private Cloud Compute has a daily quota.
     ///
     /// An unavailable model waits `lastingStopDelay`, so the charging task does not download the
     /// library in every charging window only to stop again.

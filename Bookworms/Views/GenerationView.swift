@@ -143,20 +143,22 @@ struct GenerationView: View {
         }
     }
 
-    /// The designing model: Private Cloud Compute with its daily limit, the on-device model in
-    /// `NO_PCC` builds, or the chosen third-party provider.
+    /// The run's model tier: Private Cloud Compute with its daily limit, or, when it isn't
+    /// available, the backup model, the on-device model, or local defaults.
     private var designModel: some View {
         let status = generation.status.model
-        // Until the first status arrives, the saved choice names the model.
-        let cost = status?.cost ?? SpineDesigner.current.provider.cost
+        // Until the first status arrives, the best tier this build could use names the model.
+        let tier = status?.tier ?? Self.expectedTier
         let note =
-            switch cost {
-            case .dailyLimit:
+            switch tier {
+            case .privateCloudCompute:
                 "Each new design uses one request from your daily limit. Books in a series often reuse a design without a request."
-            case .apiAccount:
-                "Each new design uses one request to this provider, billed to your API account. Books in a series often reuse a design without a request."
+            case .backup:
+                "Private Cloud Compute isn't available, so your backup model designs. Each new design uses one request to this provider, billed to your API account. Books in a series often reuse a design without a request."
             case .onDevice:
-                "Each new design runs on this \(ThisDevice.name), with no daily limit. Books in a series often reuse a design."
+                "Private Cloud Compute isn't available, so each new design runs on this \(ThisDevice.name), with no daily limit. Books in a series often reuse a design."
+            case .local:
+                "No spine design model is available on this \(ThisDevice.name)."
             }
         return Section {
             LabeledContent("Availability") {
@@ -164,7 +166,10 @@ struct GenerationView: View {
                     status.map { $0.isAvailable ? "Available" : $0.unavailableReason ?? "" }
                         ?? "Checking")
             }
-            if cost == .dailyLimit {
+            if let reason = status?.pccUnavailableReason {
+                LabeledContent("Private Cloud Compute") { Text(reason) }
+            }
+            if tier == .privateCloudCompute {
                 LabeledContent("Daily limit", value: status.map(Self.quotaText) ?? "Checking")
                 if let suggestion = status?.limitIncreaseSuggestion {
                     Button("Increase limit") { suggestion.show() }
@@ -180,10 +185,21 @@ struct GenerationView: View {
                 }
             #endif
         } header: {
-            Text(status?.designerName ?? SpineDesigner.current.provider.name)
+            Text(status?.designerName ?? Self.expectedTier.name(backup: .current))
         } footer: {
             Text(note)
         }
+    }
+
+    /// The best tier this build could use: Private Cloud Compute, or in `NO_PCC` builds the saved
+    /// backup model or the on-device model. It reads no Keychain item, so it doesn't know whether
+    /// the backup is set up.
+    private static var expectedTier: ModelTier {
+        #if NO_PCC
+            SpineDesigner.current.provider == .apple ? .onDevice : .backup
+        #else
+            .privateCloudCompute
+        #endif
     }
 
     /// The toolbar's account symbol, badged when Hardcover rejected the saved login.

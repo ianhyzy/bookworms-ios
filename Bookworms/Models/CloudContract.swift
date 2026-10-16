@@ -10,6 +10,9 @@ enum CloudContract {
     /// as the Mac companion's on-device `mac-foundation-models-v2` or this app's earlier
     /// `ios-pcc-v1`, show until a run regenerates them; colors the reader chose are kept.
     static let generatorVersion = "ios-pcc-v2"
+    /// The `SeriesLookV1.origin` of the Apple TV's own looks, which it makes without a model from
+    /// a cover's colors and the book's genres.
+    static let appleTVGeneratorVersion = "tvos-local-v1"
 
     static func designRecordName(accountID: String, bookID: Int) -> String {
         "spine-design-v1-" + digest("\(accountID):\(bookID)")
@@ -232,7 +235,8 @@ struct SpineDesignV1: Codable, Sendable, Hashable {
     /// `weight` when the family lacks that weight.
     var instanceWeight: Int? = nil
     /// How the design was made, in space-separated tokens such as "model:apple/on-device" or
-    /// "series-reuse:12". Private Cloud Compute's designs record no model token.
+    /// "series-reuse:12". The model token names the design's tier (`SpineDesignV1.tier`);
+    /// Private Cloud Compute's designs record none.
     var provenance: String? = nil
 
     func validate() throws {

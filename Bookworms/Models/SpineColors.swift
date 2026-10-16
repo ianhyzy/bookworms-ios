@@ -137,6 +137,21 @@ extension SpineDesignV1 {
         provenance?.split(separator: " ").contains("model:apple/on-device") == true
     }
 
+    /// The `provenance` token that names the model that made this design, such as
+    /// "model:apple/on-device", or `nil` for Private Cloud Compute, whose designs record none.
+    /// The design of an Apple TV look (`CloudContract.appleTVGeneratorVersion`) records none
+    /// either but comes from no model, so it reads as `ModelTier.localToken`.
+    var modelToken: String? {
+        if let token = provenance?.split(separator: " ").first(where: { $0.hasPrefix("model:") }) {
+            return String(token)
+        }
+        return generatorVersion == CloudContract.appleTVGeneratorVersion
+            ? ModelTier.localToken : nil
+    }
+
+    /// The model tier that made this design, from its `modelToken`.
+    var tier: ModelTier { ModelTier(modelToken: modelToken) }
+
     private func rebuilt(
         workItemHash: String, coverHash: String, colors: SpineColors, provenance: String?
     ) -> SpineDesignV1 {
