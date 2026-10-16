@@ -25,7 +25,7 @@ import UniformTypeIdentifiers
 struct ShareStudioView: View {
     @Environment(AppModel.self) private var model
     @State private var mode = ShareMode.mine
-    @State private var template = ShareTemplate.yearStack
+    @State private var template = ShareTemplate.topFive
     /// The reader chosen under **Compare with**: `nil`, or a reader no longer listed, is the
     /// best match.
     @State private var readerID: Int?
@@ -41,13 +41,11 @@ struct ShareStudioView: View {
     /// The years and months with finished books, kept with the library so the body need not
     /// recompute them.
     @State private var periods: (years: [Int], months: [TimeFrame]) = ([], [])
-    /// The rendered pages in order: one image, or a Year Stack's pages. Empty before the first
-    /// render, without books, or after a failed render.
-    @State private var images: [ShareImage] = []
-    /// The index of the page the preview shows.
-    @State private var shownPage = 0
-    /// The request that drew `images`. While it differs from the current request, newer images
-    /// are on their way, so the preview shows progress and sharing waits.
+    /// The rendered image: `nil` before the first render, without books, or after a failed
+    /// render.
+    @State private var image: ShareImage?
+    /// The request that drew `image`. While it differs from the current request, a newer image
+    /// is on its way, so the preview shows progress and sharing waits.
     @State private var renderedRequest: RenderRequest?
     /// Whether the last render failed, so no image is shown or shared.
     @State private var failed = false
@@ -66,7 +64,7 @@ struct ShareStudioView: View {
         #if DEBUG
             let defaults = UserDefaults.standard
             guard let raw = defaults.string(forKey: "BookwormsShareTemplate") else { return }
-            _template = State(initialValue: ShareTemplate(rawValue: raw) ?? .yearStack)
+            _template = State(initialValue: ShareTemplate(rawValue: raw) ?? .topFive)
             _mode = State(
                 initialValue: defaults.string(forKey: "BookwormsShareMode")
                     .flatMap(ShareMode.init(rawValue:))
@@ -139,12 +137,11 @@ struct ShareStudioView: View {
         if template == .pile { books = Array(books.prefix(PileSnapshotRenderer.maximumBooks)) }
         // Only the drawn books' designs, so a design saved for another book changes nothing.
         let designs = books.map { model.design(for: $0) }
-        // Spine Spectrum draws no lettering, and the pile renderer waits for its own fonts, so a
-        // newly loaded face changes neither; restarting a pile would only delay it. Other
-        // templates re-render only when a face for one of their own books arrives.
+        // The pile renderer waits for its own fonts, so a newly loaded face changes nothing;
+        // restarting a pile would only delay it. Other templates re-render only when a face for
+        // one of their own books arrives.
         let loadedFaces =
-            template == .spectrum || template == .pile
-            ? 0 : designs.count { model.fonts.face(for: $0) != nil }
+            template == .pile ? 0 : designs.count { model.fonts.face(for: $0) != nil }
         return RenderRequest(
             template: template, aspect: aspect, frame: frame, bookID: bookID,
             coverStyle: coverStyle, direction: direction, showsRatings: showsRatings, seed: seed,
@@ -180,8 +177,14 @@ struct ShareStudioView: View {
         .onChange(of: model.books, initial: true) { _, books in
             periods = TimeFrame.periods(in: books)
         }
-        .onChange(of: mode) { _, mode in
-            if !mode.templates.contains(template) { template = mode.templates[0] }
+        .onChange(of: mode) { oldMode, mode in
+            if mode == .mine, oldMode.templates.contains(template) {
+                // My reading opens on Top Five, even from Hot takes, which both modes offer. A
+                // detail's Share picks its template along with the mode, so that one stays.
+                template = .topFive
+            } else if !mode.templates.contains(template) {
+                template = mode == .mine ? .topFive : mode.templates[0]
+            }
         }
         .task(id: shownReader?.id) {
             // A reader outside the refresh's limit downloads once shown; a refresh in progress
@@ -218,16 +221,18 @@ struct ShareStudioView: View {
     }
 
     /// The preview above the settings in a compact width; in a regular width, such as on the
-    /// Mac, the preview fills the window beside a column of settings.
+    /// Mac, the preview fills the window beside a column of settings. The image's size and cover
+    /// style sit right below the preview, then **My reading** / **With friends**, which chooses
+    /// the templates listed below it.
     @ViewBuilder
     private func form(isPending: Bool, hasNoBooks: Bool) -> some View {
         Group {
             if sizeClass == .regular {
                 HStack(spacing: 0) {
                     VStack(spacing: 16) {
-                        modePicker.frame(maxWidth: 420)
                         preview(isPending: isPending, hasNoBooks: hasNoBooks, maxHeight: .infinity)
-                        sizePicker.frame(maxWidth: 420)
+                        imageRow.frame(maxWidth: 420)
+                        modePicker.frame(maxWidth: 420)
                     }
                     .padding(24)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -240,18 +245,26 @@ struct ShareStudioView: View {
             } else {
                 Form {
                     Section {
-                        // Comparisons are first-class: the choice sits above everything it changes.
-                        modePicker.listRowBackground(Color.clear)
                         preview(isPending: isPending, hasNoBooks: hasNoBooks, maxHeight: 380)
-                        sizePicker.listRowBackground(Color.clear)
+                        imageRow
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                        modePicker
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
                     }
                     settings(hasNoBooks: hasNoBooks)
                 }
+                // The preview starts just below the bar instead of a section's height lower.
+                .contentMargins(.top, 4, for: .scrollContent)
             }
         }
         .navigationTitle("Share")
+        // An inline title, as Library and Desk use, leaves the preview the height a large
+        // title would take.
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if !images.isEmpty {
+            if image != nil {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Share", systemImage: "square.and.arrow.up") {
                         Task { await share() }
@@ -269,11 +282,39 @@ struct ShareStudioView: View {
         .pickerStyle(.segmented)
     }
 
-    private var sizePicker: some View {
-        Picker("Size", selection: $aspect) {
-            ForEach(ShareAspect.allCases) { Text($0.title).tag($0) }
+    /// The image's size, and beside it whether covers draw as 3D books or flat. At accessibility
+    /// text sizes the button moves below the picker, which then keeps the row's whole width.
+    private var imageRow: some View {
+        let layout =
+            dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(spacing: 12)) : AnyLayout(HStackLayout(spacing: 12))
+        return layout {
+            Picker("Size", selection: $aspect) {
+                ForEach(ShareAspect.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            coverToggle
         }
-        .pickerStyle(.segmented)
+    }
+
+    /// Draws covers as 3D books when on and flat when off. It is disabled where the template
+    /// has one style: Desk's books are always 3D, and Year in Books on Square shows no covers.
+    private var coverToggle: some View {
+        let isOn = Binding {
+            template == .pile || coverStyle == .threeD
+        } set: {
+            coverStyle = $0 ? .threeD : .flat
+        }
+        // Year in Books draws covers only for its records, which appear when they fit.
+        let help =
+            template == .yearInBooks
+            ? "Draws the records' covers as 3D books when they fit" : "Draws covers as 3D books"
+        return Toggle("3D books", systemImage: "view.3d", isOn: isOn)
+            .toggleStyle(.button)
+            .labelStyle(.iconOnly)
+            .help(help)
+            .accessibilityHint(help)
+            .disabled(!template.hasCoverStyle || (template == .yearInBooks && aspect == .square))
     }
 
     @ViewBuilder
@@ -302,34 +343,18 @@ struct ShareStudioView: View {
         if template.isSingleBook {
             Section("Book") { bookRow }
         }
-        // Year in Books draws covers only for its records, which Square leaves out.
-        if template.hasCoverStyle && !(template == .yearInBooks && aspect == .square) {
-            Section {
-                Picker("Cover style", selection: $coverStyle) {
-                    ForEach(ShareCoverStyle.allCases) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.segmented)
-            } header: {
-                Text("Cover")
-            } footer: {
-                if template == .yearInBooks {
-                    Text("Applies to the records, which appear when they fit.")
-                }
-            }
-        }
         if template == .hotTakes || template.hasRatingOption || showsShuffle {
             Section("Options") { options(hasNoBooks: hasNoBooks) }
         }
     }
 
-    /// Opens the share sheet with every page, in order, so Instagram can post them as a
-    /// carousel or a run of stories, and Photos saves them all. Only the shared files carry the
-    /// credit.
+    /// Opens the share sheet with the image. Only the shared file carries the credit.
     private func share() async {
+        guard let image else { return }
         isPreparing = true
         defer { isPreparing = false }
         do {
-            var shared = try await SharedFiles.images(images)
+            var shared = try await SharedFiles.images([image])
             // A comparison invites its viewers to compare on Hardcover.
             if renderedRequest?.readerID != nil, let owner = model.social.owner {
                 shared.text = HardcoverInvite.shareText(owner.username)
@@ -343,8 +368,7 @@ struct ShareStudioView: View {
     #if DEBUG
         /// Renders each entry of `-BookwormsShareBatch`, such as
         /// `yearInBooks,story,month:2025-08,flat`, separated by spaces, and saves it as
-        /// `share-debug-<entry>.png`, with later pages as `share-debug-<entry>-2.png` and so on,
-        /// so one launch checks many options.
+        /// `share-debug-<entry>.png`, so one launch checks many options.
         private func renderBatch() async {
             guard
                 let batch = UserDefaults.standard.string(forKey: "BookwormsShareBatch"),
@@ -372,7 +396,7 @@ struct ShareStudioView: View {
                     try? await Task.sleep(for: .milliseconds(200))
                     settled = renderedRequest == request ? settled + 1 : 0
                 }
-                ShareDebug.write(images, name: "-" + entry.replacing(":", with: "_"))
+                ShareDebug.write(image, name: "-" + entry.replacing(":", with: "_"))
             }
         }
     #endif
@@ -380,7 +404,7 @@ struct ShareStudioView: View {
     @ViewBuilder
     private func preview(isPending: Bool, hasNoBooks: Bool, maxHeight: CGFloat) -> some View {
         // Messages sit outside the image's box, which would clip them at large text sizes.
-        if images.isEmpty && hasNoBooks && !model.isLoading {
+        if image == nil && hasNoBooks && !model.isLoading {
             let empty = emptyState
             ContentUnavailableView {
                 Label(empty.title, systemImage: template.systemImage)
@@ -398,7 +422,7 @@ struct ShareStudioView: View {
             }
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
-        } else if images.isEmpty && failed && !isPending {
+        } else if image == nil && failed && !isPending {
             ContentUnavailableView(
                 "Couldn't draw the image", systemImage: "exclamationmark.triangle",
                 // A pile's arrangement varies with the seed, so Shuffle can succeed where it
@@ -410,47 +434,30 @@ struct ShareStudioView: View {
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
         } else {
-            VStack(spacing: 10) {
-                box(isPending: isPending, maxHeight: maxHeight)
-                if images.count > 1 { pageDots }
-            }
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
+            box(isPending: isPending, maxHeight: maxHeight)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
         }
     }
 
-    /// The preview's image, or its pages, in a box shaped like the image, with the render's
-    /// progress over it.
+    /// The preview's image in a box shaped like it, with the render's progress over it.
     private func box(isPending: Bool, maxHeight: CGFloat) -> some View {
         let size = aspect.size
         return ZStack {
             // Sizes the box as the image does, before there is one.
             Color.clear.frame(idealWidth: size.width, idealHeight: size.height)
-            if images.count > 1 {
-                #if os(macOS)
-                    // The Mac has no page swipe; the page dots below choose the page.
-                    page(images[min(shownPage, images.count - 1)])
-                #else
-                    // Swipes through the pages. Their dots sit below the box, since the system's
-                    // would cover the Year Stack's bottom spine.
-                    TabView(selection: $shownPage) {
-                        ForEach(images.indices, id: \.self) { index in
-                            page(images[index]).tag(index)
-                        }
-                    }
-                    .tabViewStyle(.page(indexDisplayMode: .never))
-                    // A new page count starts again at page 1 (see `render(_:)`).
-                    .id(images.count)
-                #endif
-            } else if let image = images.first {
-                page(image)
+            if let image {
+                Image(uiImage: image.image)
+                    .resizable()
+                    .scaledToFit()
+                    .accessibilityLabel("\(image.name) preview")
             }
             if template == .pile && isPending {
                 // A pile takes seconds to load its covers and lay its books out.
                 ProgressView("Dropping books")
                     .padding()
                     .background(.regularMaterial, in: .rect(cornerRadius: 12))
-            } else if images.isEmpty {
+            } else if image == nil {
                 ProgressView()
             } else if isPending {
                 ProgressView()
@@ -463,40 +470,6 @@ struct ShareStudioView: View {
         .background(.quaternary)
         .clipShape(.rect(cornerRadius: 12))
         .frame(maxWidth: .infinity, maxHeight: maxHeight)
-    }
-
-    /// A dot for each page, the shown page's filled, which VoiceOver reads and adjusts as one
-    /// control.
-    private var pageDots: some View {
-        HStack(spacing: 8) {
-            ForEach(images.indices, id: \.self) { index in
-                Circle()
-                    .fill(index == shownPage ? .primary : .tertiary)
-                    .frame(width: 7, height: 7)
-                    #if os(macOS)
-                        .padding(4)
-                        .contentShape(.rect)
-                        .onTapGesture { shownPage = index }
-                    #endif
-            }
-        }
-        .accessibilityElement()
-        .accessibilityLabel("Page")
-        .accessibilityValue("\(shownPage + 1) of \(images.count)")
-        .accessibilityAdjustableAction { direction in
-            switch direction {
-            case .increment: shownPage = min(shownPage + 1, images.count - 1)
-            case .decrement: shownPage = max(shownPage - 1, 0)
-            @unknown default: break
-            }
-        }
-    }
-
-    private func page(_ image: ShareImage) -> some View {
-        Image(uiImage: image.image)
-            .resizable()
-            .scaledToFit()
-            .accessibilityLabel("\(image.name) preview")
     }
 
     /// Whether this iPhone's Hardcover sign-in provides the library, which preview mode ignores.
@@ -625,8 +598,11 @@ struct ShareStudioView: View {
     }
 
     private var templateGrid: some View {
-        LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 6
+        // Rows of three, or of four where three would leave a template alone on the last row.
+        let columns = mode.templates.count % 3 == 1 ? 4 : 3
+        return LazyVGrid(
+            columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: columns),
+            spacing: 6
         ) {
             ForEach(mode.templates) { option in
                 let isSelected = option == template
@@ -662,8 +638,9 @@ struct ShareStudioView: View {
 
     // MARK: - Time frame
 
+    /// The kinds of time frame, shortest first.
     private enum FrameKind: CaseIterable, Identifiable {
-        case year, month, lifetime
+        case month, year, lifetime
 
         var id: Self { self }
 
@@ -783,12 +760,11 @@ struct ShareStudioView: View {
         }
     }
 
-    /// Whether the seed changes the image. It varies spine stacks, the Top Five fan, a pile's
-    /// arrangement, and the angle of 3D books; flat single covers and Spine Spectrum ignore it.
+    /// Whether the seed changes the image. It varies Year in Books' spine stacks, the Top Five
+    /// fan, a pile's arrangement, and the angle of 3D books; flat single covers ignore it.
     private var showsShuffle: Bool {
         switch template {
-        case .yearStack, .yearInBooks, .topFive, .pile: true
-        case .spectrum: false
+        case .yearInBooks, .topFive, .pile: true
         case .hotTakes, .justFinished, .review, .currentlyReading, .tasteMatch, .bookSwap:
             coverStyle == .threeD
         }
@@ -823,8 +799,8 @@ struct ShareStudioView: View {
             input.social = ShareSocial(owner: owner, reader: reader.profile, match: match)
             input.social?.avatars = await loadAvatars([owner, reader.profile])
         }
-        // The pages in order. Empty when there are no books or a page could not be drawn.
-        var rendered: [UIImage] = []
+        // `nil` when there are no books or the image could not be drawn.
+        var rendered: UIImage?
         if request.isEmpty {
             // Nothing to draw; the preview says why.
         } else if template == .pile {
@@ -834,22 +810,18 @@ struct ShareStudioView: View {
                     seed: request.seed, model: model)
                 // A render cancelled after its last check still returns; a newer one is coming.
                 try Task.checkCancellation()
-                rendered = [pile]
+                rendered = pile
             } catch is CancellationError {
                 return
             } catch {}
         } else {
             // The books drawn with covers. Year in Books draws covers only for its records.
-            let covered: [CloudBook] =
-                switch template {
-                case .yearStack, .spectrum, .pile: []
-                case .yearInBooks: YearInBooks(frame: request.frame, library: books).records
-                default: books
-                }
-            // Spines carry lettering on Year Stack and on 3D books, so their fonts load first.
-            // This waits for every face, including ones another feature is already downloading.
-            let lettered =
-                template == .yearStack ? books : request.coverStyle == .threeD ? covered : []
+            let covered =
+                template == .yearInBooks
+                ? YearInBooks(frame: request.frame, library: books).records : books
+            // The spines of 3D books carry lettering, so their fonts load first. This waits for
+            // every face, including ones another feature is already downloading.
+            let lettered = request.coverStyle == .threeD ? covered : []
             await model.fonts.load(lettered.compactMap { model.design(for: $0) })
             let coverSize = template.isSingleBook ? 1200 : template == .topFive ? 900 : 700
             input.covers = await loadCovers(covered, maximumPixelSize: coverSize)
@@ -857,35 +829,17 @@ struct ShareStudioView: View {
             input.looks = Dictionary(books.map { ($0.id, model.look(for: $0)) }) { first, _ in
                 first
             }
-            let count = input.pageCount
-            for page in 0..<count {
-                // Each page draws synchronously, so the app stays responsive between pages.
-                if page > 0 { await Task.yield() }
-                guard !Task.isCancelled else { return }
-                input.page = page
-                guard let image = input.render() else {
-                    rendered = []
-                    break
-                }
-                rendered.append(image)
-            }
+            rendered = input.render()
         }
-        // Without new images, the old ones must not stay to be shared.
+        // Without a new image, the old one must not stay to be shared.
         var name = template.title
         if template.usesTimeFrame && !template.isSingleBook { name += " " + input.period }
         if let reader = input.social?.reader { name += " with \(reader.shortName)" }
-        // So the preview's selection never points past the last page.
-        if rendered.count != images.count { shownPage = 0 }
-        images = rendered.enumerated()
-            .map { page, image in
-                ShareImage(
-                    image: image,
-                    name: rendered.count > 1 ? "\(name) (\(page + 1) of \(rendered.count))" : name)
-            }
-        failed = !request.isEmpty && rendered.isEmpty
+        image = rendered.map { ShareImage(image: $0, name: name) }
+        failed = !request.isEmpty && rendered == nil
         renderedRequest = request
         #if DEBUG
-            ShareDebug.write(images)
+            ShareDebug.write(image)
         #endif
     }
 
@@ -1012,31 +966,28 @@ private struct ShareBookPicker: View {
     /// Simulator hooks, since a script cannot tap the Share tab.
     ///
     /// Launching with `-BookwormsShareTemplate <name>` opens the Share tab with that template,
-    /// where the name is a `ShareTemplate` raw value such as `yearStack`, `hotTakes`, or `pile`.
+    /// where the name is a `ShareTemplate` raw value such as `topFive`, `hotTakes`, or `pile`.
     /// `-BookwormsShareAspect <story|portrait|square>`,
     /// `-BookwormsShareFrame <year:2025|month:2025-08|lifetime>`, `-BookwormsShareBook <id>`,
     /// `-BookwormsShareCover <threeD|flat>`, `-BookwormsShareDirection <lovedMore|lovedLess>`,
     /// and `-BookwormsShareSeed <n>` set its options, and `-BookwormsShareSamples <n>` adds
     /// fictional reviews and current reads (`samples(_:)`). Each render is then written, with
-    /// the credit that sharing adds, to
-    /// `Library/Caches/Bookworms/share-debug.png`; `-BookwormsShareBatch` renders a list of
-    /// option sets in one launch (`ShareStudioView.renderBatch()`). A Year Stack's later pages go
-    /// to `share-debug-2.png` and so on.
+    /// the credit that sharing adds, to `Library/Caches/Bookworms/share-debug.png`;
+    /// `-BookwormsShareBatch` renders a list of option sets in one launch
+    /// (`ShareStudioView.renderBatch()`).
     enum ShareDebug {
-        /// Writes the first page as `share-debug<name>.png` and later pages as
-        /// `share-debug<name>-2.png` and so on, with the credit, as sharing exports them.
-        @MainActor static func write(_ images: [ShareImage], name: String = "") {
-            guard UserDefaults.standard.string(forKey: "BookwormsShareTemplate") != nil else {
-                return
-            }
-            for (index, image) in images.enumerated() {
-                let page = index == 0 ? "" : "-\(index + 1)"
-                let url = URL.cachesDirectory.appending(
-                    path: "Bookworms/share-debug\(name)\(page).png")
-                try? FileManager.default.createDirectory(
-                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try? image.image.withShareCredit()?.pngData()?.write(to: url, options: .atomic)
-            }
+        /// Writes `image` as `share-debug<name>.png`, with the credit, as sharing exports it, in
+        /// a launch with `-BookwormsShareTemplate` or `-BookwormsShareBatch`.
+        @MainActor static func write(_ image: ShareImage?, name: String = "") {
+            let defaults = UserDefaults.standard
+            guard let image,
+                defaults.string(forKey: "BookwormsShareTemplate") != nil
+                    || defaults.string(forKey: "BookwormsShareBatch") != nil
+            else { return }
+            let url = URL.cachesDirectory.appending(path: "Bookworms/share-debug\(name).png")
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? image.image.withShareCredit()?.pngData()?.write(to: url, options: .atomic)
         }
 
         @MainActor private static var switchesTabs = false

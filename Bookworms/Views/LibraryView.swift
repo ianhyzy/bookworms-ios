@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// The books you have read, as a stack of books or a bookcase of spines (`SpineCarousel`), with
-/// a caption for the centered book.
+/// a caption for the centered book and, on the iPhone, a footer that names the library and holds
+/// its options (`LibraryFooter`).
 ///
 /// It shows the library snapshot that `AppModel` holds, within the time that **Time** chooses
 /// (`LibraryTime`); filtering and sorting happen here when the snapshot or the options change,
@@ -22,21 +23,19 @@ struct LibraryView: View {
     /// The book that Stack or Shelf pulled out to show its details over the shelf.
     @State private var pullOut = ShelfPullOut()
     @State private var showsAccount = false
+    /// How far the status bar and the Dynamic Island reach down from the screen's top edge.
+    @State private var statusBar: CGFloat = 0
     @Namespace private var namespace
 
     var body: some View {
         let read = readBooks
         let books = model.library == nil ? [] : shownBooks(of: read)
+        let options = options(read: read, books: books)
         NavigationStack(path: $path) {
-            content(read: read, books: books)
+            content(read: read, books: books, options: options)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background { ShelfPalette.wall.ignoresSafeArea() }
-                .modifier(
-                    LibraryBar(
-                        pullOut: pullOut, mode: $mode, sort: $sort, time: $time,
-                        years: LibraryTime.years(in: read),
-                        count: read.isEmpty ? nil : books.count)
-                )
+                .modifier(LibraryBar(pullOut: pullOut, options: options))
                 .navigationDestination(for: Int.self) { id in
                     PushedBookDetail(id: id)
                         #if os(iOS)
@@ -44,6 +43,14 @@ struct LibraryView: View {
                         #endif
                 }
         }
+        #if os(iOS)
+            // The stack's own safe area, outside its bar, so the bar's showing never changes it.
+            .onGeometryChange(for: CGFloat.self) {
+                $0.safeAreaInsets.top
+            } action: {
+                statusBar = $0
+            }
+        #endif
         // The walnut backdrop is dark in both appearances, so text and bars use dark styles.
         .environment(\.colorScheme, .dark)
         #if os(iOS)
@@ -62,7 +69,7 @@ struct LibraryView: View {
         // return to a spine that is still where it left it.
         .onChange(of: mode) { pullOut.close() }
         // In Stack, the stack centers a pulled book behind its details, and again as Back starts,
-        // so the book always flies back to the middle of the screen, clear of the stack's faded
+        // so the book always flies back to the middle of the screen, clear of the stack's
         // ends, even if the stack moved while the details showed.
         .onChange(of: pullOut.showsText) { centerPulledBook() }
         .onChange(of: pullOut.isReturning) { centerPulledBook() }
@@ -71,55 +78,89 @@ struct LibraryView: View {
         #endif
     }
 
-    @ViewBuilder private func content(read: [CloudBook], books: [CloudBook]) -> some View {
-        if model.library == nil {
-            NoLibraryView(showsAccount: $showsAccount)
-        } else if read.isEmpty {
-            NoBooksYetView()
-        } else if books.isEmpty {
-            // Scrolls so that at accessibility sizes the actions stay above the tab bar.
-            ScrollView {
-                ContentUnavailableView {
-                    Label("No books in \(time.title)", systemImage: "calendar")
-                } description: {
-                    Text("Books you finish in this time appear here.")
-                } actions: {
-                    if time != .allTime {
-                        Button("Show All Time") { time = .allTime }
-                    }
-                }
-            }
-            .defaultScrollAnchor(.center, for: .alignment)
-        } else {
+    /// **View options** and the library's status, or `nil` without a library or read books,
+    /// where Library offers neither.
+    private func options(read: [CloudBook], books: [CloudBook]) -> LibraryOptions? {
+        guard model.library != nil, !read.isEmpty else { return nil }
+        return LibraryOptions(
+            mode: $mode, sort: $sort, time: $time, years: LibraryTime.years(in: read),
+            count: books.count)
+    }
+
+    @ViewBuilder private func content(
+        read: [CloudBook], books: [CloudBook], options: LibraryOptions?
+    ) -> some View {
+        if let options {
             VStack(spacing: 0) {
-                SpineCarousel(
-                    books: books, mode: mode, centeredID: $centeredID, namespace: namespace,
-                    pullOut: pullOut
-                ) { book in
-                    if reduceMotion {
-                        path.append(book.id)
-                    } else if mode == .stack, centeredID != book.id {
-                        // The stack glides the book to the middle of the screen first, as it
-                        // centers the book for the return (`centerPulledBook`), so the book
-                        // slides out in full view, clear of the stack's faded ends, where the
-                        // stack's faded copy would otherwise hand off to the flight's opaque
-                        // one.
-                        centeredID = book.id
-                        Task {
-                            try? await Task.sleep(for: .seconds(SpineCarousel.glide))
-                            if mode == .stack { pullOut.pull(book, upright: false) }
-                        }
-                    } else {
-                        pullOut.pull(book, upright: mode == .shelf)
-                    }
+                if books.isEmpty {
+                    noBooksInTime
+                } else {
+                    carousel(books)
                 }
-                ShelfCaption(books: books, centeredID: $centeredID)
-                    // Larger sizes overflow the caption's fixed height; the book's details
-                    // show the same record at any size.
-                    .dynamicTypeSize(...DynamicTypeSize.accessibility3)
+                #if os(iOS)
+                    LibraryFooter(options: options, pullOut: pullOut)
+                #endif
             }
             .modifier(ShelfPullOutStage(pullOut: pullOut))
+        } else if model.library == nil {
+            NoLibraryView(showsAccount: $showsAccount)
+        } else {
+            NoBooksYetView()
         }
+    }
+
+    /// Says that the time has no books, and offers **Show All Time**.
+    private var noBooksInTime: some View {
+        // Scrolls so that at accessibility sizes the actions stay above the footer.
+        ScrollView {
+            ContentUnavailableView {
+                Label("No books in \(time.title)", systemImage: "calendar")
+            } description: {
+                Text("Books you finish in this time appear here.")
+            } actions: {
+                if time != .allTime {
+                    Button("Show All Time") { time = .allTime }
+                }
+            }
+        }
+        .defaultScrollAnchor(.center, for: .alignment)
+    }
+
+    /// The carousel and its caption.
+    @ViewBuilder private func carousel(_ books: [CloudBook]) -> some View {
+        SpineCarousel(
+            books: books, mode: mode, centeredID: $centeredID, namespace: namespace,
+            pullOut: pullOut, statusBar: statusBar
+        ) { book in
+            if reduceMotion {
+                path.append(book.id)
+            } else if mode == .stack, centeredID != book.id {
+                // The stack glides the book to the middle of the screen first, as it
+                // centers the book for the return (`centerPulledBook`), so the book
+                // slides out in full view, clear of the stack's ends, where the
+                // stack's faded copy would otherwise hand off to the flight's opaque
+                // one.
+                centeredID = book.id
+                Task {
+                    try? await Task.sleep(for: .seconds(SpineCarousel.glide))
+                    if mode == .stack { pullOut.pull(book, upright: false) }
+                }
+            } else {
+                pullOut.pull(book, upright: mode == .shelf)
+            }
+        }
+        .modifier(ShelfPullOutWait(pullOut: pullOut))
+        #if os(iOS)
+            // The books run up under the status bar and the Dynamic Island to the
+            // screen's top edge, where the bar shows only over a book's details. Its
+            // frame stays the same whether the bar shows or not, so a pulled book's
+            // place never moves.
+            .ignoresSafeArea(.container, edges: .top)
+        #endif
+        ShelfCaption(books: books, centeredID: $centeredID)
+            // Larger sizes overflow the caption's fixed height; the book's details
+            // show the same record at any size.
+            .dynamicTypeSize(...DynamicTypeSize.accessibility3)
     }
 
     private func centerPulledBook() {
@@ -181,71 +222,158 @@ struct LibraryView: View {
     #endif
 }
 
-/// Library's title, subtitle, and **View options** menu, or, while a book's details show over
-/// the shelf, **Back** and the book's **Share**.
+/// Library's bar: its title, or, while a book's details show over the shelf, **Back** and the
+/// book's **Share**.
 ///
-/// The menu follows Photos: **View as**, **3D Books** for Stack, **Time**, **Sort by**, and
-/// **Remove Filters** while the time differs from its default. Its symbol fills meanwhile, as Mail's filter button does.
+/// On the iPhone, the bar hides while `LibraryFooter` names the library under the books, which
+/// run up to the screen's top edge, and shows for a book's details and for the screens without
+/// a library or read books. A time without books keeps the footer, for **View options**. On the
+/// Mac, the toolbar keeps the title, with the time and the number of books as its subtitle and
+/// **View options** at its trailing end.
 ///
 /// A modifier of its own, so a book's pull-out and return update only the bar, not the
 /// library's body, which sorts the library.
 private struct LibraryBar: ViewModifier {
     let pullOut: ShelfPullOut
+    /// **View options** and the status, or `nil` without a library or read books.
+    let options: LibraryOptions?
+
+    @Environment(AppModel.self) private var model
+
+    func body(content: Content) -> some View {
+        content
+            // Details over the shelf show no title, as pushed details do. Hidden, the title
+            // still names Library for the back button of details that push.
+            .navigationTitle(pullOut.showsDetails ? "" : "Library")
+            #if os(macOS)
+                .navigationSubtitle(pullOut.showsDetails ? "" : options?.status ?? "")
+            #endif
+            .navigationBarTitleDisplayMode(.inline)
+            #if os(iOS)
+                .toolbarVisibility(
+                    options != nil && !pullOut.showsDetails ? .hidden : .automatic,
+                    for: .navigationBar)
+            #endif
+            .toolbar {
+                if let book = pullOut.book, pullOut.showsDetails {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Back", systemImage: "chevron.backward") { pullOut.putBack() }
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Share", systemImage: "square.and.arrow.up") {
+                            pullOut.keepsForShare = true
+                            model.share(book)
+                        }
+                    }
+                }
+                #if os(macOS)
+                    if let options, !pullOut.showsDetails {
+                        ToolbarItem(placement: .primaryAction) { options }
+                    }
+                #endif
+            }
+    }
+}
+
+/// On the iPhone, the library's name and its status, such as "Last 12 Months · 39 books",
+/// centered under the caption, with **View options** as a round glass button at the trailing
+/// end, as Mail shows a mailbox's status beside its filter button.
+///
+/// It ignores touches while a book's details show, and takes them again as the book flies back;
+/// a choice from the menu then puts the book back at once.
+private struct LibraryFooter: View {
+    let options: LibraryOptions
+    let pullOut: ShelfPullOut
+
+    var body: some View {
+        HStack(spacing: 8) {
+            // Balances the menu, so the text centers on the screen.
+            button.hidden().accessibilityHidden(true)
+            // Smaller than the caption, so the footer reads as the screen's status, not as
+            // more about the centered book.
+            VStack(spacing: 1) {
+                Text("Library")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(ShelfPalette.paper)
+                // Breaks between the time and the count when the status does not fit on one line.
+                ViewThatFits(in: .horizontal) {
+                    Text(options.status)
+                    VStack(spacing: 1) {
+                        Text(options.time.title)
+                        Text(options.books)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+            }
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .accessibilityElement(children: .combine)
+            // Names the screen for VoiceOver's headings, as the hidden bar's title did.
+            .accessibilityAddTraits(.isHeader)
+            button
+        }
+        .padding(.horizontal, 16)
+        // A little more space above than between the caption's lines, so the footer reads as
+        // the screen's own line, under the book's.
+        .padding(.top, 6)
+        .padding(.bottom, 8)
+        // Larger sizes would take lines that the books need.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
+        .allowsHitTesting(!pullOut.showsDetails)
+    }
+
+    private var button: some View {
+        options
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .controlSize(.large)
+    }
+}
+
+/// The **View options** menu, which follows Photos: **View as**, **3D Books** for Stack,
+/// **Time**, **Sort by**, and **Remove Filters** while the time differs from its default. Its
+/// symbol fills meanwhile, as Mail's filter button does, and VoiceOver reads its value as
+/// "Filtered".
+private struct LibraryOptions: View {
     @Binding var mode: ShelfMode
     @Binding var sort: ShelfSort
     @Binding var time: LibraryTime
     /// The years with read books, newest first, for **Year**.
     let years: [Int]
-    /// The books shown, for the subtitle, or `nil` without read books.
-    let count: Int?
+    /// The books shown.
+    let count: Int
 
-    @Environment(AppModel.self) private var model
     /// How **Stack** draws its books, which `SpineCarousel` reads.
     @AppStorage("BookwormsStackStyle") private var stackStyle = StackStyle.flat
+
+    @ScaledMetric(relativeTo: .body) private var icon: CGFloat = 17
+
+    /// The time and the number of books shown, such as "Last 12 Months · 39 books".
+    var status: String { "\(time.title) · \(books)" }
+    /// The number of books shown, such as "39 books".
+    var books: String { FrameChip.books(count, of: count) }
 
     /// Whether the time differs from its default.
     private var isFiltered: Bool { time != .last12Months }
 
-    func body(content: Content) -> some View {
-        content
-            // Details over the shelf show no title, as pushed details do.
-            .navigationTitle(pullOut.showsDetails ? "" : "Library")
-            .navigationSubtitle(subtitle)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { toolbar }
-    }
-
-    /// The time and the number of books shown, such as "Last 12 Months · 39 books".
-    private var subtitle: String {
-        guard let count, !pullOut.showsDetails else { return "" }
-        return "\(time.title) · \(FrameChip.books(count, of: count))"
-    }
-
-    @ToolbarContentBuilder private var toolbar: some ToolbarContent {
-        if let book = pullOut.book, pullOut.showsDetails {
-            ToolbarItem(placement: .topBarLeading) {
-                Button("Back", systemImage: "chevron.backward") { pullOut.putBack() }
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button("Share", systemImage: "square.and.arrow.up") {
-                    pullOut.keepsForShare = true
-                    model.share(book)
-                }
-            }
-        } else {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    menu
-                } label: {
-                    Label(
-                        "View options",
-                        systemImage: isFiltered
-                            ? "line.3.horizontal.decrease.circle.fill"
-                            : "line.3.horizontal.decrease")
-                }
-                .accessibilityValue(isFiltered ? "Filtered" : "")
-            }
+    var body: some View {
+        Menu {
+            menu
+        } label: {
+            Label(
+                "View options",
+                systemImage: isFiltered
+                    ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease"
+            )
+            #if os(iOS)
+                .labelStyle(.iconOnly)
+                // The filled symbol is larger, so a fixed frame keeps the glass button's size.
+                .frame(width: icon, height: icon)
+            #endif
         }
+        .accessibilityValue(isFiltered ? "Filtered" : "")
     }
 
     @ViewBuilder private var menu: some View {
@@ -312,10 +440,13 @@ struct PushedBookDetail: View {
 ///
 /// Reads `centeredID` itself, so a new centered book updates only this caption. The caption
 /// keeps a fixed, Dynamic Type–scaled height so the carousel above it never resizes mid-scroll.
+/// Its text sits at the bottom, on the footer, so the two read as one block under the books; the
+/// height fits a two-line title over a finish date and rating, and a one-line title leaves the
+/// space above it.
 private struct ShelfCaption: View {
     let books: [CloudBook]
     @Binding var centeredID: Int?
-    @ScaledMetric(relativeTo: .title3) private var height: CGFloat = 150
+    @ScaledMetric(relativeTo: .title3) private var height: CGFloat = 120
     @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
@@ -364,7 +495,7 @@ private struct ShelfCaption: View {
         .foregroundStyle(ShelfPalette.paper)
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity)
-        .frame(height: height, alignment: .top)
+        .frame(height: height, alignment: .bottom)
         .accessibilityElement(children: .combine)
     }
 }
