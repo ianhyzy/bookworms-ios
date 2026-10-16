@@ -111,7 +111,7 @@ actor SpineWorker {
         (updates, continuation) = AsyncStream.makeStream()
     }
 
-    /// Reads and publishes Private Cloud Compute's availability and quota.
+    /// Reads and publishes the designing model's availability and quota.
     func refreshModelStatus() async {
         snapshot.model = await analyzer.status()
         snapshot.dropExpiredStop()

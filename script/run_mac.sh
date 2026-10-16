@@ -8,9 +8,9 @@
 # certificate and the existing "Mac Team Provisioning Profile: gay.ian.Bookworms.Mac", which
 # grants the shared iCloud container and push. Until Apple assigns the managed Private Cloud
 # Compute capability, no profile can include it, so this build signs with
-# config/NoPCC-macOS.entitlements and compiles with NO_PCC: Apple's model reports itself
-# unavailable, and a third-party model chosen in Settings designs spines. A development-signed
-# build uses the CloudKit Development environment, as the other apps' development builds do.
+# config/NoPCC-macOS.entitlements and compiles with NO_PCC: Apple's on-device model designs
+# spines unless a third-party model is chosen in Settings. A development-signed build uses the
+# CloudKit Development environment, as the other apps' development builds do.
 set -euo pipefail
 
 PREVIEW=0

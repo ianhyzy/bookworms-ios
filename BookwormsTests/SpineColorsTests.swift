@@ -90,6 +90,17 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertEqual(action(design(generator: "ios-pcc-v0")), .redesign)
         XCTAssertEqual(action(design(), work: otherWork), .redesign)
         XCTAssertEqual(action(design(), cover: otherCover), .redesign)
+        var onDevice = design()
+        onDevice.provenance = "model:apple/on-device"
+        XCTAssertTrue(onDevice.isOnDeviceDesign)
+        #if NO_PCC
+            XCTAssertEqual(action(onDevice), .keep, "A test build keeps its own on-device design")
+        #else
+            XCTAssertEqual(
+                action(onDevice), .redesign,
+                "A Private Cloud Compute build redesigns an on-device design")
+        #endif
+        XCTAssertEqual(action(onDevice.recolored(reader)), .keep, "Reader colors still win")
 
         // Reader colors outlast a generator change, and move to the new work-item hash.
         XCTAssertEqual(action(edited), .keep)

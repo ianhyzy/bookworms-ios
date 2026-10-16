@@ -250,6 +250,10 @@ final class GenerationTests: XCTestCase {
                 .retryAfter, dayLater)
         XCTAssertNil(
             SpineWorker.modelStop(status(reader: .onDevice, quota: .belowLimit), mode: .foreground))
+        // NO_PCC builds design from the title measurements when the on-device model lacks vision.
+        XCTAssertNil(
+            SpineWorker.modelStop(
+                status(reader: .measurementsOnly, quota: .belowLimit), mode: .background))
     }
 
     func testTitleNoFamilyCoversUsesTheStyleSystemTypeface() throws {

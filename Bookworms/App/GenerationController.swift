@@ -142,7 +142,7 @@ final class GenerationController {
         }
     }
 
-    /// Reads Private Cloud Compute's availability and quota for the Spines tab.
+    /// Reads the designing model's availability and quota for the Spines tab.
     func refreshModelStatus() async {
         await worker.refreshModelStatus()
     }
