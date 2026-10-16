@@ -33,13 +33,20 @@ final class GenerationTests: XCTestCase {
     }
 
     func testProviderErrorsStopTheRunWhenEveryBookWouldFail() {
-        func failure(_ status: Int) -> CompanionError? {
+        func failure(_ status: Int, code: String? = nil) -> CompanionError? {
             BookAnalyzer.modelFailure(
-                ProviderError(provider: .anthropic, status: status, retryAfter: nil, message: "x"))
+                ProviderError(
+                    provider: .openAI, status: status, retryAfter: nil, message: "x", code: code))
         }
         guard case .providerRejected = failure(401), case .providerRejected = failure(404),
-            case .modelBusy = failure(429), case .modelBusy = failure(503)
+            case .providerRejected = failure(400), case .modelBusy = failure(429),
+            case .modelBusy = failure(429, code: "rate_limit_exceeded"),
+            case .modelBusy = failure(503)
         else { return XCTFail("Provider errors map to the wrong dispositions") }
+        // An account without credit fails every book, so the run moves to the next tier.
+        guard case .providerRejected = failure(402),
+            case .providerRejected = failure(429, code: "insufficient_quota")
+        else { return XCTFail("An account without credit should move the run to the next tier") }
         guard
             case .invalidDesign = BookAnalyzer.modelFailure(
                 ProviderError(provider: .openAI, status: nil, retryAfter: nil, message: "x"))
@@ -238,16 +245,12 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(
             SpineWorker.modelStop(status(quota: .limitReached), mode: .foreground)?.retryAfter,
             now)
-        // An unavailable model waits a day instead of downloading the library every charge.
-        let dayLater = now.addingTimeInterval(SpineWorker.lastingStopDelay)
-        XCTAssertEqual(
-            SpineWorker.modelStop(
-                status(available: false, quota: .belowLimit), mode: .background, now: now)?
-                .retryAfter, dayLater)
-        XCTAssertEqual(
-            SpineWorker.modelStop(
-                status(reader: .none, quota: .belowLimit), mode: .foreground, now: now)?
-                .retryAfter, dayLater)
+        // A tier lost during a run stops it with no retry date, so the next run, which picks
+        // the best tier again, starts when it is next scheduled.
+        let lost = SpineWorker.modelStop(
+            status(available: false, quota: .belowLimit), mode: .background)
+        XCTAssertEqual(lost?.message, "Unavailable")
+        XCTAssertNil(lost?.retryAfter)
         XCTAssertNil(
             SpineWorker.modelStop(status(reader: .onDevice, quota: .belowLimit), mode: .foreground))
         // The on-device tier designs from the title measurements when its model lacks vision.
@@ -281,6 +284,17 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(backup.tier, .backup)
         XCTAssertEqual(backup.pccUnavailableReason, "privateCloudCompute unavailable")
 
+        // Private Cloud Compute without image input reports itself unavailable, so the next
+        // tier designs and records its own tier.
+        var blind = status(.privateCloudCompute, available: false)
+        blind.unavailableReason = "Private Cloud Compute can't read covers on this iPhone."
+        let sighted = BookAnalyzer.bestStatus(
+            pcc: blind, backup: status(.backup, available: false),
+            onDevice: status(.onDevice, available: true))
+        XCTAssertEqual(sighted.tier, .onDevice)
+        XCTAssertEqual(sighted.provenance, ModelTier.onDeviceToken)
+        XCTAssertEqual(sighted.pccUnavailableReason, blind.unavailableReason)
+
         // A backup that isn't set up on this device, such as one without a key, is skipped.
         let onDevice = BookAnalyzer.bestStatus(
             pcc: status(.privateCloudCompute, available: false),
@@ -300,10 +314,10 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(local.pccUnavailableReason, "privateCloudCompute unavailable")
         XCTAssertEqual(local.onDeviceUnavailableReason, "onDevice unavailable")
         XCTAssertEqual(local.designerName, "Local defaults")
-        XCTAssertNil(SpineWorker.modelStop(local, mode: .background, now: now))
+        XCTAssertNil(SpineWorker.modelStop(local, mode: .background))
         let watched = await BookAnalyzer().status(of: .local, designer: .appleOnly)
         XCTAssertTrue(watched.isAvailable, "Local defaults never stop a run")
-        XCTAssertNil(SpineWorker.modelStop(watched, mode: .background, now: now))
+        XCTAssertNil(SpineWorker.modelStop(watched, mode: .background))
 
         XCTAssertNotNil(SpineDesigner.appleOnly.problem, "No backup model is never set up")
     }

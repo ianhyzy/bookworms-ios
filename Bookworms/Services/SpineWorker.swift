@@ -97,8 +97,8 @@ actor SpineWorker {
     private var runModel: ModelStatus?
 
     static let busyRetryDelay: TimeInterval = 15 * 60
-    /// How long a stop waits when its cause needs the user, such as a full iCloud storage plan
-    /// or Apple Intelligence turned off. **Generate now** does not wait.
+    /// How long a stop waits when its cause needs the user, such as a full iCloud storage plan.
+    /// **Generate now** does not wait.
     static let lastingStopDelay: TimeInterval = 24 * 60 * 60
     /// URL error codes that stop the run with no retry date: no usable network, or a cancelled
     /// request.
@@ -516,7 +516,8 @@ actor SpineWorker {
     /// Reads the run's model status and stops the run when it should send no more requests.
     ///
     /// A run's first check picks its tier (`BookAnalyzer.status(for:)`). Later checks keep that
-    /// tier and watch its availability and quota, so the run never switches models on its own.
+    /// tier and watch its availability and quota. Only the backup model's lasting rejection
+    /// moves a run to a lower tier (`newDesign`); a tier that becomes unavailable stops the run.
     private func stopForModel(mode: RunMode) async -> Bool {
         var status: ModelStatus
         if let runModel {
@@ -544,21 +545,16 @@ actor SpineWorker {
     /// Returns why the run's model should get no more requests in this run, or `nil` to continue.
     /// Only Private Cloud Compute has a daily quota.
     ///
-    /// An unavailable model waits `lastingStopDelay`, so the charging task does not download the
-    /// library in every charging window only to stop again.
-    static func modelStop(_ status: ModelStatus, mode: RunMode, now: Date = Date()) -> (
+    /// A run's tier becomes unavailable only during the run, because a run starts with the best
+    /// available tier and local defaults are always available. That stop sets no retry date,
+    /// so the next run, which picks the best tier again, starts as soon as it is scheduled.
+    static func modelStop(_ status: ModelStatus, mode: RunMode) -> (
         message: String, retryAfter: Date?
     )? {
         guard status.isAvailable else {
             return (
                 status.unavailableReason ?? CompanionError.modelUnavailable.localizedDescription,
-                now.addingTimeInterval(lastingStopDelay)
-            )
-        }
-        guard status.coverReader != .none else {
-            return (
-                CompanionError.modelUnavailable.localizedDescription,
-                now.addingTimeInterval(lastingStopDelay)
+                nil
             )
         }
         switch status.quota {

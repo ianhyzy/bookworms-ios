@@ -59,17 +59,15 @@ struct ModelStatus: Sendable {
 
     /// Which model answers the cover-lettering question, which needs image input.
     enum CoverReader: Sendable {
-        /// The designing model reads the cover itself.
+        /// The designing model reads the cover itself: Private Cloud Compute, which counts as
+        /// unavailable without image input, or the backup model.
         case designModel
-        /// The on-device model reads the cover, without a reasoning level: for a designing model
-        /// without image input, or when the on-device model designs.
+        /// The on-device model designs and reads the cover, without a reasoning level.
         case onDevice
         /// No model reads the cover, and the design comes from the title measurements alone, as
         /// when a guardrail rejects the crop: at the on-device tier when its model lacks image
         /// input, and always with local defaults.
         case measurementsOnly
-        /// No model reads the cover, so the run stops.
-        case none
     }
 
     var tier: ModelTier
@@ -109,8 +107,9 @@ struct ModelStatus: Sendable {
     }
 }
 
-/// Designs a spine from a cover with local OCR, the cover's title colors, at most one model
-/// request, and downloaded Google Fonts families.
+/// Designs a spine from a cover with local OCR, the cover's title colors, at most one Private
+/// Cloud Compute or backup-model request plus an on-device mood request, and downloaded Google
+/// Fonts families.
 ///
 /// The model answers three coarse questions about the title lettering, which even the on-device
 /// model answers reliably: whether it is hand-drawn, whether it has serifs, and any special
@@ -157,7 +156,7 @@ actor BookAnalyzer {
                     tier: .privateCloudCompute, isAvailable: false,
                     unavailableReason:
                         "This test build leaves out Private Cloud Compute until Apple grants the entitlement.",
-                    coverReader: .none)
+                    coverReader: .designModel)
             #else
                 return pccStatus()
             #endif
@@ -169,11 +168,11 @@ actor BookAnalyzer {
 
     /// Picks the run's tier from each tier's status, best first.
     ///
-    /// Private Cloud Compute designs whenever the system reports it available, even over its
-    /// daily limit, so the run waits for the reset instead of switching models each day. Without
-    /// it, the backup model designs when it is set up on this device, then the on-device model,
-    /// and otherwise local defaults. A lower tier's status records why Private Cloud Compute and,
-    /// for local defaults, the on-device model are unavailable.
+    /// Private Cloud Compute designs whenever the system reports it available with image input,
+    /// even over its daily limit, so the run waits for the reset instead of switching models
+    /// each day. Without it, the backup model designs when it is set up on this device, then
+    /// the on-device model, and otherwise local defaults. A lower tier's status records why
+    /// Private Cloud Compute and, for local defaults, the on-device model are unavailable.
     static func bestStatus(
         pcc: ModelStatus, backup: @autoclosure () -> ModelStatus,
         onDevice: @autoclosure () -> ModelStatus
@@ -226,27 +225,22 @@ actor BookAnalyzer {
             case .belowLimit(let below): below.isApproachingLimit ? .approachingLimit : .belowLimit
             @unknown default: usage.isLimitReached ? .limitReached : .belowLimit
             }
+        // Without image input, Private Cloud Compute would answer no question about the cover,
+        // so a lower tier designs and records its own tier.
+        let readsCovers = model.capabilities.contains(.vision)
+        let blind = "Private Cloud Compute can't read covers on this \(ThisDevice.name)."
         let reason: String? =
             switch model.availability {
-            case .available: nil
+            case .available: readsCovers ? nil : blind
             case .unavailable(.deviceNotEligible):
                 "This \(ThisDevice.name) does not support Private Cloud Compute."
             case .unavailable(.systemNotReady):
                 "Private Cloud Compute is not ready. Check that Apple Intelligence is on."
             case .unavailable: "Private Cloud Compute is unavailable."
             }
-        let onDevice = SystemLanguageModel.default
-        let reader: ModelStatus.CoverReader =
-            if model.capabilities.contains(.vision) {
-                .designModel
-            } else if onDevice.isAvailable, onDevice.capabilities.contains(.vision) {
-                .onDevice
-            } else {
-                .none
-            }
         return ModelStatus(
-            tier: .privateCloudCompute, isAvailable: model.isAvailable,
-            unavailableReason: reason, coverReader: reader, quota: quota,
+            tier: .privateCloudCompute, isAvailable: model.isAvailable && readsCovers,
+            unavailableReason: reason, coverReader: .designModel, quota: quota,
             quotaResetDate: usage.resetDate, limitIncreaseSuggestion: usage.limitIncreaseSuggestion)
     }
 
@@ -263,8 +257,7 @@ actor BookAnalyzer {
     /// Throws `CompanionError.quotaReached`, `.modelBusy`, or `.fontServiceUnavailable`, or an
     /// offline `URLError`, when the run should stop; `.providerRejected` when the backup model
     /// rejects the request or is not set up; `.modelUnavailable` when the tier's model is
-    /// unavailable or no model can read the cover; and `.invalidDesign` when this book cannot get
-    /// a valid design.
+    /// unavailable; and `.invalidDesign` when this book cannot get a valid design.
     func design(
         book: CloudBook, accountID: String, workItemHash: String, cover: CoverImage,
         using model: ModelStatus
@@ -338,8 +331,6 @@ actor BookAnalyzer {
                 contextOptions: ContextOptions(includeSchemaInPrompt: true))
         case .measurementsOnly:
             reading = nil
-        case .none:
-            throw CompanionError.modelUnavailable
         }
         let families =
             if status.tier == .local {
@@ -407,11 +398,10 @@ actor BookAnalyzer {
             default: return .invalidDesign
             }
         case let error as ProviderError:
-            // A rejected key, model name, or request repeats for every book, so it stops the run.
+            // A rejected key, model name, request, or account without credit repeats for every
+            // book, so the run moves to the next tier.
+            if error.isLasting { return .providerRejected(error.localizedDescription) }
             if error.isTransient { return .modelBusy(error.retryAfter) }
-            if error.isAuthorization || [400, 404].contains(error.status) {
-                return .providerRejected(error.localizedDescription)
-            }
             return .invalidDesign
         case is GeneratedContent.ParsingError: return .invalidDesign
         case is SystemLanguageModel.Error: return .modelUnavailable

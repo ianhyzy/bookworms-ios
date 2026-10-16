@@ -117,11 +117,18 @@ struct ProviderError: LocalizedError {
     let status: Int?
     let retryAfter: Date?
     let message: String
+    /// The error body's `error.code`, or its `error.type` without one, such as OpenAI's
+    /// "insufficient_quota".
+    var code: String? = nil
 
     var errorDescription: String? { "\(provider.name): \(message)" }
 
-    /// A rejected key or account, which every later request repeats.
-    var isAuthorization: Bool { status == 401 || status == 403 }
+    /// A rejected key, model name, or request, or an account without credit, which every later
+    /// request repeats: a 401 or 403, a 400, a 402 Payment Required, a 404, or OpenAI's
+    /// `insufficient_quota`, which it sends with a 429.
+    var isLasting: Bool {
+        [400, 401, 402, 403, 404].contains(status) || code == "insufficient_quota"
+    }
     /// A rate limit or outage, which a later run can get past.
     var isTransient: Bool { status == 429 || status == 529 || (status ?? 0) >= 500 }
 }
@@ -295,18 +302,27 @@ enum ProviderHTTP {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let result: (Data, URLResponse)
+        do {
+            result = try await URLSession.shared.data(for: request)
+        } catch let error as URLError where !SpineWorker.offlineErrors.contains(error.code) {
+            // An endpoint that can't be reached, such as a local server that is off, would fail
+            // every book, so the run stops and a later run tries again.
+            throw CompanionError.modelBusy(nil)
+        }
+        let (data, response) = result
         let http = response as? HTTPURLResponse
         let status = http?.statusCode ?? 0
         let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         guard (200..<300).contains(status) else {
             let retryAfter = http?.value(forHTTPHeaderField: "Retry-After")
                 .flatMap(TimeInterval.init).map { Date.now.addingTimeInterval($0) }
-            let message =
-                ((json?["error"] as? [String: Any])?["message"] as? String)
-                ?? HTTPURLResponse.localizedString(forStatusCode: status)
+            let error = json?["error"] as? [String: Any]
             throw ProviderError(
-                provider: provider, status: status, retryAfter: retryAfter, message: message)
+                provider: provider, status: status, retryAfter: retryAfter,
+                message: error?["message"] as? String
+                    ?? HTTPURLResponse.localizedString(forStatusCode: status),
+                code: error?["code"] as? String ?? error?["type"] as? String)
         }
         guard let text = answer(in: json, provider: provider), !text.isEmpty else {
             throw ProviderError(
