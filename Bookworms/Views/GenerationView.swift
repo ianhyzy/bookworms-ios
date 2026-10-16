@@ -144,7 +144,8 @@ struct GenerationView: View {
     }
 
     /// The run's model tier: Private Cloud Compute with its daily limit, or, when it isn't
-    /// available, the backup model, the on-device model, or local defaults.
+    /// available, the backup model, the on-device model, or local defaults, with why each
+    /// better tier is unavailable and what a design costs at this one.
     private var designModel: some View {
         let status = generation.status.model
         // Until the first status arrives, the best tier this build could use names the model.
@@ -154,11 +155,11 @@ struct GenerationView: View {
             case .privateCloudCompute:
                 "Each new design uses one request from your daily limit. Books in a series often reuse a design without a request."
             case .backup:
-                "Private Cloud Compute isn't available, so your backup model designs. Each new design uses one request to this provider, billed to your API account. Books in a series often reuse a design without a request."
+                "Private Cloud Compute isn't available, so your backup model designs. Each new design uses one request to this provider, billed to your API account. Books in a series often reuse a design without a request. \(Self.upgradeNote)"
             case .onDevice:
-                "Private Cloud Compute isn't available, so each new design runs on this \(ThisDevice.name), with no daily limit. Books in a series often reuse a design."
+                "Private Cloud Compute isn't available, so each new design runs on this \(ThisDevice.name), with no daily limit. Books in a series often reuse a design. \(Self.upgradeNote)"
             case .local:
-                "No model is available on this \(ThisDevice.name), so each new design comes from the cover's colors and lettering and the book's genres. When a model becomes available, later runs redesign these spines."
+                "No model is available on this \(ThisDevice.name), so each new design comes from the cover's colors and lettering and the book's genres, with no model requests. \(Self.upgradeNote)"
             }
         return Section {
             LabeledContent("Availability") {
@@ -179,9 +180,9 @@ struct GenerationView: View {
                 }
             }
             #if os(macOS)
-                SettingsLink { Text("Choose Model…") }
+                SettingsLink { Text("Choose Backup Model…") }
             #else
-                NavigationLink("Choose Model") {
+                NavigationLink("Choose Backup Model") {
                     Form { SpineDesignerSettings() }
                         .navigationTitle("Spine Design Model")
                         .navigationBarTitleDisplayMode(.inline)
@@ -193,6 +194,9 @@ struct GenerationView: View {
             Text(note)
         }
     }
+
+    private static let upgradeNote =
+        "Runs recheck each book weekly and redesign it once a better model is available."
 
     /// The best tier this build could use: Private Cloud Compute, or in `NO_PCC` builds the saved
     /// backup model or the on-device model. It reads no Keychain item, so it doesn't know whether

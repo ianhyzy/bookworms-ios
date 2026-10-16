@@ -2,8 +2,8 @@ import SwiftUI
 
 /// Chooses the backup model that designs spines when Private Cloud Compute isn't available: none,
 /// a preset provider with its own API key, or any OpenAI-compatible endpoint. Apple's Private
-/// Cloud Compute designs whenever it is available, and without a backup, Apple's on-device model
-/// designs in its place.
+/// Cloud Compute designs whenever it is available. Without it, the backup designs, then Apple's
+/// on-device model, then local defaults (`ModelTier`).
 ///
 /// Keys go straight to this device's Keychain and never show again; the field only replaces or
 /// removes the saved key.
@@ -60,15 +60,19 @@ struct SpineDesignerSettings: View {
 
     #if NO_PCC
         private static let appleNote =
-            "This test build leaves out Private Cloud Compute until Apple grants the entitlement. Without a backup model, Apple's on-device model designs spines on this \(ThisDevice.name), with no daily limit."
+            "This test build leaves out Private Cloud Compute until Apple grants the entitlement. Without a backup model, Apple's on-device model designs spines on this \(ThisDevice.name), with no daily limit. \(localNote)"
         private static let providerNote =
-            "This test build leaves out Private Cloud Compute, so this model designs spines. The provider receives each cover, its title and author, and the colors and font families to choose from. Requests are billed to your API account. Press Return to save a key; it stays in this device's Keychain."
+            "This test build leaves out Private Cloud Compute, so this model designs spines, before Apple's on-device model. \(providerDetails)"
     #else
         private static let appleNote =
-            "Private Cloud Compute designs spines within its daily limit. When it isn't available, Apple's on-device model designs on this \(ThisDevice.name), unless you choose a backup model."
+            "Private Cloud Compute designs spines within its daily limit. When it isn't available, Apple's on-device model designs on this \(ThisDevice.name), unless you choose a backup model. \(localNote)"
         private static let providerNote =
-            "This model designs spines only when Private Cloud Compute isn't available, before Apple's on-device model. The provider receives each cover, its title and author, and the colors and font families to choose from. Requests are billed to your API account. Press Return to save a key; it stays in this device's Keychain."
+            "This model designs spines only when Private Cloud Compute isn't available, before Apple's on-device model. \(providerDetails)"
     #endif
+    private static let localNote =
+        "With no model available, spines come from the cover's colors and lettering and the book's genres."
+    private static let providerDetails =
+        "If the provider rejects the key or model name, Apple's on-device model or local defaults design the rest of that run. The provider receives each cover, its title and author, and the colors and font families to choose from. Requests are billed to your API account. Press Return to save a key; it stays in this device's Keychain."
 
     private func refresh() {
         designer.save()

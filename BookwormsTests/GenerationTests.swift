@@ -341,7 +341,10 @@ final class GenerationTests: XCTestCase {
                 next: ModelStatus(
                     tier: .onDevice, isAvailable: true, unavailableReason: nil,
                     coverReader: .onDevice)),
-            "Anthropic: invalid x-api-key. Apple on-device model designs the rest of this run.")
+            "Anthropic: invalid x-api-key. The rest of this run uses Apple's on-device model.")
+        XCTAssertEqual(
+            SpineWorker.fallbackMessage(rejection: "Unknown model.", next: .local),
+            "Unknown model. The rest of this run uses local defaults.")
     }
 
     func testTitleNoFamilyCoversUsesTheStyleSystemTypeface() throws {

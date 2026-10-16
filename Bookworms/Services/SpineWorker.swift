@@ -393,7 +393,14 @@ actor SpineWorker {
     /// The Spines tab's message when the backup model's `rejection` moves the run to `next`.
     static func fallbackMessage(rejection: String, next: ModelStatus) -> String {
         let sentence = rejection.hasSuffix(".") ? rejection : rejection + "."
-        return "\(sentence) \(next.designerName) designs the rest of this run."
+        let tier =
+            switch next.tier {
+            case .privateCloudCompute: "Private Cloud Compute"
+            case .backup: next.designerName
+            case .onDevice: "Apple's on-device model"
+            case .local: "local defaults"
+            }
+        return "\(sentence) The rest of this run uses \(tier)."
     }
 
     /// Returns the series look `book` draws: its look group's saved look, unless its link keeps
