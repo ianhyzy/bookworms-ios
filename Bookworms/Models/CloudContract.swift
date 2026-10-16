@@ -101,11 +101,85 @@ struct CloudLibraryArchive: Decodable, Sendable {
     }
 }
 
-struct CloudSourceSnapshot: Decodable, Sendable {
+extension CloudLibraryArchive {
+    /// Returns the archive JSON `stored` with `snapshot` as the entry for its source and account,
+    /// or `nil` when the stored entry is as new or newer.
+    ///
+    /// The splice edits the JSON, so it keeps every other key, snapshot, and design, including
+    /// fields this app doesn't decode. It replaces the first entry for `snapshot`'s source and
+    /// account only when `snapshot` is strictly newer, and appends an entry when there is none.
+    /// It never removes an entry, and it sorts entries as the Apple TV does. A snapshot without
+    /// `series` keeps the stored entry's series. Books leave out `chosenCoverURL` and
+    /// `seriesLink`, which the archive never carries. When `stored` is `nil`, the splice starts
+    /// an archive with `version` 1 and empty `designs`, which the Apple TV requires.
+    ///
+    /// - Throws: `CompanionError.unsupportedCloudData` when `stored` has a version other than 1,
+    ///   and `CompanionError.invalidCloudData` when it is not an archive.
+    static func splice(_ snapshot: CloudSourceSnapshot, into stored: Data?) throws -> Data? {
+        var archive: [String: Any] = [:]
+        if let stored {
+            guard let object = try? JSONSerialization.jsonObject(with: stored) as? [String: Any]
+            else { throw CompanionError.invalidCloudData }
+            archive = object
+        }
+        if let version = archive["version"], version as? Int != 1 {
+            throw CompanionError.unsupportedCloudData
+        }
+        guard var sources = (archive["sources"] ?? [Any]()) as? [[String: Any]] else {
+            throw CompanionError.invalidCloudData
+        }
+        let written = CloudSourceSnapshot(
+            source: snapshot.source, accountID: snapshot.accountID,
+            books: snapshot.books.map { book in
+                var book = book
+                book.chosenCoverURL = nil
+                book.seriesLink = nil
+                return book
+            },
+            syncedAt: snapshot.syncedAt, series: snapshot.series)
+        guard
+            var entry = try JSONSerialization.jsonObject(with: JSONEncoder().encode(written))
+                as? [String: Any]
+        else { throw CompanionError.invalidCloudData }
+        func key(_ entry: [String: Any]) -> String {
+            (entry["source"] as? String ?? "") + (entry["accountID"] as? String ?? "")
+        }
+        if let index = sources.firstIndex(where: {
+            $0["source"] as? String == snapshot.source
+                && $0["accountID"] as? String == snapshot.accountID
+        }) {
+            let existing = sources[index]
+            if let date = existing["syncedAt"] as? Double,
+                Date(timeIntervalSinceReferenceDate: date) >= snapshot.syncedAt
+            {
+                return nil
+            }
+            if entry["series"] == nil { entry["series"] = existing["series"] }
+            sources[index] = entry
+        } else {
+            sources.append(entry)
+        }
+        sources.sort { key($0) < key($1) }
+        archive["sources"] = sources
+        archive["version"] = 1
+        if archive["designs"] == nil { archive["designs"] = [String: Any]() }
+        return try JSONSerialization.data(withJSONObject: archive, options: .sortedKeys)
+    }
+}
+
+/// One source's books in the `library-v1` archive, such as one Hardcover account's library.
+///
+/// `source` is `"hardcover"` or `"cwa"`, and `syncedAt` is when the writer's download finished,
+/// in `JSONEncoder`'s default date encoding. This app writes only Hardcover snapshots
+/// (`CloudLibraryArchive.splice(_:into:)`).
+struct CloudSourceSnapshot: Codable, Sendable {
     let source: String
     let accountID: String
     let books: [CloudBook]
     let syncedAt: Date
+    /// The series of a Hardcover snapshot's books, which the Apple TV shows in book details.
+    /// Snapshots saved before series were fetched, and CWA snapshots, leave it out.
+    var series: [SeriesInfo]? = nil
 
     func selectedBooks(in worklist: SpineWorklistV1) throws -> [CloudBook] {
         let included = Set(worklist.bookIDs)
@@ -116,10 +190,11 @@ struct CloudSourceSnapshot: Decodable, Sendable {
     }
 }
 
-/// A book from the Apple TV's `library-v1` archive.
+/// A book in a `library-v1` archive snapshot.
 ///
-/// The archive encodes the TV's full `Book`; this type decodes the fields the companion uses and
-/// ignores the rest. Optional reading fields are absent from older archives.
+/// The Apple TV encodes its full `Book`; this type decodes the fields the companion uses and
+/// ignores the rest, and the snapshots this app writes carry only these fields. Optional reading
+/// fields are absent from older archives.
 struct CloudBook: Codable, Sendable, Hashable, Identifiable {
     let id: Int
     var title: String
@@ -161,8 +236,8 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
     var ratingDistribution: [RatingBucket]? = nil
     /// The book's description as its source stores it, which can carry HTML or Markdown.
     var description: String? = nil
-    /// The reader's own review as plain text. The Apple TV archive does not carry reviews; the
-    /// iPhone fills this in from its own Hardcover sign-in.
+    /// The reader's own review as plain text (`HardcoverClient.plainText(from:)`). Snapshots
+    /// that Apple TV builds without reviews saved leave it out.
     var review: String? = nil
     /// The cover the reader chose (`CoverChoiceV1`), which neither the archive nor
     /// `workItemHash` includes, so designs keep matching the Apple TV's hash.
@@ -192,6 +267,24 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
     var finishedDate: Date? {
         guard let finished, finished.count >= 10 else { return nil }
         return try? Date(String(finished.prefix(10)) + "T12:00:00Z", strategy: .iso8601)
+    }
+}
+
+/// A Hardcover series and its main books in reading order, as a Hardcover snapshot's `series`
+/// in the `library-v1` archive. The shape matches the Apple TV's `SeriesInfo`, so a snapshot
+/// this app writes keeps the series the TV shows in book details.
+struct SeriesInfo: Codable, Hashable, Sendable, Identifiable {
+    let id: Int
+    let name: String
+    /// The series' main books, one per whole-number position, earliest first.
+    let books: [SeriesBook]
+
+    struct SeriesBook: Codable, Hashable, Sendable, Identifiable {
+        let id: Int
+        let title: String
+        let position: Double
+        let releaseYear: Int?
+        let coverURL: URL?
     }
 }
 
