@@ -180,10 +180,12 @@ extension PileTray {
     /// normalized device y coordinates, in a view of width-to-height `aspect`. The camera must
     /// look at the table's center without turning, as the default camera and a zoomed one do.
     ///
-    /// A pile against the far or side walls rises toward the top or sides of the screen, so
-    /// those walls stand where the view's edges meet a pile `pileHeight` high, by default the
-    /// tallest pile (`tallestPile`). A pile against the near wall rises toward the middle of the
-    /// screen, so that wall stands where the bottom edge meets the table.
+    /// The far and side walls stand where the view's edges meet a pile `pileHeight` high, by
+    /// default the tallest pile (`tallestPile`), so a pile up to that high stays on screen.
+    /// Books pushed against those walls, as **Tip the table** pushes them, can rise past a lower
+    /// `pileHeight` toward the top or sides of the screen. A pile against the near wall rises
+    /// toward the middle of the screen, so that wall stands where the bottom edge meets the
+    /// table.
     init?(
         aspect: Float, safeTop: Float, safeBottom: Float, pileHeight: Float = tallestPile,
         camera: PileCamera = PileCamera()
@@ -236,9 +238,9 @@ extension PileTray {
 
     /// How high `books` pile on `tray`: their volume spread over the tray, doubled for a loose
     /// pile, and a unit more for the books that lie across others or lean on them, which also
-    /// keeps the tray's far edge inside the box of **Phone is the box**, at most `tallestPile`. Live piles stay under it: 14 liters top out at 0.8 units (1.3 here), and
-    /// 33 liters, a year's books, at 1.4 (1.7 here). `tray` is the tallest pile's, the smallest
-    /// tray, so its area overstates the height a little.
+    /// keeps the tray's far edge inside the box of **Phone is the box**, at most `tallestPile`.
+    /// `tray` is the tallest pile's, the smallest tray, so its area overstates the height a
+    /// little.
     static func pileHeight(of books: [CloudBook], over tray: PileTray) -> Float {
         let volume = books.map { BookShape(of: $0, coverAspect: 2 / 3).size }
             .map { $0.x * $0.y * $0.z }
@@ -288,14 +290,16 @@ enum PileLayout {
     /// units without drag, so about nine in ten land front cover up. Without drag they land at
     /// 51 to 62 units a second, and about twice as many land face down.
     static let airDrag: Float = 1
-    /// Above the highest start a drop plan gives on an iPhone, with room for a book lifted over
-    /// others (see `dropPlan`). The walls reach it.
-    static let ceiling: Float = 44
+    /// The height of the ceiling over `tray`, which the walls reach: 20 units over the drop
+    /// height, above the highest start a drop plan gives there, with room for a book lifted
+    /// over others (see `dropPlan`). A wider tray, such as a wide Mac window's, drops from
+    /// higher (`spawnHeight(over:)`), so its ceiling rises with it.
+    static func ceiling(over tray: PileTray) -> Float { spawnHeight(over: tray) + 20 }
     /// Half the largest book's diagonal, 3.72 units, and a little more: a book whose middle lies
     /// this far outside the view is wholly out of it.
     static let entryClearance: Float = 1.9
     /// How long after the last wave the box of **Phone is the box** closes: longer than a book
-    /// takes to fall from the ceiling under `airDrag`, so none is still in the air.
+    /// takes to fall from an iPhone's ceiling under `airDrag`, so none is still in the air.
     static let boxDelay = Duration.seconds(2.5)
     /// Half the longest book's length (`BookShape.longest`) plus a little, which keeps a new
     /// book clear of the walls.
@@ -843,12 +847,18 @@ final class BookPileScene {
     /// pile of `books`, and fits them to each new size until the first books drop: a tab's
     /// first layouts pass through sizes it never shows, such as one with a large title. A
     /// `newPile` fits them again. Returns whether the tray changed.
+    ///
+    /// **Tip the table** slides the whole pile against one wall, where it rises higher than it
+    /// lies spread out, so with that tilt the walls leave room for the tallest pile instead.
     @discardableResult
     private func build(_ viewport: PileViewport, for books: [CloudBook], newPile: Bool = false)
         -> Bool
     {
+        let tips = tilt == .table && Self.canTilt
         guard tray == nil || spawned == 0 || newPile,
-            let tray = PileTray(viewport: viewport, books: books), tray != self.tray
+            let tray = tips
+                ? PileTray(viewport: viewport) : PileTray(viewport: viewport, books: books),
+            tray != self.tray
         else { return false }
         aspect = Float(viewport.size.width / viewport.size.height)
         box = PileBox(viewport: viewport)
@@ -875,10 +885,12 @@ final class BookPileScene {
         walls.addChild(Self.makeWalls(around: tray))
     }
 
-    /// Static walls along the tray's edges and a ceiling above the drop height. They have no
-    /// model, so books seem to bump into the edges of the screen.
+    /// Static walls along the tray's edges and a ceiling above the drop height
+    /// (`PileLayout.ceiling(over:)`). They have no model, so books seem to bump into the edges
+    /// of the screen.
     private static func makeWalls(around tray: PileTray) -> Entity {
         let walls = Entity()
+        let ceiling = PileLayout.ceiling(over: tray)
         let material = PhysicsMaterialResource.generate(
             staticFriction: 0.1, dynamicFriction: 0.1, restitution: 0.3)
         func add(_ shape: ShapeResource, at position: SIMD3<Float>, yaw: Float = 0) {
@@ -902,11 +914,15 @@ final class BookPileScene {
             // Two units thick and long enough to close the corners, so a thrown book cannot
             // slip between walls.
             add(
-                .generateBox(width: 2, height: PileLayout.ceiling, depth: simd_length(along) + 4),
-                at: (start + end) / 2 + outward + [0, PileLayout.ceiling / 2, 0],
+                .generateBox(width: 2, height: ceiling, depth: simd_length(along) + 4),
+                at: (start + end) / 2 + outward + [0, ceiling / 2, 0],
                 yaw: atan2(along.x, along.z))
         }
-        add(.generateBox(width: 90, height: 2, depth: 90), at: [0, PileLayout.ceiling + 1, 0])
+        add(
+            .generateBox(
+                width: 2 * max(tray.farHalfWidth, tray.nearHalfWidth) + 8, height: 2,
+                depth: tray.nearZ - tray.farZ + 8),
+            at: [0, ceiling + 1, (tray.farZ + tray.nearZ) / 2])
         return walls
     }
 
@@ -1344,7 +1360,8 @@ final class BookPileScene {
         let rest = carry.halfThickness + PileCarry.lift
         let surface = surfaceHeight(of: carry, under: target) ?? carry.height - rest
         carry.height +=
-            (min(surface + rest, PileLayout.ceiling - 2) - carry.height) * min(1, deltaTime * 10)
+            (min(surface + rest, PileLayout.ceiling(over: tray) - 2) - carry.height)
+            * min(1, deltaTime * 10)
         target.y = carry.height
         // The box's walls and glass stop a dynamic book anyway; this keeps it from pressing on
         // them.
@@ -1380,8 +1397,8 @@ final class BookPileScene {
     /// falling from high above. Each hit's position is the point of first touch; its distance
     /// runs from the sweep's start to that point, not along the sweep, so it is not used.
     private func surfaceHeight(of carry: Carry, under point: SIMD3<Float>) -> Float? {
-        guard let scene = root.scene else { return nil }
-        let top = min(carry.height + 3, PileLayout.ceiling - 1)
+        guard let scene = root.scene, let tray else { return nil }
+        let top = min(carry.height + 3, PileLayout.ceiling(over: tray) - 1)
         let hits = scene.convexCast(
             convexShape: carry.shape, fromPosition: [point.x, top, point.z],
             fromOrientation: carry.level, toPosition: [point.x, 0, point.z],
