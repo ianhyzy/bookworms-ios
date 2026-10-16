@@ -97,7 +97,7 @@ struct HardcoverAccountView: View {
                 systemImage: "lock")
         } footer: {
             Text(
-                "Without a Hardcover sign-in, Bookworms shows the library your Apple TV uploads to iCloud."
+                "Without a Hardcover sign-in, Bookworms shows the library your Apple devices save to iCloud."
             )
         }
         Section {
@@ -195,7 +195,7 @@ struct HardcoverAccountView: View {
             }
         } footer: {
             Text(
-                "Bookworms keeps a copy of your Hardcover library, including your reviews, on this \(ThisDevice.name) and refreshes it every few hours."
+                "Bookworms keeps a copy of your Hardcover library, including your reviews, on this \(ThisDevice.name) and in your private iCloud storage, where your other Apple devices use it too. It refreshes the copy about once a day."
             )
         }
         Section {
@@ -207,7 +207,7 @@ struct HardcoverAccountView: View {
                     Button("Sign out", role: .destructive) { account.signOut() }
                 } message: {
                     Text(
-                        "Bookworms removes your login and its copy of your library from this \(ThisDevice.name). Your Hardcover account is unchanged."
+                        "Bookworms removes your login and its copy of your library from this \(ThisDevice.name). The copy in your iCloud stays, and Bookworms can still show it. Your Hardcover account is unchanged."
                     )
                 }
         }

@@ -387,6 +387,98 @@ final class HardcoverTests: XCTestCase {
             "Another account's copy never fixes covers")
     }
 
+    // MARK: - iCloud copies
+
+    @MainActor
+    func testSyncAdoptsANewerICloudCopyWithoutAskingHardcover() async throws {
+        let (tokens, defaults, library) = try Self.signedInStores()
+        defer { tokens.delete() }
+        try Self.cache(
+            PhoneLibrary(
+                accountID: "4242", username: "fictional_reader", syncedAt: Self.hoursAgo(5),
+                books: []),
+            at: library, defaults: defaults)
+        let book = CloudBook(
+            id: 101, title: "The Lantern Keeper", author: "Mara Quill", coverURL: nil,
+            detailCoverURL: URL(string: "https://covers.example.com/reader-101.jpg"),
+            review: "A quiet triumph.")
+        let copy = CloudSourceSnapshot(
+            source: "hardcover", accountID: "4242", books: [book], syncedAt: Self.hoursAgo(1),
+            series: [SeriesInfo(id: 9, name: "The Lantern Cycle", books: [])])
+        let folder = try Self.archiveFolder(with: [copy])
+        let account = HardcoverAccount(
+            tokens: tokens,
+            client: HardcoverClient { request in
+                XCTFail("A copy from the last day needs no Hardcover request")
+                return Self.respond(500, "", to: request)
+            },
+            defaults: defaults, libraryURL: library)
+        account.cloud = LocalSpineStore(folder: folder)
+        let revision = account.libraryRevision
+
+        await account.syncIfStale()
+        let adopted = try XCTUnwrap(PhoneLibrary.load(from: library))
+        XCTAssertEqual(adopted.books, [book])
+        XCTAssertEqual(adopted.series, copy.series)
+        XCTAssertEqual(adopted.syncedAt, copy.syncedAt)
+        XCTAssertEqual(adopted.username, "fictional_reader")
+        XCTAssertEqual(account.summary?.syncedAt, copy.syncedAt)
+        XCTAssertEqual(account.libraryRevision, revision + 1)
+        XCTAssertNil(account.publishTask, "An adopted copy is not published again")
+
+        // An hour-old copy is fresh: no iCloud read and no download.
+        try FileManager.default.removeItem(at: folder.appending(path: "library-v1.json"))
+        await account.syncIfStale()
+        XCTAssertEqual(account.libraryRevision, revision + 1)
+    }
+
+    @MainActor
+    func testSyncAsksHardcoverOnceTheNewestCopyIsADayOldAndPublishesTheLibrary() async throws {
+        let (tokens, defaults, library) = try Self.signedInStores()
+        defer { tokens.delete() }
+        try Self.cache(
+            PhoneLibrary(
+                accountID: "4242", username: "fictional_reader", syncedAt: Self.hoursAgo(30),
+                books: []),
+            at: library, defaults: defaults)
+        // The iCloud copy is newer than this device's but a day old, so Hardcover is asked, and
+        // the book keeps the copy's cover. Another account's fresh copy doesn't count.
+        let saved = CloudBook(
+            id: 101, title: "The Lantern Keeper", author: "Mara Quill",
+            coverURL: URL(string: "https://covers.example.com/saved-alternate-101.jpg"),
+            detailCoverURL: URL(string: "https://covers.example.com/saved-101.jpg"))
+        let folder = try Self.archiveFolder(with: [
+            CloudSourceSnapshot(
+                source: "hardcover", accountID: "4242", books: [saved],
+                syncedAt: Self.hoursAgo(25)),
+            CloudSourceSnapshot(
+                source: "hardcover", accountID: "7", books: [], syncedAt: Self.hoursAgo(1)),
+        ])
+        let account = HardcoverAccount(
+            tokens: tokens, client: HardcoverClient(transport: Self.libraryTransport),
+            defaults: defaults, libraryURL: library)
+        account.cloud = LocalSpineStore(folder: folder)
+
+        await account.syncIfStale()
+        let synced = try XCTUnwrap(PhoneLibrary.load(from: library))
+        XCTAssertEqual(synced.books.map(\.id), [101, 303, 202])
+        XCTAssertEqual(synced.books.first?.detailCoverURL, saved.detailCoverURL)
+        XCTAssertEqual(synced.books.first?.coverURL, saved.coverURL)
+        XCTAssertGreaterThan(synced.syncedAt, Self.hoursAgo(1))
+        XCTAssertEqual(account.summary?.syncedAt, synced.syncedAt)
+
+        await account.publishTask?.value
+        let archive = try JSONDecoder()
+            .decode(
+                CloudLibraryArchive.self,
+                from: Data(contentsOf: folder.appending(path: "library-v1.json")))
+        let published = try XCTUnwrap(archive.newestHardcoverSnapshot(accountID: "4242"))
+        XCTAssertEqual(published.syncedAt, synced.syncedAt)
+        XCTAssertEqual(published.books, synced.books)
+        XCTAssertEqual(published.series?.map(\.id), [9])
+        XCTAssertNotNil(archive.newestHardcoverSnapshot(accountID: "7"))
+    }
+
     // MARK: - Library source
 
     func testSignedInPhoneLibraryIsUsedOnlyWithoutAListingWorklist() {
@@ -469,6 +561,44 @@ final class HardcoverTests: XCTestCase {
         let library = URL.temporaryDirectory.appending(
             path: "hardcover-library-\(UUID().uuidString).json")
         return (tokens, defaults, library)
+    }
+
+    /// Caches `library` at `url` with its account summary, as a sync would.
+    private static func cache(_ library: PhoneLibrary, at url: URL, defaults: UserDefaults) throws {
+        try library.save(to: url)
+        defaults.set(
+            try JSONEncoder()
+                .encode(
+                    HardcoverAccount.Summary(
+                        accountID: library.accountID, username: library.username,
+                        syncedAt: library.syncedAt)),
+            forKey: HardcoverAccount.summaryKey)
+    }
+
+    /// A new folder whose `library-v1.json` holds `snapshots`, for a `LocalSpineStore`.
+    private static func archiveFolder(with snapshots: [CloudSourceSnapshot]) throws -> URL {
+        let folder = URL.temporaryDirectory.appending(path: "library-archive-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        var archive: Data?
+        for snapshot in snapshots {
+            archive = try CloudLibraryArchive.splice(snapshot, into: archive)
+        }
+        try XCTUnwrap(archive).write(to: folder.appending(path: "library-v1.json"))
+        return folder
+    }
+
+    /// A whole second `hours` ago, which survives every JSON round trip unchanged.
+    private static func hoursAgo(_ hours: Double) -> Date {
+        let seconds = (Date.timeIntervalSinceReferenceDate - hours * 3600).rounded()
+        return Date(timeIntervalSinceReferenceDate: seconds)
+    }
+
+    /// Answers the account, library, and series queries with the fictional fixtures.
+    private static let libraryTransport: HardcoverClient.Transport = { request in
+        let body = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
+        if body.contains("query Account") { return respond(200, me, to: request) }
+        if body.contains("query PhoneSeries") { return respond(200, seriesPage, to: request) }
+        return respond(200, libraryPage, to: request)
     }
 
     /// A transport that answers every request with `status` and `body`.

@@ -99,6 +99,13 @@ struct CloudLibraryArchive: Decodable, Sendable {
         var seen = Set<Int>()
         return (source, source.books.filter { $0.id > 0 && seen.insert($0.id).inserted })
     }
+
+    /// Returns the newest Hardcover snapshot of `accountID`, or `nil` when the archive holds
+    /// none.
+    func newestHardcoverSnapshot(accountID: String) -> CloudSourceSnapshot? {
+        sources.filter { $0.source == "hardcover" && $0.accountID == accountID }
+            .max { $0.syncedAt < $1.syncedAt }
+    }
 }
 
 extension CloudLibraryArchive {
@@ -187,6 +194,15 @@ struct CloudSourceSnapshot: Codable, Sendable {
         let selected = books.filter { included.contains($0.id) && seen.insert($0.id).inserted }
         guard selected.count == included.count else { throw CompanionError.waitingForLibrary }
         return selected
+    }
+}
+
+extension CloudSourceSnapshot {
+    /// The Hardcover snapshot of a library this device downloaded.
+    init(_ library: PhoneLibrary) {
+        self.init(
+            source: "hardcover", accountID: library.accountID, books: library.books,
+            syncedAt: library.syncedAt, series: library.series)
     }
 }
 

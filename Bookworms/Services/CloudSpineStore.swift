@@ -438,18 +438,14 @@ actor CloudSpineStore: SpineStore {
     }
 
     func archivedLibrary(accountID: String) async throws -> CloudSourceSnapshot? {
-        try await fetchArchive()?.sources
-            .filter { $0.source == "hardcover" && $0.accountID == accountID }
-            .max { $0.syncedAt < $1.syncedAt }
+        try await fetchArchive()?.newestHardcoverSnapshot(accountID: accountID)
     }
 
     /// Splices `library` into the archive record, creating the record when it is missing. Saves
     /// with `ifServerRecordUnchanged` and retries up to three times when another device changes
     /// the archive meanwhile.
     func publishLibrary(_ library: PhoneLibrary) async throws {
-        let snapshot = CloudSourceSnapshot(
-            source: "hardcover", accountID: library.accountID, books: library.books,
-            syncedAt: library.syncedAt, series: library.series)
+        let snapshot = CloudSourceSnapshot(library)
         for _ in 0..<3 {
             let (record, stored) = try await libraryRecord()
             guard let payload = try CloudLibraryArchive.splice(snapshot, into: stored) else {

@@ -67,12 +67,6 @@ protocol SpineStore: Sendable {
 }
 
 extension SpineStore {
-    /// A store without a shared archive, such as `LocalSpineStore`, holds no snapshot.
-    func archivedLibrary(accountID: String) async throws -> CloudSourceSnapshot? { nil }
-
-    /// A store without a shared archive, such as `LocalSpineStore`, publishes nothing.
-    func publishLibrary(_ library: PhoneLibrary) async throws {}
-
     /// Saves `design` unless a design of the same work from the same generator already exists.
     func save(_ design: SpineDesignV1) async throws {
         try await save(design, replacing: false)
@@ -276,6 +270,22 @@ actor LocalSpineStore: SpineStore {
     }
 
     func installWorklistSubscription() async throws {}
+
+    func archivedLibrary(accountID: String) async throws -> CloudSourceSnapshot? {
+        try decode(CloudLibraryArchive.self, "library-v1.json")?
+            .newestHardcoverSnapshot(accountID: accountID)
+    }
+
+    func publishLibrary(_ library: PhoneLibrary) async throws {
+        let url = folder.appending(path: "library-v1.json")
+        let stored =
+            FileManager.default.fileExists(atPath: url.path) ? try Data(contentsOf: url) : nil
+        guard
+            let archive = try CloudLibraryArchive.splice(
+                CloudSourceSnapshot(library), into: stored)
+        else { return }
+        try archive.write(to: url, options: .atomic)
+    }
 
     /// Returns `books` with the reader's chosen covers and series links.
     private func applyingChoices(accountID: String, to books: [CloudBook]) throws -> [CloudBook] {

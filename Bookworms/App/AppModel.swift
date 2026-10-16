@@ -4,12 +4,13 @@ import Observation
 /// The library the app shows: the active Hardcover account's books, their saved designs and series
 /// looks, and the covers and series links the reader chose.
 ///
-/// Signed in to Hardcover on this iPhone, the books come from that account (`HardcoverAccount`);
-/// otherwise from the Apple TV's iCloud archive. Either way `CloudSpineStore` adds the designs,
-/// looks, and choices from iCloud. Launching with `-BookwormsPreviewFolder <path>` reads a local
-/// folder instead and ignores the sign-in (see `script/load-preview-data.py`); a relative path
-/// resolves inside the app's `Caches/Bookworms` folder. The last library is cached so launch shows
-/// it immediately.
+/// Signed in to Hardcover on this device, the books come from that account (`HardcoverAccount`),
+/// which shares its library with the reader's other devices through the iCloud archive;
+/// otherwise from that archive's newest Hardcover library. Either way `CloudSpineStore` adds the
+/// designs, looks, and choices from iCloud. Launching with `-BookwormsPreviewFolder <path>` reads
+/// a local folder instead and ignores the sign-in (see `script/load-preview-data.py`); a relative
+/// path resolves inside the app's `Caches/Bookworms` folder. The last library is cached so launch
+/// shows it immediately.
 @MainActor
 @Observable
 final class AppModel {
@@ -95,6 +96,7 @@ final class AppModel {
         } else {
             self.store = CloudSpineStore()
             isPreview = false
+            account.cloud = store
             if let data = try? Data(contentsOf: cacheURL),
                 let cached = try? JSONDecoder().decode(LibrarySnapshot.self, from: data)
             {
@@ -188,8 +190,9 @@ final class AppModel {
     /// Reloads the library and designs, then, after a successful load, creates missing series
     /// looks (`createMissingLooks()`) while it loads the fonts the designs name.
     ///
-    /// When signed in to Hardcover, first downloads the account's library if the copy on this
-    /// iPhone is missing or a few hours old; a failed download keeps that copy and is reported.
+    /// When signed in to Hardcover, first brings the account's library up to date from iCloud or
+    /// Hardcover (`HardcoverAccount.syncIfStale()`); a failed download keeps the copy on this
+    /// device and is reported.
     /// No library (an iCloud account without an Apple TV upload, or a sign-in without a
     /// downloaded copy) clears the shown and cached library, and so does a missing iCloud
     /// account when signed out, so another account's reading history never stays visible.
@@ -316,9 +319,10 @@ final class AppModel {
         await social.downloadIfMissing(id, token: token)
     }
 
-    /// Shows the new phone library after a Hardcover sign-in, sync, or sign-out. The shown
-    /// library clears first when it belongs to another account or the reader signed out, so
-    /// neither another account's books nor the signed-out account's reviews stay visible.
+    /// Shows the new phone library after a Hardcover sign-in, sync, adoption of an iCloud copy, or
+    /// sign-out. The shown library clears first when it belongs to another account or the reader
+    /// signed out, so another account's books never stay visible. Signed out, the reload shows
+    /// the iCloud archive, which can hold the library and reviews this device published.
     private func accountLibraryChanged() {
         guard !isPreview else { return }
         if library?.accountID != account.summary?.accountID { clearLibrary() }
