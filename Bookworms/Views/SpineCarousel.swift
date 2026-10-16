@@ -101,6 +101,24 @@ struct SpineCarousel: View {
         }
         // A book can only return to the place it left, which the other style draws differently.
         .onChange(of: style) { pullOut.close() }
+        .overlay(alignment: .top) {
+            // On the iPhone, Stack runs up under the status bar. A faint wash of the wall's color
+            // keeps the time and battery readable over spine lettering, and fades out by the
+            // status bar's lower edge, so the books below it stay sharp. The system's soft edge
+            // effect reaches about a spine farther and blurs that book too.
+            if mode == .stack {
+                LinearGradient(
+                    stops: [
+                        .init(color: ShelfPalette.wallLight.color.opacity(0.6), location: 0),
+                        .init(color: ShelfPalette.wallLight.color.opacity(0.45), location: 0.6),
+                        .init(color: .clear, location: 1),
+                    ], startPoint: .top, endPoint: .bottom
+                )
+                .frame(height: statusBar)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
+        }
         .background {
             // A pool of warm light behind the middle of the stack, larger than the carousel so its
             // falloff never meets an edge. The shelf's lamp lights the bookcase instead.
@@ -612,18 +630,9 @@ private struct CenterTracking: ViewModifier {
             }
             .scrollIndicators(.hidden)
             // The books run to the screen's edge or fade out before it, so a bar's edge effect
-            // would only draw a seam across the walnut.
-            .scrollEdgeEffectHidden(true, for: [.bottom, .horizontal])
-            #if os(iOS)
-                // On the iPhone, Stack runs up under the status bar, where the soft effect blurs
-                // and dims the books just enough to keep the time and battery readable over
-                // their lettering. It draws no seam, which `.automatic` does on iOS 27. Shelf
-                // keeps its books below the status bar, over plain wood.
-                .scrollEdgeEffectHidden(axis == .horizontal, for: .top)
-                .scrollEdgeEffectStyle(.soft, for: .top)
-            #else
-                .scrollEdgeEffectHidden(true, for: .top)
-            #endif
+            // would only draw a seam across the walnut. Under the iPhone's status bar, Stack draws
+            // its own faint backing instead (`SpineCarousel.body`).
+            .scrollEdgeEffectHidden()
     }
 
     private func scrollToCenteredBook() {
