@@ -2,10 +2,10 @@ import Foundation
 
 /// Where the companion reads the library and saves spine designs.
 ///
-/// `CloudSpineStore` is the private iCloud database the Apple TV shares, combined with this
-/// iPhone's own Hardcover library when it is signed in (see `WorkSource`). `LocalSpineStore`
-/// reads a folder of the same JSON for Simulator previews and tests, so no iCloud account is
-/// needed; it ignores the Hardcover sign-in.
+/// `CloudSpineStore` is the private iCloud database that the reader's Apple devices share,
+/// combined with this device's own Hardcover library when it is signed in (see `WorkSource`).
+/// `LocalSpineStore` reads a folder of the same JSON for Simulator previews and tests, so no
+/// iCloud account is needed; it ignores the Hardcover sign-in.
 ///
 /// Both stores set each book's `chosenCoverURL` and `seriesLink` from the reader's
 /// `CoverChoiceV1` and `SeriesLinkV1` records when they load work or the library.

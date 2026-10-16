@@ -305,12 +305,14 @@ actor CloudSpineStore: SpineStore {
         } catch let error as CKError where error.code == .unknownItem {}
     }
 
-    /// Returns this iPhone's own Hardcover library when it is signed in, otherwise the Apple TV
-    /// archive, with each book's newest design.
+    /// Returns this device's own Hardcover library when it is signed in, otherwise the archive's
+    /// library, with each book's newest design.
     ///
-    /// Signed in, the result is `nil` until the account's library is downloaded, because the
-    /// archive may belong to another account. The phone library shows without an iCloud
-    /// account, just without designs.
+    /// Signed in, the result is `nil` until this device has its copy of the account's library,
+    /// downloaded or adopted from the archive (`HardcoverAccount.syncIfStale()`), because the
+    /// archive's newest library may belong to another account. Signed out, the archive can show
+    /// the library and reviews that this device published. The phone library shows without an
+    /// iCloud account, just without designs.
     func loadLibrary() async throws -> LibrarySnapshot? {
         if let accountID = HardcoverAccount.signedInAccountID {
             guard let phone = PhoneLibrary.load(), phone.accountID == accountID else { return nil }
