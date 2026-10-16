@@ -41,6 +41,12 @@ protocol SpineStore: Sendable {
     /// `look`, or the look another device saved first. Throws `CompanionError.invalidCloudData`
     /// when the group's saved look is not valid.
     func createLook(_ look: SeriesLookV1) async throws -> SeriesLookV1
+    /// Saves `look`, made from a better tier's design, over its group's saved look while that
+    /// look is still one `look`'s tier upgrades (`SeriesLookV1.isUpgraded(at:)`), and returns
+    /// the look the group keeps: `look`, or the saved look when the reader edited it or another
+    /// device saved one from `look`'s tier or a better one first. Creates the look when the
+    /// group has none.
+    func upgradeLook(_ look: SeriesLookV1) async throws -> SeriesLookV1
     /// Saves `look` over its group's look, such as after a requested redesign remakes it.
     func save(_ look: SeriesLookV1) async throws
     /// Saves `look`'s colors and edit date over the saved look that it recolors (see
@@ -202,6 +208,20 @@ actor LocalSpineStore: SpineStore {
                 let existing = SeriesLookV1.keyed(all, accountID: look.accountID)[look.key]
             else { throw CompanionError.invalidCloudData }
             return existing
+        }
+        all[name] = look
+        try write(all, "series-looks-v1.json")
+        return look
+    }
+
+    func upgradeLook(_ look: SeriesLookV1) async throws -> SeriesLookV1 {
+        try look.validate()
+        var all = try looks()
+        let name = CloudContract.seriesLookRecordName(accountID: look.accountID, key: look.key)
+        if let saved = SeriesLookV1.keyed(all, accountID: look.accountID)[look.key],
+            !saved.isUpgraded(at: look.tier)
+        {
+            return saved
         }
         all[name] = look
         try write(all, "series-looks-v1.json")

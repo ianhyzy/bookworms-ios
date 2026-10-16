@@ -224,6 +224,27 @@ actor CloudSpineStore: SpineStore {
         }
     }
 
+    /// Saves `look` over a saved look it upgrades, checking the saved record again on each try,
+    /// so a recoloring or a better look that another device saves meanwhile is kept. A record
+    /// that holds no valid look is replaced.
+    func upgradeLook(_ look: SeriesLookV1) async throws -> SeriesLookV1 {
+        try look.validate()
+        let name = CloudContract.seriesLookRecordName(accountID: look.accountID, key: look.key)
+        var kept = look
+        try await write(
+            JSONEncoder().encode(look), recordType: "SeriesLookV1", recordName: name
+        ) { record in
+            guard let payload = Self.payload(SeriesLookV1.self, in: record),
+                let saved =
+                    SeriesLookV1.keyed([name: payload], accountID: look.accountID)[look.key],
+                !saved.isUpgraded(at: look.tier)
+            else { return false }
+            kept = saved
+            return true
+        }
+        return kept
+    }
+
     /// Saves `look` over its group's look; the last writer wins.
     func save(_ look: SeriesLookV1) async throws {
         try look.validate()

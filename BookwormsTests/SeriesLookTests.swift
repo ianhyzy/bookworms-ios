@@ -251,6 +251,98 @@ final class SeriesLookTests: XCTestCase {
         XCTAssertNoThrow(try remade.validate())
     }
 
+    func testLooksKeepTheirSourceDesignsModelToken() throws {
+        let onDevice = SeriesLookV1(
+            design: design(
+                7,
+                provenance: "series-reuse:3 generated-colors:000000,FFFFFF,FF0000 "
+                    + ModelTier.onDeviceToken),
+            key: look().key, createdAt: created)
+        XCTAssertEqual(onDevice.provenance, ModelTier.onDeviceToken, "Only the model token")
+        XCTAssertEqual(onDevice.tier, .onDevice)
+        XCTAssertEqual(onDevice.design(bookID: 8).tier, .onDevice, "Copies keep the tier")
+        XCTAssertEqual(
+            onDevice.remade(from: design(7, provenance: "model:local"), at: created).tier, .local)
+        XCTAssertNoThrow(try onDevice.validate())
+        XCTAssertEqual(
+            try JSONDecoder().decode(SeriesLookV1.self, from: JSONEncoder().encode(onDevice)),
+            onDevice)
+
+        XCTAssertNil(look().provenance)
+        XCTAssertEqual(look().tier, .privateCloudCompute, "No token is Private Cloud Compute")
+        XCTAssertEqual(look().withOrigin(CloudContract.appleTVGeneratorVersion).tier, .local)
+        var long = onDevice
+        long.provenance = String(repeating: "p", count: 81)
+        XCTAssertThrowsError(try long.validate(), "Long provenance")
+    }
+
+    func testWeakerUneditedLooksUpgradeFromTheirSourceBook() {
+        var onDevice = look()
+        onDevice.provenance = ModelTier.onDeviceToken
+        XCTAssertTrue(onDevice.isUpgraded(at: .backup))
+        XCTAssertTrue(onDevice.isUpgraded(at: .privateCloudCompute))
+        XCTAssertFalse(onDevice.isUpgraded(at: .onDevice), "The first look decides equal tiers")
+        XCTAssertFalse(onDevice.isUpgraded(at: .local))
+        XCTAssertFalse(look().isUpgraded(at: .privateCloudCompute))
+        var edited = onDevice
+        edited.editedAt = created.addingTimeInterval(60)
+        XCTAssertFalse(edited.isUpgraded(at: .privateCloudCompute), "The reader's edit stays")
+
+        func covered(_ book: CloudBook) -> CloudBook {
+            var book = book
+            book.chosenCoverURL = URL(string: "https://example.com/\(book.id).jpg")
+            return book
+        }
+        var first = covered(book(1, series: 1018))
+        first.seriesPosition = 1
+        let members = [covered(book(123, series: 1018)), first, book(2, series: 1018)]
+        XCTAssertEqual(onDevice.upgradeSource(among: members), 123, "The look's source book")
+        XCTAssertEqual(
+            onDevice.upgradeSource(among: Array(members.dropFirst())), 1,
+            "The best-ranked member once the source left the group")
+        XCTAssertEqual(
+            onDevice.withOrigin(CloudContract.appleTVGeneratorVersion)
+                .upgradeSource(among: members), 1,
+            "An Apple TV look upgrades from the best-ranked member")
+        XCTAssertNil(onDevice.upgradeSource(among: [book(2, series: 1018)]), "No cover")
+    }
+
+    func testUpgradingALookKeepsEditsAndBetterLooks() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appending(path: "bookworms-looks-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = LocalSpineStore(folder: folder)
+        let local = look().withOrigin(CloudContract.appleTVGeneratorVersion)
+        func upgrade(_ provenance: String?, family: String = "Lora") -> SeriesLookV1 {
+            SeriesLookV1(
+                design: design(7, provenance: provenance, family: family), key: local.key,
+                createdAt: local.createdAt)
+        }
+
+        let missing = try await store.upgradeLook(upgrade(ModelTier.onDeviceToken))
+        XCTAssertEqual(missing.tier, .onDevice, "A group without a look gets one")
+        let tied = try await store.upgradeLook(
+            upgrade(ModelTier.onDeviceToken, family: "Merriweather"))
+        XCTAssertEqual(tied, missing, "An equal tier keeps the saved look")
+        let better = try await store.upgradeLook(upgrade(nil))
+        XCTAssertEqual(better.tier, .privateCloudCompute)
+        XCTAssertEqual(better.createdAt, local.createdAt)
+        let worse = try await store.upgradeLook(upgrade(ModelTier.onDeviceToken))
+        XCTAssertEqual(worse, better, "A weaker look never replaces a better one")
+
+        try await store.save(
+            local.recolored(
+                SpineColors(
+                    background: ColorValue(hex: "#000000")!,
+                    foreground: ColorValue(hex: "#FFFFFF")!,
+                    accent: ColorValue(hex: "#FF0000")!), at: created.addingTimeInterval(60)))
+        let edited = try await store.upgradeLook(upgrade(nil))
+        XCTAssertEqual(edited.origin, CloudContract.appleTVGeneratorVersion, "The edit stays")
+        let saved = try await store.seriesLooks(accountID: "42", keys: [local.key])
+        XCTAssertEqual(saved[local.key], edited)
+    }
+
     @MainActor
     func testLookWithoutAFamilyDrawsAnInstalledFace() async {
         let fonts = SpineFonts()

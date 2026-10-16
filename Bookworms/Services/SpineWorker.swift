@@ -299,12 +299,20 @@ actor SpineWorker {
     /// the run's tier or better, or a design whose colors the reader chose (see
     /// `SpineDesignV1.action(workItemHash:coverHash:readerChoseCover:runTier:drawsSeriesLook:)`).
     /// `forced` always makes a new design.
+    ///
+    /// The book whose design upgrades its group's look (`SeriesLookV1.upgradeSource(among:)`)
+    /// is designed as if the group had no look, so a weaker tier's look gets a design from the
+    /// run's tier. When that book's saved design is kept, it upgrades the look with no request.
     private func design(
         for book: CloudBook, cover: CoverImage, workHash: String, context: WorkContext,
         forced: Bool, mode: RunMode
     ) async throws -> (design: SpineDesignV1, isNewDesign: Bool)? {
         // Looked up even when forced, so `saveLook` knows whether the group has a look.
-        let look = try await seriesLook(for: book, accountID: context.accountID)
+        let savedLook = try await seriesLook(for: book, accountID: context.accountID)
+        let runTier = runModel?.tier ?? .local
+        let upgradesLook =
+            savedLook.map { $0.isUpgraded(at: runTier) && isUpgradeSource(book, of: $0) } ?? false
+        let look = upgradesLook ? nil : savedLook
         if !forced {
             // A ledger miss is not proof: another device may have saved this work already.
             let saved = try await store.savedDesign(accountID: context.accountID, bookID: book.id)
@@ -314,18 +322,24 @@ actor SpineWorker {
             let action = saved?
                 .action(
                     workItemHash: workHash, coverHash: cover.hash,
-                    readerChoseCover: readerChoseCover, runTier: runModel?.tier ?? .local,
+                    readerChoseCover: readerChoseCover, runTier: runTier,
                     drawsSeriesLook: look != nil)
             switch action ?? .redesign {
-            case .keep: return nil
+            case .keep:
+                if upgradesLook, let saved, saved.generatedColors == nil {
+                    await saveLook(from: saved, for: book, replacing: false)
+                }
+                return nil
             case .save(let design): return (design, false)
             case .redesign: break
             }
             // Books in one look group share a design so their spines match on the shelf. A book
             // that draws its group's look saves a copy of it, whichever device made the look.
-            let source =
+            let source: SpineDesignV1? =
                 if let look {
                     look.design(bookID: look.sourceBookID)
+                } else if upgradesLook {
+                    nil
                 } else {
                     try await storedSeriesDesign(for: book, context: context)
                 }
@@ -396,20 +410,29 @@ actor SpineWorker {
 
     /// Makes `design`, a new design at the run's tier, the series look of `book`'s look group
     /// when the group has none, so the group's first design decides its look. A look another
-    /// device saved first wins. With `replacing`, a group's saved look is made again from `design` instead. A failed
-    /// save leaves the group to the rank rule (`storedSeriesDesign`) or its old look until a
-    /// later design or the app's catch-up saves one.
+    /// device saved first wins. When `book` is the source that upgrades the group's look
+    /// (`isUpgradeSource(_:of:)`), `design` replaces a look from a weaker tier that the reader
+    /// never edited, keeping its creation date. With `replacing`, a group's saved look is made
+    /// again from `design` instead. A failed save leaves the group to the rank rule
+    /// (`storedSeriesDesign`) or its old look until a later design or the app's catch-up saves
+    /// one, or, for an upgrade, until the book's next check.
     private func saveLook(from design: SpineDesignV1, for book: CloudBook, replacing: Bool) async {
         // `design(for:...)` looked up the group's look, unless the book keeps its own look.
         guard book.seriesLink?.ownLook != true,
             let key = SeriesDesigns.lookKey(of: book, link: book.seriesLink),
-            let saved = looks[key], saved == nil || replacing
+            let saved = looks[key]
         else { return }
         do {
             let look: SeriesLookV1
-            if let saved {
+            if let saved, replacing {
                 look = saved.remade(from: design, at: Date())
                 try await store.save(look)
+            } else if let saved {
+                guard saved.isUpgraded(at: design.tier), isUpgradeSource(book, of: saved) else {
+                    return
+                }
+                look = try await store.upgradeLook(
+                    SeriesLookV1(design: design, key: key, createdAt: saved.createdAt))
             } else {
                 look = try await store.createLook(
                     SeriesLookV1(design: design, key: key, createdAt: Date()))
@@ -422,6 +445,12 @@ actor SpineWorker {
                 "Series look not saved: \(nsError.domain, privacy: .public) \(nsError.code, privacy: .public)"
             )
         }
+    }
+
+    /// Whether `book` is the book of this pass's library whose design upgrades `look`
+    /// (`SeriesLookV1.upgradeSource(among:)`).
+    private func isUpgradeSource(_ book: CloudBook, of look: SeriesLookV1) -> Bool {
+        look.upgradeSource(among: lookGroups[look.key] ?? []) == book.id
     }
 
     /// Returns the saved design of `book`'s source in a look group without a saved look, by the
