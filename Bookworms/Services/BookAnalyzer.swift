@@ -270,12 +270,14 @@ actor BookAnalyzer {
     /// uses the best match's system typeface instead of a Google Fonts family. Local defaults
     /// also use it when a family can't download, such as when Google Fonts can't be reached,
     /// because they need no other request: the system typeface letters any book, and the colors
-    /// pass the same contrast check.
+    /// pass the same contrast check. That design records `SpineDesignV1.systemFontToken`, so a
+    /// later run designs the book again (`SpineDesignV1.awaitsFont`).
     ///
     /// Throws `CompanionError.quotaReached`, `.modelBusy`, or `.fontServiceUnavailable`, or an
     /// offline `URLError`, when the run should stop; `.providerRejected` when the backup model
-    /// rejects its key, model name, or account (`ProviderError.isLasting`) or is not set up; `.modelUnavailable` when the tier's model is
-    /// unavailable; and `.invalidDesign` when this book cannot get a valid design.
+    /// rejects its key, model name, or account (`ProviderError.isLasting`) or is not set up;
+    /// `.modelUnavailable` when the tier's model is unavailable; and `.invalidDesign` when this
+    /// book cannot get a valid design.
     func design(
         book: CloudBook, accountID: String, workItemHash: String, cover: CoverImage,
         using model: ModelStatus
@@ -364,6 +366,7 @@ actor BookAnalyzer {
         let text = Self.renderedText(of: book, uppercase: uppercase)
         var tried = Set<String>()
         var usesSystemFace = false
+        var fontFailed = false
         for candidate in candidates where tried.count < 6 && tried.insert(candidate.family).inserted
         {
             guard let family = SpineFamily(rawValue: candidate.family) else { continue }
@@ -373,6 +376,7 @@ actor BookAnalyzer {
             } catch {
                 guard status.tier == .local, !Task.isCancelled else { throw error }
                 usesSystemFace = true
+                fontFailed = true
                 break
             }
             if let font = downloaded {
@@ -391,11 +395,13 @@ actor BookAnalyzer {
         // already thrown, except for local defaults; a family Google Fonts lacks stays missing,
         // so it does not block the fallback either.
         guard usesSystemFace else { throw CompanionError.invalidDesign }
+        let tokens = [status.provenance, fontFailed ? SpineDesignV1.systemFontToken : nil]
+            .compactMap { $0 }
         return try Self.design(
             choice: Self.choice(lettering, palette: palette, weight: best.weight),
             style: bestFamily.style, font: nil, uppercase: uppercase, palette: palette, book: book,
             accountID: accountID, workItemHash: workItemHash, coverHash: cover.hash,
-            provenance: status.provenance)
+            provenance: tokens.isEmpty ? nil : tokens.joined(separator: " "))
     }
 
     /// Maps a model framework error to the companion's error, or returns `nil` for other errors.
@@ -663,8 +669,8 @@ actor BookAnalyzer {
     /// allowed or lacks a glyph that this book's title or author needs, so the caller can analyze
     /// the cover instead. A source without a family that names a face installed on this device
     /// (`SpineFonts.installedFace(named:)`) needs that face's glyphs; without the face, readers
-    /// draw the system typeface, which letters any book. The copy keeps `source`'s model token
-    /// (`SpineDesignV1.modelToken`), so it has its source's tier.
+    /// draw the system typeface, which letters any book. The copy keeps `source`'s tier tokens
+    /// (`SpineDesignV1.tierTokens`), so it has its source's tier and awaits its source's font.
     func seriesDesign(
         from source: SpineDesignV1, book: CloudBook, accountID: String, workItemHash: String,
         coverHash: String
@@ -681,7 +687,7 @@ actor BookAnalyzer {
             uppercase: source.uppercase, fontFamily: source.fontFamily,
             fontPostScriptName: source.fontPostScriptName, instanceWeight: source.instanceWeight,
             provenance: String(
-                (["series-reuse:\(source.bookID)"] + [source.modelToken].compactMap { $0 })
+                (["series-reuse:\(source.bookID)"] + source.tierTokens)
                     .joined(separator: " ").prefix(80)))
         try design.validate()
         return design

@@ -203,6 +203,33 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertEqual(upgrading(copy.recolored(reader), runTier: .onDevice), .keep)
     }
 
+    func testDesignsAwaitingTheirFontRankBelowTheirTier() {
+        let awaiting = design(provenance: "model:local font:system")
+        let local = design(provenance: "model:local")
+        func action(_ design: SpineDesignV1, runTier: ModelTier, drawsSeriesLook: Bool = false)
+            -> SavedDesignAction
+        {
+            design.action(
+                workItemHash: work, coverHash: cover, readerChoseCover: false, runTier: runTier,
+                drawsSeriesLook: drawsSeriesLook)
+        }
+        XCTAssertTrue(awaiting.awaitsFont)
+        XCTAssertFalse(local.awaitsFont)
+        XCTAssertEqual(awaiting.tier, .local)
+        XCTAssertEqual(awaiting.tierTokens, ["model:local", "font:system"])
+        // A run at the design's own tier tries the font again; a book that draws its series'
+        // look keeps drawing it, and the reader's colors stay.
+        XCTAssertEqual(action(awaiting, runTier: .local), .redesign)
+        XCTAssertEqual(action(awaiting, runTier: .local, drawsSeriesLook: true), .keep)
+        XCTAssertEqual(action(awaiting.recolored(reader), runTier: .local), .keep)
+        XCTAssertTrue(awaiting.recolored(reader).awaitsFont, "Recoloring keeps the token")
+        // A design whose font downloaded replaces it, and another stand-in doesn't.
+        XCTAssertFalse(awaiting.outlasts(local, replacing: false))
+        XCTAssertTrue(awaiting.outlasts(awaiting, replacing: false))
+        XCTAssertTrue(local.outlasts(awaiting, replacing: false))
+        XCTAssertTrue(awaiting.isOutranked(by: .onDevice, awaitingFont: true))
+    }
+
     func testSavesKeepTheFirstDesignAtATierAndTakeBetterTiers() {
         let onDevice = design(provenance: "model:apple/on-device")
         let pcc = design().movedBack()
@@ -289,6 +316,16 @@ final class SpineColorsTests: XCTestCase {
                 workItemHash: work, coverHash: cover)
         XCTAssertEqual(reusedOnDevice?.provenance, "series-reuse:7 model:apple/on-device")
         XCTAssertEqual(reusedOnDevice?.tier, .onDevice)
+
+        // A copy of a design that awaits its font awaits it too.
+        var awaiting = generated
+        awaiting.provenance = "model:local font:system"
+        let reusedAwaiting = try await BookAnalyzer()
+            .seriesDesign(
+                from: awaiting, book: sibling, accountID: "42", workItemHash: work,
+                coverHash: cover)
+        XCTAssertEqual(reusedAwaiting?.provenance, "series-reuse:7 model:local font:system")
+        XCTAssertEqual(reusedAwaiting?.awaitsFont, true)
     }
 
     func testSeriesReuseNeedsTheGlyphsOfAnInstalledFaceWithoutAFamily() async throws {

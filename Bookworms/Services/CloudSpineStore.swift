@@ -227,7 +227,7 @@ actor CloudSpineStore: SpineStore {
             guard let payload = Self.payload(SeriesLookV1.self, in: record),
                 let saved =
                     SeriesLookV1.keyed([name: payload], accountID: look.accountID)[look.key],
-                !saved.isUpgraded(at: look.tier)
+                !saved.isUpgraded(at: look.tier, awaitingFont: look.awaitsFont)
             else { return false }
             kept = saved
             return true

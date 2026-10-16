@@ -5,8 +5,10 @@ import Foundation
 ///
 /// A book is rechecked when it has no entry, its work-item hash, chosen cover, or the generator
 /// changed, its last check ran at a model tier below the run's, or its last check is seven days
-/// old. A failed book waits 24 hours unless its work-item hash or chosen cover changed. An Apple TV sync alone does not trigger a recheck: on a phone,
-/// re-downloading every cover after each sync costs too much time and data.
+/// old, or one day old when it saved a design that awaits its font
+/// (`SpineDesignV1.awaitsFont`). A failed book waits 24 hours unless its work-item hash or chosen
+/// cover changed. An Apple TV sync alone does not trigger a recheck: on a phone, re-downloading
+/// every cover after each sync costs too much time and data.
 actor WorkLedger {
     private struct LedgerState: Codable {
         var cloudUserRecordName: String?
@@ -28,6 +30,9 @@ actor WorkLedger {
         /// kept or saved when that tier is better. `nil` when unknown, as after a failure or in
         /// an entry saved without it, and an unknown tier never forces a recheck.
         var tier: ModelTier?
+        /// Whether the last check saved a design that awaits its font, so the book is checked
+        /// again after `failureBackoff`; `nil` in an entry saved without it.
+        var awaitsFont: Bool?
     }
 
     static let recheckInterval: TimeInterval = 7 * 24 * 60 * 60
@@ -73,7 +78,8 @@ actor WorkLedger {
             return now.timeIntervalSince(failedAt) >= Self.failureBackoff
         }
         if let tier = entry.tier, tier < runTier { return true }
-        return now.timeIntervalSince(entry.checkedAt) >= Self.recheckInterval
+        let interval = entry.awaitsFont == true ? Self.failureBackoff : Self.recheckInterval
+        return now.timeIntervalSince(entry.checkedAt) >= interval
     }
 
     /// Whether `chosenCover` differs from the reader's chosen cover at the book's last check. A
@@ -83,15 +89,16 @@ actor WorkLedger {
         entries[recordName].map { $0.chosenCover != chosenCover } ?? false
     }
 
-    /// Records a successful check at `tier` (`Entry.tier`).
+    /// Records a successful check at `tier` (`Entry.tier`), which saved a design that awaits
+    /// its font when `awaitsFont` is true.
     func recordSuccess(
         recordName: String, workItemHash: String, coverHash: String, chosenCover: URL? = nil,
-        tier: ModelTier? = nil, now: Date = Date()
+        tier: ModelTier? = nil, awaitsFont: Bool = false, now: Date = Date()
     ) throws {
         entries[recordName] = Entry(
             workItemHash: workItemHash, coverHash: coverHash,
             generatorVersion: CloudContract.generatorVersion, chosenCover: chosenCover,
-            checkedAt: now, tier: tier)
+            checkedAt: now, tier: tier, awaitsFont: awaitsFont)
         try persist()
     }
 

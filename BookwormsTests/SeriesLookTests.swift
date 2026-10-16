@@ -308,6 +308,27 @@ final class SeriesLookTests: XCTestCase {
         XCTAssertNil(onDevice.upgradeSource(among: [book(2, series: 1018)]), "No cover")
     }
 
+    func testLooksAwaitingTheirFontUpgradeOnceItDownloads() {
+        let awaiting = SeriesLookV1(
+            design: design(
+                7, provenance: "series-reuse:3 model:local font:system", family: nil),
+            key: look().key, createdAt: created)
+        XCTAssertEqual(awaiting.provenance, "model:local font:system")
+        XCTAssertTrue(awaiting.awaitsFont)
+        XCTAssertEqual(awaiting.tier, .local)
+        XCTAssertTrue(awaiting.design(bookID: 8).awaitsFont, "Copies await the font too")
+        XCTAssertTrue(awaiting.isUpgraded(at: .local), "A design with its font replaces it")
+        XCTAssertFalse(
+            awaiting.isUpgraded(at: .local, awaitingFont: true), "Another stand-in doesn't")
+        XCTAssertTrue(awaiting.isUpgraded(at: .onDevice, awaitingFont: true))
+        var edited = awaiting
+        edited.editedAt = created.addingTimeInterval(60)
+        XCTAssertFalse(edited.isUpgraded(at: .local), "The reader's edit stays")
+        var local = look()
+        local.provenance = ModelTier.localToken
+        XCTAssertFalse(local.isUpgraded(at: .local), "The first look decides equal tiers")
+    }
+
     func testLooksReadOtherGeneratorsAndKeepTheReadersColors() throws {
         // A look seeded from the retired Mac companion's on-device design upgrades.
         let mac = look().withOrigin(CloudContract.macGeneratorVersion)

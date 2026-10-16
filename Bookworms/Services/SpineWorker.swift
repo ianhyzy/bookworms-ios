@@ -257,11 +257,15 @@ actor SpineWorker {
                         )
                     }
                     // A design from a better tier than the run's, such as a kept Private Cloud
-                    // Compute design, needs no recheck when that tier runs.
+                    // Compute design, needs no recheck when that tier runs. A saved design that
+                    // awaits its font is checked again after a day.
+                    var awaitsFont = false
+                    if case .save(let made, _) = outcome { awaitsFont = made.awaitsFont }
                     try await ledger.recordSuccess(
                         recordName: recordName, workItemHash: workHash, coverHash: cover.hash,
                         chosenCover: book.chosenCoverURL,
-                        tier: runModel.map { max($0.tier, outcome.design.tier) })
+                        tier: runModel.map { max($0.tier, outcome.design.tier) },
+                        awaitsFont: awaitsFont)
                     snapshot.completed += 1
                 } catch {
                     try Task.checkCancellation()
@@ -462,11 +466,13 @@ actor SpineWorker {
     /// Makes `design`, a new design at the run's tier, the series look of `book`'s look group
     /// when the group has none, so the group's first design decides its look. A look another
     /// device saved first from this tier or a better one wins. When `book` is the source that
-    /// upgrades the group's look (`isUpgradeSource(_:of:)`), `design` replaces a look from a
-    /// weaker tier that the reader never edited, keeping its creation date. With `replacing`, a
-    /// group's saved look is made again from `design` instead. A failed save leaves the group to
-    /// the rank rule (`storedSeriesDesign`) or its old look until a later design or the app's
-    /// catch-up saves one, or, for an upgrade, until the book's next check.
+    /// upgrades the group's look (`isUpgradeSource(_:of:)`), `design` replaces a look that the
+    /// reader never edited and that `design` outranks, such as one from a weaker tier or one
+    /// that awaits its font (`SeriesLookV1.isUpgraded(at:awaitingFont:)`), keeping its creation
+    /// date. With `replacing`, a group's saved look is made again from `design` instead. A
+    /// failed save leaves the group to the rank rule (`storedSeriesDesign`) or its old look
+    /// until a later design or the app's catch-up saves one, or, for an upgrade, until the
+    /// book's next check.
     private func saveLook(from design: SpineDesignV1, for book: CloudBook, replacing: Bool) async {
         // `design(for:...)` looked up the group's look, unless the book keeps its own look.
         guard book.seriesLink?.ownLook != true,
@@ -486,7 +492,9 @@ actor SpineWorker {
                         SeriesLookV1(design: design, key: key, createdAt: Date()))
                 }
                 // The saved look, or a look another device created first.
-                if look.isUpgraded(at: design.tier), isUpgradeSource(book, of: look) {
+                if look.isUpgraded(at: design.tier, awaitingFont: design.awaitsFont),
+                    isUpgradeSource(book, of: look)
+                {
                     look = try await store.upgradeLook(
                         SeriesLookV1(design: design, key: key, createdAt: look.createdAt))
                 } else if saved != nil {

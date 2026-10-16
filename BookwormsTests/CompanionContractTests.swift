@@ -89,6 +89,22 @@ final class CompanionContractTests: XCTestCase {
                 now: now.addingTimeInterval(60))
         XCTAssertTrue(persisted)
 
+        // A design that awaits its font is checked again after a day, or at once at a better
+        // tier.
+        try await ledger.recordSuccess(
+            recordName: "record", workItemHash: "work", coverHash: "cover", tier: .local,
+            awaitsFont: true, now: now)
+        let awaitingSoon = await ledger.needsCheck(
+            recordName: "record", workItemHash: "work", runTier: .local,
+            now: now.addingTimeInterval(23 * 3_600))
+        let awaitingAfterDay = await ledger.needsCheck(
+            recordName: "record", workItemHash: "work", runTier: .local,
+            now: now.addingTimeInterval(86_400))
+        let awaitingBetterTier = await needsCheck(at: .onDevice)
+        XCTAssertFalse(awaitingSoon)
+        XCTAssertTrue(awaitingAfterDay)
+        XCTAssertTrue(awaitingBetterTier)
+
         // A failure waits out its backoff even for a better tier.
         try await ledger.recordFailure(recordName: "record", workItemHash: "work", now: now)
         let backingOff = await needsCheck(at: .privateCloudCompute)

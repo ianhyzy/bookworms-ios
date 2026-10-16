@@ -102,9 +102,10 @@ extension SpineDesignV1 {
     }
 
     /// Whether saving `design` leaves this saved design in place: both are the same work from
-    /// the same generator, and this one comes from `design`'s tier or a better one or carries
-    /// the reader's colors. So the first device to save a work at a tier keeps it, and a better
-    /// tier's design replaces a weaker one's. With `replacing`, for a redesign the reader asked
+    /// the same generator, and `design` doesn't outrank this one
+    /// (`isOutranked(by:awaitingFont:)`) or this one carries the reader's colors. So the first
+    /// device to save a work at a tier keeps it, and a better tier's design, or one whose font
+    /// downloaded, replaces a weaker one's. With `replacing`, for a redesign the reader asked
     /// for, only a saved design that is no older stays.
     func outlasts(_ design: SpineDesignV1, replacing: Bool) -> Bool {
         guard accountID == design.accountID, bookID == design.bookID,
@@ -113,7 +114,8 @@ extension SpineDesignV1 {
         else { return false }
         return replacing
             ? generatedAt >= design.generatedAt
-            : tier >= design.tier || generatedColors != nil
+            : !isOutranked(by: design.tier, awaitingFont: design.awaitsFont)
+                || generatedColors != nil
     }
 
     /// What a generation run at `runTier` does with this saved design for a book whose work-item
@@ -127,11 +129,12 @@ extension SpineDesignV1 {
     /// cover the reader chose, with new image bytes, redesigns a recolored spine. Otherwise a
     /// recolored design whose hashes changed is saved again under the new hashes, with its colors
     /// and `generatedAt`. A design with the generator's colors is kept while both hashes match and
-    /// it comes from this generator at `runTier` or a better tier (`tier`), or the book draws a
-    /// series look. A run redesigns a weaker tier's design, so a better model replaces a weaker
-    /// one's choices once it is available. A look can come from another generator, such as the
-    /// Apple TV's, and redesigning a book that draws it changes nothing on the shelf. A series
-    /// copy (`isSeriesReuse`) never upgrades a look, so it is redesigned instead: it reproduces a
+    /// it comes from this generator at `runTier` or a better tier, without a font to await at
+    /// `runTier` (`isOutranked(by:awaitingFont:)`), or the book draws a series look. A run
+    /// redesigns a weaker tier's design, so a better model replaces a weaker one's choices once
+    /// it is available. A look can come from another generator, such as the Apple TV's, and
+    /// redesigning a book that draws it changes nothing on the shelf. A series copy
+    /// (`isSeriesReuse`) never upgrades a look, so it is redesigned instead: it reproduces a
     /// look or another book's design, perhaps the very look it would replace, and a copy without
     /// a model token reads as Private Cloud Compute whatever made its source.
     func action(
@@ -148,7 +151,7 @@ extension SpineDesignV1 {
                     provenance: provenance))
         }
         let isKept =
-            (generatorVersion == CloudContract.generatorVersion && tier >= runTier
+            (generatorVersion == CloudContract.generatorVersion && !isOutranked(by: runTier)
                 && !(upgradesSeriesLook && isSeriesReuse))
             || drawsSeriesLook
         return isCurrent && isKept ? .keep : .redesign
@@ -174,6 +177,32 @@ extension SpineDesignV1 {
 
     /// The model tier that made this design, from its `modelToken`.
     var tier: ModelTier { ModelTier(modelToken: modelToken) }
+
+    /// The `provenance` token of a local-defaults design whose Google Fonts family couldn't
+    /// download, such as while Google Fonts was unreachable, so it uses its style's system
+    /// typeface (`BookAnalyzer.design(book:accountID:workItemHash:cover:using:)`).
+    static let systemFontToken = "font:system"
+
+    /// Whether the design stands in its system typeface for a family that couldn't download
+    /// (`systemFontToken`). It ranks below the other designs of its tier
+    /// (`isOutranked(by:awaitingFont:)`), so a later run redesigns it, and upgrades the series
+    /// look made from it, once the font downloads.
+    var awaitsFont: Bool {
+        provenance?.split(separator: " ").contains { $0 == Self.systemFontToken } == true
+    }
+
+    /// The `provenance` tokens that place the design in the tier rule, which its series copies
+    /// and looks carry: its `modelToken` and, when it awaits a font, `systemFontToken`.
+    var tierTokens: [String] {
+        [modelToken, awaitsFont ? Self.systemFontToken : nil].compactMap { $0 }
+    }
+
+    /// Whether a design from `tier` replaces this one under the tier rule: `tier` is better, or
+    /// it is this design's tier and only this design awaits a font. `awaitingFont` tells
+    /// whether the other design awaits one too.
+    func isOutranked(by tier: ModelTier, awaitingFont: Bool = false) -> Bool {
+        self.tier < tier || (self.tier == tier && awaitsFont && !awaitingFont)
+    }
 
     private func rebuilt(
         workItemHash: String, coverHash: String, colors: SpineColors, provenance: String?

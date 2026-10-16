@@ -534,6 +534,9 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(design.typeface, SpineFontStyle.geometricSans.fallbackTypeface)
         XCTAssertEqual(design.weight, 700)
         XCTAssertEqual(design.tier, .local)
+        // The design awaits its font, so a later run designs the book again.
+        XCTAssertEqual(design.provenance, "model:local font:system")
+        XCTAssertTrue(design.awaitsFont)
         let lc = SpineContrast.apca(
             text: try XCTUnwrap(ColorValue(hex: design.foregroundHex)),
             background: try XCTUnwrap(ColorValue(hex: design.backgroundHex)))
