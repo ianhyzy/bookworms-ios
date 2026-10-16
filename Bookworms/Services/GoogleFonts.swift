@@ -47,11 +47,13 @@ actor GoogleFonts {
     private let catalogLifetime: TimeInterval = 7 * 24 * 60 * 60
     private let maximumBytes = 30 * 1024 * 1024
 
+    /// Creates a downloader that caches under `root`. Tests pass `configuration` to stand in for
+    /// the network.
     init(
-        root: URL = URL.cachesDirectory.appending(path: "Bookworms/fonts")
+        root: URL = URL.cachesDirectory.appending(path: "Bookworms/fonts"),
+        configuration: URLSessionConfiguration = .ephemeral
     ) {
         self.root = root
-        let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil
         configuration.timeoutIntervalForRequest = 40
         session = URLSession(configuration: configuration)

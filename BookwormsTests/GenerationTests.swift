@@ -404,6 +404,53 @@ final class GenerationTests: XCTestCase {
         XCTAssertNil(design.instanceWeight)
     }
 
+    func testLocalDefaultsUseTheStyleSystemTypefaceWhenFontsCannotDownload() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "bookworms-fonts-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [OfflineURLProtocol.self]
+        let analyzer = BookAnalyzer(fonts: GoogleFonts(root: root, configuration: configuration))
+        // A textless cover in two dark blues, so no title line is measured.
+        let side = 64
+        var pixels = [UInt8](repeating: 255, count: side * side * 4)
+        for y in 0..<side {
+            for x in 0..<side {
+                let offset = (y * side + x) * 4
+                pixels[offset] = 20
+                pixels[offset + 1] = x < side / 2 ? 40 : 60
+                pixels[offset + 2] = 90
+            }
+        }
+        let image = try XCTUnwrap(
+            pixels.withUnsafeMutableBytes { buffer in
+                CGContext(
+                    data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8,
+                    bytesPerRow: side * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?
+                    .makeImage()
+            })
+        let hash = String(repeating: "a", count: 64)
+        let book = CloudBook(
+            id: 9, title: "A Quiet Orbit", author: "Ann Author", coverURL: nil,
+            detailCoverURL: nil, genres: ["Science Fiction"])
+        let design = try await analyzer.design(
+            book: book, accountID: "42", workItemHash: hash,
+            cover: CoverImage(image: image, hash: hash), using: .local)
+        XCTAssertNil(design.fontFamily)
+        XCTAssertNil(design.fontPostScriptName)
+        XCTAssertEqual(design.typeface, SpineFontStyle.geometricSans.fallbackTypeface)
+        XCTAssertEqual(design.weight, 700)
+        XCTAssertEqual(design.tier, .local)
+        let lc = SpineContrast.apca(
+            text: try XCTUnwrap(ColorValue(hex: design.foregroundHex)),
+            background: try XCTUnwrap(ColorValue(hex: design.backgroundHex)))
+        XCTAssertGreaterThanOrEqual(abs(lc), 75)
+        // With the system typeface, a series copy of the design needs no download either.
+        let letters = try await analyzer.letters(book, with: design)
+        XCTAssertTrue(letters)
+    }
+
     func testTitlesTheAtlasCannotRankFallBackToGenreOrHumanistFaces() throws {
         let atlas = try XCTUnwrap(FontAtlas.shared)
         let font = try XCTUnwrap(atlas.fonts.first { $0.family == "Oswald" && $0.weight == 400 })
@@ -727,4 +774,14 @@ extension SpineDesignV1 {
         design.fontPostScriptName = postScriptName
         return design
     }
+}
+
+/// Fails every request as an offline device does.
+private final class OfflineURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+    }
+    override func stopLoading() {}
 }
