@@ -215,16 +215,18 @@ struct ShareStudioView: View {
     }
 
     /// The preview above the settings in a compact width; in a regular width, such as on the
-    /// Mac, the preview fills the window beside a column of settings.
+    /// Mac, the preview fills the window beside a column of settings. The image's size and cover
+    /// style sit right below the preview, then the choice of templates, above everything it
+    /// changes.
     @ViewBuilder
     private func form(isPending: Bool, hasNoBooks: Bool) -> some View {
         Group {
             if sizeClass == .regular {
                 HStack(spacing: 0) {
                     VStack(spacing: 16) {
-                        modePicker.frame(maxWidth: 420)
                         preview(isPending: isPending, hasNoBooks: hasNoBooks, maxHeight: .infinity)
-                        sizePicker.frame(maxWidth: 420)
+                        imageRow.frame(maxWidth: 420)
+                        modePicker.frame(maxWidth: 420)
                     }
                     .padding(24)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -237,16 +239,22 @@ struct ShareStudioView: View {
             } else {
                 Form {
                     Section {
-                        // Comparisons are first-class: the choice sits above everything it changes.
-                        modePicker.listRowBackground(Color.clear)
                         preview(isPending: isPending, hasNoBooks: hasNoBooks, maxHeight: 380)
-                        sizePicker.listRowBackground(Color.clear)
+                        imageRow
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                        modePicker.listRowBackground(Color.clear)
                     }
                     settings(hasNoBooks: hasNoBooks)
                 }
+                // The preview starts just below the bar instead of a section's height lower.
+                .contentMargins(.top, 4, for: .scrollContent)
             }
         }
         .navigationTitle("Share")
+        // An inline title, as Library and Desk use, leaves the preview the height a large
+        // title would take.
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if image != nil {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -266,11 +274,30 @@ struct ShareStudioView: View {
         .pickerStyle(.segmented)
     }
 
-    private var sizePicker: some View {
-        Picker("Size", selection: $aspect) {
-            ForEach(ShareAspect.allCases) { Text($0.title).tag($0) }
+    /// The image's size, and beside it whether covers draw as 3D books or flat.
+    private var imageRow: some View {
+        HStack(spacing: 12) {
+            Picker("Size", selection: $aspect) {
+                ForEach(ShareAspect.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            coverToggle
         }
-        .pickerStyle(.segmented)
+    }
+
+    /// Draws covers as 3D books when on and flat when off. It is disabled where the template
+    /// has one style: Desk's books are always 3D, and Year in Books on Square shows no covers.
+    private var coverToggle: some View {
+        let isOn = Binding {
+            template == .pile || coverStyle == .threeD
+        } set: {
+            coverStyle = $0 ? .threeD : .flat
+        }
+        return Toggle("3D books", systemImage: "view.3d", isOn: isOn)
+            .toggleStyle(.button)
+            .labelStyle(.iconOnly)
+            .help("Draw covers as 3D books")
+            .disabled(!template.hasCoverStyle || (template == .yearInBooks && aspect == .square))
     }
 
     @ViewBuilder
@@ -298,21 +325,6 @@ struct ShareStudioView: View {
         }
         if template.isSingleBook {
             Section("Book") { bookRow }
-        }
-        // Year in Books draws covers only for its records, which Square leaves out.
-        if template.hasCoverStyle && !(template == .yearInBooks && aspect == .square) {
-            Section {
-                Picker("Cover style", selection: $coverStyle) {
-                    ForEach(ShareCoverStyle.allCases) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.segmented)
-            } header: {
-                Text("Cover")
-            } footer: {
-                if template == .yearInBooks {
-                    Text("Applies to the records, which appear when they fit.")
-                }
-            }
         }
         if template == .hotTakes || template.hasRatingOption || showsShuffle {
             Section("Options") { options(hasNoBooks: hasNoBooks) }
@@ -604,8 +616,9 @@ struct ShareStudioView: View {
 
     // MARK: - Time frame
 
+    /// The kinds of time frame, shortest first.
     private enum FrameKind: CaseIterable, Identifiable {
-        case year, month, lifetime
+        case month, year, lifetime
 
         var id: Self { self }
 

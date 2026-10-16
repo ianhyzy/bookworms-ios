@@ -189,20 +189,11 @@ enum HotTakeDirection: String, CaseIterable, Identifiable {
 }
 
 /// How a card draws covers.
-enum ShareCoverStyle: String, CaseIterable, Identifiable {
+enum ShareCoverStyle: String, CaseIterable {
     /// A lit 3D book with its spine.
     case threeD
     /// The cover alone, with rounded corners and a soft shadow.
     case flat
-
-    var id: Self { self }
-
-    var title: String {
-        switch self {
-        case .threeD: "3D"
-        case .flat: "Flat"
-        }
-    }
 }
 
 /// An export size, in pixels, matching common social formats.
