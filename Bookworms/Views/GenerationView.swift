@@ -6,8 +6,8 @@ import SwiftUI
 #endif
 
 /// The **Spines** tab: design coverage, generator progress, the designing model and its quota,
-/// the charging preference, and where the library comes from. The toolbar opens the Hardcover
-/// account sheet.
+/// and the charging preference. The toolbar opens the Hardcover account sheet, which shows where
+/// the library comes from and when it last synced.
 struct GenerationView: View {
     @Environment(AppModel.self) private var model
     @Environment(GenerationController.self) private var generation
@@ -36,11 +36,16 @@ struct GenerationView: View {
                         Text(Self.chargingFooter)
                     }
                 }
-                librarySource
             }
+            // The first section has no header, so the default top margin reads as a gap. Share
+            // uses the same margin.
+            .contentMargins(.top, 4, for: .scrollContent)
             .navigationTitle("Spines")
+            // The tab bar already names the tab, so an inline title leaves the form more room.
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 Button("Hardcover account", systemImage: accountSymbol) { showsAccount = true }
+                    .accessibilityValue(accountNeedsAttention ? "Needs attention" : "")
             }
             .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
             .task { await generation.refreshModelStatus() }
@@ -77,6 +82,10 @@ struct GenerationView: View {
                 Text("\(designed) of \(total) books designed")
                     .font(.headline)
             }
+            if model.library == nil {
+                Text("No library yet. Open your Hardcover account to connect or check its status.")
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -109,7 +118,7 @@ struct GenerationView: View {
     private var progress: some View {
         let status = generation.status
         let done = status.completed + status.failed
-        return Section("Generation") {
+        return Section {
             if status.isRunning {
                 ProgressView(value: Double(done), total: Double(max(done + status.queue, 1))) {
                     Text(status.phase)
@@ -139,6 +148,15 @@ struct GenerationView: View {
             } else {
                 Button("Generate now") { generation.generateNow() }
                     .disabled(status.isRunning)
+            }
+        } header: {
+            Text("Generation")
+        } footer: {
+            // The worklist choice explains why a run may design books the summary doesn't count.
+            if model.account.isSignedIn, !model.isPreview {
+                Text(
+                    "When your Apple TV lists books to design, Bookworms designs those instead of your Hardcover library."
+                )
             }
         }
     }
@@ -215,55 +233,17 @@ struct GenerationView: View {
         #endif
     }
 
-    /// The toolbar's account symbol, badged when Hardcover rejected the saved login.
-    private var accountSymbol: String {
+    /// Whether the account sheet shows a problem: Hardcover rejected the saved login, the library
+    /// failed to download or load, also while an older copy shows.
+    private var accountNeedsAttention: Bool {
         let account = model.account
-        if account.needsReconnect { return "person.crop.circle.badge.exclamationmark.fill" }
-        return account.isSignedIn ? "person.crop.circle.fill" : "person.crop.circle"
+        return account.needsReconnect || account.syncError != nil || model.loadError != nil
     }
 
-    /// The library's source: this iPhone's Hardcover sign-in, or the archive's library in iCloud.
-    ///
-    /// A signed-in iPhone never shows the archive's library (see `CloudSpineStore`), so the
-    /// sign-in decides the label. Load and sync errors show even while an older copy is shown.
-    @ViewBuilder private var librarySource: some View {
-        let account = model.account
-        let fromHardcover = account.isSignedIn && !model.isPreview
-        Section {
-            if let library = model.library {
-                LabeledContent(
-                    "Library synced",
-                    value: library.syncedAt.formatted(.relative(presentation: .named)))
-            } else if model.loadError == nil {
-                Text(
-                    fromHardcover
-                        ? "Loading your Hardcover library."
-                        : "Waiting for one of your Apple devices to save a library to iCloud.")
-            }
-            if let error = model.loadError {
-                Label(error, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.secondary)
-            }
-            // Preview mode ignores the sign-in.
-            if !model.isPreview, account.needsReconnect {
-                Button("Reconnect") {
-                    account.startSignIn()
-                    showsAccount = true
-                }
-            } else if !model.isPreview, !account.isSignedIn, model.library == nil {
-                Button("Connect Hardcover instead") { showsAccount = true }
-            }
-        } header: {
-            Text(fromHardcover ? "Hardcover" : "iCloud")
-        } footer: {
-            if model.isPreview {
-                Text("Preview mode reads a local library. Designs stay on this \(ThisDevice.name).")
-            } else if fromHardcover {
-                Text(
-                    "Your books come from your Hardcover account on this \(ThisDevice.name). When your Apple TV lists books of another Hardcover account to design, Bookworms designs those instead."
-                )
-            }
-        }
+    /// The toolbar's account symbol, badged when the account sheet shows a problem.
+    private var accountSymbol: String {
+        if accountNeedsAttention { return "person.crop.circle.badge.exclamationmark.fill" }
+        return model.account.isSignedIn ? "person.crop.circle.fill" : "person.crop.circle"
     }
 
     private static func quotaText(_ status: ModelStatus) -> String {
