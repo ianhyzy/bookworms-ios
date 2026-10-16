@@ -377,7 +377,8 @@ actor SpineWorker {
 
     /// Returns the saved design of `book`'s source in a look group without a saved look, by the
     /// rule the app draws with (`SeriesDesigns.sources(of:lends:canLetter:)`), when that source
-    /// is another book with a usable saved design from this generator.
+    /// is another book with a usable saved design from this generator, made for that book as it
+    /// is now (`SeriesDesigns.isCurrent(_:for:)`).
     ///
     /// A source ranks before the books that draw with it and is always designed from its own
     /// cover: a redesign from a new cover, or a newly read first book, changes the group.
@@ -400,7 +401,7 @@ actor SpineWorker {
         let designs = earlier.reduce(into: [Int: SpineDesignV1]()) { designs, mate in
             if let design = bookDesigns[mate.id],
                 design.generatorVersion == CloudContract.generatorVersion,
-                SeriesDesigns.isUsableSource(design)
+                SeriesDesigns.isUsableSource(design), SeriesDesigns.isCurrent(design, for: mate)
             {
                 designs[mate.id] = design
             }

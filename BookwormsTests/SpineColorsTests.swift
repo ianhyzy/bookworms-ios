@@ -218,6 +218,15 @@ final class SpineColorsTests: XCTestCase {
             uppercase: false, fontFamily: family)
     }
 
+    /// `designs`, each made for its book in `books` as it is now, so it can lend by rank.
+    private func current(_ designs: [Int: SpineDesignV1], in books: [CloudBook])
+        -> [Int: SpineDesignV1]
+    {
+        designs.mapValues { design in
+            books.first { $0.id == design.bookID }.map(design.current(for:)) ?? design
+        }
+    }
+
     func testSeriesMembershipNeedsTheSameSeriesAndFirstAuthor() {
         let first = seriesBook(1, by: "José Saramago")
         XCTAssertTrue(SeriesDesigns.matches(first, seriesBook(2, by: "jose saramago")))
@@ -264,18 +273,20 @@ final class SpineColorsTests: XCTestCase {
         // Book 2 lends its design, in Bebas Neue, to the books after it; book 7 has another
         // author. Book 1 ranks first but draws its own design once it has one.
         XCTAssertEqual(
-            SeriesDesigns.sources(books: books, designs: designs),
+            SeriesDesigns.sources(books: books, designs: current(designs, in: books)),
             [2: 2, 3: 2, 4: 2, 5: 2, 6: 2])
         // Without book 2, book 4 finished before book 3 at the same position, so it leads.
         designs[2] = nil
         XCTAssertEqual(
-            SeriesDesigns.sources(books: books, designs: designs), [3: 4, 4: 4, 5: 4, 6: 4])
+            SeriesDesigns.sources(books: books, designs: current(designs, in: books)),
+            [3: 4, 4: 4, 5: 4, 6: 4])
 
         // Without positions, the earliest finish leads, and a missing finish ranks last.
         let unnumbered = [seriesBook(10), seriesBook(11, finished: "2021-01-01"), seriesBook(9)]
         let unnumberedSources = SeriesDesigns.sources(
             books: unnumbered,
-            designs: [9: design(for: 9), 10: design(for: 10), 11: design(for: 11)])
+            designs: current(
+                [9: design(for: 9), 10: design(for: 10), 11: design(for: 11)], in: unnumbered))
         XCTAssertEqual(unnumberedSources, [9: 11, 10: 11, 11: 11])
         XCTAssertEqual(
             SeriesDesigns.sourceFirst(unnumbered + [seriesBook(12, series: nil)]).map(\.id),
@@ -290,7 +301,7 @@ final class SpineColorsTests: XCTestCase {
             seriesBook(2, by: "Ann Author, Co Writer", position: 2),
             seriesBook(3, by: "Co Writer", position: 3),
         ]
-        let designs = [1: design(for: 1), 2: design(for: 2), 3: design(for: 3)]
+        let designs = current([1: design(for: 1), 2: design(for: 2), 3: design(for: 3)], in: books)
         for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
             XCTAssertEqual(
                 SeriesDesigns.sources(books: order.map { books[$0] }, designs: designs),
@@ -306,11 +317,22 @@ final class SpineColorsTests: XCTestCase {
             seriesBook(1, position: 1), seriesBook(2, position: 2),
             seriesBook(3, position: 3, title: "東京物語"),
         ]
-        let designs = [1: design(for: 1), 2: design(for: 2), 3: design(for: 3)]
+        let designs = current([1: design(for: 1), 2: design(for: 2), 3: design(for: 3)], in: books)
         let sources = SeriesDesigns.sources(books: books, designs: designs) { book, design in
             face.covers(SeriesDesigns.lettering(of: book, uppercase: design.uppercase))
         }
         XCTAssertEqual(sources, [1: 1, 2: 1])
+    }
+
+    func testOutOfDateDesignDrawsOnlyItsOwnBook() {
+        // Book 1 ranks first, but its design was made for the book's earlier metadata, so it
+        // lends to no one: book 3 draws book 2's design, and book 1 draws its own.
+        let books = [
+            seriesBook(1, position: 1), seriesBook(2, position: 2), seriesBook(3, position: 3),
+        ]
+        var designs = current([2: design(for: 2), 3: design(for: 3)], in: books)
+        designs[1] = design(for: 1)
+        XCTAssertEqual(SeriesDesigns.sources(books: books, designs: designs), [2: 2, 3: 2])
     }
 
     /// A model reading a preview folder that holds `books`, their saved `designs`, and saved

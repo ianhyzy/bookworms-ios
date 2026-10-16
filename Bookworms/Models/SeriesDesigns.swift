@@ -16,12 +16,12 @@ struct SeriesLookKey: Codable, Hashable, Sendable {
 /// Books with one look key (`lookKey(of:link:)`) form a look group. A group's first saved look
 /// (`SeriesLookV1`) decides how its books draw; a book whose link sets `ownLook`, or whose
 /// lettering the look's loaded face lacks glyphs for, draws its own design instead. Before a
-/// group has a look, its books draw the design of the best-ranked book with one
-/// (`sources(of:lends:canLetter:)`). Each book keeps its own saved design either way. Generation
-/// follows the same rules (`SpineWorker`), so a group's books usually save matching designs
-/// anyway. The Apple TV app mirrors `styleSeries`, `lookKey`, and `subseries`; keep them in step,
-/// because the look key names the look's record, and keys that differ between the apps give one
-/// group two looks.
+/// group has a look, its books draw the design of the best-ranked book with one made for it as it
+/// is now (`sources(books:designs:canLetter:)`). Each book keeps its own saved design either way.
+/// Generation follows the same rules (`SpineWorker`), so a group's books usually save matching
+/// designs anyway. The Apple TV app mirrors `styleSeries`, `lookKey`, and `subseries`; keep them
+/// in step, because the look key names the look's record, and keys that differ between the apps
+/// give one group two looks.
 enum SeriesDesigns {
     /// The series whose look `book` draws, with the book's position in it: the series its link
     /// names, else its shortest series, or `nil` for no series.
@@ -190,7 +190,7 @@ enum SeriesDesigns {
     /// `ranksBefore` order. A book takes the best-ranked earlier root that can lend (`lends`) and
     /// can letter it (`canLetter`); otherwise it is a root itself. Recolor, **Change cover**, and
     /// **Redesign spine** on a book act on its source, which always designs from its own cover.
-    /// The result doesn't depend on the order of `books`.
+    /// The result doesn't depend on the order of `books`. `lends` runs once per root.
     static func sources(
         of books: [CloudBook], lends: (CloudBook) -> Bool,
         canLetter: (_ book: CloudBook, _ source: CloudBook) -> Bool = { _, _ in true }
@@ -206,13 +206,14 @@ enum SeriesDesigns {
     ) -> [Int: Int] {
         var sources: [Int: Int] = [:]
         for members in groups {
-            var roots: [CloudBook] = []
+            // The roots that can lend, in rank order.
+            var lenders: [CloudBook] = []
             for book in members {
-                if let root = roots.first(where: { lends($0) && canLetter(book, $0) }) {
+                if let root = lenders.first(where: { canLetter(book, $0) }) {
                     sources[book.id] = root.id
                     sources[root.id] = root.id
-                } else {
-                    roots.append(book)
+                } else if lends(book) {
+                    lenders.append(book)
                 }
             }
         }
@@ -222,7 +223,8 @@ enum SeriesDesigns {
     /// `sources(of:lends:canLetter:)` for books with saved `designs`: a book lends its design
     /// when its allowed upright face (`SpineDesignV1.withAllowedFont`) is usable
     /// (`isUsableSource`), so a design saved in a blocked face, such as Impact, lends its
-    /// replacement.
+    /// replacement, and the design was made for the book as it is now (`isCurrent(_:for:)`).
+    /// A book whose design is stale draws it but lends it to no one.
     static func sources(
         books: [CloudBook], designs: [Int: SpineDesignV1],
         canLetter: (CloudBook, SpineDesignV1) -> Bool = { _, _ in true }
@@ -237,7 +239,10 @@ enum SeriesDesigns {
     ) -> [Int: Int] {
         sources(
             ranked: groups,
-            lends: { designs[$0.id].map { isUsableSource($0.withAllowedFont) } == true },
+            lends: { book in
+                guard let design = designs[book.id] else { return false }
+                return isUsableSource(design.withAllowedFont) && isCurrent(design, for: book)
+            },
             canLetter: { book, source in designs[source.id].map { canLetter(book, $0) } ?? false })
     }
 
@@ -261,8 +266,7 @@ enum SeriesDesigns {
     /// The looks to create for the look groups in `books` that have no saved look in `looks`.
     ///
     /// A group gets a look when a member has a usable saved design (`isUsableSource`) made for
-    /// the book as it is now: its work-item hash matches the book's
-    /// (`CloudContract.workItemHash(accountID:book:)`). The look copies the member design made
+    /// the book as it is now (`isCurrent(_:for:)`). The look copies the member design made
     /// earliest (`generatedAt`, then the lower book ID), as stored, among designs that are not
     /// series reuse copies, or among the copies when every design is one.
     static func missingLooks(
@@ -274,8 +278,7 @@ enum SeriesDesigns {
                 guard looks[key] == nil else { return nil }
                 let usable = members.compactMap { book -> SpineDesignV1? in
                     guard let design = designs[book.id], isUsableSource(design),
-                        design.workItemHash
-                            == CloudContract.workItemHash(accountID: design.accountID, book: book)
+                        isCurrent(design, for: book)
                     else { return nil }
                     return design
                 }
@@ -284,6 +287,14 @@ enum SeriesDesigns {
                     .min { ($0.generatedAt, $0.bookID) < ($1.generatedAt, $1.bookID) }
                 return source.map { SeriesLookV1(design: $0, key: key, createdAt: now) }
             }
+    }
+
+    /// Returns whether `design` was made for `book` as it is now: its work-item hash matches the
+    /// book's (`CloudContract.workItemHash(accountID:book:)`). A design made for an earlier title,
+    /// author, or cover still draws its own book, but it neither lends to other books by rank nor
+    /// starts a look.
+    static func isCurrent(_ design: SpineDesignV1, for book: CloudBook) -> Bool {
+        design.workItemHash == CloudContract.workItemHash(accountID: design.accountID, book: book)
     }
 
     /// The text a spine letters for `book` in a design, for glyph checks: its title and author.
