@@ -271,6 +271,8 @@ final class HardcoverTests: XCTestCase {
         // Only the finished book belongs on the shelf: not the current read, and not the book
         // on Want to Read.
         XCTAssertEqual(library.books.filter(\.hasBeenRead).map(\.id), [101])
+        // The featured series names the book; the shorter series decides its look.
+        XCTAssertEqual(SeriesDesigns.styleSeries(of: library.books[0], link: nil)?.id, 7)
     }
 
     func testReviewTextBecomesPlainText() {

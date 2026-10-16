@@ -177,11 +177,13 @@ final class SpineColorsTests: XCTestCase {
             uppercase: false, fontFamily: family)
     }
 
-    func testSeriesMembershipNeedsTheSameSeriesAndASharedAuthor() {
+    func testSeriesMembershipNeedsTheSameSeriesAndFirstAuthor() {
         let first = seriesBook(1, by: "José Saramago")
         XCTAssertTrue(SeriesDesigns.matches(first, seriesBook(2, by: "jose saramago")))
         XCTAssertFalse(SeriesDesigns.matches(first, seriesBook(3, by: "Another Writer")))
         XCTAssertTrue(
+            SeriesDesigns.matches(seriesBook(4, by: "Ann Author, Co Writer"), seriesBook(5)))
+        XCTAssertFalse(
             SeriesDesigns.matches(seriesBook(4, by: "Co Writer, Ann Author"), seriesBook(5)))
         XCTAssertFalse(SeriesDesigns.matches(seriesBook(6), seriesBook(7, series: 9)))
         XCTAssertFalse(
@@ -235,9 +237,9 @@ final class SpineColorsTests: XCTestCase {
             [11, 9, 10, 12])
     }
 
-    func testSeriesSourcesLendOnlyOwnDesignsInAnyBookOrder() {
-        // Book 2 shares an author with books 1 and 3, which share none. Book 2 draws book 1's
-        // design; book 3 may not draw the design book 2 borrowed, so it draws its own.
+    func testSeriesSourcesGroupByFirstAuthorInAnyBookOrder() {
+        // Book 2 shares its first author with book 1, so it draws book 1's design. Book 3's
+        // first author is only book 2's coauthor, so it draws its own.
         let books = [
             seriesBook(1, by: "Ann Author", position: 1),
             seriesBook(2, by: "Ann Author, Co Writer", position: 2),
