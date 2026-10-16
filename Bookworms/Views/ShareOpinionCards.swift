@@ -94,56 +94,83 @@ struct ReviewCard: View {
     }
 }
 
-/// Up to three books whose rating differs most from Hardcover's readers, with both ratings and
-/// the gap in stars.
+/// Up to three books whose rating differs most from Hardcover's readers, or from another
+/// reader's (`ShareInput.social`), with both ratings and the gap in stars.
 ///
 /// Several takes stack as rows. A single take gets a large cover instead, so the card does not
-/// leave most of its height empty.
+/// leave most of its height empty. Compared with another reader, the card ends with the
+/// invitation to compare on Hardcover.
 struct HotTakesCard: View {
     let input: ShareInput
 
     var body: some View {
-        let aspect = input.aspect
-        let isHero = input.books.count == 1
         let theme = input.theme
         ZStack {
             LinearGradient(
                 colors: [theme.backdropLight.color, theme.backdropDark.color],
                 startPoint: .top, endPoint: .bottom)
-            VStack(
-                alignment: isHero && aspect != .square ? .center : .leading,
-                spacing: aspect == .square ? 24 : 36
-            ) {
-                VStack(alignment: isHero && aspect != .square ? .center : .leading, spacing: 8) {
-                    Text(heading)
-                        .font(ShareStyle.serif(aspect == .story ? 84 : 68, .semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.6)
-                    Text(subtitle)
-                        .font(.system(size: 32, weight: .medium))
-                        .opacity(0.75)
-                        .lineLimit(1)
-                        .minimumScaleFactor(30 / 32)
+            if let social = input.social {
+                VStack(spacing: 24) {
+                    takes.frame(maxHeight: .infinity)
+                    ShareInviteLine(username: social.owner.username)
                 }
-                if isHero, let book = input.books.first {
-                    hero(book)
-                } else {
-                    let panel = theme.panel().color
-                    // One slot for every cover, as wide as the widest, so each row's text starts
-                    // at the same x.
-                    let slot = input.books
-                        .map {
-                            ShareCover.aspect(of: input.covers[$0.id], style: input.coverStyle)
-                        }
-                        .max()
-                    ForEach(input.books) { book in
-                        row(book, coverAspect: slot ?? 2 / 3, panel: panel)
+                .foregroundStyle(ShareStyle.cream.color)
+                .padding(input.aspect.insets)
+            } else {
+                takes
+                    .foregroundStyle(ShareStyle.cream.color)
+                    .padding(input.aspect.insets)
+            }
+        }
+    }
+
+    private var takes: some View {
+        let aspect = input.aspect
+        let isHero = input.books.count == 1
+        let theme = input.theme
+        return VStack(
+            alignment: isHero && aspect != .square ? .center : .leading,
+            spacing: aspect == .square ? 24 : 36
+        ) {
+            VStack(alignment: isHero && aspect != .square ? .center : .leading, spacing: 8) {
+                Text(heading)
+                    .font(ShareStyle.serif(aspect == .story ? 84 : 68, .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                Text(subtitle)
+                    .font(.system(size: 32, weight: .medium))
+                    .opacity(0.75)
+                    .lineLimit(1)
+                    .minimumScaleFactor(30 / 32)
+            }
+            if isHero, let book = input.books.first {
+                hero(book)
+            } else {
+                let panel = theme.panel().color
+                // One slot for every cover, as wide as the widest, so each row's text starts
+                // at the same x.
+                let slot = input.books
+                    .map {
+                        ShareCover.aspect(of: input.covers[$0.id], style: input.coverStyle)
                     }
+                    .max()
+                ForEach(input.books) { book in
+                    row(book, coverAspect: slot ?? 2 / 3, panel: panel)
                 }
             }
-            .foregroundStyle(ShareStyle.cream.color)
-            .padding(aspect.insets)
         }
+    }
+
+    /// Who the takes compare with: the other reader's short name, or Hardcover's readers.
+    private var rival: (name: String, label: String) {
+        guard let reader = input.social?.reader else { return ("Hardcover readers", "Hardcover") }
+        return (reader.shortName, reader.shortName)
+    }
+
+    /// The rating the reader's is compared with.
+    private func rivalRating(_ book: CloudBook) -> Double? {
+        guard let match = input.social?.match else { return book.communityRating }
+        return match.theirRating(for: book.id)
     }
 
     /// "Hot takes of 2025", "Hot takes of August 2025", or "My all-time hot takes".
@@ -152,10 +179,10 @@ struct HotTakesCard: View {
     }
 
     /// "Books I loved more than Hardcover readers did", in the picker's words, or "A book I…"
-    /// for a single take.
+    /// for a single take. With another reader, their short name replaces Hardcover readers.
     private var subtitle: String {
         let subject = input.books.count == 1 ? "A book" : "Books"
-        return "\(subject) I \(input.direction.title.lowercased()) than Hardcover readers did"
+        return "\(subject) I \(input.direction.title.lowercased()) than \(rival.name) did"
     }
 
     /// One take: a large cover with the title, the gap, and both ratings below it, or beside
@@ -211,8 +238,10 @@ struct HotTakesCard: View {
             case .portrait: 300
             case .square: 250
             }
-        // Two takes get taller rows than three, so the card stays full.
-        let height = input.books.count == 2 ? base * 1.25 : base
+        // Two takes get taller rows than three, so the card stays full. The invitation of a
+        // comparison with another reader takes some of the height.
+        let height =
+            (input.books.count == 2 ? base * 1.25 : base) * (input.social == nil ? 1 : 0.9)
         let coverHeight = height - 56
         return HStack(spacing: 28) {
             ShareCover(
@@ -243,9 +272,17 @@ struct HotTakesCard: View {
         .background(panel, in: .rect(cornerRadius: 28))
     }
 
-    /// The gap in stars between the reader's rating and Hardcover's average, in gold.
+    /// The gap in stars between the reader's rating and the rival rating, in gold.
     private func gap(_ book: CloudBook, size: CGFloat) -> some View {
-        let text = Self.signed(book.ratingGap ?? 0)
+        let gap: Double? =
+            if input.social == nil {
+                book.ratingGap
+            } else if let mine = book.rating, let other = rivalRating(book) {
+                mine - other
+            } else {
+                nil
+            }
+        let text = Self.signed(gap ?? 0)
         return Text(text)
             .font(ShareStyle.serif(size, .bold))
             .foregroundStyle(ShareStyle.gold)
@@ -253,14 +290,14 @@ struct HotTakesCard: View {
             .accessibilityLabel("\(text) stars")
     }
 
-    /// The reader's stars over Hardcover's, in aligned columns.
+    /// The reader's stars over the rival's, in aligned columns.
     private func ratings(_ book: CloudBook) -> some View {
         Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
             if let rating = book.rating {
                 ratingRow("Me", rating: rating, isMuted: false)
             }
-            if let community = book.communityRating {
-                ratingRow("Hardcover", rating: community, isMuted: true)
+            if let other = rivalRating(book) {
+                ratingRow(rival.label, rating: other, isMuted: true)
             }
         }
     }
@@ -270,6 +307,8 @@ struct HotTakesCard: View {
             Text(label)
                 .font(.system(size: 30, weight: .medium))
                 .opacity(isMuted ? 0.7 : 1)
+                // A long name shrinks a little before the stars lose room.
+                .minimumScaleFactor(0.8)
             ShareStars(rating: rating, size: 28, isMuted: isMuted)
             Text(rating.formatted(.number.precision(.fractionLength(1))))
                 .font(ShareStyle.serif(32, .semibold))

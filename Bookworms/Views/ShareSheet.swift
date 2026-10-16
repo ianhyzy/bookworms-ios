@@ -15,6 +15,11 @@ import os
 struct SharedFiles: Identifiable {
     let id = UUID()
     let urls: [URL]
+    /// Text to send with the files, such as a comparison's invitation, which apps that take
+    /// text, such as Messages, include.
+    var text: String?
+    /// The files followed by `text`, as the share sheet takes them.
+    var items: [Any] { urls + (text.map { [$0] } ?? []) }
 
     /// Writes `images`, each with the credit (`UIImage.withShareCredit()`), as PNG files named
     /// after them, in order. Each call first deletes the files of the previous one, so at most
@@ -170,7 +175,7 @@ extension View {
                 binding.wrappedValue = nil
                 onComplete(outcome)
             }
-            let picker = NSSharingServicePicker(items: files.urls)
+            let picker = NSSharingServicePicker(items: files.items)
             picker.delegate = context.coordinator
             // The share buttons sit at the toolbar's trailing end, above this view's top
             // trailing corner, so the picker drops down from there.
@@ -200,7 +205,7 @@ extension View {
             guard let files, context.coordinator.presented != files.id else { return }
             context.coordinator.presented = files.id
             let sheet = UIActivityViewController(
-                activityItems: files.urls, applicationActivities: nil)
+                activityItems: files.items, applicationActivities: nil)
             sheet.popoverPresentationController?.sourceView = host.view
             let binding = $files
             let toasts = model.toasts

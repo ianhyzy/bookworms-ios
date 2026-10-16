@@ -66,7 +66,8 @@ final class ShareRenderTests: XCTestCase {
         let cases: [(frame: TimeFrame, style: ShareCoverStyle)] = [
             (.year(2025), .threeD), (.month(year: 2025, month: 5), .flat), (.lifetime, .flat),
         ]
-        for template in ShareTemplate.allCases where template != .pile {
+        // Social templates need another reader (`testSocialTemplatesRender...`).
+        for template in ShareTemplate.allCases where template != .pile && !template.isSocial {
             for (frame, style) in cases {
                 let books = template.books(from: Self.books, in: frame)
                 XCTAssertFalse(books.isEmpty, "\(template) \(frame)")
@@ -127,7 +128,8 @@ final class ShareRenderTests: XCTestCase {
             look.isCondensed.toggle()
             return look
         }
-        for template in ShareTemplate.allCases where template != .yearStack && template != .pile {
+        for template in ShareTemplate.allCases
+        where template != .yearStack && template != .pile && !template.isSocial {
             let books = template.books(from: Self.books, in: .lifetime)
             for aspect in ShareAspect.allCases {
                 func pixels(_ looks: [Int: SpineLook]) throws -> Data {
@@ -398,6 +400,55 @@ final class ShareRenderTests: XCTestCase {
         XCTAssertNil(Self.books[6].ratingGap, "Book 7 has 12 ratings")
         XCTAssertEqual(HotTakesCard.signed(-0.75), "−0.8")
         XCTAssertEqual(HotTakesCard.signed(1.5), "+1.5")
+    }
+
+    /// Taste Match, Book Swap, and Hot Takes with another reader draw at every size, with flat
+    /// and 3D covers, a long name, and a reader without a profile photo. The other reader rates
+    /// the fixture's rated books but one 1.5 stars lower, plus two books the owner doesn't have.
+    @MainActor
+    func testSocialTemplatesRenderAtExactPixelSizeWithContent() throws {
+        let owner = ReaderProfile(id: 1, username: "fictional_owner", name: "Fictional Owner")
+        let reader = ReaderProfile(
+            id: 2, username: "fictional_friend", name: "Wilhelmina Featherstonehaugh-Smythe")
+        // Book 14, rated 4.5 stars, stays a pick for them.
+        var theirs = Self.books.compactMap { book -> CloudBook? in
+            guard let rating = book.rating, book.id != 14 else { return nil }
+            var copy = book
+            copy.rating = max(0.5, rating - 1.5)
+            return copy
+        }
+        theirs += [17, 18]
+            .map {
+                CloudBook(
+                    id: $0, title: "Fictional Pick \($0)", author: "Author \($0)", coverURL: nil,
+                    detailCoverURL: nil, rating: 5)
+            }
+        let match = TasteMatch(mine: Self.books, theirs: theirs)
+        XCTAssertNotNil(match.score)
+        XCTAssertFalse(match.fights.isEmpty)
+        XCTAssertFalse(match.forThem.isEmpty)
+        XCTAssertFalse(match.forMe.isEmpty)
+        for template in [ShareTemplate.tasteMatch, .bookSwap, .hotTakes] {
+            let books = template.books(
+                from: Self.books, in: .lifetime, direction: .lovedMore, match: match)
+            XCTAssertFalse(books.isEmpty, "\(template)")
+            for aspect in ShareAspect.allCases {
+                for style in ShareCoverStyle.allCases {
+                    let label = "\(template) \(aspect) \(style)"
+                    try autoreleasepool {
+                        var input = ShareInput(
+                            template: template, aspect: aspect, books: books, looks: Self.looks,
+                            frame: .lifetime, coverStyle: style, seed: 7)
+                        input.social = ShareSocial(owner: owner, reader: reader, match: match)
+                        let image = try XCTUnwrap(input.render()?.cgImage, label)
+                        XCTAssertEqual(image.width, Int(aspect.size.width), label)
+                        XCTAssertEqual(image.height, Int(aspect.size.height), label)
+                        XCTAssertGreaterThan(
+                            try differingFraction(image), 0.05, "\(label) is a flat color")
+                    }
+                }
+            }
+        }
     }
 
     func testExcerptEndsAtASentenceOrWordWithAnEllipsis() {

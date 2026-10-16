@@ -16,10 +16,19 @@ import UniformTypeIdentifiers
 /// anything still loading as a placeholder. The Pile template renders with
 /// `PileSnapshotRenderer`, which loads its own covers and fonts.
 ///
+/// **My reading** offers templates about the reader's own books, and **With friends** offers
+/// comparisons with another Hardcover reader, chosen under **Compare with**
+/// (`ShareReaderSection`). Comparisons come prepared from `SocialModel`; the body only picks
+/// the shown reader's.
+///
 /// Without a library, the tab shows `NoLibraryView` instead, which can open the Hardcover sheet.
 struct ShareStudioView: View {
     @Environment(AppModel.self) private var model
+    @State private var mode = ShareMode.mine
     @State private var template = ShareTemplate.yearStack
+    /// The reader chosen under **Compare with**: `nil`, or a reader no longer listed, is the
+    /// best match.
+    @State private var readerID: Int?
     @State private var aspect = ShareAspect.story
     /// The chosen time frame: `nil`, or a frame without finished books, is the newest year.
     @State private var frame: TimeFrame?
@@ -58,6 +67,10 @@ struct ShareStudioView: View {
             let defaults = UserDefaults.standard
             guard let raw = defaults.string(forKey: "BookwormsShareTemplate") else { return }
             _template = State(initialValue: ShareTemplate(rawValue: raw) ?? .yearStack)
+            _mode = State(
+                initialValue: defaults.string(forKey: "BookwormsShareMode")
+                    .flatMap(ShareMode.init(rawValue:))
+                    ?? (ShareTemplate(rawValue: raw)?.isSocial == true ? .friends : .mine))
             _aspect = State(
                 initialValue: defaults.string(forKey: "BookwormsShareAspect")
                     .flatMap(ShareAspect.init(rawValue:)) ?? .story)
@@ -98,11 +111,31 @@ struct ShareStudioView: View {
         return periods.years.first.map { .year($0) } ?? .lifetime
     }
 
+    /// The reader the friends' templates compare with: the chosen one while listed, else the
+    /// best match, else the first reader. `nil` in **My reading**.
+    private var shownReader: SocialModel.Reader? {
+        guard mode == .friends else { return nil }
+        let readers = model.social.readers
+        return readers.first { $0.id == readerID } ?? readers.first { $0.match?.score != nil }
+            ?? readers.first
+    }
+
+    /// The books `template` draws. With friends, they come from the comparison with `reader`,
+    /// and there are none before the reader's library downloads.
+    private func books(
+        _ template: ShareTemplate, frame: TimeFrame, bookID: Int?, reader: SocialModel.Reader?
+    ) -> [CloudBook] {
+        if mode == .friends && reader?.match == nil { return [] }
+        return template.books(
+            from: library, in: frame, bookID: bookID, direction: direction, match: reader?.match)
+    }
+
     /// The image the current options and library call for.
     private var request: RenderRequest {
         let frame = shownFrame
         let bookID = template.isSingleBook ? bookID : nil
-        var books = template.books(from: library, in: frame, bookID: bookID, direction: direction)
+        let reader = shownReader
+        var books = books(template, frame: frame, bookID: bookID, reader: reader)
         if template == .pile { books = Array(books.prefix(PileSnapshotRenderer.maximumBooks)) }
         // Only the drawn books' designs, so a design saved for another book changes nothing.
         let designs = books.map { model.design(for: $0) }
@@ -115,8 +148,10 @@ struct ShareStudioView: View {
         return RenderRequest(
             template: template, aspect: aspect, frame: frame, bookID: bookID,
             coverStyle: coverStyle, direction: direction, showsRatings: showsRatings, seed: seed,
-            syncedAt: model.library?.syncedAt, covers: books.map(\.coverCandidates.first),
-            designs: designs, loadedFaces: loadedFaces)
+            syncedAt: model.library?.syncedAt, readerID: reader?.id,
+            socialRevision: mode == .friends ? model.social.revision : 0,
+            hasScore: template == .tasteMatch && reader?.match?.score != nil,
+            covers: books.map(\.coverCandidates.first), designs: designs, loadedFaces: loadedFaces)
     }
 
     var body: some View {
@@ -130,7 +165,7 @@ struct ShareStudioView: View {
             } else {
                 // The request lists one cover candidate per drawn book, so it shows emptiness
                 // at once, before the debounced render catches up.
-                form(isPending: isPending, hasNoBooks: request.covers.isEmpty)
+                form(isPending: isPending, hasNoBooks: request.isEmpty)
             }
         }
         .shareSheet($files)
@@ -145,10 +180,22 @@ struct ShareStudioView: View {
         .onChange(of: model.books, initial: true) { _, books in
             periods = TimeFrame.periods(in: books)
         }
+        .onChange(of: mode) { _, mode in
+            if !mode.templates.contains(template) { template = mode.templates[0] }
+        }
+        .task(id: shownReader?.id) {
+            // A reader outside the refresh's limit downloads once shown; a refresh in progress
+            // downloads the others itself.
+            guard let reader = shownReader, reader.match == nil, !model.social.isSyncing else {
+                return
+            }
+            await model.downloadReader(reader.id)
+        }
         .onChange(of: model.shareBookID, initial: true) { _, id in
             guard let id else { return }
             model.shareBookID = nil
             let book = library.first { $0.id == id }
+            mode = .mine
             if book?.isReading == true && book?.finishedDate == nil {
                 template = .currentlyReading
             } else {
@@ -160,6 +207,13 @@ struct ShareStudioView: View {
         #if DEBUG
             .task(id: periods.years) { await renderBatch() }
             .onAppear { ShareDebug.switchTabs(model) }
+            .onChange(of: model.social.revision, initial: true) {
+                // `-BookwormsShareReader <username>` chooses that reader once they are listed.
+                guard readerID == nil,
+                    let username = UserDefaults.standard.string(forKey: "BookwormsShareReader")
+                else { return }
+                readerID = model.social.readers.first { $0.profile.username == username }?.id
+            }
         #endif
     }
 
@@ -171,6 +225,7 @@ struct ShareStudioView: View {
             if sizeClass == .regular {
                 HStack(spacing: 0) {
                     VStack(spacing: 16) {
+                        modePicker.frame(maxWidth: 420)
                         preview(isPending: isPending, hasNoBooks: hasNoBooks, maxHeight: .infinity)
                         sizePicker.frame(maxWidth: 420)
                     }
@@ -185,6 +240,8 @@ struct ShareStudioView: View {
             } else {
                 Form {
                     Section {
+                        // Comparisons are first-class: the choice sits above everything it changes.
+                        modePicker.listRowBackground(Color.clear)
                         preview(isPending: isPending, hasNoBooks: hasNoBooks, maxHeight: 380)
                         sizePicker.listRowBackground(Color.clear)
                     }
@@ -205,6 +262,13 @@ struct ShareStudioView: View {
         }
     }
 
+    private var modePicker: some View {
+        Picker("Templates for", selection: $mode) {
+            ForEach(ShareMode.allCases) { Text($0.title).tag($0) }
+        }
+        .pickerStyle(.segmented)
+    }
+
     private var sizePicker: some View {
         Picker("Size", selection: $aspect) {
             ForEach(ShareAspect.allCases) { Text($0.title).tag($0) }
@@ -214,11 +278,15 @@ struct ShareStudioView: View {
 
     @ViewBuilder
     private func settings(hasNoBooks: Bool) -> some View {
+        if mode == .friends {
+            ShareReaderSection(
+                reader: shownReader, selection: $readerID, showsAccount: $showsAccount)
+        }
         Section("Template") {
             if dynamicTypeSize >= .xLarge {
                 // Names in a grid truncate above the default text size.
                 Picker("Template", selection: $template) {
-                    ForEach(ShareTemplate.allCases) { option in
+                    ForEach(mode.templates) { option in
                         Label(option.title, systemImage: option.systemImage).tag(option)
                     }
                 }
@@ -261,7 +329,12 @@ struct ShareStudioView: View {
         isPreparing = true
         defer { isPreparing = false }
         do {
-            files = try await SharedFiles.images(images)
+            var shared = try await SharedFiles.images(images)
+            // A comparison invites its viewers to compare on Hardcover.
+            if renderedRequest?.readerID != nil, let owner = model.social.owner {
+                shared.text = HardcoverInvite.shareText(owner.username)
+            }
+            files = shared
         } catch {
             model.toasts.show(.failure("Couldn't prepare the image"))
         }
@@ -283,6 +356,16 @@ struct ShareStudioView: View {
                 aspect = ShareAspect(rawValue: parts[1]) ?? aspect
                 frame = ShareDebug.frame(parts[2])
                 coverStyle = ShareCoverStyle(rawValue: parts[3]) ?? .threeD
+                // A fifth part names a reader to compare with, which also chooses With friends.
+                let reader = parts.count > 4 ? parts[4] : ""
+                mode = template.isSocial || !reader.isEmpty ? .friends : .mine
+                if !reader.isEmpty {
+                    // Comparisons are prepared shortly after the library loads.
+                    for _ in 0..<50 where model.social.readers.isEmpty {
+                        try? await Task.sleep(for: .milliseconds(100))
+                    }
+                    readerID = model.social.readers.first { $0.profile.username == reader }?.id
+                }
                 // Waits until the image matches the options and font loads have settled.
                 var settled = 0
                 while settled < 5, !Task.isCancelled {
@@ -304,8 +387,11 @@ struct ShareStudioView: View {
             } description: {
                 Text(empty.message)
             } actions: {
-                // The Apple TV's library has no reviews; the iPhone's Hardcover sign-in adds them.
-                if template == .review && !usesHardcover && !model.isPreview {
+                // The Apple TV's library has no reviews and no friends; the iPhone's Hardcover
+                // sign-in adds both.
+                let needsHardcover =
+                    mode == .friends ? !model.canCompare : template == .review && !usesHardcover
+                if needsHardcover && !model.isPreview {
                     Button("Connect Hardcover") { showsAccount = true }
                         .buttonStyle(.bordered)
                 }
@@ -418,6 +504,7 @@ struct ShareStudioView: View {
 
     /// Why the template has nothing to draw, and what would give it something.
     private var emptyState: (title: String, message: String) {
+        if mode == .friends { return friendsEmptyState }
         let frame = shownFrame
         let suffix = frame == .lifetime ? "" : " in \(frame.title)"
         let nextSync =
@@ -461,11 +548,85 @@ struct ShareStudioView: View {
         }
     }
 
+    /// Why a comparison has nothing to draw: no sign-in, no reader, a library still loading or
+    /// hidden, or too little in common.
+    private var friendsEmptyState: (title: String, message: String) {
+        let social = model.social
+        guard let reader = shownReader else {
+            if !model.canCompare {
+                return (
+                    "Compare with friends",
+                    "Connect Hardcover to compare your ratings with the people you follow."
+                )
+            }
+            if social.isSyncing {
+                return ("Loading the people you follow", "This takes a moment the first time.")
+            }
+            if let failure = social.failure {
+                return ("Couldn't load the people you follow", failure)
+            }
+            return (
+                "No one to compare with yet",
+                "Follow readers on Hardcover, or look up a public username under Compare with."
+            )
+        }
+        let name = reader.profile.shortName
+        guard let match = reader.match else {
+            if social.loadingReaders.contains(reader.id) || social.isSyncing {
+                return ("Loading \(name)'s ratings", "This takes a moment for a big library.")
+            }
+            return (
+                "\(name)'s ratings haven't downloaded",
+                social.failure ?? "Choose \(name) again under Compare with to try again."
+            )
+        }
+        if reader.hasNoRatings {
+            return (
+                "\(name) has no public ratings",
+                "Their Hardcover profile may be private, or they haven't rated any books yet."
+            )
+        }
+        let shared = match.shared.count
+        let both = shared == 1 ? "1 book" : "\(shared) books"
+        switch template {
+        case .tasteMatch:
+            return (
+                "Not enough in common yet",
+                "You and \(name) have both rated \(both). A taste match needs "
+                    + "\(TasteMatch.minimumShared)."
+            )
+        case .hotTakes:
+            let frame = shownFrame
+            let suffix = frame == .lifetime ? "" : " in \(frame.title)"
+            let other: HotTakeDirection = direction == .lovedMore ? .lovedLess : .lovedMore
+            if !match.hotTakes(in: frame, direction: other).isEmpty {
+                return (
+                    "No hot takes\(suffix)",
+                    "Choose \(other.title) to see where \(name) rated higher or lower."
+                )
+            }
+            if frame != .lifetime, !match.hotTakes(in: .lifetime, direction: direction).isEmpty {
+                return ("No hot takes\(suffix)", "Choose another time frame or Lifetime.")
+            }
+            return (
+                "No hot takes with \(name)\(suffix)",
+                "Books you both rated at least half a star apart appear here. You have \(both) "
+                    + "in common."
+            )
+        default:
+            return (
+                "Nothing to swap yet",
+                "Book Swap suggests books one of you rated 4 stars or more that the other "
+                    + "hasn't shelved."
+            )
+        }
+    }
+
     private var templateGrid: some View {
         LazyVGrid(
             columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 6
         ) {
-            ForEach(ShareTemplate.allCases) { option in
+            ForEach(mode.templates) { option in
                 let isSelected = option == template
                 Button {
                     template = option
@@ -626,7 +787,8 @@ struct ShareStudioView: View {
         switch template {
         case .yearStack, .yearInBooks, .topFive, .pile: true
         case .spectrum: false
-        case .hotTakes, .justFinished, .review, .currentlyReading: coverStyle == .threeD
+        case .hotTakes, .justFinished, .review, .currentlyReading, .tasteMatch, .bookSwap:
+            coverStyle == .threeD
         }
     }
 
@@ -648,16 +810,20 @@ struct ShareStudioView: View {
     /// Draws one request, unless the task is cancelled first. Sets `renderedRequest` otherwise.
     private func render(_ request: RenderRequest) async {
         let template = request.template
-        let books = template.books(
-            from: library, in: request.frame, bookID: request.bookID,
-            direction: request.direction)
+        let reader = request.readerID.flatMap(model.social.reader)
+        let books = books(
+            template, frame: request.frame, bookID: request.bookID, reader: reader)
         var input = ShareInput(
             template: template, aspect: request.aspect, books: books, frame: request.frame,
             coverStyle: request.coverStyle, direction: request.direction,
             showsRatings: request.showsRatings, seed: request.seed)
+        if let reader, let match = reader.match, let owner = model.social.owner {
+            input.social = ShareSocial(owner: owner, reader: reader.profile, match: match)
+            input.social?.avatars = await loadAvatars([owner, reader.profile])
+        }
         // The pages in order. Empty when there are no books or a page could not be drawn.
         var rendered: [UIImage] = []
-        if books.isEmpty {
+        if request.isEmpty {
             // Nothing to draw; the preview says why.
         } else if template == .pile {
             do {
@@ -704,7 +870,8 @@ struct ShareStudioView: View {
         }
         // Without new images, the old ones must not stay to be shared.
         var name = template.title
-        if !template.isSingleBook { name += " " + input.period }
+        if template.usesTimeFrame && !template.isSingleBook { name += " " + input.period }
+        if let reader = input.social?.reader { name += " with \(reader.shortName)" }
         // So the preview's selection never points past the last page.
         if rendered.count != images.count { shownPage = 0 }
         images = rendered.enumerated()
@@ -713,11 +880,22 @@ struct ShareStudioView: View {
                     image: image,
                     name: rendered.count > 1 ? "\(name) (\(page + 1) of \(rendered.count))" : name)
             }
-        failed = !books.isEmpty && rendered.isEmpty
+        failed = !request.isEmpty && rendered.isEmpty
         renderedRequest = request
         #if DEBUG
             ShareDebug.write(images)
         #endif
+    }
+
+    /// Loads the readers' profile photos for a social card. A reader without one, or whose
+    /// photo fails to load, is left out and shows initials.
+    private func loadAvatars(_ readers: [ReaderProfile]) async -> [Int: UIImage] {
+        var avatars: [Int: UIImage] = [:]
+        for reader in readers {
+            guard let url = reader.avatarURL else { continue }
+            avatars[reader.id] = await model.covers.image(at: [url], maximumPixelSize: 400)
+        }
+        return avatars
     }
 
     private func loadCovers(_ books: [CloudBook], maximumPixelSize: Int) async -> [Int: UIImage] {
@@ -746,11 +924,20 @@ private struct RenderRequest: Equatable {
     var showsRatings: Bool
     var seed: UInt64
     var syncedAt: Date?
+    /// The reader a comparison draws with, or `nil` outside **With friends**.
+    var readerID: Int?
+    /// `SocialModel.revision` for a comparison, so new ratings redraw it.
+    var socialRevision: Int
+    /// Whether a Taste Match has a score, which it draws even without books to show.
+    var hasScore: Bool
     /// The covers the image draws, so choosing another cover redraws it.
     var covers: [URL?]
     /// The designs of the books the image draws, in their order.
     var designs: [SpineDesignV1?]
     var loadedFaces: Int
+
+    /// Whether the image has nothing to draw.
+    var isEmpty: Bool { covers.isEmpty && !hasScore }
 
     /// The request without its designs. The render task restarts only when these change: a
     /// pile takes seconds to render, and a generation run saves a design every few seconds, so a

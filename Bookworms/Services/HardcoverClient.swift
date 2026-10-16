@@ -251,6 +251,124 @@ actor HardcoverClient {
         }
     }
 
+    // MARK: - Social
+
+    /// The signed-in reader's profile, for comparisons and the share images' invitation.
+    func owner(token: String) async throws -> ReaderProfile {
+        struct Reply: Decodable { let me: [SocialProfile] }
+        let reply: Reply = try await query(
+            Self.ownerQuery, variables: SocialVariables(), token: token)
+        guard reply.me.count == 1, let owner = reply.me.first?.profile else {
+            throw HardcoverError.invalidToken
+        }
+        return owner
+    }
+
+    /// Returns the IDs of the readers `owner` blocked on Hardcover. Every list of other readers
+    /// leaves them out, so a failure here fails the request that needs it.
+    func blockedReaders(owner: Int, token: String) async throws -> Set<Int> {
+        struct Row: Decodable {
+            let blockedUserID: Int?
+            enum CodingKeys: String, CodingKey { case blockedUserID = "blocked_user_id" }
+        }
+        struct Reply: Decodable {
+            let userBlocks: [Row]
+            enum CodingKeys: String, CodingKey { case userBlocks = "user_blocks" }
+        }
+        var ids = Set<Int>()
+        for offset in stride(from: 0, to: Self.socialRowLimit, by: 100) {
+            if offset > 0 { try await Task.sleep(for: Self.pagePause) }
+            let reply: Reply = try await query(
+                Self.blockedQuery, variables: SocialVariables(user: owner, offset: offset),
+                token: token)
+            ids.formUnion(reply.userBlocks.compactMap(\.blockedUserID))
+            if reply.userBlocks.count < 100 { return ids }
+        }
+        throw HardcoverError.incomplete
+    }
+
+    /// Returns the readers `owner` follows, in the order they were followed, without the
+    /// `blocked` readers or profiles that have no username.
+    func following(owner: Int, blocked: Set<Int>, token: String) async throws -> [ReaderProfile] {
+        struct Row: Decodable {
+            let followedUser: SocialProfile?
+            enum CodingKeys: String, CodingKey { case followedUser = "followed_user" }
+        }
+        struct Reply: Decodable {
+            let followedUsers: [Row]
+            enum CodingKeys: String, CodingKey { case followedUsers = "followed_users" }
+        }
+        var readers: [ReaderProfile] = []
+        var seen = Set<Int>()
+        for offset in stride(from: 0, to: Self.socialRowLimit, by: 100) {
+            if offset > 0 { try await Task.sleep(for: Self.pagePause) }
+            let reply: Reply = try await query(
+                Self.followingQuery, variables: SocialVariables(user: owner, offset: offset),
+                token: token)
+            for row in reply.followedUsers {
+                guard let reader = row.followedUser?.profile, reader.id != owner,
+                    !blocked.contains(reader.id), seen.insert(reader.id).inserted
+                else { continue }
+                readers.append(reader)
+            }
+            if reply.followedUsers.count < 100 { return readers }
+        }
+        throw HardcoverError.incomplete
+    }
+
+    /// Returns the IDs among `users` with activity in their 100 newest Hardcover events, most
+    /// recently active first. Readers without recent activity are left out.
+    func recentlyActive(among users: [Int], token: String) async throws -> [Int] {
+        guard !users.isEmpty else { return [] }
+        struct Row: Decodable {
+            let user: User?
+            struct User: Decodable { let id: Int }
+        }
+        struct Reply: Decodable { let activities: [Row] }
+        let reply: Reply = try await query(
+            Self.activityQuery, variables: SocialVariables(users: users), token: token)
+        var seen = Set<Int>()
+        return reply.activities.compactMap(\.user?.id).filter { seen.insert($0).inserted }
+    }
+
+    /// Downloads a reader's rated books and the books on their Currently Reading, Read, Paused,
+    /// and Did Not Finish shelves, highest rated first, 100 per request about a second apart.
+    ///
+    /// Each book carries the reader's own rating and finish date, but no review. A library
+    /// larger than `readerLibraryLimit` keeps its highest-rated books. Hardcover leaves out what
+    /// a private profile hides, so such a reader can return no books.
+    func readerLibrary(user: Int, token: String) async throws -> [CloudBook] {
+        var rows: [LibraryPage.Row] = []
+        for offset in stride(from: 0, to: Self.readerLibraryLimit, by: 100) {
+            if offset > 0 { try await Task.sleep(for: Self.pagePause) }
+            let page: LibraryPage = try await query(
+                Self.readerLibraryQuery,
+                variables: SocialVariables(
+                    user: user, offset: offset, language: Self.coverLanguage),
+                token: token)
+            rows += page.userBooks
+            if page.userBooks.count < 100 { break }
+        }
+        return Self.normalize(rows)
+    }
+
+    /// Returns the readers whose username is one of `usernames`, exactly as Hardcover stores
+    /// it.
+    func readers(named usernames: [String], token: String) async throws -> [ReaderProfile] {
+        struct Reply: Decodable { let users: [SocialProfile] }
+        let reply: Reply = try await query(
+            Self.usersQuery, variables: SocialVariables(usernames: usernames), token: token)
+        return reply.users.compactMap(\.profile)
+    }
+
+    /// The most rows a list of followed or blocked readers reads.
+    private static let socialRowLimit = 10_000
+    /// The most books a reader's library keeps.
+    static let readerLibraryLimit = 3_000
+    /// The pause between two pages of one list, which keeps paging inside Hardcover's rate
+    /// limit.
+    static let pagePause = Duration.seconds(1.1)
+
     /// Turns a review or a book description into plain text: HTML tags and Markdown markers are
     /// removed, entities are decoded, and paragraphs stay separated by one blank line. Returns
     /// `nil` for empty text.
@@ -428,6 +546,60 @@ actor HardcoverClient {
         }
         """
 
+    private static let ownerQuery = "query SocialOwner { me { id username name image { url } } }"
+
+    private static let blockedQuery = """
+        query SocialBlocked($user: Int!, $offset: Int!) {
+          user_blocks(where: {user_id: {_eq: $user}}, order_by: {id: asc}, limit: 100, offset: $offset) {
+            blocked_user_id
+          }
+        }
+        """
+
+    private static let followingQuery = """
+        query SocialFollowing($user: Int!, $offset: Int!) {
+          followed_users(where: {user_id: {_eq: $user}}, order_by: {id: asc}, limit: 100, offset: $offset) {
+            followed_user { id username name image { url } }
+          }
+        }
+        """
+
+    private static let activityQuery = """
+        query SocialActivity($users: [Int!]!) {
+          activities(where: {user_id: {_in: $users}}, order_by: [{created_at: desc}, {id: desc}], limit: 100) {
+            user { id }
+          }
+        }
+        """
+
+    // The library query's book fields without the reader's review, current read, and the
+    // catalog details that only the owner's books show.
+    private static let readerLibraryQuery = """
+        query ReaderLibrary($user: Int!, $offset: Int!, $language: String!) {
+          user_books(where: {user_id: {_eq: $user},
+              _or: [{rating: {_is_null: false}}, {status_id: {_in: [2, 3, 4, 5]}}]},
+            order_by: [{rating: desc_nulls_last}, {id: asc}], limit: 100, offset: $offset) {
+            last_read_date rating status_id
+            book { id title pages release_year cached_contributors rating ratings_count
+              image { url width height }
+              book_series { featured position series { id name } }
+              editions(where: {image_id: {_is_null: false},
+                  _or: [{language_id: {_is_null: true}}, {language: {code2: {_eq: $language}}}]},
+                order_by: {users_count: desc}, limit: 5) {
+                image { url width height }
+              }
+            }
+            edition { pages audio_seconds image { url width height } reading_format { format } language { code2 } }
+          }
+        }
+        """
+
+    private static let usersQuery = """
+        query ReaderLookup($usernames: [String!]!) {
+          users(where: {username: {_in: $usernames}}, limit: 5) { id username name image { url } }
+        }
+        """
+
     private static let editionsQuery = """
         query EditionCovers($book: Int!) {
           editions(where: {book_id: {_eq: $book}, image_id: {_is_null: false}},
@@ -599,6 +771,37 @@ actor HardcoverClient {
 private struct GraphQLRequest<Variables: Encodable>: Encodable {
     let query: String
     let variables: Variables
+}
+
+/// The variables of a social query. Absent values are left out of the request, since
+/// Hardcover rejects variables that a query does not declare.
+private struct SocialVariables: Encodable {
+    var user: Int?
+    var offset: Int?
+    var users: [Int]?
+    var usernames: [String]?
+    var language: String?
+}
+
+/// A Hardcover user as the social queries return one. A profile without a username has no
+/// page to link to, so it is left out.
+private struct SocialProfile: Decodable {
+    let id: Int
+    let username: String?
+    let name: String?
+    let image: Image?
+
+    struct Image: Decodable { let url: String? }
+
+    var profile: ReaderProfile? {
+        guard let username = username?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !username.isEmpty
+        else { return nil }
+        let avatar = image?.url.flatMap(URL.init(string:))
+        return ReaderProfile(
+            id: id, username: username, name: name,
+            avatarURL: CoverURLPolicy.allows(avatar) ? avatar : nil)
+    }
 }
 
 private struct HTTPFailure: Decodable { let error: String? }
