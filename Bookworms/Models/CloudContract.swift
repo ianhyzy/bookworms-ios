@@ -163,8 +163,10 @@ extension CloudLibraryArchive {
             }
             if Date(timeIntervalSinceReferenceDate: date) >= snapshot.syncedAt { return nil }
             if entry["series"] == nil { entry["series"] = existing["series"] }
+            entry["books"] = keepingAppleTVFields(of: entry["books"], from: existing["books"])
             sources[index] = entry
         } else {
+            entry["books"] = keepingAppleTVFields(of: entry["books"], from: nil)
             sources.append(entry)
         }
         sources.sort { key($0) < key($1) }
@@ -172,6 +174,26 @@ extension CloudLibraryArchive {
         archive["version"] = 1
         if archive["designs"] == nil { archive["designs"] = [String: Any]() }
         return try JSONSerialization.data(withJSONObject: archive, options: .sortedKeys)
+    }
+
+    /// `books` with the two book fields only the Apple TV stores: `sources`, which is always
+    /// Hardcover for a Hardcover snapshot, and `isOwned`, kept from the same book in `stored`.
+    private static func keepingAppleTVFields(of books: Any?, from stored: Any?) -> Any? {
+        guard let books = books as? [[String: Any]] else { return books }
+        var owned: [Int: Any] = [:]
+        for book in (stored as? [[String: Any]]) ?? [] {
+            if let id = book["id"] as? Int, let isOwned = book["isOwned"], owned[id] == nil {
+                owned[id] = isOwned
+            }
+        }
+        return books.map { book in
+            var book = book
+            if book["sources"] == nil { book["sources"] = ["hardcover"] }
+            if book["isOwned"] == nil, let id = book["id"] as? Int, let isOwned = owned[id] {
+                book["isOwned"] = isOwned
+            }
+            return book
+        }
     }
 }
 

@@ -30,6 +30,9 @@ final class LibraryArchiveTests: XCTestCase {
         XCTAssertEqual(mine.books.map(\.title), ["New"])
         XCTAssertEqual(mine.books.first?.review, "Loved it.")
         XCTAssertNil(mine.books.first?.chosenCoverURL)
+        // The fields only the Apple TV stores survive the replacement.
+        XCTAssertEqual(mine.books.first?.sources, [.hardcover])
+        XCTAssertEqual(mine.books.first?.isOwned, true)
         // A download without series keeps the stored ones.
         XCTAssertEqual(mine.series, [storedSeries])
         XCTAssertEqual(archive.designs[7]?.coverHash, "cover")
@@ -158,7 +161,7 @@ final class LibraryArchiveTests: XCTestCase {
                     books: [
                         TVBook(
                             id: 1, title: "Old", author: "Author", review: "Old review",
-                            sources: [.hardcover])
+                            sources: [.hardcover], isOwned: true)
                     ],
                     syncedAt: synced, series: [storedSeries]),
                 TVSnapshot(
