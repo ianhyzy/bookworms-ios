@@ -217,6 +217,11 @@ final class HardcoverTests: XCTestCase {
             let body = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
             XCTAssertFalse(body.contains("mutation"))
             if body.contains("query Account") { return Self.respond(200, Self.me, to: request) }
+            if body.contains("query PhoneSeries") {
+                // Only the featured series of each book, as the Apple TV asks.
+                XCTAssertTrue(body.contains(#""ids":[9]"#))
+                return Self.respond(200, Self.seriesPage, to: request)
+            }
             XCTAssertTrue(body.contains(#""user":4242"#))
             // The Apple TV reads `review` with the same scopes; `review_raw` is unproven.
             XCTAssertTrue(body.contains("status_id review"))
@@ -273,6 +278,21 @@ final class HardcoverTests: XCTestCase {
         XCTAssertEqual(library.books.filter(\.hasBeenRead).map(\.id), [101])
         // The featured series names the book; the shorter series decides its look.
         XCTAssertEqual(SeriesDesigns.styleSeries(of: library.books[0], link: nil)?.id, 7)
+        // One book per whole-number position, the first listed; only HTTPS covers.
+        XCTAssertEqual(
+            library.series,
+            [
+                SeriesInfo(
+                    id: 9, name: "The Lantern Cycle",
+                    books: [
+                        SeriesInfo.SeriesBook(
+                            id: 101, title: "The Lantern Keeper", position: 1, releaseYear: 2021,
+                            coverURL: URL(string: "https://covers.example.com/book-101.jpg")),
+                        SeriesInfo.SeriesBook(
+                            id: 102, title: "Untitled", position: 2, releaseYear: nil,
+                            coverURL: nil),
+                    ])
+            ])
     }
 
     func testReviewTextBecomesPlainText() {
@@ -293,6 +313,78 @@ final class HardcoverTests: XCTestCase {
             plain("Tea &amp; toast &#8212; I <3 it, 5 * 3 > 2 and snake_case stays. #bookclub"),
             "Tea & toast — I <3 it, 5 * 3 > 2 and snake_case stays. #bookclub")
         XCTAssertEqual(plain("First.\n \n\n\nSecond."), "First.\n\nSecond.")
+    }
+
+    // MARK: - Fixed covers
+
+    /// The Apple TV app's cases (`LibraryTests`), so both apps fix the same covers.
+    func testSavedCoversStayUnlessALowQualityCoverHasASharpReplacement() {
+        func cover(_ name: String, height: Int? = nil) -> LibraryPage.Image {
+            LibraryPage.Image(
+                url: URL(string: "https://example.com/\(name)"),
+                width: height.map { $0 * 2 / 3 }, height: height)
+        }
+        let low = cover("low", height: 600)
+        let sharp = cover("sharp", height: 1500)
+        let fair = cover("fair", height: 900)
+        let unsized = cover("unsized")
+        let thumbnail = cover("thumbnail", height: 197)
+        let saved = (preferred: low.url, alternate: URL(string: "https://example.com/saved"))
+        func choice(_ images: [LibraryPage.Image], previous: (preferred: URL?, alternate: URL?)?)
+            -> (preferred: URL?, alternate: URL?)
+        {
+            HardcoverClient.coverURLs(
+                edition: nil, book: images.first, otherEditions: Array(images.dropFirst()),
+                previous: previous)
+        }
+
+        XCTAssertEqual(
+            choice([sharp], previous: nil).preferred, sharp.url, "A new book takes the new cover")
+        XCTAssertEqual(
+            choice([sharp], previous: (nil, saved.alternate)).preferred, sharp.url,
+            "A book without a saved cover takes the new cover")
+        let kept = choice([sharp], previous: saved)
+        XCTAssertEqual(kept.preferred, low.url, "A saved cover missing from the sync stays")
+        XCTAssertEqual(kept.alternate, saved.alternate)
+        XCTAssertEqual(
+            choice([low, sharp], previous: saved).preferred, sharp.url,
+            "A low-quality cover upgrades to one at least 1000 pixels tall")
+        XCTAssertEqual(
+            choice([low, fair], previous: saved).preferred, low.url,
+            "A cover under 1000 pixels is no upgrade")
+        XCTAssertEqual(
+            choice([thumbnail, unsized], previous: (thumbnail.url, nil)).preferred,
+            thumbnail.url, "A cover without a reported height is never an upgrade")
+        XCTAssertEqual(
+            choice([unsized, sharp], previous: (unsized.url, nil)).preferred, unsized.url,
+            "A saved cover without a reported height is never replaced")
+    }
+
+    func testSavedCoversStayOnlyForTheSignedInAccount() async throws {
+        // The account is 4242, and its only book reports a 1500-pixel cover.
+        let client = HardcoverClient { request in
+            let body = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
+            if body.contains("query Account") { return Self.respond(200, Self.me, to: request) }
+            return Self.respond(
+                200,
+                #"{"data":{"user_books":[{"book":{"id":5,"title":"Covered","image":{"url":"https://example.com/current","width":1000,"height":1500}}}]}}"#,
+                to: request)
+        }
+        let saved = CloudBook(
+            id: 5, title: "Covered", author: "Unknown author",
+            coverURL: URL(string: "https://example.com/saved-alternate"),
+            detailCoverURL: URL(string: "https://example.com/saved"))
+        func previous(_ accountID: String) -> PhoneLibrary {
+            PhoneLibrary(
+                accountID: accountID, username: nil, syncedAt: .distantPast, books: [saved])
+        }
+        let same = try await client.library(token: "fictional-token", previous: previous("4242"))
+        XCTAssertEqual(same.books.first?.detailCoverURL, saved.detailCoverURL)
+        XCTAssertEqual(same.books.first?.coverURL, saved.coverURL)
+        let other = try await client.library(token: "fictional-token", previous: previous("7"))
+        XCTAssertEqual(
+            other.books.first?.detailCoverURL, URL(string: "https://example.com/current"),
+            "Another account's copy never fixes covers")
     }
 
     // MARK: - Library source
@@ -443,6 +535,21 @@ final class HardcoverTests: XCTestCase {
              "image":null,"book_series":[],"editions":[]},
            "edition":null,"user_book_reads":[],"current_read":[]}
         ]}}
+        """
+
+    /// The fixture's featured series: a duplicate and a half position that normalization drops,
+    /// and a book with an HTTP cover, which is left out.
+    private static let seriesPage = """
+        {"data":{"series":[{"id":9,"name":"The Lantern Cycle","book_series":[
+          {"position":1,"book":{"id":101,"title":"The Lantern Keeper","release_year":2021,
+            "image":{"url":"https://covers.example.com/book-101.jpg","width":400,"height":600}}},
+          {"position":1,"book":{"id":150,"title":"The Lantern Keeper (Illustrated)",
+            "release_year":2023,"image":null}},
+          {"position":1.5,"book":{"id":151,"title":"A Lantern Story","release_year":2022,
+            "image":null}},
+          {"position":2,"book":{"id":102,"title":null,"release_year":null,
+            "image":{"url":"http://covers.example.com/book-102.jpg","width":400,"height":600}}}
+        ]}]}}
         """
 }
 
