@@ -613,7 +613,17 @@ private struct CenterTracking: ViewModifier {
             .scrollIndicators(.hidden)
             // The books run to the screen's edge or fade out before it, so a bar's edge effect
             // would only draw a seam across the walnut.
-            .scrollEdgeEffectHidden()
+            .scrollEdgeEffectHidden(true, for: [.bottom, .horizontal])
+            #if os(iOS)
+                // On the iPhone, Stack runs up under the status bar, where the soft effect blurs
+                // and dims the books just enough to keep the time and battery readable over
+                // their lettering. It draws no seam, which `.automatic` does on iOS 27. Shelf
+                // keeps its books below the status bar, over plain wood.
+                .scrollEdgeEffectHidden(axis == .horizontal, for: .top)
+                .scrollEdgeEffectStyle(.soft, for: .top)
+            #else
+                .scrollEdgeEffectHidden(true, for: .top)
+            #endif
     }
 
     private func scrollToCenteredBook() {
