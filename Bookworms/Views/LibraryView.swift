@@ -46,6 +46,11 @@ struct LibraryView: View {
         }
         // The walnut backdrop is dark in both appearances, so text and bars use dark styles.
         .environment(\.colorScheme, .dark)
+        #if os(iOS)
+            // The tab bar belongs to the tab view, outside the dark scheme, and its glass stays
+            // light over the dark wall in light appearance, so the tab asks for a dark bar too.
+            .toolbarColorScheme(.dark, for: .tabBar)
+        #endif
         .tint(ShelfPalette.lamp)
         // Outside the dark scheme and tint, so the account sheet follows the system appearance.
         // Kept on the stack, so the sheet stays open when the library it brings replaces the

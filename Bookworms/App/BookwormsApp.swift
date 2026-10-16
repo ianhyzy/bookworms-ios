@@ -157,24 +157,16 @@ struct RootView: View {
         @Bindable var model = model
         TabView(selection: $model.selectedTab) {
             Tab("Share", systemImage: "square.and.arrow.up", value: .share) { ShareStudioView() }
-            // Library and Desk set their own tint; this keeps the bar's lamp tint out of their
-            // account sheets, which follow the system appearance.
-            Tab("Library", systemImage: "books.vertical", value: .library) {
-                LibraryView().tint(.accentColor)
-            }
-            Tab("Desk", systemImage: "lamp.desk", value: .desk) { DeskView().tint(.accentColor) }
+            Tab("Library", systemImage: "books.vertical", value: .library) { LibraryView() }
+            Tab("Desk", systemImage: "lamp.desk", value: .desk) { DeskView() }
             Tab("Spines", systemImage: "wand.and.sparkles", value: .spines) { GenerationView() }
         }
         #if os(macOS)
             // A Mac app lists its sections in a Liquid Glass sidebar rather than a tab bar.
             .tabViewStyle(.sidebarAdaptable)
         #endif
-        // In light appearance, the bar over Library's and Desk's dark wall leaves the default
-        // blue with almost no contrast, so their lamp marks the selected tab.
-        .tint([.library, .desk].contains(model.selectedTab) ? ShelfPalette.lamp : nil)
         // Hardcover is the library's own source, so each launch without a working sign-in, and
-        // a sign-in that stops working, offers it over whichever tab shows. Outside the tint,
-        // so the sheet follows the system appearance.
+        // a sign-in that stops working, offers it over whichever tab shows.
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
         #if os(macOS)
             // Grouped forms match the iPhone's inset sections instead of the Mac's columns.
