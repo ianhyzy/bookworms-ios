@@ -523,7 +523,8 @@ actor SpineWorker {
             case .onDevice: "Apple's on-device model"
             case .local: "local defaults"
             }
-        return "\(sentence) Until you change the backup model, Bookworms uses \(tier)."
+        return
+            "\(sentence) Until you change the backup model, Bookworms uses \(tier). Generate now tries the backup model again."
     }
 
     /// Returns the series look `book` draws: its look group's saved look, unless its link keeps

@@ -502,11 +502,12 @@ final class GenerationTests: XCTestCase {
                 next: ModelStatus(
                     tier: .onDevice, isAvailable: true, unavailableReason: nil,
                     coverReader: .onDevice)),
-            "Anthropic: invalid x-api-key. Until you change the backup model, Bookworms uses Apple's on-device model."
+            "Anthropic: invalid x-api-key. Until you change the backup model, Bookworms uses Apple's on-device model. Generate now tries the backup model again."
         )
         XCTAssertEqual(
             SpineWorker.fallbackMessage(rejection: "Unknown model.", next: .local),
-            "Unknown model. Until you change the backup model, Bookworms uses local defaults.")
+            "Unknown model. Until you change the backup model, Bookworms uses local defaults. Generate now tries the backup model again."
+        )
     }
 
     func testTitleNoFamilyCoversUsesTheStyleSystemTypeface() throws {

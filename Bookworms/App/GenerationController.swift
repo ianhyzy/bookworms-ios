@@ -64,8 +64,15 @@ final class GenerationController {
         }
     }
 
-    /// Starts a user-requested run, unless one is already in progress.
-    func generateNow() { startRun(redesigning: nil) }
+    /// Starts a user-requested run, unless one is already in progress. The run tries the backup
+    /// model again even when its provider rejected these settings (`SpineDesigner.rejection`),
+    /// because the reader may have fixed the cause outside the app, such as by adding credit or
+    /// loading the model on a local server.
+    func generateNow() {
+        guard userRun == nil else { return }
+        SpineDesigner.forgetRejection()
+        startRun(redesigning: nil)
+    }
 
     /// Starts a user-requested run, unless one is already in progress, that first designs
     /// `book`'s design source (`AppModel.designSource(for:)`) anew at the run's tier, even when

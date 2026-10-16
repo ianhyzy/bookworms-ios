@@ -107,9 +107,9 @@ struct SpineDesigner: Hashable, Sendable {
     /// revoked key, an unknown model name, or an account without credit
     /// (`ProviderError.isLasting`); `nil` when it hasn't. It reads the Keychain.
     ///
-    /// The rejection lasts until the reader changes the provider, model name, base URL, or key
-    /// (`forgetRejection()`), so runs don't send each book's first request to a model that
-    /// refuses them all.
+    /// The rejection lasts until the reader changes the provider, model name, base URL, or key,
+    /// or starts **Generate now** (`forgetRejection()`), so runs don't send each book's first
+    /// request to a model that refuses them all.
     var rejection: String? {
         guard
             let saved = UserDefaults.standard.dictionary(forKey: Self.rejectionKey)
@@ -131,9 +131,9 @@ struct SpineDesigner: Hashable, Sendable {
         return true
     }
 
-    /// Forgets a remembered rejection, because the reader changed the settings, and returns its
-    /// message, or `nil` without one. A new key needs this: the settings ID records only whether
-    /// a key exists.
+    /// Forgets a remembered rejection, because the reader changed the settings or started
+    /// **Generate now**, and returns its message, or `nil` without one. A new key needs this: the
+    /// settings ID records only whether a key exists.
     @discardableResult static func forgetRejection() -> String? {
         let defaults = UserDefaults.standard
         let message = (defaults.dictionary(forKey: rejectionKey) as? [String: String])?["message"]
