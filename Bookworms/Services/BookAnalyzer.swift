@@ -338,17 +338,8 @@ actor BookAnalyzer {
             } else {
                 Self.families(for: reading, playful: await Self.isPlayful(book))
             }
-        var candidates = lettering.map { TitleLettering.rank(families, for: $0) } ?? []
-        if candidates.isEmpty {
-            // No measurable title line: the allowed families in this book's reproducible order.
-            // Local defaults set them bold, as the Apple TV's genre faces are.
-            var generator = SeededGenerator(seed: UInt64(bitPattern: Int64(book.id)))
-            let weight = status.tier == .local ? 700 : 400
-            candidates = families.shuffled(using: &generator)
-                .map {
-                    TitleLettering.Match(family: $0, weight: weight)
-                }
-        }
+        let candidates = Self.candidates(
+            families, lettering: lettering, book: book, local: status.tier == .local)
         guard let best = candidates.first, let bestFamily = SpineFamily(rawValue: best.family)
         else { throw CompanionError.invalidDesign }
         let uppercase = Self.prefersUppercase(observedText)
@@ -476,7 +467,9 @@ actor BookAnalyzer {
     /// The families a design without a model may use for a book with `genres`: those of its
     /// first recognized genre (`genreFamilies(_:)`). Without one, the title measurements rank
     /// every allowed family except rounded faces, which need a model to judge the book playful,
-    /// or, when `measured` is false, the Apple TV's general-fiction face, a humanist sans.
+    /// or, when `measured` is false because no title line was measured or none of these
+    /// families could be ranked by it (`candidates(_:lettering:book:local:)`), the Apple TV's
+    /// general-fiction face, a humanist sans.
     static func localFamilies(genres: [String]?, measured: Bool) -> [String] {
         if let families = genreFamilies(genres) {
             return families.map(\.rawValue).filter(allowsFamily)
@@ -484,6 +477,23 @@ actor BookAnalyzer {
         return measured
             ? families(for: nil, playful: false)
             : SpineFamily.allCases.filter { $0.style == .humanistSans }.map(\.rawValue)
+    }
+
+    /// The families and weights a design tries, best match first: `families` ranked by the
+    /// measured title line (`TitleLettering.rank(_:for:atlas:)`). Without a line that ranks them,
+    /// such as none measured or one in a script the font atlas lacks, the families come in
+    /// `book`'s reproducible order at regular weight. For local defaults (`local`), they are
+    /// then the families for a book without a measured line (`localFamilies(genres:measured:)`)
+    /// at bold weight, as the Apple TV's genre faces are.
+    static func candidates(
+        _ families: [String], lettering: TitleLettering.Measurement?, book: CloudBook, local: Bool
+    ) -> [TitleLettering.Match] {
+        let ranked = lettering.map { TitleLettering.rank(families, for: $0) } ?? []
+        guard ranked.isEmpty else { return ranked }
+        let unranked = local ? localFamilies(genres: book.genres, measured: false) : families
+        var generator = SeededGenerator(seed: UInt64(bitPattern: Int64(book.id)))
+        return unranked.shuffled(using: &generator)
+            .map { TitleLettering.Match(family: $0, weight: local ? 700 : 400) }
     }
 
     /// The catalog families for the first of `genres`, in Hardcover's ranked order, that names a

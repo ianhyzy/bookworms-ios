@@ -380,6 +380,57 @@ final class GenerationTests: XCTestCase {
         XCTAssertNil(design.instanceWeight)
     }
 
+    func testTitlesTheAtlasCannotRankFallBackToGenreOrHumanistFaces() throws {
+        let atlas = try XCTUnwrap(FontAtlas.shared)
+        let font = try XCTUnwrap(atlas.fonts.first { $0.family == "Oswald" && $0.weight == 400 })
+        let image = try XCTUnwrap(
+            CGContext(
+                data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?
+                .makeImage())
+        func measurement(_ text: String) throws -> TitleLettering.Measurement {
+            TitleLettering.Measurement(
+                text: text, crop: image, profile: try XCTUnwrap(font.compose("KINDRED")?.profile()),
+                ink: ColorValue(hex: "#FFFFFF")!, ground: ColorValue(hex: "#000000")!)
+        }
+        func candidates(
+            _ text: String, genres: [String]? = nil, local: Bool = true
+        ) throws -> [TitleLettering.Match] {
+            let book = CloudBook(
+                id: 9, title: text, author: "Ann Author", coverURL: nil, detailCoverURL: nil,
+                genres: genres)
+            let families =
+                local
+                ? BookAnalyzer.localFamilies(genres: genres, measured: true)
+                : BookAnalyzer.families(for: nil, playful: false)
+            return BookAnalyzer.candidates(
+                families, lettering: try measurement(text), book: book, local: local)
+        }
+        func styles(_ matches: [TitleLettering.Match]) -> Set<SpineFontStyle> {
+            Set(matches.compactMap { SpineFamily(rawValue: $0.family)?.style })
+        }
+
+        // The atlas has only Latin glyphs, so a Cyrillic title line ranks nothing.
+        let cyrillic = "ВОЙНА"
+        XCTAssertTrue(
+            TitleLettering.rank(
+                SpineFamily.allCases.map(\.rawValue), for: try measurement(cyrillic)
+            )
+            .isEmpty)
+        let local = try candidates(cyrillic)
+        XCTAssertEqual(styles(local), [.humanistSans], "Not the whole catalog")
+        XCTAssertTrue(local.allSatisfy { $0.weight == 700 })
+        XCTAssertEqual(styles(try candidates(cyrillic, genres: ["Horror"])), [.condensedSans])
+        // A model's families keep their order at regular weight.
+        let model = try candidates(cyrillic, local: false)
+        XCTAssertEqual(
+            Set(model.map(\.family)), Set(BookAnalyzer.families(for: nil, playful: false)))
+        XCTAssertTrue(model.allSatisfy { $0.weight == 400 })
+        // A Latin title line ranks the families it was given.
+        XCTAssertTrue(styles(try candidates("KINDRED")).count > 1)
+    }
+
     func testLocalDefaultsChooseFamiliesFromTheFirstRecognizedGenre() {
         func styles(_ genres: [String]?, measured: Bool = true) -> Set<SpineFontStyle> {
             Set(
