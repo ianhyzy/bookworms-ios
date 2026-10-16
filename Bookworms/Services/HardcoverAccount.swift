@@ -254,8 +254,17 @@ struct PhoneLibrary: Codable, Equatable, Sendable {
         try JSONEncoder().encode(self).write(to: url, options: .atomic)
     }
 
+    /// Deletes the cached library at `url` and the copies that earlier formats left beside it,
+    /// which hold the same reading history.
     static func delete(at url: URL = Self.url) {
         try? FileManager.default.removeItem(at: url)
+        let folder = url.deletingLastPathComponent()
+        for old in [
+            "hardcover-library.json", "hardcover-library-2.json", "hardcover-library-3.json",
+            "hardcover-library-4.json",
+        ] {
+            try? FileManager.default.removeItem(at: folder.appending(path: old))
+        }
     }
 }
 
