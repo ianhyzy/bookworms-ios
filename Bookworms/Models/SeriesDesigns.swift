@@ -106,7 +106,10 @@ enum SeriesDesigns {
     ///
     /// The check stands on its own and does not rely on library designs being remapped to
     /// allowed faces when they load: the spine worker passes saved designs exactly as stored
-    /// (`SpineStore.savedDesign`), and the library views may run before that remapping exists.
+    /// (`SpineStore.savedDesign`), and `AppModel.apply(_:)` adds new and recolored designs to the
+    /// library without the remapping in `LibrarySnapshot.latestDesigns`. It checks only
+    /// `fontFamily`; the worker accepts only this generator's designs, whose PostScript names are
+    /// always allowed.
     static func isUsableSource(_ design: SpineDesignV1) -> Bool {
         design.fontFamily.map(BookAnalyzer.allowsFamily) ?? true
     }

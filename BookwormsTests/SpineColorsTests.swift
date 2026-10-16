@@ -334,6 +334,25 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertEqual(model.look(for: second).background, reader.background)
     }
 
+    @MainActor
+    func testRecoloringKeepsTheSavedFontThatReadersReplace() async throws {
+        let book = seriesBook(7, series: nil)
+        var saved = design()
+        saved.fontFamily = "Lora"
+        saved.fontPostScriptName = "Lora-BoldItalic"
+        saved.instanceWeight = 700
+        let (model, folder) = try await previewModel(books: [book], designs: [saved])
+        XCTAssertNil(model.design(for: book)?.fontPostScriptName, "Readers show upright Lora")
+
+        try await model.recolor(book, to: reader)
+        let stored = try await LocalSpineStore(folder: folder)
+            .savedDesign(accountID: "42", bookID: 7)
+        XCTAssertEqual(stored?.colors, reader)
+        XCTAssertEqual(stored?.fontFamily, "Lora")
+        XCTAssertEqual(stored?.fontPostScriptName, "Lora-BoldItalic")
+        XCTAssertEqual(stored?.instanceWeight, 700)
+    }
+
     func testPreviewStoreReplacesOnlyTheRecoloredDesign() async throws {
         let folder = FileManager.default.temporaryDirectory
             .appending(path: "bookworms-colors-\(UUID().uuidString)")

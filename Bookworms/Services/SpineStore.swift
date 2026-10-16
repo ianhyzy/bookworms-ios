@@ -20,8 +20,9 @@ protocol SpineStore: Sendable {
     func isStillCurrent(_ context: WorkContext, book: CloudBook) async throws -> Bool
     /// Saves `design` unless an equal or newer design for the same work already exists.
     func save(_ design: SpineDesignV1) async throws
-    /// Replaces the saved design that `design` recolors (see `SpineDesignV1.isSameDesign(as:)`).
-    /// Throws `CompanionError.designChanged` when the saved design is another one.
+    /// Saves `design`'s colors to the saved design that it recolors (see
+    /// `SpineDesignV1.isSameDesign(as:)`), keeping the saved font and every other field. Throws
+    /// `CompanionError.designChanged` when the saved design is another one.
     func saveRecolored(_ design: SpineDesignV1) async throws
     /// Saves the reader's cover for a book, replacing an earlier choice.
     func save(_ choice: CoverChoiceV1) async throws
@@ -119,13 +120,15 @@ actor LocalSpineStore: SpineStore {
 
     func saveRecolored(_ design: SpineDesignV1) async throws {
         try design.validate()
+        guard let colors = design.colors else { throw CompanionError.invalidDesign }
         let name = CloudContract.designRecordName(
             accountID: design.accountID, bookID: design.bookID)
         var all = try designs()
         guard let saved = all[name], saved.isSameDesign(as: design) else {
             throw CompanionError.designChanged
         }
-        all[name] = design
+        // Keeps the saved font, as `CloudSpineStore` does.
+        all[name] = saved.recolored(colors)
         try write(all, "spine-designs-v1.json")
     }
 

@@ -174,8 +174,8 @@ struct GenerationView: View {
         } footer: {
             Text(
                 usesDailyLimit
-                    ? "Most new designs use two or three requests from your daily limit. Books in a series often reuse a design without a request."
-                    : "Most new designs use two or three requests to this provider, billed to your API account. Books in a series often reuse a design without a request."
+                    ? "Each new design uses one request from your daily limit. Books in a series often reuse a design without a request."
+                    : "Each new design uses one request to this provider, billed to your API account. Books in a series often reuse a design without a request."
             )
         }
     }

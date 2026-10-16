@@ -98,34 +98,41 @@ actor CloudSpineStore: SpineStore {
     func save(_ design: SpineDesignV1) async throws {
         try await write(design) { existing in
             // Another run already saved this work from this generator.
-            guard let existing else { return false }
-            return existing.accountID == design.accountID && existing.bookID == design.bookID
-                && existing.workItemHash == design.workItemHash
-                && existing.coverHash == design.coverHash
-                && existing.generatorVersion == design.generatorVersion
+            if let existing, existing.accountID == design.accountID,
+                existing.bookID == design.bookID, existing.workItemHash == design.workItemHash,
+                existing.coverHash == design.coverHash,
+                existing.generatorVersion == design.generatorVersion
+            {
+                return nil
+            }
+            return design
         }
     }
 
     func saveRecolored(_ design: SpineDesignV1) async throws {
+        guard let colors = design.colors else { throw CompanionError.invalidDesign }
         try await write(design) { existing in
             guard let existing, existing.isSameDesign(as: design) else {
                 throw CompanionError.designChanged
             }
-            return existing == design
+            // `design` may carry the font replacement that readers show
+            // (`SpineDesignV1.withAllowedFont`), so only the colors change in the stored record.
+            let recolored = existing.recolored(colors)
+            return recolored == existing ? nil : recolored
         }
     }
 
-    /// Writes `design` to its record unless `keepsSaved`, given the record's valid design if any,
-    /// returns `true` or throws. Saves with `ifServerRecordUnchanged` and retries up to three
-    /// times when another device changes the record meanwhile.
+    /// Writes the design that `update` returns, given the record's valid design if any, to the
+    /// record of `design`'s account and book. Keeps the record when `update` returns `nil`, and
+    /// saves nothing when it throws. Saves with `ifServerRecordUnchanged` and retries up to
+    /// three times when another device changes the record meanwhile.
     private func write(
-        _ design: SpineDesignV1, unless keepsSaved: (SpineDesignV1?) throws -> Bool
+        _ design: SpineDesignV1, as update: (SpineDesignV1?) throws -> SpineDesignV1?
     ) async throws {
         try design.validate()
         let id = CKRecord.ID(
             recordName: CloudContract.designRecordName(
                 accountID: design.accountID, bookID: design.bookID))
-        let payload = try JSONEncoder().encode(design)
         for _ in 0..<3 {
             let record: CKRecord
             do { record = try await database.record(for: id) } catch let error as CKError
@@ -136,8 +143,9 @@ actor CloudSpineStore: SpineStore {
             guard record.recordType == "SpineDesignV1" else {
                 throw CompanionError.invalidCloudData
             }
-            if try keepsSaved(Self.design(in: record)) { return }
-            record["payload"] = payload as CKRecordValue
+            guard let saving = try update(Self.design(in: record)) else { return }
+            try saving.validate()
+            record["payload"] = try JSONEncoder().encode(saving) as CKRecordValue
             do {
                 let result = try await database.modifyRecords(
                     saving: [record], deleting: [], savePolicy: .ifServerRecordUnchanged)
