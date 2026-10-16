@@ -116,7 +116,8 @@ actor SpineWorker {
     }
 
     /// Reads and publishes the best model tier's availability and quota. A run in progress keeps
-    /// showing its own tier, which it publishes after each book.
+    /// showing its own tier, which it publishes after each book, and reads the best tier again
+    /// when it ends.
     func refreshModelStatus() async {
         if runModel == nil { snapshot.model = await analyzer.status() }
         snapshot.dropExpiredStop()
@@ -153,11 +154,14 @@ actor SpineWorker {
         }
         // The work kept changing. The books left in `queue` keep the charging task scheduled.
         if changed { snapshot.phase = "Ready to continue" }
+        redesign = nil
+        runModel = nil
+        // The best tier again, as the next run would pick it, such as below a backup model that
+        // this run found rejected.
+        snapshot.model = await analyzer.status()
         snapshot.isRunning = false
         snapshot.currentBook = nil
         snapshot.lastRunAt = Date()
-        redesign = nil
-        runModel = nil
         isRunning = false
         publish()
     }
