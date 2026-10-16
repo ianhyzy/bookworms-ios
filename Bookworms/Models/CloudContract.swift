@@ -492,7 +492,7 @@ struct LibrarySnapshot: Codable, Sendable {
     var accountID: String
     var syncedAt: Date
     var books: [CloudBook]
-    /// Valid designs for this account, keyed by book ID, from any generator.
+    /// Valid designs for this account, keyed by book ID, from any generator, as stored.
     var designs: [Int: SpineDesignV1]
     /// Valid series looks of the books' look groups, keyed by group.
     var looks: [SeriesLookKey: SeriesLookV1] = [:]
@@ -501,14 +501,15 @@ struct LibrarySnapshot: Codable, Sendable {
     ///
     /// Designs from any generator count, so Mac and older designs show until a newer one replaces
     /// them. A design whose work-item hash no longer matches still shows: its colors and font stay
-    /// usable after small metadata edits. A blocked font, such as Impact, loads as its
+    /// usable after small metadata edits. Designs keep their stored fonts, so series rules and new
+    /// looks see what other devices see; `AppModel` draws a blocked font, such as Impact, in its
     /// replacement (`SpineDesignV1.withAllowedFont`).
     static func latestDesigns(
         _ designs: some Sequence<SpineDesignV1>, accountID: String, books: [CloudBook]
     ) -> [Int: SpineDesignV1] {
         let ids = Set(books.map(\.id))
         var latest: [Int: SpineDesignV1] = [:]
-        for design in designs.lazy.map(\.withAllowedFont)
+        for design in designs
         where design.accountID == accountID && ids.contains(design.bookID)
             && (try? design.validate()) != nil
         {

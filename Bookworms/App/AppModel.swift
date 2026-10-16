@@ -114,9 +114,16 @@ final class AppModel {
     }
 
     /// The design `book` draws with: its series look, or its series source's design when it
-    /// shares one (see `SeriesDesigns`), otherwise its own.
+    /// shares one (see `SeriesDesigns`), otherwise its own, in an allowed upright face
+    /// (`SpineDesignV1.withAllowedFont`).
     func design(for book: CloudBook) -> SpineDesignV1? {
-        lookDesigns[book.id] ?? library?.designs[seriesSources[book.id] ?? book.id]
+        lookDesigns[book.id] ?? savedDesign(for: book)?.withAllowedFont
+    }
+
+    /// The stored design that `book` draws when it draws no series look: its series source's, or
+    /// its own.
+    private func savedDesign(for book: CloudBook) -> SpineDesignV1? {
+        library?.designs[seriesSources[book.id] ?? book.id]
     }
 
     /// The book whose design and cover set `book`'s spine: its series source, or `book` itself.
@@ -246,7 +253,7 @@ final class AppModel {
         await createMissingLooks()
         // Fonts load after `isLoading` clears, so a slow download never blocks the next reload.
         if let designs = library?.designs.values {
-            await fonts.load(Array(designs) + Array(lookDesigns.values))
+            await fonts.load(designs.map(\.withAllowedFont) + Array(lookDesigns.values))
         }
     }
 
@@ -335,7 +342,7 @@ final class AppModel {
         library.designs[design.bookID] = design
         setLibrary(library)
         persistSoon()
-        Task { await fonts.load([design]) }
+        Task { await fonts.load([design.withAllowedFont]) }
     }
 
     /// Shows series looks that the generator, the catch-up after a reload, or `recolor(_:to:)`
@@ -394,7 +401,7 @@ final class AppModel {
             try await store.save(recolored)
             return
         }
-        guard let design = design(for: book) else {
+        guard let design = savedDesign(for: book) else {
             throw CompanionError.bookNotInLibrary
         }
         let recolored = design.recolored(colors)
@@ -547,10 +554,10 @@ final class AppModel {
         if drawn != lookDesigns { lookDesigns = drawn }
     }
 
-    /// Returns whether `design`'s loaded face has glyphs for `book`'s lettering, or `true` before
-    /// the face loads. Each face and lettering is checked once.
+    /// Returns whether the face that draws `design` has glyphs for `book`'s lettering, or `true`
+    /// before the face loads. Each face and lettering is checked once.
     private func canLetter(_ book: CloudBook, with design: SpineDesignV1) -> Bool {
-        guard let face = fonts.face(for: design) else { return true }
+        guard let face = fonts.face(for: design.withAllowedFont) else { return true }
         let text = SeriesDesigns.lettering(of: book, uppercase: design.uppercase)
         let key = face.postScriptName + "\n" + text
         if let covered = coverage[key] { return covered }

@@ -119,8 +119,7 @@ actor CloudSpineStore: SpineStore {
             guard let existing, existing.isSameDesign(as: design) else {
                 throw CompanionError.designChanged
             }
-            // `design` may carry the font replacement that readers show
-            // (`SpineDesignV1.withAllowedFont`), so only the colors change in the stored record.
+            // Only the colors change in the stored record.
             let recolored = existing.recolored(colors)
             return recolored == existing ? nil : recolored
         }

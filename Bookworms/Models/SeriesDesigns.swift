@@ -150,15 +150,12 @@ enum SeriesDesigns {
         return rank(lhs) < rank(rhs)
     }
 
-    /// Returns whether another book may draw with `design`: never a blocked family, such as
-    /// Impact or an italic.
+    /// Returns whether another book may draw with `design`, or a new look may copy it: never a
+    /// blocked family, such as Impact or an italic.
     ///
-    /// The check stands on its own and does not rely on library designs being remapped to
-    /// allowed faces when they load: the spine worker passes saved designs exactly as stored
-    /// (`SpineStore.savedDesign`), and `AppModel.apply(_:)` adds new and recolored designs to the
-    /// library without the remapping in `LibrarySnapshot.latestDesigns`. It checks only
-    /// `fontFamily`; the worker accepts only this generator's designs, whose PostScript names are
-    /// always allowed.
+    /// Callers pass designs as stored (`SpineStore.savedDesign`, `LibrarySnapshot.designs`), the
+    /// same records the Apple TV app checks with its copy of this rule, so both apps pick the same
+    /// source for a group's first look. It checks only `fontFamily`, as the Apple TV does.
     static func isUsableSource(_ design: SpineDesignV1) -> Bool {
         design.fontFamily.map(BookAnalyzer.allowsFamily) ?? true
     }
