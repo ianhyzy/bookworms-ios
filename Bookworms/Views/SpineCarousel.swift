@@ -435,10 +435,10 @@ private struct StackSlide: ViewModifier, Animatable {
 /// (`closing`) and rebound a fraction of a point before they settle, without ever overlapping
 /// it. With Reduce Motion on, no book is pulled, so nothing moves.
 struct StackRoom: GeometryEffect {
-    static let near: CGFloat = 3.5
-    static let far: CGFloat = 5
+    static let near: CGFloat = 4.5
+    static let far: CGFloat = 6
     static let stagger = 0.03
-    static let opening = Spring(duration: 0.5, bounce: 0.45)
+    static let opening = Spring(duration: 0.5, bounce: 0.5)
     static let snap = Spring(duration: 0.3, bounce: 0.5)
     /// How long the snap shut runs, long enough for the books a dozen places away to settle.
     static let closingDuration = 0.9
