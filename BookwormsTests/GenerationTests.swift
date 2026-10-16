@@ -6,8 +6,9 @@ import XCTest
 
 @testable import Bookworms
 
-/// Covers generation's pure decisions: error handling, quota stops, the lettering answers'
-/// font choices, and title measurement. No test calls a model, the network, or iCloud.
+/// Covers generation's decisions: error handling, quota stops, the lettering answers' font
+/// choices, title measurement, and a recheck against a local store. No test calls a model, the
+/// network, or iCloud.
 final class GenerationTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_000_000)
 
@@ -389,6 +390,89 @@ final class GenerationTests: XCTestCase {
         let current = await work(tier: .onDevice, upgradeTier: .onDevice)
         XCTAssertEqual(current.queue, [])
         XCTAssertFalse(current.upgradeWaits)
+    }
+
+    /// A weekly recheck keeps a current design without downloading its cover. Both books' covers
+    /// use a host that `CoverURLPolicy` refuses, so a download attempt fails the book without a
+    /// request, as it does for the book that has no design.
+    func testRechecksKeepACurrentDesignWithoutDownloadingItsCover() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appending(path: "bookworms-recheck-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let archive = """
+            {"version":1,"sources":[{"source":"hardcover","accountID":"42","syncedAt":800000000,
+              "books":[{"id":7,"title":"The Lantern Keeper","author":"Mara Quill",
+                "coverURL":"https://covers.localhost/7.jpg"},
+                {"id":8,"title":"Salt and Static","author":"Iris Okafor",
+                "coverURL":"https://covers.localhost/8.jpg"}]}]}
+            """
+        try Data(archive.utf8).write(to: folder.appending(path: "library-v1.json"))
+        let book = CloudBook(
+            id: 7, title: "The Lantern Keeper", author: "Mara Quill",
+            coverURL: URL(string: "https://covers.localhost/7.jpg"), detailCoverURL: nil)
+        let workHash = CloudContract.workItemHash(accountID: "42", book: book)
+        let coverHash = String(repeating: "c", count: 64)
+        let recordName = CloudContract.designRecordName(accountID: "42", bookID: 7)
+        // This generator's design without a model token, from Private Cloud Compute, which no
+        // tier outranks.
+        let design = SpineDesignV1(
+            version: 1, accountID: "42", bookID: 7, workItemHash: workHash, coverHash: coverHash,
+            generatorVersion: CloudContract.generatorVersion, generatedAt: now,
+            backgroundHex: "#101010", foregroundHex: "#F4EEE2", accentHex: "#7A1F1F",
+            typeface: "serif", weight: 700, uppercase: false)
+        try JSONEncoder().encode([recordName: design])
+            .write(to: folder.appending(path: "spine-designs-v1.json"))
+
+        let ledger = WorkLedger(url: folder.appending(path: "ledger.json"))
+        try await ledger.useCloudUser("local")
+        try await ledger.recordSuccess(
+            recordName: recordName, workItemHash: workHash, coverHash: coverHash,
+            now: Date().addingTimeInterval(-WorkLedger.recheckInterval - 60))
+        let due = await ledger.needsCheck(recordName: recordName, workItemHash: workHash)
+        XCTAssertTrue(due)
+
+        let worker = SpineWorker(store: LocalSpineStore(folder: folder), ledger: ledger)
+        await worker.reconcile(mode: .foreground)
+        var finished: WorkerSnapshot?
+        for await update in worker.updates {
+            if case .saved = update { XCTFail("The run saved a design") }
+            if case .status(let status) = update, !status.isRunning {
+                finished = status
+                break
+            }
+        }
+        let status = try XCTUnwrap(finished)
+        XCTAssertEqual(status.phase, "Finished")
+        XCTAssertEqual(status.completed, 1)
+        // The book without a design tried its cover.
+        XCTAssertEqual(status.failed, 1)
+        let rechecked = await ledger.needsCheck(recordName: recordName, workItemHash: workHash)
+        XCTAssertFalse(rechecked)
+    }
+
+    /// Only a design of the cover hash that this device's last check ended with skips the cover
+    /// download, so a design that another device made from a cover the reader chose there, and
+    /// later removed, is checked against the default cover.
+    func testOnlyADesignOfTheLastCheckedCoverSkipsTheDownload() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appending(path: "bookworms-ledger-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let ledger = WorkLedger(url: url)
+        let unchecked = await ledger.lastCheckMatches(recordName: "record", coverHash: "default")
+        XCTAssertTrue(unchecked, "A book this device never checked downloads no cover")
+
+        try await ledger.recordSuccess(
+            recordName: "record", workItemHash: "work", coverHash: "default", now: now)
+        let same = await ledger.lastCheckMatches(recordName: "record", coverHash: "default")
+        let chosenElsewhere = await ledger.lastCheckMatches(
+            recordName: "record", coverHash: "chosen")
+        XCTAssertTrue(same)
+        XCTAssertFalse(chosenElsewhere)
+
+        try await ledger.recordFailure(recordName: "record", workItemHash: "work", now: now)
+        let failed = await ledger.lastCheckMatches(recordName: "record", coverHash: "default")
+        XCTAssertFalse(failed)
     }
 
     func testRunsPreferPrivateCloudComputeThenTheBackupThenTheOnDeviceModelThenLocalDefaults()

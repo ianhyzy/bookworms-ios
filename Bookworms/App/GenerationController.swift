@@ -190,7 +190,7 @@ final class GenerationController {
     }
 
     /// The earliest the next background run is worth starting: the quota reset or a service's
-    /// retry date, or with no known work left, a day from now, which keeps the seven-day cover
+    /// retry date, or with no known work left, a day from now, which keeps the seven-day design
     /// rechecks and libraries without a worklist current. Nil means as soon as possible.
     private func nextRunDate(hasNewWork: Bool) -> Date? {
         if let retryAfter = status.retryAfter, retryAfter > .now { return retryAfter }

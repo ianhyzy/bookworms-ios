@@ -238,7 +238,7 @@ final class ShareRenderTests: XCTestCase {
         XCTAssertFalse(PileSnapshotRenderer.isRendering)
     }
 
-    /// Without a library, signed out explains both sources; signed in follows the download.
+    /// Without a library, signed out explains how to get one; signed in follows the download.
     func testNoLibraryStatusFollowsTheSignInAndDownload() {
         func status(
             loading: Bool = false, signedIn: Bool = false, syncing: Bool = false,
@@ -252,10 +252,10 @@ final class ShareRenderTests: XCTestCase {
         let signedOut = status(loadError: "Sign in to iCloud.")
         XCTAssertEqual(signedOut, .signedOut(note: "Sign in to iCloud."))
         XCTAssertTrue(signedOut.message.contains("Apple TV"), signedOut.message)
-        XCTAssertTrue(signedOut.message.contains("connect Hardcover"), signedOut.message)
+        XCTAssertTrue(signedOut.message.contains("Connect Hardcover"), signedOut.message)
         XCTAssertTrue(
-            signedOut.message.hasSuffix("\n\nApple TV library: Sign in to iCloud."),
-            "The note belongs to the Apple TV option: \(signedOut.message)")
+            signedOut.message.hasSuffix("\n\niCloud library: Sign in to iCloud."),
+            "The note belongs to the iCloud library: \(signedOut.message)")
         XCTAssertEqual(status(signedIn: true, syncing: true), .downloading)
         XCTAssertEqual(status(loading: true, signedIn: true), .downloading)
         XCTAssertEqual(

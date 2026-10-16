@@ -6,8 +6,8 @@ enum LibraryStatus: Equatable {
     case loading
     /// The signed-in account's library is downloading.
     case downloading
-    /// Signed out, and the Apple TV has not uploaded a library. `note` is the error from loading
-    /// the Apple TV's library, such as a missing iCloud account.
+    /// Signed out, and none of the reader's devices has saved a library to iCloud. `note` is the
+    /// error from loading the iCloud library, such as a missing iCloud account.
     case signedOut(note: String?)
     /// Hardcover rejected the saved login; `error` says how.
     case reconnect(error: String?)
@@ -68,11 +68,11 @@ enum LibraryStatus: Equatable {
         switch self {
         case .loading, .downloading: ""
         case .signedOut(let note):
-            // The note concerns only the Apple TV's library, so it must not read as a step that
+            // The note concerns only the iCloud library, so it must not read as a step that
             // connecting Hardcover also needs.
             [
-                "Connect Hardcover to bring in the books you've read, or turn on iCloud storage in the Bookworms app on your Apple TV.",
-                note.map { "Apple TV library: \($0)" },
+                "Connect Hardcover to bring in the books you've read. You can also connect it on another of your Apple devices, or turn on iCloud storage in the Bookworms app on your Apple TV.",
+                note.map { "iCloud library: \($0)" },
             ]
             .compactMap(\.self).joined(separator: "\n\n")
         case .reconnect(let error):
@@ -148,6 +148,7 @@ struct NoBooksYetView: View {
             description: Text(
                 model.account.isSignedIn && !model.isPreview
                     ? "Books on your Hardcover shelves appear here after the next sync."
-                    : "Books you finish appear here after your Apple TV syncs."))
+                    : "Books you finish appear here after one of your Apple devices next syncs with Hardcover."
+            ))
     }
 }

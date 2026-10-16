@@ -205,10 +205,20 @@ actor HardcoverClient {
         return user
     }
 
-    /// Downloads every book on the account's shelves, 100 per request, paced about a second
-    /// apart to stay inside Hardcover's rate limit.
-    func library(token: String) async throws -> PhoneLibrary {
+    /// Downloads every book on the account's shelves, 100 per request, and then the series of
+    /// the books, 50 per request, each request paced about a second apart to stay inside
+    /// Hardcover's rate limit.
+    ///
+    /// `previous` is the newest copy of the library the caller knows. Its books keep their covers
+    /// (`coverURLs(edition:book:otherEditions:editionIsInLanguage:previous:)`) only when it
+    /// belongs to the token's account; a copy of another account is ignored. A failed series
+    /// request leaves `series` `nil` and still returns the library.
+    func library(token: String, previous: PhoneLibrary? = nil) async throws -> PhoneLibrary {
         let user = try await account(token: token)
+        let accountID = String(user.id)
+        let previousBooks = Dictionary(
+            (previous?.accountID == accountID ? previous?.books ?? [] : []).map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first })
         struct Variables: Encodable {
             let user: Int
             let offset: Int
@@ -216,19 +226,53 @@ actor HardcoverClient {
         }
         var rows: [LibraryPage.Row] = []
         for offset in stride(from: 0, to: 10_000, by: 100) {
-            if offset > 0 { try await Task.sleep(for: .seconds(1.1)) }
+            if offset > 0 { try await Task.sleep(for: Self.pagePause) }
             let page: LibraryPage = try await query(
                 Self.libraryQuery,
                 variables: Variables(user: user.id, offset: offset, language: Self.coverLanguage),
                 token: token)
             rows += page.userBooks
             if page.userBooks.count < 100 {
+                let books = Self.normalize(rows, previous: previousBooks)
                 return PhoneLibrary(
-                    accountID: String(user.id), username: user.username, syncedAt: .now,
-                    books: Self.normalize(rows))
+                    accountID: accountID, username: user.username, syncedAt: .now, books: books,
+                    series: try? await series(Set(books.compactMap(\.seriesID)), token: token))
             }
         }
         throw HardcoverError.incomplete
+    }
+
+    /// Returns the names and main books of the series `ids`, 50 series per request, each request
+    /// paced like library pages. The Apple TV shows them in book details.
+    private func series(_ ids: Set<Int>, token: String) async throws -> [SeriesInfo] {
+        struct Variables: Encodable { let ids: [Int] }
+        let sorted = ids.sorted()
+        var result: [SeriesInfo] = []
+        for start in stride(from: 0, to: sorted.count, by: 50) {
+            try await Task.sleep(for: Self.pagePause)
+            let page: SeriesPage = try await query(
+                Self.seriesQuery,
+                variables: Variables(ids: Array(sorted[start..<min(start + 50, sorted.count)])),
+                token: token)
+            result += page.series.map(Self.seriesInfo)
+        }
+        return result
+    }
+
+    /// Keeps one book per whole-number position: the most-read, which the query lists first. Ported
+    /// from the Apple TV app, so both apps write the same series.
+    private static func seriesInfo(_ series: SeriesPage.Series) -> SeriesInfo {
+        var seen = Set<Double>()
+        let books = series.bookSeries.compactMap { entry -> SeriesInfo.SeriesBook? in
+            guard let position = entry.position, position >= 0, position == position.rounded(),
+                let book = entry.book, seen.insert(position).inserted
+            else { return nil }
+            return SeriesInfo.SeriesBook(
+                id: book.id, title: book.title ?? "Untitled", position: position,
+                releaseYear: book.releaseYear,
+                coverURL: book.image?.url.flatMap { $0.scheme == "https" ? $0 : nil })
+        }
+        return SeriesInfo(id: series.id, name: series.name, books: books)
     }
 
     /// Returns the covers of the book's editions, most-read edition first, one per image URL.
@@ -546,6 +590,19 @@ actor HardcoverClient {
         }
         """
 
+    // Ported from the Apple TV app's series query.
+    private static let seriesQuery = """
+        query PhoneSeries($ids: [Int!]!) {
+          series(where: {id: {_in: $ids}}) {
+            id name
+            book_series(where: {position: {_is_null: false}},
+              order_by: [{position: asc}, {book: {users_count: desc}}]) {
+              position book { id title release_year image { url width height } }
+            }
+          }
+        }
+        """
+
     private static let ownerQuery = "query SocialOwner { me { id username name image { url } } }"
 
     private static let blockedQuery = """
@@ -622,8 +679,12 @@ actor HardcoverClient {
     }
 
     /// Converts rows to books the way the Apple TV app does, keeping one row per book: the most
-    /// recently finished.
-    private static func normalize(_ rows: [LibraryPage.Row]) -> [CloudBook] {
+    /// recently finished. `previous` holds the account's books from its last sync, by ID, whose
+    /// covers stay fixed unless an upgrade applies
+    /// (`coverURLs(edition:book:otherEditions:editionIsInLanguage:previous:)`).
+    private static func normalize(_ rows: [LibraryPage.Row], previous: [Int: CloudBook] = [:])
+        -> [CloudBook]
+    {
         var unique: [Int: CloudBook] = [:]
         for row in rows {
             let source = row.book
@@ -638,7 +699,8 @@ actor HardcoverClient {
                 editionIsInLanguage: edition?.language?.code2
                     .map {
                         $0.lowercased() == coverLanguage.lowercased()
-                    } ?? true)
+                    } ?? true,
+                previous: previous[source.id].map { ($0.detailCoverURL, $0.coverURL) })
             let membership = source.bookSeries?
                 .sorted { ($0.featured ?? false) && !($1.featured ?? false) }.first
             let seriesName = membership?.series?.name?
@@ -720,18 +782,52 @@ actor HardcoverClient {
         return fraction.isFinite ? min(1, max(0, fraction)) : nil
     }
 
+    /// The reported height, in pixels, below which a saved cover counts as low quality and may be
+    /// replaced by a sharper one. Matches the Apple TV app.
+    static let lowQualityCoverHeight = 1000
+
     /// The preferred cover and a fallback, chosen like the Apple TV app.
+    ///
+    /// `previous` holds the covers the book had in the account's last sync. They stay fixed, so
+    /// spine designs and cached images keep matching on every device even when the reader's
+    /// edition changes, unless an upgrade applies: this sync's candidates include the previous
+    /// preferred cover with a reported height below `lowQualityCoverHeight`, and the new choice
+    /// reports a height of at least that. A cover without a reported height is never replaced
+    /// and never replaces another. Without `previous`, or without a previous preferred cover,
+    /// the new choice is used. The Apple TV app applies the same rule.
+    static func coverURLs(
+        edition: LibraryPage.Image?, book: LibraryPage.Image?,
+        otherEditions: [LibraryPage.Image] = [], editionIsInLanguage: Bool = true,
+        previous: (preferred: URL?, alternate: URL?)? = nil
+    ) -> (preferred: URL?, alternate: URL?) {
+        let choice = bestCoverURLs(
+            edition: edition, book: book, otherEditions: otherEditions,
+            editionIsInLanguage: editionIsInLanguage)
+        guard let previous, let kept = previous.preferred else { return choice }
+        let candidates = [edition, book].compactMap(\.self) + otherEditions
+        func height(_ url: URL?) -> Int? {
+            candidates.filter { url != nil && $0.url == url }.compactMap(\.height).max()
+        }
+        if let old = height(kept), old < lowQualityCoverHeight,
+            let new = height(choice.preferred), new >= lowQualityCoverHeight
+        {
+            return choice
+        }
+        return previous
+    }
+
+    /// The best covers among this sync's candidates.
     ///
     /// The reader's edition wins unless another image is clearly better; a square audiobook
     /// image, for example, loses to any portrait cover. An edition in another language counts
     /// only when nothing else can serve. Without a portrait cover, the largest square image of at
     /// least 300 pixels is used.
-    private static func coverURLs(
+    private static func bestCoverURLs(
         edition: LibraryPage.Image?, book: LibraryPage.Image?, otherEditions: [LibraryPage.Image],
         editionIsInLanguage: Bool
     ) -> (preferred: URL?, alternate: URL?) {
         if !editionIsInLanguage, edition != nil {
-            let choice = coverURLs(
+            let choice = bestCoverURLs(
                 edition: nil, book: book, otherEditions: otherEditions, editionIsInLanguage: true)
             if choice.preferred != nil { return choice }
         }
@@ -849,8 +945,41 @@ private struct EditionsPage: Decodable {
     }
 }
 
+/// The series query's reply.
+private struct SeriesPage: Decodable {
+    let series: [Series]
+
+    struct Series: Decodable {
+        let id: Int
+        let name: String
+        let bookSeries: [Entry]
+
+        enum CodingKeys: String, CodingKey {
+            case id, name
+            case bookSeries = "book_series"
+        }
+    }
+
+    struct Entry: Decodable {
+        let position: Double?
+        let book: Book?
+    }
+
+    struct Book: Decodable {
+        let id: Int
+        let title: String?
+        let releaseYear: Int?
+        let image: LibraryPage.Image?
+
+        enum CodingKeys: String, CodingKey {
+            case id, title, image
+            case releaseYear = "release_year"
+        }
+    }
+}
+
 /// One page of the library query, decoded field by field from Hardcover's names.
-private struct LibraryPage: Decodable {
+struct LibraryPage: Decodable {
     let userBooks: [Row]
 
     enum CodingKeys: String, CodingKey { case userBooks = "user_books" }

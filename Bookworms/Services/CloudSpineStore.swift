@@ -1,10 +1,11 @@
 import CloudKit
 import Foundation
 
-/// Reads the Apple TV archive, or this iPhone's own Hardcover library when it is signed in, and
-/// publishes one portable design per Hardcover book in the private database of the shared iCloud
-/// container. The reader's cover choices and series links, and the series looks, live in the same
-/// database.
+/// Reads the shared `library-v1` archive, or this device's own Hardcover library when it is
+/// signed in, and publishes one portable design per Hardcover book in the private database of the
+/// shared iCloud container. It also writes this device's Hardcover library into the archive, so
+/// other devices can show it without downloading it. The reader's cover choices and series links,
+/// and the series looks, live in the same database.
 actor CloudSpineStore: SpineStore {
     private let container = CKContainer(identifier: CloudContract.containerID)
     private var database: CKDatabase { container.privateCloudDatabase }
@@ -304,12 +305,14 @@ actor CloudSpineStore: SpineStore {
         } catch let error as CKError where error.code == .unknownItem {}
     }
 
-    /// Returns this iPhone's own Hardcover library when it is signed in, otherwise the Apple TV
-    /// archive, with each book's newest design.
+    /// Returns this device's own Hardcover library when it is signed in, otherwise the archive's
+    /// library, with each book's newest design.
     ///
-    /// Signed in, the result is `nil` until the account's library is downloaded, because the
-    /// archive may belong to another account. The phone library shows without an iCloud
-    /// account, just without designs.
+    /// Signed in, the result is `nil` until this device has its copy of the account's library,
+    /// downloaded or adopted from the archive (`HardcoverAccount.syncIfStale()`), because the
+    /// archive's newest library may belong to another account. Signed out, the archive can show
+    /// the library and reviews that this device published. The phone library shows without an
+    /// iCloud account, just without designs.
     func loadLibrary() async throws -> LibrarySnapshot? {
         if let accountID = HardcoverAccount.signedInAccountID {
             guard let phone = PhoneLibrary.load(), phone.accountID == accountID else { return nil }
@@ -436,24 +439,60 @@ actor CloudSpineStore: SpineStore {
         return worklist
     }
 
+    func archivedLibrary(accountID: String) async throws -> CloudSourceSnapshot? {
+        try await fetchArchive()?.newestHardcoverSnapshot(accountID: accountID)
+    }
+
+    /// Splices `library` into the archive record, creating the record when it is missing. Saves
+    /// with `ifServerRecordUnchanged` and retries up to three times when another device changes
+    /// the archive meanwhile.
+    func publishLibrary(_ library: PhoneLibrary) async throws {
+        let snapshot = CloudSourceSnapshot(library)
+        for _ in 0..<3 {
+            let (record, stored) = try await libraryRecord()
+            guard let payload = try CloudLibraryArchive.splice(snapshot, into: stored) else {
+                return
+            }
+            // CloudKit uploads the asset from this file during the save.
+            let file = FileManager.default.temporaryDirectory.appending(
+                path: "library-\(UUID().uuidString).json")
+            try payload.write(to: file, options: .atomic)
+            defer { try? FileManager.default.removeItem(at: file) }
+            record["archive"] = CKAsset(fileURL: file)
+            do {
+                try await saveIfUnchanged(record)
+                return
+            } catch let error as CKError where error.code == .serverRecordChanged {
+                continue
+            }
+        }
+        throw CompanionError.cloudConflict
+    }
+
     private func fetchArchive() async throws -> CloudLibraryArchive? {
+        guard let json = try await libraryRecord().json else { return nil }
+        let archive = try JSONDecoder().decode(CloudLibraryArchive.self, from: json)
+        guard archive.version == 1 else { throw CompanionError.unsupportedCloudData }
+        return archive
+    }
+
+    /// Returns the `library-v1` record with its archive JSON, or a new record and `nil` when
+    /// none exists. Throws `CompanionError.invalidCloudData` for a record without a readable
+    /// archive of at most 50 MB.
+    private func libraryRecord() async throws -> (record: CKRecord, json: Data?) {
+        let id = CKRecord.ID(recordName: CloudContract.libraryRecordName)
         let record: CKRecord
-        do {
-            record = try await database.record(
-                for: CKRecord.ID(recordName: CloudContract.libraryRecordName))
-        } catch let error as CKError where error.code == .unknownItem {
-            return nil
+        do { record = try await database.record(for: id) } catch let error as CKError
+            where error.code == .unknownItem
+        {
+            return (CKRecord(recordType: "LibraryArchive", recordID: id), nil)
         }
         guard record.recordType == "LibraryArchive", let asset = record["archive"] as? CKAsset,
             let url = asset.fileURL
         else { throw CompanionError.invalidCloudData }
         let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
         guard size > 0, size <= 50 * 1024 * 1024 else { throw CompanionError.invalidCloudData }
-        let archive = try JSONDecoder()
-            .decode(
-                CloudLibraryArchive.self, from: Data(contentsOf: url))
-        guard archive.version == 1 else { throw CompanionError.unsupportedCloudData }
-        return archive
+        return (record, try Data(contentsOf: url))
     }
 
     private static func design(in record: CKRecord) -> SpineDesignV1? {

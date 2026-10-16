@@ -2,10 +2,10 @@ import Foundation
 
 /// Where the companion reads the library and saves spine designs.
 ///
-/// `CloudSpineStore` is the private iCloud database the Apple TV shares, combined with this
-/// iPhone's own Hardcover library when it is signed in (see `WorkSource`). `LocalSpineStore`
-/// reads a folder of the same JSON for Simulator previews and tests, so no iCloud account is
-/// needed; it ignores the Hardcover sign-in.
+/// `CloudSpineStore` is the private iCloud database that the reader's Apple devices share,
+/// combined with this device's own Hardcover library when it is signed in (see `WorkSource`).
+/// `LocalSpineStore` reads a folder of the same JSON for Simulator previews and tests, so no
+/// iCloud account is needed; it ignores the Hardcover sign-in.
 ///
 /// Both stores set each book's `chosenCoverURL` and `seriesLink` from the reader's
 /// `CoverChoiceV1` and `SeriesLinkV1` records when they load work or the library.
@@ -57,6 +57,13 @@ protocol SpineStore: Sendable {
     func loadLibrary() async throws -> LibrarySnapshot?
     /// Subscribes to worklist changes so a silent push can schedule generation.
     func installWorklistSubscription() async throws
+    /// Returns the newest Hardcover snapshot of `accountID` in the shared `library-v1` archive,
+    /// or `nil` when the archive holds none.
+    func archivedLibrary(accountID: String) async throws -> CloudSourceSnapshot?
+    /// Writes `library` into the shared `library-v1` archive as its account's Hardcover snapshot
+    /// when it is newer than the stored one (`CloudLibraryArchive.splice(_:into:)`), so other
+    /// devices can show it without downloading it from Hardcover.
+    func publishLibrary(_ library: PhoneLibrary) async throws
 }
 
 extension SpineStore {
@@ -70,27 +77,37 @@ extension SpineStore {
 enum WorkSource: Equatable {
     /// The Apple TV's worklist chose the account and books from its archive.
     case worklist
-    /// This iPhone's own Hardcover library.
+    /// This device's own Hardcover library.
     case phone(PhoneLibrary)
-    /// The newest Hardcover snapshot in the Apple TV archive.
+    /// The newest Hardcover snapshot in the archive.
     case archive
-    /// Nothing to design: the Apple TV paused generation and this iPhone is signed out, or
-    /// this iPhone is signed in but has no copy of the account's library.
+    /// Nothing to design: the Apple TV paused generation and this device is signed out, or
+    /// this device is signed in but has no copy of the account's library.
     case none
 
-    /// A worklist that lists books decides. Without one, a signed-in iPhone designs only its
-    /// own library (`phone`, when it belongs to `signedInAccountID`): the archive may belong to
-    /// another account, so it never stands in, even before the first download. Signed out, the
-    /// archive is used unless an empty worklist says the Apple TV turned Hardcover off.
+    /// Signed in with its own copy of the account's library (`phone`, when it belongs to
+    /// `signedInAccountID`), a device designs that copy unless a worklist lists books of another
+    /// account or of a newer copy. A worklist of the same account and copy or an older one
+    /// doesn't decide: fixed covers make the copy's books hash as the Apple TV's do
+    /// (`CloudContract.workItemHash(accountID:book:)`). Otherwise a worklist that lists books
+    /// decides, so books that the Apple TV's newer copy adds get designs before this device
+    /// adopts that copy. Without one, a signed-in device without its copy designs nothing,
+    /// since the archive may belong to another account, and a signed-out device uses the
+    /// archive unless an empty worklist says the Apple TV turned Hardcover off.
     init(worklist: SpineWorklistV1?, signedInAccountID: String?, phone: PhoneLibrary?) {
-        if let worklist, !worklist.bookIDs.isEmpty {
+        let listing = worklist.flatMap { $0.bookIDs.isEmpty ? nil : $0 }
+        // Dates match within a millisecond, as the archive matches a worklist to its snapshot.
+        if let phone, phone.accountID == signedInAccountID,
+            listing.map({
+                $0.accountID == phone.accountID
+                    && $0.syncedAt.timeIntervalSince(phone.syncedAt) < 0.001
+            }) ?? true
+        {
+            self = .phone(phone)
+        } else if listing != nil {
             self = .worklist
-        } else if let signedInAccountID {
-            if let phone, phone.accountID == signedInAccountID {
-                self = .phone(phone)
-            } else {
-                self = .none
-            }
+        } else if signedInAccountID != nil {
+            self = .none
         } else {
             self = worklist == nil ? .archive : .none
         }
@@ -263,6 +280,22 @@ actor LocalSpineStore: SpineStore {
     }
 
     func installWorklistSubscription() async throws {}
+
+    func archivedLibrary(accountID: String) async throws -> CloudSourceSnapshot? {
+        try decode(CloudLibraryArchive.self, "library-v1.json")?
+            .newestHardcoverSnapshot(accountID: accountID)
+    }
+
+    func publishLibrary(_ library: PhoneLibrary) async throws {
+        let url = folder.appending(path: "library-v1.json")
+        let stored =
+            FileManager.default.fileExists(atPath: url.path) ? try Data(contentsOf: url) : nil
+        guard
+            let archive = try CloudLibraryArchive.splice(
+                CloudSourceSnapshot(library), into: stored)
+        else { return }
+        try archive.write(to: url, options: .atomic)
+    }
 
     /// Returns `books` with the reader's chosen covers and series links.
     private func applyingChoices(accountID: String, to books: [CloudBook]) throws -> [CloudBook] {
