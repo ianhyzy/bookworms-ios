@@ -322,6 +322,43 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(upgradeTier(.onDevice, available: false), .local)
     }
 
+    func testRunsAtTheDailyLimitWaitForTheUpgradesTheyCannotQueue() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appending(path: "bookworms-ledger-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let ledger = WorkLedger(url: url)
+        let book = CloudBook(
+            id: 9, title: "A Quiet Orbit", author: "Ann Author", coverURL: nil,
+            detailCoverURL: nil)
+        let hash = CloudContract.workItemHash(accountID: "42", book: book)
+        try await ledger.recordSuccess(
+            recordName: CloudContract.designRecordName(accountID: "42", bookID: book.id),
+            workItemHash: hash, coverHash: hash, tier: .onDevice)
+        func work(tier: ModelTier, upgradeTier: ModelTier) async -> (
+            queue: [Int], upgradeWaits: Bool
+        ) {
+            let work = await SpineWorker.work(
+                [book], accountID: "42", ledger: ledger, tier: tier, upgradeTier: upgradeTier)
+            return (work.queue.map(\.id), work.upgradeWaits)
+        }
+        // At the limit, the upgrade isn't queued, but it keeps the stop and its reset date.
+        let limited = ModelStatus(
+            tier: .privateCloudCompute, isAvailable: true, unavailableReason: nil,
+            coverReader: .designModel, quota: .limitReached, quotaResetDate: now)
+        let waiting = await work(
+            tier: limited.tier, upgradeTier: SpineWorker.upgradeTier(limited, mode: .foreground))
+        XCTAssertEqual(waiting.queue, [])
+        XCTAssertTrue(waiting.upgradeWaits)
+        XCTAssertEqual(SpineWorker.modelStop(limited, mode: .foreground)?.retryAfter, now)
+        // Below the limit the upgrade is queued, and at the book's own tier nothing waits.
+        let open = await work(tier: .privateCloudCompute, upgradeTier: .privateCloudCompute)
+        XCTAssertEqual(open.queue, [9])
+        XCTAssertFalse(open.upgradeWaits)
+        let current = await work(tier: .onDevice, upgradeTier: .onDevice)
+        XCTAssertEqual(current.queue, [])
+        XCTAssertFalse(current.upgradeWaits)
+    }
+
     func testRunsPreferPrivateCloudComputeThenTheBackupThenTheOnDeviceModelThenLocalDefaults()
         async
     {

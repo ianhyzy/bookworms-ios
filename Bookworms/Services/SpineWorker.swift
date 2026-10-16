@@ -192,24 +192,21 @@ actor SpineWorker {
             // tier queues the books a weaker tier last checked.
             let model = await readModel()
             let upgradeTier = Self.upgradeTier(model, mode: mode)
-            var queue: [CloudBook] = []
-            for book in books {
-                let workHash = CloudContract.workItemHash(accountID: accountID, book: book)
-                if await ledger.needsCheck(
-                    recordName: Self.recordName(accountID, book), workItemHash: workHash,
-                    chosenCover: book.chosenCoverURL, runTier: upgradeTier)
-                {
-                    queue.append(book)
-                }
-            }
-            queue = SeriesDesigns.sourceFirst(queue)
+            let work = await Self.work(
+                books, accountID: accountID, ledger: ledger, tier: model.tier,
+                upgradeTier: upgradeTier)
+            var queue = SeriesDesigns.sourceFirst(work.queue)
             if let redesign, let book = books.first(where: { $0.id == redesign.bookID }) {
                 queue.removeAll { $0.id == book.id }
                 queue.insert(book, at: 0)
             }
             snapshot.queue = queue.count
             guard !queue.isEmpty else {
-                snapshot.phase = "All spines are up to date"
+                // Waiting upgrades keep the model's stop and its retry date, such as the quota
+                // reset, so the charging task runs again then.
+                if !work.upgradeWaits || !stopForModel(model, mode: mode) {
+                    snapshot.phase = "All spines are up to date"
+                }
                 return false
             }
             if stopForModel(model, mode: mode) { return false }
@@ -560,11 +557,37 @@ actor SpineWorker {
         return true
     }
 
+    /// Returns the books of `books` that the ledger says a run checks at `upgradeTier`
+    /// (`upgradeTier(_:mode:)`), and whether another book waits only for `tier`, the run's, to
+    /// take requests again, such as an upgrade held back by Private Cloud Compute's daily limit.
+    static func work(
+        _ books: [CloudBook], accountID: String, ledger: WorkLedger, tier: ModelTier,
+        upgradeTier: ModelTier
+    ) async -> (queue: [CloudBook], upgradeWaits: Bool) {
+        var queue: [CloudBook] = []
+        var upgradeWaits = false
+        for book in books {
+            let workHash = CloudContract.workItemHash(accountID: accountID, book: book)
+            func needsCheck(at tier: ModelTier) async -> Bool {
+                await ledger.needsCheck(
+                    recordName: recordName(accountID, book), workItemHash: workHash,
+                    chosenCover: book.chosenCoverURL, runTier: tier)
+            }
+            if await needsCheck(at: upgradeTier) {
+                queue.append(book)
+            } else if !upgradeWaits, upgradeTier < tier {
+                upgradeWaits = await needsCheck(at: tier)
+            }
+        }
+        return (queue, upgradeWaits)
+    }
+
     /// The tier a run passes to `WorkLedger.needsCheck`, so that a book whose last check ran at
     /// a lower tier is checked again at once: the run's tier, or `.local`, which queues no
     /// upgrade, when the run would stop for its model (`modelStop(_:mode:)`), such as at Private
-    /// Cloud Compute's daily limit. That run queues the books it would without tiers, and the
-    /// daily limit stops a run partway through upgrades until the reset.
+    /// Cloud Compute's daily limit. That run queues only the books it would queue without tiers.
+    /// With none, it still stops for its model when upgrades wait, so the charging task runs
+    /// again at the reset. The daily limit also stops a run partway through upgrades.
     static func upgradeTier(_ status: ModelStatus, mode: RunMode) -> ModelTier {
         modelStop(status, mode: mode) == nil ? status.tier : .local
     }
