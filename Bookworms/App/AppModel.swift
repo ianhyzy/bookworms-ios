@@ -175,7 +175,8 @@ final class AppModel {
         return library?.looks[key]
     }
 
-    /// Reloads the library and designs, then loads the fonts the designs name.
+    /// Reloads the library and designs, then creates missing series looks
+    /// (`createMissingLooks()`) while it loads the fonts the designs name.
     ///
     /// When signed in to Hardcover, first downloads the account's library if the copy on this
     /// iPhone is missing or a few hours old; a failed download keeps that copy and is reported.
@@ -250,11 +251,14 @@ final class AppModel {
         if revision != account.libraryRevision { return await reload() }
         // Social data refreshes on its own, so its downloads never hold up the next reload.
         Task { await syncSocial() }
-        await createMissingLooks()
+        // The catch-up's serial saves and the font downloads run side by side, so neither waits
+        // for the other; `apply(_:)` loads the faces of the looks the catch-up saves.
+        async let catchUp: Void = createMissingLooks()
         // Fonts load after `isLoading` clears, so a slow download never blocks the next reload.
         if let designs = library?.designs.values {
             await fonts.load(designs.map(\.withAllowedFont) + Array(lookDesigns.values))
         }
+        await catchUp
     }
 
     /// Whether the Share tab can compare with other readers: signed in to Hardcover on this
