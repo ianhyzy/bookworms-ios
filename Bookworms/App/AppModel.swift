@@ -391,23 +391,23 @@ final class AppModel {
     /// Throws when the colors cannot be saved, and then they stay on screen until the next
     /// reload. Throws `CompanionError.invalidDesign`, before showing anything, when the colors
     /// are not readable, and `CompanionError.bookNotInLibrary` when the book has no design.
-    /// When iCloud holds another design, such as a redesign from another device, reloads to show
-    /// it and throws `CompanionError.designChanged`.
+    /// When iCloud holds another design or look, such as a redesign from another device, reloads
+    /// to show it and throws `CompanionError.designChanged`.
     func recolor(_ book: CloudBook, to colors: SpineColors) async throws {
-        if let look = drawnLook(of: book) {
-            let recolored = look.recolored(colors, at: .now)
-            try recolored.validate()
-            apply([recolored])
-            try await store.save(recolored)
-            return
-        }
-        guard let design = savedDesign(for: book) else {
-            throw CompanionError.bookNotInLibrary
-        }
-        let recolored = design.recolored(colors)
-        try recolored.validate()
-        apply(recolored)
         do {
+            if let look = drawnLook(of: book) {
+                let recolored = look.recolored(colors, at: .now)
+                try recolored.validate()
+                apply([recolored])
+                try await store.saveRecolored(recolored)
+                return
+            }
+            guard let design = savedDesign(for: book) else {
+                throw CompanionError.bookNotInLibrary
+            }
+            let recolored = design.recolored(colors)
+            try recolored.validate()
+            apply(recolored)
             try await store.saveRecolored(recolored)
         } catch CompanionError.designChanged {
             await reload()

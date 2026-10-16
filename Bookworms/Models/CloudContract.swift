@@ -378,6 +378,17 @@ struct SeriesLookV1: Codable, Sendable, Hashable {
             instanceWeight: instanceWeight)
     }
 
+    /// Whether `other` is this look or a recoloring of it: every field but the colors and
+    /// `editedAt` matches, so no device remade the look in between.
+    func isSameLook(as other: SeriesLookV1) -> Bool {
+        var look = other
+        look.backgroundHex = backgroundHex
+        look.foregroundHex = foregroundHex
+        look.accentHex = accentHex
+        look.editedAt = editedAt
+        return look == self
+    }
+
     /// Returns the look with `colors`, edited at `date`.
     func recolored(_ colors: SpineColors, at date: Date) -> SeriesLookV1 {
         var look = self

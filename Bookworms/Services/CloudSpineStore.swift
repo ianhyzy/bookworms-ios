@@ -234,12 +234,27 @@ actor CloudSpineStore: SpineStore {
                 accountID: look.accountID, key: look.key))
     }
 
+    func saveRecolored(_ look: SeriesLookV1) async throws {
+        try look.validate()
+        try await write(
+            JSONEncoder().encode(look), recordType: "SeriesLookV1",
+            recordName: CloudContract.seriesLookRecordName(
+                accountID: look.accountID, key: look.key)
+        ) { record in
+            guard let saved = Self.payload(SeriesLookV1.self, in: record),
+                saved.isSameLook(as: look)
+            else { throw CompanionError.designChanged }
+            return saved == look
+        }
+    }
+
     /// Saves `payload` in the named record, creating the record when it is missing, unless
-    /// `isCurrent` finds that the record already holds it. Saves with `ifServerRecordUnchanged`
-    /// and retries up to three times when another device changes the record meanwhile.
+    /// `isCurrent` finds that the record already holds it; nothing is saved when `isCurrent`
+    /// throws. Saves with `ifServerRecordUnchanged` and retries up to three times when another
+    /// device changes the record meanwhile.
     private func write(
         _ payload: Data, recordType: String, recordName: String,
-        isCurrent: (CKRecord) -> Bool = { _ in false }
+        isCurrent: (CKRecord) throws -> Bool = { _ in false }
     ) async throws {
         let id = CKRecord.ID(recordName: recordName)
         for _ in 0..<3 {
@@ -250,7 +265,7 @@ actor CloudSpineStore: SpineStore {
                 record = CKRecord(recordType: recordType, recordID: id)
             }
             guard record.recordType == recordType else { throw CompanionError.invalidCloudData }
-            if isCurrent(record) { return }
+            if try isCurrent(record) { return }
             record["payload"] = payload as CKRecordValue
             do {
                 try await saveIfUnchanged(record)

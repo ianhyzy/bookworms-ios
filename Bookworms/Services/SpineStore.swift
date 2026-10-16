@@ -39,8 +39,12 @@ protocol SpineStore: Sendable {
     /// `look`, or the look another device saved first. Throws `CompanionError.invalidCloudData`
     /// when the group's saved look is not valid.
     func createLook(_ look: SeriesLookV1) async throws -> SeriesLookV1
-    /// Saves `look` over its group's look, such as after the reader recolors it.
+    /// Saves `look` over its group's look, such as after a requested redesign remakes it.
     func save(_ look: SeriesLookV1) async throws
+    /// Saves `look`'s colors and edit date over the saved look that it recolors (see
+    /// `SeriesLookV1.isSameLook(as:)`). Throws `CompanionError.designChanged` when the group's
+    /// saved look is missing or another one, such as a look another device remade.
+    func saveRecolored(_ look: SeriesLookV1) async throws
     /// Returns the active account's books, every valid saved design, and the saved looks of the
     /// books' look groups, or `nil` before there is a library.
     func loadLibrary() async throws -> LibrarySnapshot?
@@ -199,6 +203,17 @@ actor LocalSpineStore: SpineStore {
         try look.validate()
         var all = try looks()
         all[CloudContract.seriesLookRecordName(accountID: look.accountID, key: look.key)] = look
+        try write(all, "series-looks-v1.json")
+    }
+
+    func saveRecolored(_ look: SeriesLookV1) async throws {
+        try look.validate()
+        var all = try looks()
+        let name = CloudContract.seriesLookRecordName(accountID: look.accountID, key: look.key)
+        guard let saved = all[name], saved.isSameLook(as: look) else {
+            throw CompanionError.designChanged
+        }
+        all[name] = look
         try write(all, "series-looks-v1.json")
     }
 

@@ -328,6 +328,31 @@ final class SeriesLookTests: XCTestCase {
         XCTAssertEqual(edited[first.key]?.origin, first.origin)
         XCTAssertEqual(edited[first.key]?.editedAt, created.addingTimeInterval(60))
     }
+
+    func testRecoloringALookKeepsARemakeFromAnotherDevice() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appending(path: "bookworms-looks-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = LocalSpineStore(folder: folder)
+        let first = try await store.createLook(look())
+        let colors = SpineColors(
+            background: ColorValue(hex: "#000000")!, foreground: ColorValue(hex: "#FFFFFF")!,
+            accent: ColorValue(hex: "#FF0000")!)
+        try await store.saveRecolored(first.recolored(colors, at: created.addingTimeInterval(60)))
+
+        // Another device remade the look in another font before this one saved its colors.
+        let remade = first.remade(
+            from: design(7, at: 60, family: "Lora"), at: created.addingTimeInterval(120))
+        try await store.save(remade)
+        do {
+            try await store.saveRecolored(
+                first.recolored(colors, at: created.addingTimeInterval(180)))
+            XCTFail("A recoloring of a remade look was saved")
+        } catch CompanionError.designChanged {}
+        let kept = try await store.seriesLooks(accountID: "42", keys: [first.key])
+        XCTAssertEqual(kept[first.key], remade)
+    }
 }
 
 extension SeriesLookV1 {
