@@ -560,6 +560,10 @@ final class PileStatus {
 /// The live Desk shares its desk and book parts with the dominoes (`DeskScenes`): `handOff()`
 /// gives the dominoes the books as they lie, and `adopt(_:camera:books:tidy:periods:generation:
 /// viewport:)` takes them back, wherever they lie, as the desk's arrangement until the next drop.
+///
+/// Once nothing in the scene has moved for `restDelay`, `restChanged` reports that the pile
+/// rests, so `DeskScenes` can stop drawing it, and the next change to the scene, or `stir()`,
+/// reports that it moves again.
 @MainActor
 final class BookPileScene {
     /// The scene root, which runs the physics simulation.
@@ -641,6 +645,19 @@ final class BookPileScene {
     /// which returns with the book.
     let lifter: BookLifter
     private var readerCamera = PileCamera()
+    /// Called with `true` once the pile has rested for `restDelay`, and with `false` when
+    /// something next changes the scene (see `stir()`).
+    var restChanged: ((Bool) -> Void)?
+    private var isResting = false
+    /// How long nothing has moved, as of the last check, and the time since that check.
+    private var stillTime: TimeInterval = 0
+    private var sinceCheck: TimeInterval = 0
+    /// The camera at the last check.
+    private var checkedCamera = Transform.identity
+
+    /// How long nothing must move before the pile rests, and how often `update` checks.
+    static let restDelay: TimeInterval = 10
+    private static let restCheck: TimeInterval = 0.5
 
     /// The walls' collision group, which a thrown-back book passes through.
     private static let wallGroup = CollisionGroup(rawValue: 1 << 1)
@@ -882,6 +899,7 @@ final class BookPileScene {
         let key = PlanKey(
             ids: books.map(\.id), tidy: tidy, periods: periods, generation: generation)
         guard refits || key != planKey else { return }
+        stir()
         if !refits, !tidy, periods == nil, let planKey, !planKey.tidy, planKey.periods == nil,
             planKey.generation == generation,
             let added = PileLayout.added(to: planKey.ids, in: books)
@@ -1010,6 +1028,7 @@ final class BookPileScene {
     /// Removes every book and returns the camera and gravity to rest. Keeps the parts of the
     /// books in `ids` for the next drop.
     private func reset(keeping ids: Set<Int>) {
+        stir()
         shelf.children.removeAll()
         bookIDs = [:]
         falling = [:]
@@ -1075,6 +1094,7 @@ final class BookPileScene {
     /// Puts a cover that arrived after its book was built onto the book in the pile.
     func retexture(_ id: Int, cover: any RealityKit.Material) {
         for case let book as ModelEntity in shelf.children where bookIDs[book.id] == id {
+            stir()
             book.children.first?.components[ModelComponent.self]?
                 .materials[
                     Int(BookSlot.cover)] = cover
@@ -1097,6 +1117,7 @@ final class BookPileScene {
         book.transform = slot.transform
         shelf.addChild(book)
         bookIDs[book.id] = slot.book.id
+        stir()
         return book
     }
 
@@ -1143,7 +1164,51 @@ final class BookPileScene {
             shakeRest -= deltaTime
             shake(reading.acceleration)
         }
-        if let color = calendar.advance(by: Float(deltaTime)) { stage.setLampColor(color) }
+        if let color = calendar.advance(by: Float(deltaTime)) {
+            stage.setLampColor(color)
+            stir()
+        }
+        sinceCheck += deltaTime
+        if sinceCheck >= Self.restCheck {
+            checkRest(after: sinceCheck)
+            sinceCheck = 0
+        }
+    }
+
+    /// Counts `interval` toward the pile's rest if nothing moved, and reports the rest once it
+    /// lasts `restDelay`. Nothing may be held, flying, waiting to fall, or falling; no camera
+    /// may move; motion must not steer gravity; no period's name may glow; and every book must
+    /// be slower than a crawl. The physics engine puts bodies to sleep on its own, but reports
+    /// no sleep, so their speeds stand in for it. The dust does not count, so a still image
+    /// holds its motes wherever they drift.
+    private func checkRest(after interval: TimeInterval) {
+        let camera = camera.transform
+        defer { checkedCamera = camera }
+        guard carry == nil, cameraMove == nil, !isFlying, !tracksMotion, !loading.isLoading,
+            spawned == plan.count, falling.isEmpty, camera == checkedCamera,
+            !calendar.isGlowing, !shelf.children.contains(where: Self.moves)
+        else { return stir() }
+        stillTime += interval
+        if stillTime >= Self.restDelay, !isResting {
+            isResting = true
+            restChanged?(true)
+        }
+    }
+
+    /// Notes that something changed the scene, so the pile no longer rests, and reports that
+    /// to `restChanged` if it rested.
+    func stir() {
+        stillTime = 0
+        guard isResting else { return }
+        isResting = false
+        restChanged?(false)
+    }
+
+    /// Whether `book` moves faster than a crawl.
+    private static func moves(_ book: Entity) -> Bool {
+        guard let motion = book.components[PhysicsMotionComponent.self] else { return false }
+        return simd_length(motion.linearVelocity) > 0.05
+            || simd_length(motion.angularVelocity) > 0.1
     }
 
     /// Picks up the book under `point`, in a view of `size`, and returns whether there was one
@@ -1470,7 +1535,10 @@ final class BookPileScene {
     /// a new reference.
     func setTilt(_ tilt: PileTilt, tracking: Bool) {
         let tracking = tracking && tilt != .off && Self.canTilt
-        if tilt != self.tilt || tracking != tracksMotion { tiltReference = nil }
+        if tilt != self.tilt || tracking != tracksMotion {
+            tiltReference = nil
+            stir()
+        }
         self.tilt = tilt
         if tracking != tracksMotion {
             tracksMotion = tracking
@@ -1570,6 +1638,7 @@ final class BookPileScene {
     private func setGravity(_ gravity: SIMD3<Float>) {
         guard simd_distance(gravity, self.gravity) > PileLayout.gravity * 0.03 else { return }
         self.gravity = gravity
+        stir()
         root.components[PhysicsSimulationComponent.self]?.gravity = gravity
         for case let book as ModelEntity in shelf.children where book !== carry?.book {
             book.applyLinearImpulse(simd_normalize(gravity) * 1e-4, relativeTo: nil)
@@ -1645,14 +1714,7 @@ final class BookPileScene {
         private func waitForRest() async {
             for _ in 0..<40 {
                 try? await Task.sleep(for: .milliseconds(500))
-                let moving = shelf.children.contains { book in
-                    guard let motion = book.components[PhysicsMotionComponent.self] else {
-                        return false
-                    }
-                    return simd_length(motion.linearVelocity) > 0.05
-                        || simd_length(motion.angularVelocity) > 0.1
-                }
-                if !moving { return }
+                if !shelf.children.contains(where: Self.moves) { return }
             }
         }
 

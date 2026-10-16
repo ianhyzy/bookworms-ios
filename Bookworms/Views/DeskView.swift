@@ -91,7 +91,15 @@ struct DeskView: View {
             } else {
                 let title = frame?.title ?? Self.years(of: shelf.books)
                 ZStack {
-                    if !desk.hidesView {
+                    // The resting pile's still stands in for the view, and lies under the view
+                    // as it returns, until it draws (see `DeskScenes`).
+                    if let still = desk.still {
+                        Image(uiImage: still)
+                            .resizable()
+                            .ignoresSafeArea()
+                            .accessibilityHidden(true)
+                    }
+                    if !desk.hidesView && !desk.isPaused {
                         DeskSceneView(reducesEffects: desk.reducesEffects) { desk.attach(to: $0) }
                             .ignoresSafeArea()
                             .accessibilityHidden(true)
