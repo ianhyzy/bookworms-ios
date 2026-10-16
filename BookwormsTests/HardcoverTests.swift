@@ -627,8 +627,16 @@ final class HardcoverTests: XCTestCase {
         let otherAccount = SpineWorklistV1(
             version: 1, accountID: "7", syncedAt: .distantPast, bookIDs: [1])
         // With its own copy, a signed-in device designs it even when the Apple TV's worklist of
-        // the same account lists books: fixed covers make both hash the same.
+        // the same account and copy, or an older one, lists books: fixed covers make both hash
+        // the same.
         XCTAssertEqual(source(listing, "4242", phone), .phone(phone))
+        let newerPhone = PhoneLibrary(
+            accountID: "4242", username: nil, syncedAt: .now, books: [])
+        XCTAssertEqual(source(listing, "4242", newerPhone), .phone(newerPhone))
+        // A newer worklist decides, so the books the Apple TV's newer copy adds get designs.
+        let newerListing = SpineWorklistV1(
+            version: 1, accountID: "4242", syncedAt: .now, bookIDs: [1])
+        XCTAssertEqual(source(newerListing, "4242", phone), .worklist)
         XCTAssertEqual(source(otherAccount, "4242", phone), .worklist)
         XCTAssertEqual(source(listing, "4242", nil), .worklist)
         XCTAssertEqual(source(listing, nil, nil), .worklist)

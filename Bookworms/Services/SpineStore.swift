@@ -87,16 +87,21 @@ enum WorkSource: Equatable {
 
     /// Signed in with its own copy of the account's library (`phone`, when it belongs to
     /// `signedInAccountID`), a device designs that copy unless a worklist lists books of another
-    /// account. A worklist of the same account doesn't decide: fixed covers make the copy's
-    /// books hash as the Apple TV's do (`CloudContract.workItemHash(accountID:book:)`), and the
-    /// copy can be newer than the worklist. Otherwise a worklist that lists books decides.
-    /// Without one, a signed-in device without its copy designs nothing, since the archive may
-    /// belong to another account, and a signed-out device uses the archive unless an empty
-    /// worklist says the Apple TV turned Hardcover off.
+    /// account or of a newer copy. A worklist of the same account and copy or an older one
+    /// doesn't decide: fixed covers make the copy's books hash as the Apple TV's do
+    /// (`CloudContract.workItemHash(accountID:book:)`). Otherwise a worklist that lists books
+    /// decides, so books that the Apple TV's newer copy adds get designs before this device
+    /// adopts that copy. Without one, a signed-in device without its copy designs nothing,
+    /// since the archive may belong to another account, and a signed-out device uses the
+    /// archive unless an empty worklist says the Apple TV turned Hardcover off.
     init(worklist: SpineWorklistV1?, signedInAccountID: String?, phone: PhoneLibrary?) {
         let listing = worklist.flatMap { $0.bookIDs.isEmpty ? nil : $0 }
+        // Dates match within a millisecond, as the archive matches a worklist to its snapshot.
         if let phone, phone.accountID == signedInAccountID,
-            listing.map({ $0.accountID == phone.accountID }) ?? true
+            listing.map({
+                $0.accountID == phone.accountID
+                    && $0.syncedAt.timeIntervalSince(phone.syncedAt) < 0.001
+            }) ?? true
         {
             self = .phone(phone)
         } else if listing != nil {
