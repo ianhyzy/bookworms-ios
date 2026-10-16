@@ -378,7 +378,12 @@ final class SpineColorsTests: XCTestCase {
     @MainActor
     func testSavedLookDecidesTheSeriesUnlessABookKeepsItsOwn() async throws {
         var books = [seriesBook(1, position: 1), seriesBook(2, position: 2)]
-        let saved = [design(for: 1, background: "#202020"), design(for: 2, background: "#404040")]
+        // Georgia has no glyphs for this title.
+        let tokyo = seriesBook(3, position: 3, title: "東京物語")
+        let saved = [
+            design(for: 1, background: "#202020"), design(for: 2, background: "#404040"),
+            design(for: 3, background: "#606060"),
+        ]
         let key = try XCTUnwrap(SeriesDesigns.lookKey(of: books[0], link: nil))
         // A look the Apple TV made from a cover, in a system face, before either design.
         let television = SeriesLookV1(
@@ -387,7 +392,7 @@ final class SpineColorsTests: XCTestCase {
             backgroundHex: "#102030", foregroundHex: "#F0F0F0", accentHex: "#F0F0F0",
             typeface: "serif", weight: 700, uppercase: true, fontPostScriptName: "Georgia-Bold")
         let (model, folder) = try await previewModel(
-            books: books, designs: saved, looks: [television])
+            books: books + [tokyo], designs: saved, looks: [television])
         XCTAssertEqual(model.library?.looks, [key: television], "Loading keeps the first look")
         for book in books {
             let drawn = try XCTUnwrap(model.design(for: book))
@@ -395,6 +400,10 @@ final class SpineColorsTests: XCTestCase {
             XCTAssertEqual(drawn.generatorVersion, "tvos-local-v1")
             XCTAssertEqual(model.look(for: book).face?.postScriptName, "Georgia-Bold")
         }
+        XCTAssertEqual(
+            model.design(for: tokyo)?.backgroundHex, "#606060",
+            "A book the look's face cannot letter draws its own design")
+        XCTAssertNil(model.drawnLook(of: tokyo))
 
         // Keeping book 2's own look draws its own design, and recoloring it leaves the look.
         books[1].seriesLink = SeriesLinkV1(

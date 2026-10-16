@@ -14,8 +14,8 @@ struct SeriesLookKey: Codable, Hashable, Sendable {
 /// font, colors, case, and weight, with only the title and thickness changing.
 ///
 /// Books with one look key (`lookKey(of:link:)`) form a look group. A group's first saved look
-/// (`SeriesLookV1`) decides how its books draw; a book whose link sets `ownLook` draws its own
-/// design instead. Before a group has a look, its books draw the design of the best-ranked book
+/// (`SeriesLookV1`) decides how its books draw; a book whose link sets `ownLook`, or whose
+/// lettering the look's loaded face lacks glyphs for, draws its own design instead. Before a group has a look, its books draw the design of the best-ranked book
 /// with one (`sources(of:lends:canLetter:)`). Each book keeps its own saved design either way.
 /// Generation follows the same rules (`SpineWorker`), so a group's books usually save matching
 /// designs anyway. The Apple TV app mirrors `styleSeries`, `lookKey`, and `subseries`; keep them

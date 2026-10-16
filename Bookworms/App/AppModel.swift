@@ -524,13 +524,13 @@ final class AppModel {
 
     /// Recomputes `seriesSources` and `lookDesigns` from the library and the loaded faces.
     ///
-    /// Every book of a look group with a saved look draws it, as on the Apple TV; the system
-    /// font cascade letters any glyph the look's face lacks. The books of other groups draw by
-    /// rank (`SeriesDesigns.sources`), where a book whose lettering its source's loaded face
-    /// lacks glyphs for keeps its own design. Edits to a book that draws a look, such as
-    /// **Change cover** and **Redesign spine**, act on the look's source book while it draws the
-    /// look too, else on the book itself. A book alone in its group shares its look with no one,
-    /// so it has no series source.
+    /// The books of a look group with a saved look draw it; the books of other groups draw by
+    /// rank (`SeriesDesigns.sources`). A book whose lettering, uppercased when the design is
+    /// uppercase, the look's or source's loaded face lacks glyphs for draws its own design;
+    /// until a face loads, the check passes. Edits to a book that draws a look, such as **Change
+    /// cover** and **Redesign spine**, act on the look's source book while it draws the look
+    /// too, else on the book itself. A book that alone draws its group's look shares it with no
+    /// one, so it has no series source.
     private func alignSeries() {
         var sources: [Int: Int] = [:]
         var drawn: [Int: SpineDesignV1] = [:]
@@ -541,14 +541,16 @@ final class AppModel {
                     unlooked += members
                     continue
                 }
+                var drawing: [Int] = []
                 for book in members {
-                    drawn[book.id] = look.design(
-                        bookID: book.id, hashesFrom: library.designs[book.id])
+                    let design = look.design(bookID: book.id, hashesFrom: library.designs[book.id])
+                    guard canLetter(book, with: design) else { continue }
+                    drawn[book.id] = design
+                    drawing.append(book.id)
                 }
-                guard members.count > 1 else { continue }
-                let source =
-                    members.contains { $0.id == look.sourceBookID } ? look.sourceBookID : nil
-                for book in members { sources[book.id] = source ?? book.id }
+                guard drawing.count > 1 else { continue }
+                let source = drawing.contains(look.sourceBookID) ? look.sourceBookID : nil
+                for id in drawing { sources[id] = source ?? id }
             }
             sources.merge(
                 SeriesDesigns.sources(
