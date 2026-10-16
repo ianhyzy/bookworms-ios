@@ -350,6 +350,7 @@ struct SeriesLookV1: Codable, Sendable, Hashable {
         guard version == 1, !accountID.isEmpty, accountID.count <= 512, seriesID > 0,
             sourceBookID > 0, group.count <= 200,
             !origin.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, origin.count <= 80,
+            !origin.contains(where: \.isNewline),
             createdAt.timeIntervalSince1970.isFinite,
             editedAt.map({ $0.timeIntervalSince1970.isFinite }) ?? true
         else { throw CompanionError.invalidCloudData }

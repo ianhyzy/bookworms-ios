@@ -208,6 +208,7 @@ final class SeriesLookTests: XCTestCase {
         rejects({ $0 = $0.withGroup(String(repeating: "g", count: 201)) }, "Long group")
         rejects({ $0 = $0.withOrigin(" ") }, "Blank origin")
         rejects({ $0 = $0.withOrigin(String(repeating: "o", count: 81)) }, "Long origin")
+        rejects({ $0 = $0.withOrigin("ios-pcc-v2\nx") }, "Origin with a line break")
         XCTAssertNoThrow(try look().withGroup(String(repeating: "g", count: 200)).validate())
         XCTAssertThrowsError(try link(0).validate())
         XCTAssertTrue(link(1).changesNothing)
