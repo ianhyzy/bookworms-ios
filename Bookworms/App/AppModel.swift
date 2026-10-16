@@ -18,9 +18,10 @@ final class AppModel {
     private(set) var library: LibrarySnapshot?
     /// The library's books, most recently finished first, then unfinished books by title.
     private(set) var books: [CloudBook] = []
-    /// Maps each book that shares a series design to the book whose design sets its spine: the
-    /// source book of the series look it draws, or its source by rank in a look group without a
-    /// look (`SeriesDesigns.sources`). Recomputed when the library changes or any face loads.
+    /// Maps each book that shares a series design to the book whose design sets its spine: for a
+    /// series look, the look's source book while it draws the look too, else the book itself; in
+    /// a look group without a look, its source by rank (`SeriesDesigns.sources`). Recomputed when
+    /// the library changes or any face loads.
     private(set) var seriesSources: [Int: Int] = [:]
     /// The series look that each book drawing one draws, as that book's design
     /// (`SeriesLookV1.design(bookID:hashesFrom:)`). Recomputed with `seriesSources`.
@@ -127,6 +128,45 @@ final class AppModel {
     /// Whether `book` shares its spine design with other books in its series, so changing the
     /// design changes theirs too.
     func sharesSeriesDesign(_ book: CloudBook) -> Bool { seriesSources[book.id] != nil }
+
+    /// Whether **Style** lets the reader choose whether edits to `book` change its series' look
+    /// or only the book (`SeriesLinkV1.ownLook`): its look group has a saved look or another
+    /// library book, counting books that keep their own look.
+    func choosesEditScope(for book: CloudBook) -> Bool {
+        guard let library, let key = SeriesDesigns.lookKey(of: book, link: book.seriesLink) else {
+            return false
+        }
+        // The series check skips the slower author and title keys of most books.
+        return library.looks[key] != nil
+            || library.books.contains {
+                $0.id != book.id
+                    && SeriesDesigns.styleSeries(of: $0, link: $0.seriesLink)?.id == key.seriesID
+                    && SeriesDesigns.lookKey(of: $0, link: $0.seriesLink) == key
+            }
+    }
+
+    /// The colors **Reset colors** restores on the spine `book` draws, or `nil` when unknown: the
+    /// generator's colors of its design (`SpineDesignV1.generatedColors`). For a series look,
+    /// those of the look's source design while it has the look's generator and font, so it is
+    /// the design the look was made from.
+    func generatedColors(for book: CloudBook) -> SpineColors? {
+        guard let look = drawnLook(of: book) else {
+            return design(for: book).flatMap { $0.generatedColors ?? $0.colors }
+        }
+        guard let source = library?.designs[look.sourceBookID],
+            source.generatorVersion == look.origin,
+            source.fontPostScriptName == look.fontPostScriptName
+        else { return nil }
+        return source.generatedColors ?? source.colors
+    }
+
+    /// The series look that `book` draws, if any.
+    private func drawnLook(of book: CloudBook) -> SeriesLookV1? {
+        guard lookDesigns[book.id] != nil,
+            let key = SeriesDesigns.lookKey(of: book, link: book.seriesLink)
+        else { return nil }
+        return library?.looks[key]
+    }
 
     /// Reloads the library and designs, then loads the fonts the designs name.
     ///
@@ -347,10 +387,7 @@ final class AppModel {
     /// When iCloud holds another design, such as a redesign from another device, reloads to show
     /// it and throws `CompanionError.designChanged`.
     func recolor(_ book: CloudBook, to colors: SpineColors) async throws {
-        if lookDesigns[book.id] != nil,
-            let key = SeriesDesigns.lookKey(of: book, link: book.seriesLink),
-            let look = library?.looks[key]
-        {
+        if let look = drawnLook(of: book) {
             let recolored = look.recolored(colors, at: .now)
             try recolored.validate()
             apply([recolored])
@@ -478,7 +515,9 @@ final class AppModel {
     /// The books of a look group with a saved look draw it; the books of other groups draw by
     /// rank (`SeriesDesigns.sources`). A book whose lettering the look's or source's loaded face
     /// lacks glyphs for keeps its own design; until a face loads, the system typeface letters
-    /// every book.
+    /// every book. Edits to a book that draws a look, such as **Change cover** and **Redesign
+    /// spine**, act on the look's source book while it draws the look too, else on the book
+    /// itself.
     private func alignSeries() {
         var sources: [Int: Int] = [:]
         var drawn: [Int: SpineDesignV1] = [:]
@@ -489,12 +528,15 @@ final class AppModel {
                     unlooked += members
                     continue
                 }
+                var drawing: [Int] = []
                 for book in members {
                     let design = look.design(bookID: book.id, hashesFrom: library.designs[book.id])
                     guard canLetter(book, with: design) else { continue }
                     drawn[book.id] = design
-                    sources[book.id] = look.sourceBookID
+                    drawing.append(book.id)
                 }
+                let source = drawing.contains(look.sourceBookID) ? look.sourceBookID : nil
+                for id in drawing { sources[id] = source ?? id }
             }
             sources.merge(
                 SeriesDesigns.sources(

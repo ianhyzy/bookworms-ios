@@ -416,6 +416,36 @@ final class SpineColorsTests: XCTestCase {
     }
 
     @MainActor
+    func testSeriesEditsFollowTheLooksSourceWhileItDrawsTheLook() async throws {
+        let books = [
+            seriesBook(1, position: 1), seriesBook(2, position: 2), seriesBook(3, series: 6),
+        ]
+        let saved = [
+            design(for: 1, background: "#202020"),
+            design(for: 2, background: "#404040").movedBack(),
+        ]
+        let (model, _) = try await previewModel(books: books, designs: saved)
+        XCTAssertEqual(model.designSource(for: books[0]).id, 2)
+        XCTAssertTrue(model.choosesEditScope(for: books[0]))
+        XCTAssertFalse(model.choosesEditScope(for: books[2]), "Book 3 is alone in its series")
+
+        // Reset colors restores the colors of the design the look was made from.
+        try await model.recolor(books[0], to: reader)
+        XCTAssertEqual(model.look(for: books[0]).background, reader.background)
+        XCTAssertEqual(model.generatedColors(for: books[0])?.background.hex, "#404040")
+
+        // Once the source keeps its own look, edits to book 1 act on book 1, which still draws
+        // the look, and book 2 can still return to the series.
+        try await model.setSeriesLink(
+            for: books[1], linkedSeriesID: nil, standsAlone: false, ownLook: true)
+        XCTAssertEqual(model.designSource(for: books[0]).id, 1)
+        XCTAssertEqual(model.look(for: books[0]).background, reader.background)
+        let second = try XCTUnwrap(model.books.first { $0.id == 2 })
+        XCTAssertTrue(model.choosesEditScope(for: second))
+        XCTAssertEqual(model.generatedColors(for: second)?.background.hex, "#404040")
+    }
+
+    @MainActor
     func testRecoloringKeepsTheSavedFontThatReadersReplace() async throws {
         let book = seriesBook(7, series: nil)
         var saved = design()
