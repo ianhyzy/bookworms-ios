@@ -256,7 +256,9 @@ final class GenerationTests: XCTestCase {
                 status(reader: .measurementsOnly, quota: .belowLimit), mode: .background))
     }
 
-    func testRunsPreferPrivateCloudComputeThenTheBackupThenTheOnDeviceModel() {
+    func testRunsPreferPrivateCloudComputeThenTheBackupThenTheOnDeviceModelThenLocalDefaults()
+        async
+    {
         func status(_ tier: ModelTier, available: Bool, quota: ModelStatus.Quota = .belowLimit)
             -> ModelStatus
         {
@@ -286,15 +288,22 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(onDevice.tier, .onDevice)
         XCTAssertEqual(onDevice.pccUnavailableReason, "privateCloudCompute unavailable")
 
-        // With no tier available, the on-device model's reason explains the stop.
-        let none = BookAnalyzer.bestStatus(
+        XCTAssertNil(onDevice.onDeviceUnavailableReason)
+
+        // With no model available, local defaults design and record why each model is missing.
+        let local = BookAnalyzer.bestStatus(
             pcc: status(.privateCloudCompute, available: false),
             backup: status(.backup, available: false), onDevice: status(.onDevice, available: false)
         )
-        XCTAssertEqual(none.tier, .onDevice)
-        XCTAssertEqual(
-            SpineWorker.modelStop(none, mode: .foreground, now: now)?.message,
-            "onDevice unavailable")
+        XCTAssertEqual(local.tier, .local)
+        XCTAssertEqual(local.coverReader, .measurementsOnly)
+        XCTAssertEqual(local.pccUnavailableReason, "privateCloudCompute unavailable")
+        XCTAssertEqual(local.onDeviceUnavailableReason, "onDevice unavailable")
+        XCTAssertEqual(local.designerName, "Local defaults")
+        XCTAssertNil(SpineWorker.modelStop(local, mode: .background, now: now))
+        let watched = await BookAnalyzer().status(of: .local, designer: .appleOnly)
+        XCTAssertTrue(watched.isAvailable, "Local defaults never stop a run")
+        XCTAssertNil(SpineWorker.modelStop(watched, mode: .background, now: now))
 
         XCTAssertNotNil(SpineDesigner.appleOnly.problem, "No backup model is never set up")
     }
@@ -352,6 +361,49 @@ final class GenerationTests: XCTestCase {
         XCTAssertNil(design.fontFamily)
         XCTAssertNil(design.fontPostScriptName)
         XCTAssertNil(design.instanceWeight)
+    }
+
+    func testLocalDefaultsChooseFamiliesFromTheFirstRecognizedGenre() {
+        func styles(_ genres: [String]?, measured: Bool = true) -> Set<SpineFontStyle> {
+            Set(
+                BookAnalyzer.localFamilies(genres: genres, measured: measured)
+                    .compactMap { SpineFamily(rawValue: $0)?.style })
+        }
+        XCTAssertEqual(styles(["Fantasy"]), [.classicalCaps, .bookSerif])
+        XCTAssertEqual(styles(["LitRPG"]), [.classicalCaps, .bookSerif])
+        XCTAssertEqual(styles(["Space Opera"]), [.geometricSans])
+        XCTAssertEqual(styles(["Crime Fiction"]), [.condensedSans])
+        XCTAssertEqual(styles(["Gothic"]), [.condensedSans])
+        XCTAssertEqual(styles(["Historical Fiction"]), [.bookSerif])
+        XCTAssertEqual(styles(["Memoir"]), [.humanistSans])
+        XCTAssertEqual(styles(["Young Adult"]), [.rounded])
+        XCTAssertEqual(styles(["Humor"]), [.monospace, .decorative])
+        XCTAssertTrue(
+            BookAnalyzer.localFamilies(genres: ["Satire"], measured: true)
+                .contains(SpineFamily.specialElite.rawValue))
+        // The first genre that names a recognized one decides, in Hardcover's order.
+        XCTAssertEqual(styles(["Adventure", "Mystery", "Fantasy"]), [.condensedSans])
+        XCTAssertEqual(styles(["fantasy", "Science Fiction"]), [.classicalCaps, .bookSerif])
+
+        // Without a recognized genre, the measurements rank every family but rounded faces,
+        // which need a model to judge the book playful.
+        let unranked = styles(["Adventure"])
+        XCTAssertFalse(unranked.contains(.rounded))
+        XCTAssertTrue(unranked.isSuperset(of: [.blackletter, .script, .bookSerif, .monospace]))
+        XCTAssertEqual(styles(nil), unranked)
+        // With nothing measured either, the Apple TV's general-fiction face: a humanist sans.
+        XCTAssertEqual(styles(nil, measured: false), [.humanistSans])
+        XCTAssertEqual(styles(["Adventure"], measured: false), [.humanistSans])
+        XCTAssertEqual(styles(["Horror"], measured: false), [.condensedSans])
+
+        for genres in [nil, ["Fantasy"], ["Humor"], ["Young Adult"], ["Horror"]] as [[String]?] {
+            for measured in [true, false] {
+                let families = BookAnalyzer.localFamilies(genres: genres, measured: measured)
+                XCTAssertFalse(families.isEmpty)
+                XCTAssertTrue(families.allSatisfy(BookAnalyzer.allowsFamily), "\(families)")
+            }
+        }
+        XCTAssertNil(BookAnalyzer.genreFamilies(["Adventure", "Nonfiction"]))
     }
 
     func testLetteringAnswersNarrowTheFamiliesAndNeverOfferSlantedFaces() {

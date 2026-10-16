@@ -70,10 +70,10 @@ final class GenerationController {
     /// Starts a user-requested run, unless one is already in progress.
     func generateNow() { startRun(redesigning: nil) }
 
-    /// Starts a user-requested run, unless one is already in progress, that first makes a new
-    /// model design for `book`'s design source (`AppModel.designSource(for:)`), even when its
-    /// saved design is current. When `book` draws its series' look, the look then takes the new
-    /// design's colors and type, so the whole series changes.
+    /// Starts a user-requested run, unless one is already in progress, that first designs
+    /// `book`'s design source (`AppModel.designSource(for:)`) anew at the run's tier, even when
+    /// its saved design is current. When `book` draws its series' look, the look then takes the
+    /// new design's colors and type, so the whole series changes.
     func redesign(_ book: CloudBook) {
         let model = AppModel.shared
         startRun(

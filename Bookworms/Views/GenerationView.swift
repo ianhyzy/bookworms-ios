@@ -158,7 +158,7 @@ struct GenerationView: View {
             case .onDevice:
                 "Private Cloud Compute isn't available, so each new design runs on this \(ThisDevice.name), with no daily limit. Books in a series often reuse a design."
             case .local:
-                "No spine design model is available on this \(ThisDevice.name)."
+                "No model is available on this \(ThisDevice.name), so each new design comes from the cover's colors and lettering and the book's genres. When a model becomes available, later runs redesign these spines."
             }
         return Section {
             LabeledContent("Availability") {
@@ -168,6 +168,9 @@ struct GenerationView: View {
             }
             if let reason = status?.pccUnavailableReason {
                 LabeledContent("Private Cloud Compute") { Text(reason) }
+            }
+            if let reason = status?.onDeviceUnavailableReason {
+                LabeledContent("Apple on-device model") { Text(reason) }
             }
             if tier == .privateCloudCompute {
                 LabeledContent("Daily limit", value: status.map(Self.quotaText) ?? "Checking")

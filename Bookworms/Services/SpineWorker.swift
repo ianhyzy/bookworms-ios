@@ -124,9 +124,9 @@ actor SpineWorker {
 
     /// Designs the books that need it, until the queue is empty or a stop condition.
     ///
-    /// With `redesigning`, the run first makes a new model design for that book even when its
-    /// saved design is current, as **Redesign spine** asks: it skips the ledger, the saved
-    /// design, and series reuse. With `remakesLook`, the book's look group's saved look then takes
+    /// With `redesigning`, the run first designs that book anew at its tier even when its saved
+    /// design is current, as **Redesign spine** asks: it skips the ledger, the saved design, and
+    /// series reuse. With `remakesLook`, the book's look group's saved look then takes
     /// the new design's colors and type (`SeriesLookV1.remade(from:at:)`). A book outside the
     /// run's work, or without a cover, is not designed.
     ///
@@ -237,7 +237,7 @@ actor SpineWorker {
                         continuation.yield(.saved(made.design))
                         bookDesigns[book.id] = made.design
                         checkedBooks.insert(book.id)
-                        if made.isModelDesign {
+                        if made.isNewDesign {
                             await saveLook(
                                 from: made.design, for: book,
                                 replacing: redesigned?.remakesLook == true)
@@ -294,15 +294,15 @@ actor SpineWorker {
         return false
     }
 
-    /// Returns the design to save for `book`, and whether a model request made it, or `nil` when
-    /// iCloud already has this work at the run's tier or better, or a design whose colors the
-    /// reader chose (see
+    /// Returns the design to save for `book`, and whether the run's tier made it from the cover
+    /// rather than copying a saved design or look, or `nil` when iCloud already has this work at
+    /// the run's tier or better, or a design whose colors the reader chose (see
     /// `SpineDesignV1.action(workItemHash:coverHash:readerChoseCover:runTier:drawsSeriesLook:)`).
-    /// `forced` always makes a model design.
+    /// `forced` always makes a new design.
     private func design(
         for book: CloudBook, cover: CoverImage, workHash: String, context: WorkContext,
         forced: Bool, mode: RunMode
-    ) async throws -> (design: SpineDesignV1, isModelDesign: Bool)? {
+    ) async throws -> (design: SpineDesignV1, isNewDesign: Bool)? {
         // Looked up even when forced, so `saveLook` knows whether the group has a look.
         let look = try await seriesLook(for: book, accountID: context.accountID)
         if !forced {
@@ -338,20 +338,21 @@ actor SpineWorker {
             }
         }
         return (
-            try await modelDesign(
+            try await newDesign(
                 for: book, cover: cover, workHash: workHash, accountID: context.accountID,
                 mode: mode),
             true
         )
     }
 
-    /// Designs `book` with the run's model.
+    /// Designs `book` at the run's tier.
     ///
     /// A lasting rejection by the backup model, such as a revoked key or an unknown model name,
     /// would repeat for every book, so the rest of the run designs with the best tier below the
-    /// backup, and the Spines tab shows the rejection. The next run tries the backup again. When
-    /// no tier below can design, the rejection stops the run.
-    private func modelDesign(
+    /// backup, down to local defaults, and the Spines tab shows the rejection. The next run tries
+    /// the backup again. When the tier found can take no request now, such as Private Cloud
+    /// Compute at its daily limit, the rejection stops the run.
+    private func newDesign(
         for book: CloudBook, cover: CoverImage, workHash: String, accountID: String,
         mode: RunMode
     ) async throws -> SpineDesignV1 {
@@ -393,9 +394,9 @@ actor SpineWorker {
         return look
     }
 
-    /// Makes `design`, a new model design, the series look of `book`'s look group when the group
-    /// has none, so the group's first design decides its look. A look another device saved first
-    /// wins. With `replacing`, a group's saved look is made again from `design` instead. A failed
+    /// Makes `design`, a new design at the run's tier, the series look of `book`'s look group
+    /// when the group has none, so the group's first design decides its look. A look another
+    /// device saved first wins. With `replacing`, a group's saved look is made again from `design` instead. A failed
     /// save leaves the group to the rank rule (`storedSeriesDesign`) or its old look until a
     /// later design or the app's catch-up saves one.
     private func saveLook(from design: SpineDesignV1, for book: CloudBook, replacing: Bool) async {
@@ -467,6 +468,7 @@ actor SpineWorker {
         if let runModel {
             status = await analyzer.status(of: runModel.tier, designer: runModel.designer)
             status.pccUnavailableReason = runModel.pccUnavailableReason
+            status.onDeviceUnavailableReason = runModel.onDeviceUnavailableReason
         } else {
             status = await analyzer.status()
         }

@@ -10,9 +10,9 @@ import Vision
 /// (`BookAnalyzer.status(for:)`), and each design records its tier as a `provenance` model token
 /// (`SpineDesignV1.tier`), so a later run at a better tier redesigns it.
 enum ModelTier: Int, Comparable, Sendable {
-    /// No model, from what the device has locally. The Apple TV's own looks
-    /// (`CloudContract.appleTVGeneratorVersion`) count as this tier. This app doesn't design at
-    /// this tier yet.
+    /// No model: local defaults from the cover's colors and title measurements and the book's
+    /// genres (`BookAnalyzer.localFamilies(genres:measured:)`). It is always available. The
+    /// Apple TV's own looks (`CloudContract.appleTVGeneratorVersion`) count as this tier.
     case local
     /// Apple's on-device model (`SystemLanguageModel.default`).
     case onDevice
@@ -65,8 +65,8 @@ struct ModelStatus: Sendable {
         /// without image input, or when the on-device model designs.
         case onDevice
         /// No model reads the cover, and the design comes from the title measurements alone, as
-        /// when a guardrail rejects the crop. Only the on-device tier designs this way, when the
-        /// on-device model lacks image input.
+        /// when a guardrail rejects the crop: at the on-device tier when its model lacks image
+        /// input, and always with local defaults.
         case measurementsOnly
         /// No model reads the cover, so the run stops.
         case none
@@ -87,6 +87,12 @@ struct ModelStatus: Sendable {
     var designer = SpineDesigner.appleOnly
     /// Why Private Cloud Compute is unavailable, when a lower tier designs instead.
     var pccUnavailableReason: String?
+    /// Why Apple's on-device model is unavailable, when local defaults design instead.
+    var onDeviceUnavailableReason: String?
+
+    /// Local defaults, which need no model and are always available.
+    static let local = ModelStatus(
+        tier: .local, isAvailable: true, unavailableReason: nil, coverReader: .measurementsOnly)
 
     /// The designing model, as the Spines tab names it.
     var designerName: String { tier.name(backup: designer) }
@@ -103,8 +109,8 @@ struct ModelStatus: Sendable {
     }
 }
 
-/// Designs a spine from a cover with local OCR, the cover's title colors, one model request, and
-/// downloaded Google Fonts families.
+/// Designs a spine from a cover with local OCR, the cover's title colors, at most one model
+/// request, and downloaded Google Fonts families.
 ///
 /// The model answers three coarse questions about the title lettering, which even the on-device
 /// model answers reliably: whether it is hand-drawn, whether it has serifs, and any special
@@ -114,7 +120,8 @@ struct ModelStatus: Sendable {
 ///
 /// The run's model tier (`ModelTier`) answers. Private Cloud Compute's request counts against the
 /// user's daily quota, and the backup model's request is billed to the reader's API account.
-/// Test builds without the managed Private Cloud Compute entitlement (`NO_PCC`) never create that
+/// Local defaults send no request: the book's genres stand in for the model's answers. Test
+/// builds without the managed Private Cloud Compute entitlement (`NO_PCC`) never create that
 /// model.
 actor BookAnalyzer {
     private let fonts = GoogleFonts()
@@ -156,10 +163,7 @@ actor BookAnalyzer {
             #endif
         case .backup: return Self.backupStatus(designer)
         case .onDevice: return Self.onDeviceStatus()
-        case .local:
-            return ModelStatus(
-                tier: .local, isAvailable: false,
-                unavailableReason: "Bookworms needs a model to design spines.", coverReader: .none)
+        case .local: return .local
         }
     }
 
@@ -167,9 +171,9 @@ actor BookAnalyzer {
     ///
     /// Private Cloud Compute designs whenever the system reports it available, even over its
     /// daily limit, so the run waits for the reset instead of switching models each day. Without
-    /// it, the backup model designs when it is set up on this device, and otherwise the on-device
-    /// model, whose status explains the stop when it is unavailable too. A lower tier's status
-    /// records why Private Cloud Compute is unavailable.
+    /// it, the backup model designs when it is set up on this device, then the on-device model,
+    /// and otherwise local defaults. A lower tier's status records why Private Cloud Compute and,
+    /// for local defaults, the on-device model are unavailable.
     static func bestStatus(
         pcc: ModelStatus, backup: @autoclosure () -> ModelStatus,
         onDevice: @autoclosure () -> ModelStatus
@@ -177,6 +181,11 @@ actor BookAnalyzer {
         guard !pcc.isAvailable else { return pcc }
         var status = backup()
         if !status.isAvailable { status = onDevice() }
+        if !status.isAvailable {
+            let reason = status.unavailableReason
+            status = .local
+            status.onDeviceUnavailableReason = reason
+        }
         status.pccUnavailableReason = pcc.unavailableReason
         return status
     }
@@ -198,8 +207,7 @@ actor BookAnalyzer {
             case .available: nil
             case .unavailable(.deviceNotEligible):
                 "This \(ThisDevice.name) does not support Apple Intelligence."
-            case .unavailable(.appleIntelligenceNotEnabled):
-                "Apple Intelligence is off. Turn it on to design spines."
+            case .unavailable(.appleIntelligenceNotEnabled): "Apple Intelligence is off."
             case .unavailable(.modelNotReady):
                 "Apple's on-device model is not ready yet. It may still be downloading."
             case .unavailable: "Apple's on-device model is unavailable."
@@ -246,10 +254,11 @@ actor BookAnalyzer {
     /// itself in the design's `provenance` (`ModelStatus.provenance`).
     ///
     /// The model reads only the crop of the title line, so cover art and book data do not
-    /// anchor its answers. Up to six families, best match first, are downloaded and
-    /// glyph-checked in order. When none of them covers the title and author and at least one
-    /// lacks a glyph, as for a title in a script no family covers, the design uses the best
-    /// match's system typeface instead of a Google Fonts family.
+    /// anchor its answers. Local defaults send no request and choose families from the book's
+    /// genres instead (`localFamilies(genres:measured:)`). Up to six families, best match first,
+    /// are downloaded and glyph-checked in order. When none of them covers the title and author
+    /// and at least one lacks a glyph, as for a title in a script no family covers, the design
+    /// uses the best match's system typeface instead of a Google Fonts family.
     ///
     /// Throws `CompanionError.quotaReached`, `.modelBusy`, or `.fontServiceUnavailable`, or an
     /// offline `URLError`, when the run should stop; `.providerRejected` when the backup model
@@ -282,7 +291,7 @@ actor BookAnalyzer {
         book: CloudBook, accountID: String, workItemHash: String, cover: CoverImage,
         using status: ModelStatus
     ) async throws -> SpineDesignV1 {
-        let model: any LanguageModel
+        let model: (any LanguageModel)?
         switch status.tier {
         case .privateCloudCompute:
             #if NO_PCC
@@ -306,7 +315,7 @@ actor BookAnalyzer {
             }
             model = SystemLanguageModel.default
         case .local:
-            throw CompanionError.modelUnavailable
+            model = nil
         }
         let palette = try CoverPalette.sample(cover.image)
         let lines = try recognizeText(in: cover.image)
@@ -318,6 +327,7 @@ actor BookAnalyzer {
         // cannot pair one provider's model with another's reading options.
         switch status.coverReader {
         case .designModel:
+            guard let model else { throw CompanionError.modelUnavailable }
             reading = try await Self.readLettering(
                 crop, model: model,
                 contextOptions: ContextOptions(includeSchemaInPrompt: true, reasoningLevel: .light))
@@ -331,14 +341,21 @@ actor BookAnalyzer {
         case .none:
             throw CompanionError.modelUnavailable
         }
-        let families = Self.families(for: reading, playful: await Self.isPlayful(book))
+        let families =
+            if status.tier == .local {
+                Self.localFamilies(genres: book.genres, measured: lettering != nil)
+            } else {
+                Self.families(for: reading, playful: await Self.isPlayful(book))
+            }
         var candidates = lettering.map { TitleLettering.rank(families, for: $0) } ?? []
         if candidates.isEmpty {
             // No measurable title line: the allowed families in this book's reproducible order.
+            // Local defaults set them bold, as the Apple TV's genre faces are.
             var generator = SeededGenerator(seed: UInt64(bitPattern: Int64(book.id)))
+            let weight = status.tier == .local ? 700 : 400
             candidates = families.shuffled(using: &generator)
                 .map {
-                    TitleLettering.Match(family: $0, weight: 400)
+                    TitleLettering.Match(family: $0, weight: weight)
                 }
         }
         guard let best = candidates.first, let bestFamily = SpineFamily(rawValue: best.family)
@@ -464,6 +481,62 @@ actor BookAnalyzer {
         }
         if !playful { chosen.removeAll { $0.style == .rounded } }
         return chosen.map(\.rawValue).filter(allowsFamily)
+    }
+
+    /// The families a design without a model may use for a book with `genres`: those of its
+    /// first recognized genre (`genreFamilies(_:)`). Without one, the title measurements rank
+    /// every allowed family except rounded faces, which need a model to judge the book playful,
+    /// or, when `measured` is false, the Apple TV's general-fiction face, a humanist sans.
+    static func localFamilies(genres: [String]?, measured: Bool) -> [String] {
+        if let families = genreFamilies(genres) {
+            return families.map(\.rawValue).filter(allowsFamily)
+        }
+        return measured
+            ? families(for: nil, playful: false)
+            : SpineFamily.allCases.filter { $0.style == .humanistSans }.map(\.rawValue)
+    }
+
+    /// The catalog families for the first of `genres`, in Hardcover's ranked order, that names a
+    /// recognized genre, or `nil` when none does. The table follows the Apple TV's genre faces
+    /// (`BookWallLocalSpine.fontName(for:)` in the tvOS app), matching lowercased substrings in
+    /// the same order. Each row gets the catalog style groups nearest the face its comment names.
+    static func genreFamilies(_ genres: [String]?) -> [SpineFamily]? {
+        func styles(_ styles: SpineFontStyle...) -> [SpineFamily] {
+            SpineFamily.allCases.filter { styles.contains($0.style) }
+        }
+        let table: [(names: [String], families: [SpineFamily])] = [
+            // Georgia Bold, with the classical capitals that fantasy covers favor.
+            (["litrpg", "fantasy", "magic"], styles(.classicalCaps, .bookSerif)),
+            // Futura Bold.
+            (["science fiction", "sci-fi", "space opera", "cyberpunk"], styles(.geometricSans)),
+            // DIN Condensed Bold.
+            (["mystery", "thriller", "crime"], styles(.condensedSans)),
+            // Bebas Neue.
+            (["horror", "gothic"], styles(.condensedSans)),
+            // Avenir Heavy.
+            (["romance", "love story"], styles(.humanistSans)),
+            // Times New Roman Bold.
+            (["history", "historical"], styles(.bookSerif)),
+            // Avenir Next Demi Bold.
+            (["literary", "classics"], styles(.humanistSans)),
+            // Helvetica Neue Bold: the catalog's neo-grotesques, such as Inter, are humanist sans.
+            (["biography", "memoir"], styles(.humanistSans)),
+            // Arial Rounded Bold: the only genre that gets rounded faces without a model.
+            (["young adult", "middle grade"], styles(.rounded)),
+            // Arial Bold.
+            (["graphic novel", "comics"], styles(.humanistSans)),
+            // Verdana Bold.
+            (["poetry", "verse"], styles(.humanistSans)),
+            // Courier New Bold, with the typewriter face that the "typewriter" treatment allows.
+            (["humor", "humour", "satire"], styles(.monospace) + [.specialElite]),
+        ]
+        for genre in genres ?? [] {
+            let genre = genre.lowercased()
+            if let row = table.first(where: { $0.names.contains { genre.contains($0) } }) {
+                return row.families
+            }
+        }
+        return nil
     }
 
     static let moods = [
