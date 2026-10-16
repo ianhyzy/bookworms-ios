@@ -563,7 +563,7 @@ enum CompanionError: LocalizedError, Sendable {
     case modelUnavailable
     /// The daily Private Cloud Compute quota is used up until the date, when known.
     case quotaReached(Date?)
-    /// Private Cloud Compute is unreachable or busy; retry after the date, when the system gives
+    /// The designing model is unreachable or busy; retry after the date, when the model gives
     /// one.
     case modelBusy(Date?)
     case invalidDesign
@@ -590,14 +590,14 @@ enum CompanionError: LocalizedError, Sendable {
         case .bookNotInLibrary: "This book is not in the library Bookworms shows now."
         case .invalidCover: "A book cover could not be read securely."
         case .coverTooLarge: "A book cover exceeds the image limit."
-        case .modelUnavailable: "Private Cloud Compute is unavailable on this \(ThisDevice.name)."
+        case .modelUnavailable: "The spine design model is unavailable on this \(ThisDevice.name)."
         case .quotaReached(let date):
             if let date {
                 "Today's Private Cloud Compute limit is reached. It resets at \(date.formatted(date: .omitted, time: .shortened))."
             } else {
                 "Today's Private Cloud Compute limit is reached."
             }
-        case .modelBusy: "Private Cloud Compute is busy or unreachable. Bookworms will retry."
+        case .modelBusy: "The spine design model is busy or unreachable. Bookworms will retry."
         case .invalidDesign: "The generated design did not pass validation."
         case .fontServiceUnavailable: "Google Fonts is unavailable. Bookworms will retry."
         case .cloudConflict: "A concurrent iCloud update prevented saving."

@@ -143,18 +143,27 @@ struct GenerationView: View {
         }
     }
 
-    /// The designing model: Private Cloud Compute with its daily limit, or the chosen
-    /// third-party provider.
+    /// The designing model: Private Cloud Compute with its daily limit, the on-device model in
+    /// `NO_PCC` builds, or the chosen third-party provider.
     private var designModel: some View {
         let status = generation.status.model
-        let usesDailyLimit = status?.usesDailyLimit ?? true
+        let cost = status?.cost ?? .dailyLimit
+        let note =
+            switch cost {
+            case .dailyLimit:
+                "Each new design uses one request from your daily limit. Books in a series often reuse a design without a request."
+            case .apiAccount:
+                "Each new design uses one request to this provider, billed to your API account. Books in a series often reuse a design without a request."
+            case .onDevice:
+                "Each new design runs on this \(ThisDevice.name), with no daily limit. Books in a series often reuse a design."
+            }
         return Section {
             LabeledContent("Availability") {
                 Text(
                     status.map { $0.isAvailable ? "Available" : $0.unavailableReason ?? "" }
                         ?? "Checking")
             }
-            if usesDailyLimit {
+            if cost == .dailyLimit {
                 LabeledContent("Daily limit", value: status.map(Self.quotaText) ?? "Checking")
                 if let suggestion = status?.limitIncreaseSuggestion {
                     Button("Increase limit") { suggestion.show() }
@@ -172,11 +181,7 @@ struct GenerationView: View {
         } header: {
             Text(status?.designerName ?? "Private Cloud Compute")
         } footer: {
-            Text(
-                usesDailyLimit
-                    ? "Each new design uses one request from your daily limit. Books in a series often reuse a design without a request."
-                    : "Each new design uses one request to this provider, billed to your API account. Books in a series often reuse a design without a request."
-            )
+            Text(note)
         }
     }
 

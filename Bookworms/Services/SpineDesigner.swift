@@ -5,7 +5,9 @@ import ImageIO
 import UniformTypeIdentifiers
 
 /// Which model designs spines: Apple's Private Cloud Compute, or a third-party provider the
-/// reader chose in Settings on the Mac or from the Spines tab on the iPhone.
+/// reader chose in Settings on the Mac or from the Spines tab on the iPhone. In test builds
+/// without the managed Private Cloud Compute entitlement (`NO_PCC`), Apple's choice designs with
+/// the on-device model instead.
 ///
 /// The choice and model name live in `UserDefaults`; each provider's API key lives in this
 /// device's Keychain (`KeychainSecret`), never synced. Third-party providers answer through
@@ -19,7 +21,7 @@ struct SpineDesigner: Hashable, Sendable {
 
         var name: String {
             switch self {
-            case .apple: "Apple Private Cloud Compute"
+            case .apple: SpineDesigner.appleModelName
             case .anthropic: "Anthropic"
             case .openAI: "OpenAI"
             case .google: "Google Gemini"
@@ -54,6 +56,13 @@ struct SpineDesigner: Hashable, Sendable {
             KeychainSecret(service: "gay.ian.Bookworms.ai-provider", account: rawValue)
         }
     }
+
+    /// The name of Apple's choice, which designs with the on-device model in `NO_PCC` builds.
+    #if NO_PCC
+        static let appleModelName = "Apple on-device model"
+    #else
+        static let appleModelName = "Apple Private Cloud Compute"
+    #endif
 
     var provider: Provider
     var model: String
@@ -96,9 +105,16 @@ struct SpineDesigner: Hashable, Sendable {
     }
 
     /// Records which model made a design, such as "model:anthropic/claude-haiku-5-5", in the
-    /// design's 80-character `provenance`.
+    /// design's 80-character `provenance`. Private Cloud Compute's designs record none; the
+    /// on-device model's, in `NO_PCC` builds, record "model:apple/on-device".
     var provenance: String? {
-        guard provider != .apple else { return nil }
+        guard provider != .apple else {
+            #if NO_PCC
+                return "model:apple/on-device"
+            #else
+                return nil
+            #endif
+        }
         return String("model:\(provider.rawValue)/\(model)".prefix(80))
     }
 }
