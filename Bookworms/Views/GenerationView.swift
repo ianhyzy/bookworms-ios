@@ -147,7 +147,8 @@ struct GenerationView: View {
     /// `NO_PCC` builds, or the chosen third-party provider.
     private var designModel: some View {
         let status = generation.status.model
-        let cost = status?.cost ?? .dailyLimit
+        // Until the first status arrives, the saved choice names the model.
+        let cost = status?.cost ?? SpineDesigner.current.provider.cost
         let note =
             switch cost {
             case .dailyLimit:
@@ -179,7 +180,7 @@ struct GenerationView: View {
                 }
             #endif
         } header: {
-            Text(status?.designerName ?? "Private Cloud Compute")
+            Text(status?.designerName ?? SpineDesigner.current.provider.name)
         } footer: {
             Text(note)
         }

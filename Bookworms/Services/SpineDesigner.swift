@@ -51,6 +51,16 @@ struct SpineDesigner: Hashable, Sendable {
             }
         }
 
+        /// What each design request costs the user with this provider.
+        var cost: ModelStatus.Cost {
+            guard self == .apple else { return .apiAccount }
+            #if NO_PCC
+                return .onDevice
+            #else
+                return .dailyLimit
+            #endif
+        }
+
         /// The Keychain item that holds this provider's API key.
         var key: KeychainSecret {
             KeychainSecret(service: "gay.ian.Bookworms.ai-provider", account: rawValue)

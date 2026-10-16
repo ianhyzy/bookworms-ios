@@ -46,8 +46,8 @@ struct ModelStatus: Sendable {
     var limitIncreaseSuggestion:
         PrivateCloudComputeLanguageModel.QuotaUsage.LimitIncreaseSuggestion?
     /// The designing model's provider, as the Spines tab names it.
-    var designerName = "Private Cloud Compute"
-    var cost = Cost.dailyLimit
+    var designerName = SpineDesigner.appleModelName
+    var cost = SpineDesigner.Provider.apple.cost
 }
 
 /// Designs a spine from a cover with local OCR, the cover's title colors, one model request, and
@@ -74,20 +74,19 @@ actor BookAnalyzer {
         choices.
         """
 
-    /// Reads the designer's availability: a third-party provider's settings, the on-device
+    /// Reads `designer`'s availability: a third-party provider's settings, the on-device
     /// model's availability in `NO_PCC` builds, or Private Cloud Compute's availability and
     /// quota, creating the model on first use.
-    func status() -> ModelStatus {
-        let designer = SpineDesigner.current
+    func status(for designer: SpineDesigner = .current) -> ModelStatus {
         guard designer.provider == .apple else {
             return ModelStatus(
                 isAvailable: designer.problem == nil, unavailableReason: designer.problem,
                 coverReader: .designModel, quota: .belowLimit, quotaResetDate: nil,
                 limitIncreaseSuggestion: nil, designerName: designer.provider.name,
-                cost: .apiAccount)
+                cost: designer.provider.cost)
         }
         #if NO_PCC
-            return Self.onDeviceStatus(designerName: designer.provider.name)
+            return Self.onDeviceStatus()
         #else
             return pccStatus()
         #endif
@@ -95,7 +94,7 @@ actor BookAnalyzer {
 
     /// The on-device model's availability, for builds that design with it. It has no daily
     /// limit, and without image input the design comes from the title measurements alone.
-    private static func onDeviceStatus(designerName: String) -> ModelStatus {
+    private static func onDeviceStatus() -> ModelStatus {
         let model = SystemLanguageModel.default
         let reason: String? =
             switch model.availability {
@@ -111,8 +110,7 @@ actor BookAnalyzer {
         return ModelStatus(
             isAvailable: model.isAvailable, unavailableReason: reason,
             coverReader: model.capabilities.contains(.vision) ? .onDevice : .measurementsOnly,
-            quota: .belowLimit, quotaResetDate: nil, limitIncreaseSuggestion: nil,
-            designerName: designerName, cost: .onDevice)
+            quota: .belowLimit, quotaResetDate: nil, limitIncreaseSuggestion: nil, cost: .onDevice)
     }
 
     private func pccStatus() -> ModelStatus {
@@ -210,7 +208,9 @@ actor BookAnalyzer {
         let lettering = TitleLettering.measure(cover.image, lines: lines, title: book.title)
         let crop = lettering?.crop ?? cover.image
         let reading: LetteringReading?
-        switch status().coverReader {
+        // The designer captured above picks the cover reader, so a provider change during this
+        // design cannot pair one provider's model with another's reading options.
+        switch status(for: designer).coverReader {
         case .designModel:
             reading = try await Self.readLettering(
                 crop, model: model,

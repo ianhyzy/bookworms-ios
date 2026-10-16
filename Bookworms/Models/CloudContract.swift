@@ -231,7 +231,8 @@ struct SpineDesignV1: Codable, Sendable, Hashable {
     /// The weight of the `fontPostScriptName` instance (100...900), which can differ from
     /// `weight` when the family lacks that weight.
     var instanceWeight: Int? = nil
-    /// How the design was made when not by a model request, such as "series-reuse:12".
+    /// How the design was made, in space-separated tokens such as "model:apple/on-device" or
+    /// "series-reuse:12". Private Cloud Compute's designs record no model token.
     var provenance: String? = nil
 
     func validate() throws {
