@@ -25,7 +25,7 @@ import UniformTypeIdentifiers
 struct ShareStudioView: View {
     @Environment(AppModel.self) private var model
     @State private var mode = ShareMode.mine
-    @State private var template = ShareTemplate.yearInBooks
+    @State private var template = ShareTemplate.topFive
     /// The reader chosen under **Compare with**: `nil`, or a reader no longer listed, is the
     /// best match.
     @State private var readerID: Int?
@@ -64,7 +64,7 @@ struct ShareStudioView: View {
         #if DEBUG
             let defaults = UserDefaults.standard
             guard let raw = defaults.string(forKey: "BookwormsShareTemplate") else { return }
-            _template = State(initialValue: ShareTemplate(rawValue: raw) ?? .yearInBooks)
+            _template = State(initialValue: ShareTemplate(rawValue: raw) ?? .topFive)
             _mode = State(
                 initialValue: defaults.string(forKey: "BookwormsShareMode")
                     .flatMap(ShareMode.init(rawValue:))
