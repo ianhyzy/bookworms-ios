@@ -6,9 +6,10 @@ enum CloudContract {
     static let worklistRecordName = "spine-worklist-v1"
     static let worklistSubscriptionID = "spine-worklist-v1-changes"
     static let libraryRecordName = "library-v1"
-    /// Identifies designs from this app. Designs with another version, such as the Mac
-    /// companion's on-device `mac-foundation-models-v2`, are regenerated with Private Cloud Compute.
-    static let generatorVersion = "ios-pcc-v1"
+    /// Identifies designs from this app's current generator. Designs with another version, such
+    /// as the Mac companion's on-device `mac-foundation-models-v2` or this app's earlier
+    /// `ios-pcc-v1`, show until a run regenerates them; colors the reader chose are kept.
+    static let generatorVersion = "ios-pcc-v2"
 
     static func designRecordName(accountID: String, bookID: Int) -> String {
         "spine-design-v1-" + digest("\(accountID):\(bookID)")

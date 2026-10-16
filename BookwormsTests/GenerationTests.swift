@@ -6,8 +6,8 @@ import XCTest
 
 @testable import Bookworms
 
-/// Covers generation's pure decisions: error handling, quota stops, and the design schema's
-/// answers. No test calls a model, the network, or iCloud.
+/// Covers generation's pure decisions: error handling, quota stops, the lettering answers'
+/// font choices, and title measurement. No test calls a model, the network, or iCloud.
 final class GenerationTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_000_000)
 
@@ -252,38 +252,11 @@ final class GenerationTests: XCTestCase {
             SpineWorker.modelStop(status(reader: .onDevice, quota: .belowLimit), mode: .foreground))
     }
 
-    func testDesignAnswerMustUseOfferedChoices() throws {
-        let palette = ["#1F3A5A", "#D8CBB0"].compactMap(ColorValue.init(hex:))
-        let inks = ["#101820", "#F4EEE2"].compactMap(ColorValue.init(hex:))
-        let families = ["Lora", "Cardo", "EB Garamond"]
-        func answer(background: String = "#1F3A5A", weight: String = "semibold") throws
-            -> BookAnalyzer.DesignChoice
-        {
-            let json = """
-                {"background": "\(background)", "ink": "#F4EEE2", "accent": "#D8CBB0",
-                 "weight": "\(weight)", "rankedFamilies": ["Cardo", "Impact", "Cardo", "Lora"]}
-                """
-            return try BookAnalyzer.designChoice(
-                from: GeneratedContent(json: json), palette: palette, inks: inks,
-                families: families)
-        }
-        let choice = try answer()
-        XCTAssertEqual(choice.background.hex, "#1F3A5A")
-        XCTAssertEqual(choice.ink.hex, "#F4EEE2")
-        XCTAssertEqual(choice.accent.hex, "#D8CBB0")
-        XCTAssertEqual(choice.weight, 600)
-        XCTAssertEqual(choice.families, ["Cardo", "Lora"])
-        XCTAssertThrowsError(try answer(background: "#FF0000"))
-        XCTAssertThrowsError(try answer(weight: "black"))
-        XCTAssertNoThrow(
-            try BookAnalyzer.designSchema(palette: palette, inks: inks, families: families))
-    }
-
     func testTitleNoFamilyCoversUsesTheStyleSystemTypeface() throws {
         let palette = ["#1F3A5A", "#D8CBB0"].compactMap(ColorValue.init(hex:))
         let choice = BookAnalyzer.DesignChoice(
             background: palette[0], ink: ColorValue(hex: "#F4EEE2")!, accent: palette[1],
-            weight: 600, families: ["Lora"])
+            weight: 600)
         let book = CloudBook(
             id: 9, title: "\u{68EE}\u{306E}\u{5BB6}", author: "An Author", coverURL: nil,
             detailCoverURL: nil)
@@ -298,23 +271,66 @@ final class GenerationTests: XCTestCase {
         XCTAssertNil(design.instanceWeight)
     }
 
-    func testCandidateFamiliesAreOneStyleInAReproducibleOrderPerBook() {
-        func families(book: Int, style: SpineFontStyle) -> [String] {
-            var generator = BookAnalyzer.SeededGenerator(seed: UInt64(book))
-            return BookAnalyzer.candidateFamilies(for: style, generator: &generator)
+    func testLetteringAnswersNarrowTheFamiliesAndNeverOfferSlantedFaces() {
+        func styles(_ reading: BookAnalyzer.LetteringReading?) -> Set<SpineFontStyle> {
+            Set(
+                BookAnalyzer.families(for: reading, playful: true)
+                    .compactMap { SpineFamily(rawValue: $0)?.style })
         }
-        let serif = SpineFamily.allCases.filter { $0.style == .bookSerif }.map(\.rawValue)
-        XCTAssertEqual(Set(families(book: 7, style: .bookSerif)), Set(serif))
-        XCTAssertEqual(families(book: 7, style: .bookSerif), families(book: 7, style: .bookSerif))
-        XCTAssertNotEqual(
-            families(book: 7, style: .bookSerif), families(book: 8, style: .bookSerif))
-        for style in SpineFontStyle.allCases {
-            XCTAssertFalse(families(book: 1, style: style).isEmpty, "\(style)")
+        XCTAssertEqual(
+            styles(.init(handDrawn: false, serifs: true, treatment: "plain")),
+            [.bookSerif, .didone, .classicalCaps, .slab])
+        XCTAssertEqual(
+            styles(.init(handDrawn: false, serifs: false, treatment: "plain")),
+            [.humanistSans, .geometricSans, .condensedSans, .rounded])
+        // Textured art often draws this answer for plain lettering, so it narrows nothing extra.
+        XCTAssertEqual(
+            styles(.init(handDrawn: false, serifs: true, treatment: "dripping or distressed")),
+            styles(.init(handDrawn: false, serifs: true, treatment: "plain")))
+        XCTAssertEqual(
+            styles(.init(handDrawn: false, serifs: true, treatment: "gothic broken strokes")),
+            [.blackletter])
+        XCTAssertEqual(
+            BookAnalyzer.families(
+                for: .init(
+                    handDrawn: false, serifs: false, treatment: "outlined or multi-line neon"),
+                playful: false
+            )
+            .first, "Monoton")
+        // Rounded faces need a playful book.
+        let serious = BookAnalyzer.families(
+            for: .init(handDrawn: false, serifs: false, treatment: "plain"), playful: false)
+        XCTAssertFalse(serious.contains { SpineFamily(rawValue: $0)?.style == .rounded })
+
+        let script = BookAnalyzer.families(
+            for: .init(handDrawn: true, serifs: true, treatment: "plain"), playful: true)
+        XCTAssertTrue(script.contains("Caveat"))
+        let everything = BookAnalyzer.families(for: nil, playful: true)
+        for slanted in ["Dancing Script", "Pacifico", "Great Vibes", "Lobster", "Bangers"] {
+            XCTAssertFalse(script.contains(slanted) || everything.contains(slanted), slanted)
         }
         XCTAssertFalse(BookAnalyzer.allowsFamily("Impact"))
         XCTAssertFalse(BookAnalyzer.allowsFamily("Lora Italic"))
         XCTAssertFalse(BookAnalyzer.allowsFamily("Noto Sans Oblique"))
         XCTAssertTrue(BookAnalyzer.allowsFamily("EB Garamond"))
+    }
+
+    func testTitleMeasurementIgnoresLetterSpacingAndNeighbouringLines() throws {
+        // Two 10 × 40 letters 30 pixels apart, with a thin neighbouring line above them.
+        var pixels = [Float](repeating: 0, count: 100 * 60)
+        for y in 15..<55 {
+            for x in 10..<20 { pixels[y * 100 + x] = 1 }
+            for x in 50..<60 { pixels[y * 100 + x] = 1 }
+        }
+        for x in 0..<100 { pixels[2 * 100 + x] = 1 }
+        let profile = try XCTUnwrap(Mask(width: 100, height: 60, pixels: pixels).profile())
+        // The gap collapses to a twelfth of the 40-pixel band: (10 + 3 + 10) / 40, rounded to
+        // the 48-pixel grid.
+        XCTAssertEqual(profile.aspect, Double(23 * 48 / 40) / 48, accuracy: 0.001)
+        // Box filtering leaves one partial column at each letter edge, so even strokes vary
+        // by a pixel.
+        XCTAssertLessThan(profile.strokeSpread, 0.2)
+        XCTAssertEqual(profile.shape.count, 320 * 48)
     }
 
     /// The owner's standing rule: no spine ever uses Impact, in any spelling, from any source.
@@ -326,10 +342,7 @@ final class GenerationTests: XCTestCase {
         }
         let catalog = SpineFamily.allCases.map { $0.rawValue.lowercased() }
         XCTAssertFalse(catalog.contains { $0.contains("impact") })
-        var generator = BookAnalyzer.SeededGenerator(seed: 1)
-        let offered = SpineFontStyle.allCases.flatMap {
-            BookAnalyzer.candidateFamilies(for: $0, generator: &generator)
-        }
+        let offered = BookAnalyzer.families(for: nil, playful: true)
         XCTAssertFalse(offered.contains { $0.lowercased().contains("impact") })
         XCTAssertTrue(BookAnalyzer.allowsFamily(SpineFamily.impactReplacement.rawValue))
         XCTAssertEqual(SpineFamily.impactReplacement.style, .condensedSans)
@@ -387,6 +400,9 @@ final class GenerationTests: XCTestCase {
             ("EB Garamond", "EBGaramond-Italic", "EB Garamond"),
             ("Lora", "Lora-BoldIt", "Lora"),
             ("Italic", nil, nil),
+            ("Dancing Script", "DancingScript-Bold", "Kalam"),
+            ("Great Vibes", "GreatVibes-Regular", "Caveat"),
+            ("Pacifico", nil, "Permanent Marker"),
         ]
         for (family, postScriptName, replacement) in expected {
             let design = loaded(family, postScriptName)
@@ -400,7 +416,7 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(loaded("Lora", "Lora-Bold").fontPostScriptName, "Lora-Bold")
         for replacement in SpineFamily.slantedReplacements.values {
             XCTAssertTrue(BookAnalyzer.allowsFamily(replacement.rawValue))
-            XCTAssertEqual(replacement.style, .decorative)
+            XCTAssertTrue([.decorative, .script].contains(replacement.style))
         }
 
         // A loaded face with the italic trait is passed over for an upright one, whatever the
@@ -421,33 +437,45 @@ final class GenerationTests: XCTestCase {
         XCTAssertNil(GoogleFonts.uprightDescriptor(preferring: ["Georgia-Italic"], in: [italic]))
     }
 
-    func testDesignPromptCarriesBookDataButNotTheFontCatalog() {
-        let book = CloudBook(
-            id: 9, title: String(repeating: "T", count: 400), author: "An Author",
-            coverURL: nil, detailCoverURL: nil, genres: ["Fantasy"])
-        let palette = [ColorValue(hex: "#1F3A5A")!]
-        let inks = [ColorValue(hex: "#F4EEE2")!]
-        let prompt = BookAnalyzer.designPrompt(
-            book: book, style: .slab, families: ["Arvo", "Bitter"], observedText: "A TITLE",
-            palette: palette, inks: inks)
-        XCTAssertTrue(prompt.contains("Title: " + String(repeating: "T", count: 250) + "\n"))
-        XCTAssertTrue(prompt.contains("#1F3A5A"))
-        XCTAssertTrue(prompt.contains("Never choose Impact"))
-        // Families travel in the schema, limited to the chosen style.
-        XCTAssertFalse(SpineFamily.allCases.contains { prompt.contains($0.rawValue) })
+    func testTitleSplitTakesTheGroundFromTheBorder() throws {
+        // Light letters on a navy ground: the ink is the lighter, smaller cluster.
+        let width = 120
+        let height = 40
+        let context = try XCTUnwrap(
+            CGContext(
+                data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(red: 0.1, green: 0.15, blue: 0.35, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.setFillColor(red: 0.95, green: 0.9, blue: 0.8, alpha: 1)
+        for x in stride(from: 10, to: 110, by: 20) {
+            context.fill(CGRect(x: x, y: 8, width: 8, height: 24))
+        }
+        let split = try XCTUnwrap(TitleLettering.split(try XCTUnwrap(context.makeImage())))
+        XCTAssertGreaterThan(SpineContrast.lab(split.ink).l, SpineContrast.lab(split.ground).l)
+        XCTAssertLessThan(SpineContrast.lab(split.ground).l, 0.4)
+    }
 
-        // Themed decorative families are described so their names do not mislead the model.
-        let decorative = BookAnalyzer.designPrompt(
-            book: book, style: .decorative, families: ["Creepster", "Limelight"],
-            observedText: "", palette: palette, inks: inks)
-        XCTAssertTrue(decorative.contains("Creepster (dripping horror lettering)"))
-        XCTAssertFalse(decorative.contains("Eater"))
-        // Slanted faces that do not declare an italic trait are blocked by name.
-        XCTAssertFalse(BookAnalyzer.allowsFamily("Bangers"))
-        XCTAssertFalse(BookAnalyzer.allowsFamily("Shrikhand"))
-        var generator = BookAnalyzer.SeededGenerator(seed: 1)
-        let offered = BookAnalyzer.candidateFamilies(for: .decorative, generator: &generator)
-        XCTAssertFalse(offered.contains("Shrikhand") || offered.contains("Bangers"))
+    func testRankingPicksTheFamilyTheLetteringWasSetIn() throws {
+        let atlas = try XCTUnwrap(FontAtlas.shared)
+        XCTAssertEqual(Set(atlas.fonts.map(\.family)).count, SpineFamily.allCases.count)
+        let image = try XCTUnwrap(
+            CGContext(
+                data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?
+                .makeImage())
+        // Lettering composed from the atlas itself must rank its own family first.
+        for family in ["Oswald", "EB Garamond", "Josefin Sans"] {
+            let font = try XCTUnwrap(atlas.fonts.first { $0.family == family && $0.weight == 400 })
+            let profile = try XCTUnwrap(font.compose("KINDRED")?.profile())
+            let measurement = TitleLettering.Measurement(
+                text: "KINDRED", crop: image, profile: profile,
+                ink: ColorValue(hex: "#FFFFFF")!, ground: ColorValue(hex: "#000000")!)
+            let ranked = TitleLettering.rank(SpineFamily.allCases.map(\.rawValue), for: measurement)
+            XCTAssertEqual(ranked.first?.family, family)
+        }
     }
 }
 
