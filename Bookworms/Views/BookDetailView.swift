@@ -1080,7 +1080,8 @@ private struct SpineDesignCard: View {
 /// and **Redesign spine** change the series' look or only this book, which then draws its own
 /// design. It shows when the book's look group has a saved look or another book
 /// (`AppModel.choosesEditScope(for:)`). A choice shows at once and stays while it saves; a failed
-/// save shows a toast and the saved choice again.
+/// save shows a toast and the saved choice again. The rows take no other choice until a save
+/// ends, so saves never overlap and the last choice is the one iCloud keeps.
 private struct SeriesRows: View {
     /// A book's series choice, as the rows show it.
     struct Choice: Equatable {
@@ -1144,6 +1145,7 @@ private struct SeriesRows: View {
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
+                .disabled(saving != nil)
             }
         }
         if model.choosesEditScope(for: book) {
@@ -1164,6 +1166,7 @@ private struct SeriesRows: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .fixedSize()
+                .disabled(saving != nil)
             }
         }
     }

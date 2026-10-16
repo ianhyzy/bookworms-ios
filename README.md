@@ -47,7 +47,7 @@ On a book's details, **Style** shows the book's series choices on the **Spine de
 
 - **Series** shows when the book has a series or a series choice. It offers **Default**, labeled with the shortest series' name, such as "Default — Discworld"; each of the book's series, with its number of books when Hardcover records it, such as "Discworld (41 books)"; and **Not in a series**. A choice that Hardcover no longer lists for the book shows as **Linked series**.
 - **Edit** shows when the book's look group has a look or another book in the library. **Series** (the default) makes the cover, the colors, **Reset colors**, and the redesign change the whole series. While other books draw the same look or design, the buttons read **Change series cover** and **Redesign spines**; a book alone in its group keeps **Change cover** and **Redesign spine**, and its edits still change the look. **This book** makes the book draw its own design, and those edits then change only it.
-- Each choice shows at once and saves as the book's `SeriesLinkV1` record in iCloud (see [iCloud contract](#icloud-contract)), so other devices and generation runs follow it. Choosing **Default** with **Series** deletes the record. If the save fails, a toast says "Couldn't save the series choice" and the saved choice returns.
+- Each choice shows at once and saves as the book's `SeriesLinkV1` record in iCloud (see [iCloud contract](#icloud-contract)), so other devices and generation runs follow it. Choosing **Default** with **Series** deletes the record. Both rows take no other choice until the save ends. If the save fails, a toast says "Couldn't save the series choice" and the saved choice returns.
 
 With **Edit** set to **Series**, the edits act on the series:
 
