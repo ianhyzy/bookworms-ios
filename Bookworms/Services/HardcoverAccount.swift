@@ -237,6 +237,9 @@ struct PhoneLibrary: Codable, Equatable, Sendable {
     let username: String?
     let syncedAt: Date
     let books: [CloudBook]
+    /// The series of the books, which the Apple TV shows in book details, or `nil` when they
+    /// weren't downloaded. `CloudSpineStore.publishLibrary(_:)` writes them with the library.
+    var series: [SeriesInfo]? = nil
 
     /// Named for its format: books gained `seriesMemberships`, so a copy saved before then is not
     /// read, and the next sync downloads the library again.

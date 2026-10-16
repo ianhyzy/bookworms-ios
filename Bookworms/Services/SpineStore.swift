@@ -57,9 +57,22 @@ protocol SpineStore: Sendable {
     func loadLibrary() async throws -> LibrarySnapshot?
     /// Subscribes to worklist changes so a silent push can schedule generation.
     func installWorklistSubscription() async throws
+    /// Returns the newest Hardcover snapshot of `accountID` in the shared `library-v1` archive,
+    /// or `nil` when the archive holds none.
+    func archivedLibrary(accountID: String) async throws -> CloudSourceSnapshot?
+    /// Writes `library` into the shared `library-v1` archive as its account's Hardcover snapshot
+    /// when it is newer than the stored one (`CloudLibraryArchive.splice(_:into:)`), so other
+    /// devices can show it without downloading it from Hardcover.
+    func publishLibrary(_ library: PhoneLibrary) async throws
 }
 
 extension SpineStore {
+    /// A store without a shared archive, such as `LocalSpineStore`, holds no snapshot.
+    func archivedLibrary(accountID: String) async throws -> CloudSourceSnapshot? { nil }
+
+    /// A store without a shared archive, such as `LocalSpineStore`, publishes nothing.
+    func publishLibrary(_ library: PhoneLibrary) async throws {}
+
     /// Saves `design` unless a design of the same work from the same generator already exists.
     func save(_ design: SpineDesignV1) async throws {
         try await save(design, replacing: false)
