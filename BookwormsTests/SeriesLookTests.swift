@@ -259,6 +259,7 @@ final class SeriesLookTests: XCTestCase {
                     + ModelTier.onDeviceToken),
             key: look().key, createdAt: created)
         XCTAssertEqual(onDevice.provenance, ModelTier.onDeviceToken, "Only the model token")
+        XCTAssertEqual(onDevice.editedAt, created, "The recolored design's colors are the reader's")
         XCTAssertEqual(onDevice.tier, .onDevice)
         XCTAssertEqual(onDevice.design(bookID: 8).tier, .onDevice, "Copies keep the tier")
         XCTAssertEqual(
@@ -305,6 +306,47 @@ final class SeriesLookTests: XCTestCase {
                 .upgradeSource(among: members), 1,
             "An Apple TV look upgrades from the best-ranked member")
         XCTAssertNil(onDevice.upgradeSource(among: [book(2, series: 1018)]), "No cover")
+    }
+
+    func testLooksReadOtherGeneratorsAndKeepTheReadersColors() throws {
+        // A look seeded from the retired Mac companion's on-device design upgrades.
+        let mac = look().withOrigin(CloudContract.macGeneratorVersion)
+        XCTAssertNil(mac.provenance)
+        XCTAssertEqual(mac.tier, .onDevice)
+        XCTAssertTrue(mac.isUpgraded(at: .privateCloudCompute))
+        XCTAssertFalse(mac.isUpgraded(at: .onDevice))
+
+        // A look with a recolored design's tokens lends only its model token, so a copy takes
+        // the look's own colors, and no upgrade replaces them.
+        var tagged = look()
+        tagged.provenance =
+            "series-reuse:3 generated-colors:000000,FFFFFF,FF0000 " + ModelTier.onDeviceToken
+        XCTAssertEqual(tagged.tier, .onDevice)
+        let drawn = tagged.design(bookID: 8)
+        XCTAssertEqual(drawn.provenance, ModelTier.onDeviceToken)
+        XCTAssertNil(drawn.generatedColors)
+        XCTAssertEqual(drawn.tier, .onDevice)
+        XCTAssertFalse(tagged.isUpgraded(at: .privateCloudCompute))
+
+        // A look seeded from a design the reader recolored counts as edited.
+        let member = book(7, series: 9)
+        let hash = CloudContract.workItemHash(accountID: "42", book: member)
+        let own = design(7, provenance: ModelTier.onDeviceToken, workItemHash: hash)
+        let recolored = own.recolored(
+            SpineColors(
+                background: ColorValue(hex: "#000000")!, foreground: ColorValue(hex: "#FFFFFF")!,
+                accent: ColorValue(hex: "#FF0000")!))
+        let seeded = try XCTUnwrap(
+            SeriesDesigns.missingLooks(
+                books: [member], designs: [7: recolored], looks: [:], now: created
+            )
+            .first)
+        XCTAssertEqual(seeded.editedAt, created)
+        XCTAssertEqual(seeded.tier, .onDevice)
+        XCTAssertFalse(seeded.isUpgraded(at: .privateCloudCompute), "The reader's colors stay")
+        XCTAssertTrue(
+            SeriesLookV1(design: own, key: seeded.key, createdAt: created)
+                .isUpgraded(at: .privateCloudCompute))
     }
 
     func testUpgradingALookKeepsEditsAndBetterLooks() async throws {

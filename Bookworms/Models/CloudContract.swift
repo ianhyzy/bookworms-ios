@@ -7,9 +7,12 @@ enum CloudContract {
     static let worklistSubscriptionID = "spine-worklist-v1-changes"
     static let libraryRecordName = "library-v1"
     /// Identifies designs from this app's current generator. Designs with another version, such
-    /// as the Mac companion's on-device `mac-foundation-models-v2` or this app's earlier
-    /// `ios-pcc-v1`, show until a run regenerates them; colors the reader chose are kept.
+    /// as the Mac companion's `macGeneratorVersion` or this app's earlier `ios-pcc-v1`, show
+    /// until a run regenerates them; colors the reader chose are kept.
     static let generatorVersion = "ios-pcc-v2"
+    /// The generator of the retired Bookworms Spines Mac companion, which designed with Apple's
+    /// on-device model and recorded no model token.
+    static let macGeneratorVersion = "mac-foundation-models-v2"
     /// The `SeriesLookV1.origin` of the Apple TV's own looks, which it makes without a model from
     /// a cover's colors and the book's genres.
     static let appleTVGeneratorVersion = "tvos-local-v1"
@@ -357,12 +360,17 @@ struct SeriesLookV1: Codable, Sendable, Hashable {
     var key: SeriesLookKey { SeriesLookKey(seriesID: seriesID, group: group) }
 
     /// The model tier that made the look (`SpineDesignV1.tier`): the tier its `provenance` names,
-    /// or local defaults for an Apple TV look.
+    /// or, without a model token, the tier its `origin` implies, such as local defaults for an
+    /// Apple TV look.
     var tier: ModelTier { storedDesign(bookID: sourceBookID, hashesFrom: nil).tier }
 
-    /// Whether a design from `tier` replaces this look: the reader never edited the look, and a
-    /// weaker tier made it.
-    func isUpgraded(at tier: ModelTier) -> Bool { editedAt == nil && self.tier < tier }
+    /// Whether a design from `tier` replaces this look: a weaker tier made it, and its colors
+    /// are the generator's. The reader's colors stay: an edited look, or one whose `provenance`
+    /// carries a recolored design's `generated-colors` token.
+    func isUpgraded(at tier: ModelTier) -> Bool {
+        editedAt == nil && self.tier < tier
+            && storedDesign(bookID: sourceBookID, hashesFrom: nil).generatedColors == nil
+    }
 
     /// The book among `members`, the look group's books, whose design replaces the look when it
     /// is upgraded (`isUpgraded(at:)`), or `nil` when no member has a cover: the look's source
@@ -394,11 +402,16 @@ struct SeriesLookV1: Codable, Sendable, Hashable {
 
     /// The look as a design of the book `bookID`, which draws and series reuse treat like a saved
     /// design: the look's colors and type in an allowed upright face
-    /// (`SpineDesignV1.withAllowedFont`), `origin` as the generator, `provenance`, and the last
-    /// edit or creation as the design date. The work-item and cover hashes come from `saved`, the
-    /// book's own saved design, or are `placeholderHash`.
+    /// (`SpineDesignV1.withAllowedFont`), `origin` as the generator, the model token of
+    /// `provenance` alone, and the last edit or creation as the design date. The work-item and
+    /// cover hashes come from `saved`, the book's own saved design, or are `placeholderHash`.
+    /// Dropping the other tokens, which any device may have copied from a design, keeps a
+    /// copy of the look in the look's own colors.
     func design(bookID: Int, hashesFrom saved: SpineDesignV1? = nil) -> SpineDesignV1 {
-        storedDesign(bookID: bookID, hashesFrom: saved).withAllowedFont
+        var design = storedDesign(bookID: bookID, hashesFrom: saved).withAllowedFont
+        design.provenance = provenance?.split(separator: " ")
+            .first { $0.hasPrefix("model:") }.map(String.init)
+        return design
     }
 
     /// `design(bookID:hashesFrom:)` with the stored font, which validation checks.
@@ -463,11 +476,14 @@ struct SeriesLookV1: Codable, Sendable, Hashable {
 extension SeriesLookV1 {
     /// A look for the group `key`, made from `design`'s colors and type, with `design`'s model
     /// token as its `provenance`. The design's other tokens describe that book's design alone:
-    /// a look copies no `series-reuse` or `generated-colors` token.
+    /// a look copies no `series-reuse` or `generated-colors` token. A design the reader
+    /// recolored gives the look the reader's colors, so the look counts as edited at
+    /// `createdAt` and no upgrade replaces them (`isUpgraded(at:)`).
     init(design: SpineDesignV1, key: SeriesLookKey, createdAt: Date) {
         self.init(
             version: 1, accountID: design.accountID, seriesID: key.seriesID, group: key.group,
             sourceBookID: design.bookID, origin: design.generatorVersion, createdAt: createdAt,
+            editedAt: design.generatedColors == nil ? nil : createdAt,
             backgroundHex: design.backgroundHex, foregroundHex: design.foregroundHex,
             accentHex: design.accentHex, typeface: design.typeface, weight: design.weight,
             uppercase: design.uppercase, fontFamily: design.fontFamily,

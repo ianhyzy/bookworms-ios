@@ -63,13 +63,14 @@ extension SpineDesignV1 {
     /// Returns this design with `colors`, recording the generator's colors in `provenance` so
     /// they can be restored. Colors equal to the generator's remove the record.
     ///
-    /// The result fails `validate()` when `colors` is not readable. When the other provenance
-    /// and the token together exceed `provenance`'s 80 characters, only the token is kept.
+    /// The result fails `validate()` when `colors` is not readable. To fit `provenance`'s 80
+    /// characters, the colors token stays, other tokens such as `series-reuse` go first, and the
+    /// model token is shortened last, so the design keeps its tier (`tier`): a shortened token
+    /// still names a backup model.
     func recolored(_ colors: SpineColors) -> SpineDesignV1 {
-        let other =
-            provenance?.split(separator: " ")
-            .filter { !$0.hasPrefix(Self.generatedColorsPrefix) }
-            .joined(separator: " ") ?? ""
+        var kept =
+            provenance?.split(separator: " ").map(String.init)
+            .filter { !$0.hasPrefix(Self.generatedColorsPrefix) } ?? []
         var token = ""
         if let generated = generatedColors ?? self.colors, colors != generated {
             token =
@@ -77,11 +78,19 @@ extension SpineDesignV1 {
                 + [generated.background, generated.foreground, generated.accent]
                 .map { $0.hex.dropFirst() }.joined(separator: ",")
         }
-        var joined = [other, token].filter { !$0.isEmpty }.joined(separator: " ")
-        if joined.count > 80 { joined = token }
+        func joined() -> String {
+            (kept + [token]).filter { !$0.isEmpty }.joined(separator: " ")
+        }
+        while joined().count > 80, let other = kept.firstIndex(where: { !$0.hasPrefix("model:") }) {
+            kept.remove(at: other)
+        }
+        if joined().count > 80, let model = kept.first {
+            kept = [String(model.prefix(80 - token.count - 1))]
+        }
+        let provenance = joined()
         return rebuilt(
             workItemHash: workItemHash, coverHash: coverHash, colors: colors,
-            provenance: joined.isEmpty ? nil : joined)
+            provenance: provenance.isEmpty ? nil : provenance)
     }
 
     /// Whether `other` is this design or a recoloring of it: the same account, book, work-item
@@ -111,7 +120,8 @@ extension SpineDesignV1 {
     /// hash is `workItemHash` and whose cover, downloaded for this run, hashes to `coverHash`.
     /// `readerChoseCover` tells whether the reader chose another cover since the book's last
     /// check, such as with **Change cover**. `drawsSeriesLook` tells whether the book draws its
-    /// look group's `SeriesLookV1` instead of this design.
+    /// look group's `SeriesLookV1` instead of this design. `upgradesSeriesLook` tells whether the
+    /// book's design is to replace its group's weaker look (`SeriesLookV1.upgradeSource(among:)`).
     ///
     /// The reader's colors outlast generator, tier, metadata, and cover-image changes: only a
     /// cover the reader chose, with new image bytes, redesigns a recolored spine. Otherwise a
@@ -120,10 +130,13 @@ extension SpineDesignV1 {
     /// it comes from this generator at `runTier` or a better tier (`tier`), or the book draws a
     /// series look. A run redesigns a weaker tier's design, so a better model replaces a weaker
     /// one's choices once it is available. A look can come from another generator, such as the
-    /// Apple TV's, and redesigning a book that draws it changes nothing on the shelf.
+    /// Apple TV's, and redesigning a book that draws it changes nothing on the shelf. A series
+    /// copy (`isSeriesReuse`) never upgrades a look, so it is redesigned instead: it reproduces a
+    /// look or another book's design, perhaps the very look it would replace, and a copy without
+    /// a model token reads as Private Cloud Compute whatever made its source.
     func action(
         workItemHash: String, coverHash: String, readerChoseCover: Bool, runTier: ModelTier,
-        drawsSeriesLook: Bool = false
+        drawsSeriesLook: Bool = false, upgradesSeriesLook: Bool = false
     ) -> SavedDesignAction {
         let newCover = self.coverHash != coverHash
         let isCurrent = !newCover && self.workItemHash == workItemHash
@@ -135,21 +148,28 @@ extension SpineDesignV1 {
                     provenance: provenance))
         }
         let isKept =
-            (generatorVersion == CloudContract.generatorVersion && tier >= runTier)
+            (generatorVersion == CloudContract.generatorVersion && tier >= runTier
+                && !(upgradesSeriesLook && isSeriesReuse))
             || drawsSeriesLook
         return isCurrent && isKept ? .keep : .redesign
     }
 
     /// The `provenance` token that names the model that made this design, such as
-    /// "model:apple/on-device", or `nil` for Private Cloud Compute, whose designs record none.
-    /// The design of an Apple TV look (`CloudContract.appleTVGeneratorVersion`) records none
-    /// either but comes from no model, so it reads as `ModelTier.localToken`.
+    /// "model:apple/on-device". Without one, the generator decides: `nil`, for Private Cloud
+    /// Compute, from this generator (`CloudContract.generatorVersion`), whose Private Cloud
+    /// Compute designs record none; `ModelTier.onDeviceToken` from the retired Mac companion
+    /// (`CloudContract.macGeneratorVersion`), which designed with Apple's on-device model; and
+    /// `ModelTier.localToken` from any other generator, such as the Apple TV's looks
+    /// (`CloudContract.appleTVGeneratorVersion`), which come from no model.
     var modelToken: String? {
         if let token = provenance?.split(separator: " ").first(where: { $0.hasPrefix("model:") }) {
             return String(token)
         }
-        return generatorVersion == CloudContract.appleTVGeneratorVersion
-            ? ModelTier.localToken : nil
+        switch generatorVersion {
+        case CloudContract.generatorVersion: return nil
+        case CloudContract.macGeneratorVersion: return ModelTier.onDeviceToken
+        default: return ModelTier.localToken
+        }
     }
 
     /// The model tier that made this design, from its `modelToken`.

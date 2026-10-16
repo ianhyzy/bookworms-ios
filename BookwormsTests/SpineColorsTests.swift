@@ -62,6 +62,29 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertNoThrow(try recolored.validate())
         XCTAssertNil(
             design().recolored(reader).recolored(try XCTUnwrap(design().colors)).provenance)
+
+        // Other tokens go before the model token, which keeps the design's tier through a
+        // recoloring and its reset.
+        let original = try XCTUnwrap(design().colors)
+        let copy = design(provenance: "series-reuse:123456 model:anthropic/claude-haiku-5-5")
+        let recoloredCopy = copy.recolored(reader)
+        XCTAssertEqual(
+            recoloredCopy.provenance,
+            "model:anthropic/claude-haiku-5-5 generated-colors:000000,FFFFFF,FF0000")
+        XCTAssertEqual(recoloredCopy.tier, .backup)
+        XCTAssertNoThrow(try recoloredCopy.validate())
+        let resetCopy = recoloredCopy.recolored(original)
+        XCTAssertEqual(resetCopy.provenance, "model:anthropic/claude-haiku-5-5")
+        XCTAssertEqual(resetCopy.tier, .backup)
+
+        // A model token too long to fit is shortened and still names a backup model.
+        let custom = design(provenance: "model:custom/" + String(repeating: "m", count: 40))
+        let recoloredCustom = custom.recolored(reader)
+        XCTAssertEqual(recoloredCustom.provenance?.count, 80)
+        XCTAssertEqual(recoloredCustom.tier, .backup)
+        XCTAssertEqual(recoloredCustom.generatedColors, original)
+        XCTAssertNoThrow(try recoloredCustom.validate())
+        XCTAssertEqual(recoloredCustom.recolored(original).tier, .backup)
     }
 
     func testUnreadableColorsAreNotSavable() {
@@ -120,7 +143,7 @@ final class SpineColorsTests: XCTestCase {
 
         // A book that draws its series' look keeps another generator's design while the hashes
         // match, since a redesign would not change its spine.
-        let foreign = design(generator: "mac-foundation-models-v2")
+        let foreign = design(generator: CloudContract.macGeneratorVersion)
         XCTAssertEqual(
             foreign.action(
                 workItemHash: work, coverHash: cover, readerChoseCover: false,
@@ -164,6 +187,20 @@ final class SpineColorsTests: XCTestCase {
         // Reader colors still win, and a book that draws its series' look keeps the look's.
         XCTAssertEqual(action(onDevice.recolored(reader), runTier: .privateCloudCompute), .keep)
         XCTAssertEqual(action(local, runTier: .privateCloudCompute, drawsSeriesLook: true), .keep)
+
+        // The book that upgrades its group's look keeps only its own design: a copy, even one
+        // without a model token that reads as Private Cloud Compute, is redesigned.
+        func upgrading(_ design: SpineDesignV1, runTier: ModelTier) -> SavedDesignAction {
+            design.action(
+                workItemHash: work, coverHash: cover, readerChoseCover: false, runTier: runTier,
+                upgradesSeriesLook: true)
+        }
+        let copy = design("series-reuse:12")
+        XCTAssertEqual(action(copy, runTier: .privateCloudCompute), .keep)
+        XCTAssertEqual(upgrading(copy, runTier: .onDevice), .redesign)
+        XCTAssertEqual(upgrading(design("series-reuse:4 model:local"), runTier: .local), .redesign)
+        XCTAssertEqual(upgrading(pcc, runTier: .privateCloudCompute), .keep)
+        XCTAssertEqual(upgrading(copy.recolored(reader), runTier: .onDevice), .keep)
     }
 
     func testSavesKeepTheFirstDesignAtATierAndTakeBetterTiers() {
@@ -196,6 +233,14 @@ final class SpineColorsTests: XCTestCase {
         let television = design(generator: CloudContract.appleTVGeneratorVersion)
         XCTAssertEqual(television.modelToken, "model:local")
         XCTAssertEqual(television.tier, .local)
+        // Without a token, other generators read by what made their designs.
+        let mac = design(generator: CloudContract.macGeneratorVersion)
+        XCTAssertEqual(mac.modelToken, ModelTier.onDeviceToken)
+        XCTAssertEqual(mac.tier, .onDevice)
+        XCTAssertEqual(design(generator: "ios-pcc-v1").tier, .local)
+        XCTAssertEqual(
+            design(generator: "ios-pcc-v1", provenance: "model:openai/gpt-6-luna").tier, .backup,
+            "A model token decides")
     }
 
     func testLedgerTellsWhetherTheReaderChoseAnotherCover() async throws {
