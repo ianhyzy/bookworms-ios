@@ -526,7 +526,7 @@ actor HardcoverClient {
             last_read_date rating status_id review
             book { id title description pages release_year cached_contributors cached_tags rating
               ratings_count ratings_distribution image { url width height }
-              book_series { featured position series { id name } }
+              book_series { featured position compilation series { id name books_count primary_books_count } }
               editions(where: {image_id: {_is_null: false},
                   _or: [{language_id: {_is_null: true}}, {language: {code2: {_eq: $language}}}]},
                 order_by: {users_count: desc}, limit: 5) {
@@ -582,7 +582,7 @@ actor HardcoverClient {
             last_read_date rating status_id
             book { id title pages release_year cached_contributors rating ratings_count
               image { url width height }
-              book_series { featured position series { id name } }
+              book_series { featured position compilation series { id name books_count primary_books_count } }
               editions(where: {image_id: {_is_null: false},
                   _or: [{language_id: {_is_null: true}}, {language: {code2: {_eq: $language}}}]},
                 order_by: {users_count: desc}, limit: 5) {
@@ -643,6 +643,17 @@ actor HardcoverClient {
                 .sorted { ($0.featured ?? false) && !($1.featured ?? false) }.first
             let seriesName = membership?.series?.name?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            let memberships = source.bookSeries?
+                .compactMap { row -> SeriesMembership? in
+                    guard let series = row.series,
+                        let name = series.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+                        !name.isEmpty
+                    else { return nil }
+                    return SeriesMembership(
+                        seriesID: series.id, name: name, position: row.position,
+                        featured: row.featured ?? false, compilation: row.compilation ?? false,
+                        size: series.primaryBooksCount ?? series.booksCount)
+                }
             let isReading = row.statusID == currentlyReadingStatus
             let current = row.currentReads?.first
             let book = CloudBook(
@@ -657,6 +668,7 @@ actor HardcoverClient {
                 publicationYear: source.releaseYear, format: edition?.readingFormat?.format,
                 seriesID: membership?.series?.id, seriesPosition: membership?.position,
                 seriesName: seriesName?.isEmpty == false ? seriesName : nil,
+                seriesMemberships: memberships,
                 pages: edition?.pages ?? source.pages,
                 finished: read?.finishedAt ?? row.lastReadDate,
                 rating: row.rating, isReading: isReading ? true : nil,
@@ -875,7 +887,7 @@ private struct LibraryPage: Decodable {
         let ratingsDistribution: [RatingBucket]?
         let description: String?
         let image: Image?
-        let bookSeries: [SeriesMembership]?
+        let bookSeries: [BookSeries]?
         let editions: [EditionImage]?
 
         enum CodingKeys: String, CodingKey {
@@ -901,13 +913,22 @@ private struct LibraryPage: Decodable {
         let spoilerRatio: Double?
     }
 
-    struct SeriesMembership: Decodable {
+    struct BookSeries: Decodable {
         let featured: Bool?
         let position: Double?
+        let compilation: Bool?
         let series: Series?
         struct Series: Decodable {
             let id: Int
             let name: String?
+            let booksCount: Int?
+            let primaryBooksCount: Int?
+
+            enum CodingKeys: String, CodingKey {
+                case id, name
+                case booksCount = "books_count"
+                case primaryBooksCount = "primary_books_count"
+            }
         }
     }
 

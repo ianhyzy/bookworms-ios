@@ -121,6 +121,9 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
     /// TV archive. An archive the Apple TV saved before it fetched series names leaves it out
     /// until the TV syncs again.
     var seriesName: String? = nil
+    /// Every Hardcover series the book belongs to. Archives and caches saved before memberships
+    /// existed leave it out.
+    var seriesMemberships: [SeriesMembership]? = nil
     var pages: Int? = nil
     /// The finish date as `yyyy-MM-dd`.
     var finished: String? = nil
@@ -172,6 +175,20 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
         guard let finished, finished.count >= 10 else { return nil }
         return try? Date(String(finished.prefix(10)) + "T12:00:00Z", strategy: .iso8601)
     }
+}
+
+/// One Hardcover series that a book belongs to, as the `seriesMemberships` of a book in the Apple
+/// TV archive and in this app's caches.
+///
+/// `size` is the series' count of primary books, else of all its books, and is absent when
+/// Hardcover gives neither. `position` is the book's place in the series, when it has one.
+struct SeriesMembership: Codable, Sendable, Hashable {
+    let seriesID: Int
+    let name: String
+    var position: Double? = nil
+    let featured: Bool
+    let compilation: Bool
+    var size: Int? = nil
 }
 
 /// The number of Hardcover readers who gave a book one rating, such as 4.5.
