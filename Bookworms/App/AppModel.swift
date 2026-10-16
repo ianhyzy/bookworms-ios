@@ -26,6 +26,9 @@ final class AppModel {
     /// The series look that each book drawing one draws, as that book's design
     /// (`SeriesLookV1.design(bookID:hashesFrom:)`). Recomputed with `seriesSources`.
     private(set) var lookDesigns: [Int: SpineDesignV1] = [:]
+    /// The library's designs by book ID, in allowed upright faces (`SpineDesignV1.withAllowedFont`),
+    /// so drawing reads them without remapping. Recomputed when the library's designs change.
+    private var allowedDesigns: [Int: SpineDesignV1] = [:]
     private(set) var isLoading = false
     private(set) var loadError: String?
     /// The visible tab. Other features switch it, such as **Share** from a book's details.
@@ -70,6 +73,9 @@ final class AppModel {
     @ObservationIgnored private var persistTask: Task<Void, Never>?
     /// Glyph checks by face and lettering, so each runs once rather than on every library change.
     @ObservationIgnored private var coverage: [String: Bool] = [:]
+    /// The library's look groups, each in rank order (`SeriesDesigns.rankedLookGroups(_:)`).
+    /// Recomputed when the library's books change rather than each time a face loads.
+    @ObservationIgnored private var lookGroups: [SeriesLookKey: [CloudBook]] = [:]
 
     private convenience init() {
         self.init(
@@ -121,7 +127,7 @@ final class AppModel {
     /// shares one (see `SeriesDesigns`), otherwise its own, in an allowed upright face
     /// (`SpineDesignV1.withAllowedFont`).
     func design(for book: CloudBook) -> SpineDesignV1? {
-        lookDesigns[book.id] ?? savedDesign(for: book)?.withAllowedFont
+        lookDesigns[book.id] ?? allowedDesigns[seriesSources[book.id] ?? book.id]
     }
 
     /// The stored design that `book` draws when it draws no series look: its series source's, or
@@ -510,6 +516,8 @@ final class AppModel {
         persistTask = nil
         library = nil
         showsLoadedLibrary = false
+        lookGroups = [:]
+        allowedDesigns = [:]
         books = []
         social.prepare(mine: [])
         alignSeries()
@@ -518,7 +526,14 @@ final class AppModel {
 
     private func setLibrary(_ snapshot: LibrarySnapshot) {
         let previousBooks = library?.books
+        let previousDesigns = library?.designs
         library = snapshot
+        if previousBooks != snapshot.books {
+            lookGroups = SeriesDesigns.rankedLookGroups(snapshot.books)
+        }
+        if previousDesigns != snapshot.designs {
+            allowedDesigns = snapshot.designs.mapValues(\.withAllowedFont)
+        }
         // Before the early return: a new or recolored design can change a series' source.
         alignSeries()
         guard previousBooks != snapshot.books else { return }
@@ -546,10 +561,10 @@ final class AppModel {
         var sources: [Int: Int] = [:]
         var drawn: [Int: SpineDesignV1] = [:]
         if let library {
-            var unlooked: [CloudBook] = []
-            for (key, members) in SeriesDesigns.lookGroups(library.books) {
+            var unlooked: [[CloudBook]] = []
+            for (key, members) in lookGroups {
                 guard let look = library.looks[key] else {
-                    unlooked += members
+                    unlooked.append(members)
                     continue
                 }
                 var drawing: [Int] = []
@@ -565,7 +580,7 @@ final class AppModel {
             }
             sources.merge(
                 SeriesDesigns.sources(
-                    books: unlooked, designs: library.designs, canLetter: canLetter(_:with:))
+                    ranked: unlooked, designs: library.designs, canLetter: canLetter(_:with:))
             ) { $1 }
         }
         if sources != seriesSources { seriesSources = sources }

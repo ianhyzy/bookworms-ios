@@ -175,6 +175,11 @@ enum SeriesDesigns {
         return groups
     }
 
+    /// `lookGroups(_:)` with each group's books in rank order (`ranksBefore(_:_:)`).
+    static func rankedLookGroups(_ books: [CloudBook]) -> [SeriesLookKey: [CloudBook]] {
+        lookGroups(books).mapValues { $0.sorted(by: ranksBefore) }
+    }
+
     /// Maps each book that draws another book's spine design to that book, its source; a
     /// source maps to itself, and a book that draws its own design and lends it to no one is
     /// absent. This is the rule for look groups without a saved look.
@@ -188,10 +193,19 @@ enum SeriesDesigns {
         of books: [CloudBook], lends: (CloudBook) -> Bool,
         canLetter: (_ book: CloudBook, _ source: CloudBook) -> Bool = { _, _ in true }
     ) -> [Int: Int] {
+        sources(ranked: rankedLookGroups(books).values, lends: lends, canLetter: canLetter)
+    }
+
+    /// `sources(of:lends:canLetter:)` for look groups whose books are already in rank order, as
+    /// `rankedLookGroups(_:)` returns them, so a caller that keeps the groups skips regrouping.
+    static func sources(
+        ranked groups: some Sequence<[CloudBook]>, lends: (CloudBook) -> Bool,
+        canLetter: (_ book: CloudBook, _ source: CloudBook) -> Bool = { _, _ in true }
+    ) -> [Int: Int] {
         var sources: [Int: Int] = [:]
-        for members in lookGroups(books).values {
+        for members in groups {
             var roots: [CloudBook] = []
-            for book in members.sorted(by: ranksBefore) {
+            for book in members {
                 if let root = roots.first(where: { lends($0) && canLetter(book, $0) }) {
                     sources[book.id] = root.id
                     sources[root.id] = root.id
@@ -211,8 +225,17 @@ enum SeriesDesigns {
         books: [CloudBook], designs: [Int: SpineDesignV1],
         canLetter: (CloudBook, SpineDesignV1) -> Bool = { _, _ in true }
     ) -> [Int: Int] {
+        sources(ranked: rankedLookGroups(books).values, designs: designs, canLetter: canLetter)
+    }
+
+    /// `sources(books:designs:canLetter:)` for look groups already in rank order.
+    static func sources(
+        ranked groups: some Sequence<[CloudBook]>, designs: [Int: SpineDesignV1],
+        canLetter: (CloudBook, SpineDesignV1) -> Bool = { _, _ in true }
+    ) -> [Int: Int] {
         sources(
-            of: books, lends: { designs[$0.id].map { isUsableSource($0.withAllowedFont) } == true },
+            ranked: groups,
+            lends: { designs[$0.id].map { isUsableSource($0.withAllowedFont) } == true },
             canLetter: { book, source in designs[source.id].map { canLetter(book, $0) } ?? false })
     }
 
