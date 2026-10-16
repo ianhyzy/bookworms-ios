@@ -71,6 +71,9 @@ struct SpineCarousel: View {
     /// The zoom transition's source namespace; each spine is a source keyed by its book ID.
     let namespace: Namespace.ID
     let pullOut: ShelfPullOut
+    /// How far the status bar reaches down over the carousel's top, which Shelf keeps its books
+    /// below. Stack runs under it.
+    let statusBar: CGFloat
     /// Opens a book's details.
     let open: (CloudBook) -> Void
 
@@ -160,22 +163,24 @@ struct SpineCarousel: View {
         // A lazy stack builds only the pages within its scroll view's bounds. A spine overhangs
         // its page by up to half its thickness, and a 3D book's top board rises above its spine,
         // so the mask hides that much at each end. The scroll view reaches `bleed` past the
-        // stack's area, into the caption's space above its text, so the clear band at the bottom
-        // lies there and the stack fades out right down to the caption, and builds the pages
-        // there before their boards rise into view. On the iPhone, where the stack runs to the
-        // screen's top edge, the scroll view also reaches `top` past that edge, so the clear band
-        // at the top lies off screen. VoiceOver gets the stack's area alone, so it treats only
-        // books on screen as visible.
+        // stack's area, into the caption, so the clear band at the bottom lies over the caption
+        // and the stack fades out right down to it, and builds the pages there before their
+        // boards rise into view. On the iPhone, where the stack runs to the screen's top edge,
+        // the scroll view also reaches `top` past that edge, so the clear band at the top lies
+        // off screen. VoiceOver gets the stack's area alone, so it treats only books on screen
+        // as visible; there, the top has no clear band, so the books still run to the edge,
+        // where a book from a page above the screen can show late.
         let rise = style == .threeD ? StackedBook.rise(of: books, in: arrangement) : 0
         let bleed = voiceOver ? 0 : (track.maxThickness / 2 + rise).rounded(.up)
         #if os(iOS)
             let top = voiceOver ? 0 : (track.maxThickness / 2).rounded(.up)
+            let band = top
         #else
             let top: CGFloat = 0
+            let band = track.maxThickness / 2
         #endif
         let stops = StackArrangement.maskStops(
-            height: top + size.height + bleed, top: track.maxThickness / 2,
-            bottom: track.maxThickness / 2 + rise)
+            height: top + size.height + bleed, top: band, bottom: track.maxThickness / 2 + rise)
         // The pulled book's index, which the books of its stack make room for.
         let pulled = pullOut.roomID.flatMap { track.ids.firstIndex(of: $0) }
         return ScrollView(.vertical) {
@@ -245,7 +250,7 @@ struct SpineCarousel: View {
     }
 
     private func shelf(in size: CGSize) -> some View {
-        let bookcase = Bookcase(height: size.height)
+        let bookcase = Bookcase(height: size.height, statusBar: statusBar)
         let scale = bookcase.scale
         let track = SpineTrack(books: books) {
             $0.shelfSpineSize(scale: scale).width
@@ -539,8 +544,8 @@ private struct PulledSpine: ViewModifier {
 /// other than scrolling changes it.
 ///
 /// Tracking and scrolling use `SpineTrack` offsets, which match the layout exactly. Offsets count
-/// from the end of the scroll view's content inset, as `ScrollPosition` does; the scroll view
-/// takes a top inset where it meets the navigation bar.
+/// from the end of the scroll view's content inset, as `ScrollPosition` does, so a top inset, such
+/// as one below the Mac's toolbar, shifts neither.
 ///
 /// When columns scroll together, scrolling reports the centered book of `column`: the column of
 /// a tapped book, of the first book after a new sort, or the first column at launch. Where that
@@ -937,20 +942,24 @@ private struct Bookcase {
     /// At least the boards and the shadow, so no part gets a negative size, even in a transient
     /// layout of a scroll view with no height. A shorter scroll view clips the bookcase.
     let height: CGFloat
+    /// How far the status bar reaches down over the bookcase's top, as on the iPhone, where the
+    /// bookcase runs under it.
+    let statusBar: CGFloat
 
-    init(height: CGFloat) {
+    init(height: CGFloat, statusBar: CGFloat) {
         self.height = max(height, Self.topEdge + Self.surface + Self.lip + Self.drop)
+        self.statusBar = statusBar
     }
 
     /// How far down the books stand: partway back on the board's top.
     var base: CGFloat { height - Self.drop - Self.lip - Self.surface * 0.45 }
 
     /// Points per decimeter of book: the most that lets the tallest book (`BookShape.longest`)
-    /// clear the shelf above by 20 points, up to 170, so a tall phone still shows about ten
-    /// books across. A short shelf, such as a small phone's with the largest text, gets smaller
-    /// spines rather than clipped ones.
+    /// clear the shelf above, and the status bar, by 20 points, up to 170, so a tall phone still
+    /// shows about ten books across. A short shelf, such as a small phone's with the largest
+    /// text, gets smaller spines rather than clipped ones.
     var scale: CGFloat {
-        min(170, max(1, (base - Self.topEdge - 20) / CGFloat(BookShape.longest)))
+        min(170, max(1, (base - max(Self.topEdge, statusBar) - 20) / CGFloat(BookShape.longest)))
     }
 }
 
