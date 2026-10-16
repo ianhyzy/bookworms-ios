@@ -642,17 +642,9 @@ actor BookAnalyzer {
         from source: SpineDesignV1, book: CloudBook, accountID: String, workItemHash: String,
         coverHash: String
     ) async throws -> SpineDesignV1? {
-        guard let colors = source.generatedColors ?? source.colors else { return nil }
-        let text = Self.renderedText(of: book, uppercase: source.uppercase)
-        if let family = source.fontFamily {
-            guard let font = try await downloadedFont(family, weight: source.weight),
-                font.covers(text)
-            else { return nil }
-        } else if let face = source.fontPostScriptName.flatMap(SpineFonts.installedFace(named:)),
-            !face.covers(text)
-        {
-            return nil
-        }
+        guard let colors = source.generatedColors ?? source.colors,
+            try await letters(book, with: source)
+        else { return nil }
         let design = SpineDesignV1(
             version: 1, accountID: accountID, bookID: book.id,
             workItemHash: workItemHash, coverHash: coverHash,
@@ -666,6 +658,19 @@ actor BookAnalyzer {
                     .joined(separator: " ").prefix(80)))
         try design.validate()
         return design
+    }
+
+    /// Whether `source`'s face letters `book`'s title and author, in capitals when `source` uses
+    /// them: its downloaded, allowed Google Fonts family, or, without a family, the face its
+    /// PostScript name names when this device has it. Readers draw any other source in the
+    /// system typeface, which letters any book.
+    func letters(_ book: CloudBook, with source: SpineDesignV1) async throws -> Bool {
+        let text = Self.renderedText(of: book, uppercase: source.uppercase)
+        if let family = source.fontFamily {
+            return try await downloadedFont(family, weight: source.weight)?.covers(text) == true
+        }
+        return source.fontPostScriptName.flatMap(SpineFonts.installedFace(named:))?.covers(text)
+            ?? true
     }
 
     private func pccModel() -> PrivateCloudComputeLanguageModel {
