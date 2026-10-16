@@ -77,7 +77,7 @@ struct SpineCarousel: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
     @AppStorage("BookwormsStackStyle") private var style = StackStyle.flat
-    /// Each stack column's last centered book, for columns that do not hold `centeredID`.
+    /// Each flat stack's last centered book, for stacks that do not hold `centeredID`.
     @State private var columnCenters: [Int: Int] = [:]
 
     /// Shelved books nearly touch, so their spines read as separate books.
@@ -113,28 +113,34 @@ struct SpineCarousel: View {
     }
 
     /// Stack, in as many side-by-side stacks as the width holds at full scale, such as in a wide
-    /// Mac window. Each column holds the next run of books in order and scrolls on its own; the
-    /// caption names the book centered in the column scrolled last.
+    /// Mac window. Each column holds the next run of books in order. 3D stacks rest on one line
+    /// and scroll together, as stacks of books on a shelf would, and the caption names the book
+    /// centered in the stack that holds the book it named last (`CenterTracking`). Flat stacks
+    /// each scroll on their own, and the caption names the book centered in the stack scrolled
+    /// last.
     @ViewBuilder private func stack(in size: CGSize) -> some View {
         let columns = StackArrangement.columns(in: size.width, books: books.count)
-        if columns == 1 {
-            stackColumn(books, in: size, centeredID: $centeredID)
+        let perColumn = (books.count + columns - 1) / columns
+        let runs = (0..<columns).map { Array(books.dropFirst($0 * perColumn).prefix(perColumn)) }
+        let arrangement = StackArrangement(width: size.width / CGFloat(columns))
+        if columns == 1 || style == .threeD {
+            stackScroll(
+                arrangement.track(of: runs), arrangement: arrangement, in: size,
+                centeredID: $centeredID)
         } else {
-            let perColumn = (books.count + columns - 1) / columns
-            let width = size.width / CGFloat(columns)
             HStack(spacing: 0) {
-                ForEach(0..<columns, id: \.self) { column in
-                    let chunk = Array(books.dropFirst(column * perColumn).prefix(perColumn))
-                    stackColumn(
-                        chunk, in: CGSize(width: width, height: size.height),
-                        centeredID: columnBinding(column, ids: chunk.map(\.id)))
+                ForEach(runs.indices, id: \.self) { column in
+                    stackScroll(
+                        arrangement.track(of: [runs[column]]), arrangement: arrangement,
+                        in: CGSize(width: arrangement.width, height: size.height),
+                        centeredID: columnBinding(column, ids: runs[column].map(\.id)))
                 }
             }
         }
     }
 
     /// `centeredID` when the column holds it, and otherwise the column's own last centered book,
-    /// so scrolling one column never moves the others.
+    /// so scrolling one flat stack never moves the others.
     private func columnBinding(_ column: Int, ids: [Int]) -> Binding<Int?> {
         Binding {
             if let id = centeredID, ids.contains(id) { return id }
@@ -145,11 +151,11 @@ struct SpineCarousel: View {
         }
     }
 
-    private func stackColumn(
-        _ books: [CloudBook], in size: CGSize, centeredID: Binding<Int?>
+    /// A scroll view `size` big of `track`'s stacks, side by side, each `arrangement.width` wide.
+    private func stackScroll(
+        _ track: SpineTrack, arrangement: StackArrangement, in size: CGSize,
+        centeredID: Binding<Int?>
     ) -> some View {
-        let arrangement = StackArrangement(width: size.width)
-        let track = arrangement.track(of: books)
         // A lazy stack builds only the pages within its scroll view's bounds. A spine overhangs
         // its page by up to half its thickness, and a 3D book's top board rises above its spine,
         // so the mask hides that much at each end. To keep that clear band small at the bottom,
@@ -161,7 +167,7 @@ struct SpineCarousel: View {
         let stops = StackArrangement.maskStops(
             height: size.height + bleed, top: track.maxThickness / 2,
             bottom: track.maxThickness / 2 + rise)
-        // The pulled book's index, which the books around it make room for.
+        // The pulled book's index, which the books of its stack make room for.
         let pulled = pullOut.roomID.flatMap { track.ids.firstIndex(of: $0) }
         return ScrollView(.vertical) {
             VStack(spacing: 0) {
@@ -173,15 +179,24 @@ struct SpineCarousel: View {
                                 spineButton(slot.book) {
                                     stackedBook(slot.book, spine: arrangement.spine(of: slot.book))
                                 }
-                                .padding(.leading, arrangement.leading(of: slot.book))
+                                .padding(
+                                    .leading,
+                                    CGFloat(slot.column) * arrangement.width
+                                        + arrangement.leading(of: slot.book)
+                                )
                                 .padding(.top, slot.inset)
                                 .modifier(
                                     StackRoom(
                                         room: pullOut.room, closing: pullOut.closing,
-                                        distance: pulled.map { slot.index - $0 } ?? 0)
+                                        distance: pulled.map {
+                                            track.columns[slot.column].contains($0)
+                                                ? slot.index - $0 : 0
+                                        } ?? 0)
                                 )
                                 // Each book lies over the top board of the book below it.
                                 .zIndex(-Double(slot.index))
+                                // VoiceOver reads each stack from top to bottom, then the next.
+                                .accessibilitySortPriority(-Double(slot.index))
                             }
                         }
                         .frame(
@@ -190,6 +205,8 @@ struct SpineCarousel: View {
                         .zIndex(-Double(page))
                     }
                 }
+                // Scopes the sort priorities to the books.
+                .accessibilityElement(children: .contain)
                 Color.clear.frame(height: track.trailingSpace(viewport: size.height) + bleed)
             }
         }
@@ -514,6 +531,11 @@ private struct PulledSpine: ViewModifier {
 /// Tracking and scrolling use `SpineTrack` offsets, which match the layout exactly. Offsets count
 /// from the end of the scroll view's content inset, as `ScrollPosition` does; the scroll view
 /// takes a top inset where it meets the navigation bar.
+///
+/// When columns scroll together, scrolling reports the centered book of the column that holds
+/// `centeredID`: the column of a tapped book, of the first book after a new sort, or the first
+/// column at launch. Scrolling never moves `centeredID` to another column, so the caption keeps
+/// naming books of the stack the reader chose.
 private struct CenterTracking: ViewModifier {
     let track: SpineTrack
     let axis: Axis
@@ -525,6 +547,9 @@ private struct CenterTracking: ViewModifier {
     /// The book that scrolling last brought to the center, which tells scrolling apart from
     /// other changes to `centeredID`.
     @State private var scrolledID: Int?
+    /// The column whose centered book scrolling reports, which held `centeredID` when the
+    /// carousel last scrolled to it. Kept, so that a scroll frame never looks `centeredID` up.
+    @State private var column = 0
 
     func body(content: Content) -> some View {
         content
@@ -538,8 +563,9 @@ private struct CenterTracking: ViewModifier {
             } action: { old, offset in
                 // The first call reports the starting offset, before `onAppear` scrolls to
                 // `centeredID`, so only an actual change moves `centeredID`.
-                let id = track.id(nearest: offset)
-                guard offset != old, id != scrolledID else { return }
+                guard offset != old, let id = track.id(nearest: offset, in: column),
+                    id != scrolledID
+                else { return }
                 scrolledID = id
                 centeredID = id
             }
@@ -571,13 +597,14 @@ private struct CenterTracking: ViewModifier {
     }
 
     private func scrollToCenteredBook() {
+        column = track.column(of: centeredID)
         let offset = track.offset(of: centeredID)
         if axis == .vertical { position.scrollTo(y: offset) } else { position.scrollTo(x: offset) }
     }
 }
 
 /// The carousel's spines laid out along its scroll axis, from their thicknesses and the gaps
-/// between neighbors.
+/// between neighbors, in one column or in several side by side that scroll together.
 ///
 /// A lazy stack estimates the extent of rows it has not built, so with one spine per row, a
 /// fling or a jump to a distant book stops with a different spine at the center than the one
@@ -588,72 +615,124 @@ private struct CenterTracking: ViewModifier {
 /// a page that is not built could show (`StackArrangement.maskStops(height:top:bottom:)`), so
 /// every visible book's page intersects the scroll view and is built. Shelved spines stay opaque,
 /// so the shelf's scroll view reaches past the screen's sides by half of `maxThickness` instead.
+///
+/// Side-by-side columns end together, so stacks in them rest on one line, and share the pages:
+/// page `i` holds every column's spines centered within it, so one lazy stack builds a row of
+/// all the columns at a time.
 struct SpineTrack {
     static let pageLength: CGFloat = 100
 
-    /// A spine on a page, `inset` from the page's start. The inset is negative for a spine that
-    /// overhangs the page's start. `index` is the spine's position in `ids`.
+    /// A spine on a page, `inset` from the page's start, in `column`. The inset is negative for a
+    /// spine that overhangs the page's start. `index` is the spine's position in `ids`.
     struct Slot: Identifiable {
         let book: CloudBook
         let index: Int
+        let column: Int
         let inset: CGFloat
         var id: Int { book.id }
     }
 
+    /// The books' IDs, column by column.
     let ids: [Int]
-    /// The scroll offset that centers each spine. The first spine is centered at offset 0.
+    /// The scroll offset that centers each spine. The spine whose center lies nearest the
+    /// track's start, the first spine of a single column, is centered at offset 0.
     let offsets: [CGFloat]
+    /// Each column's span of `ids` and `offsets`.
+    let columns: [Range<Int>]
     let pages: [[Slot]]
-    /// From the first spine's start to the last spine's end.
+    /// From the longest column's start to the end, where every column ends.
     let length: CGFloat
     let maxThickness: CGFloat
-    private let firstThickness: CGFloat
-    private let lastThickness: CGFloat
+    /// The highest first spine's center and the lowest last spine's center, from the start.
+    private let firstCenter: CGFloat
+    private let lastCenter: CGFloat
 
-    /// Lays out `books` with `thickness` along the scroll axis, each `gap` after the one before
-    /// it. A negative gap overlaps the neighbors.
+    /// Lays out `books` in one column.
     init(
         books: [CloudBook], thickness: (CloudBook) -> CGFloat,
         gap: (_ before: CloudBook, _ after: CloudBook) -> CGFloat
     ) {
-        ids = books.map(\.id)
-        let thicknesses = books.map(thickness)
-        firstThickness = thicknesses.first ?? 0
-        lastThickness = thicknesses.last ?? 0
-        maxThickness = thicknesses.max() ?? 0
-        var start: CGFloat = 0
-        var offsets: [CGFloat] = []
-        var pages: [[Slot]] = []
-        for (index, (book, thickness)) in zip(books, thicknesses).enumerated() {
-            if index > 0 { start += gap(books[index - 1], book) }
-            offsets.append(start + (thickness - firstThickness) / 2)
-            let page = Int((start + thickness / 2) / Self.pageLength)
-            while pages.count <= page { pages.append([]) }
-            let inset = start - CGFloat(page) * Self.pageLength
-            pages[page].append(Slot(book: book, index: index, inset: inset))
-            start += thickness
-        }
-        self.offsets = offsets
-        self.pages = pages
-        length = start
+        self.init(columns: [books], thickness: thickness, gap: gap)
     }
 
-    /// The space before the first page, so the first spine can reach the viewport's center.
-    func leadingSpace(viewport: CGFloat) -> CGFloat { max(0, (viewport - firstThickness) / 2) }
+    /// Lays out each column's books with `thickness` along the scroll axis, each `gap` after
+    /// the one before it, and moves each column along so that it ends with the longest. A
+    /// negative gap overlaps the neighbors.
+    init(
+        columns books: [[CloudBook]], thickness: (CloudBook) -> CGFloat,
+        gap: (_ before: CloudBook, _ after: CloudBook) -> CGFloat
+    ) {
+        // Each spine's start within its column, and its thickness.
+        let spans = books.map { column in
+            var end: CGFloat = 0
+            return column.indices.map { index in
+                if index > 0 { end += gap(column[index - 1], column[index]) }
+                let span = (start: end, thickness: thickness(column[index]))
+                end += span.thickness
+                return span
+            }
+        }
+        let ends = spans.map { $0.last.map { $0.start + $0.thickness } ?? 0 }
+        let length = ends.max() ?? 0
+        // Where each column starts, so that it ends with the longest.
+        let origins = ends.map { length - $0 }
+        let firstCenters = zip(spans, origins)
+            .compactMap { column, origin in
+                column.first.map { origin + $0.thickness / 2 }
+            }
+        let firstCenter = firstCenters.min() ?? 0
+        var ids: [Int] = []
+        var offsets: [CGFloat] = []
+        var columns: [Range<Int>] = []
+        var pages: [[Slot]] = []
+        for column in books.indices {
+            let first = ids.count
+            for (book, span) in zip(books[column], spans[column]) {
+                let start = origins[column] + span.start
+                let center = start + span.thickness / 2
+                let page = Int(center / Self.pageLength)
+                while pages.count <= page { pages.append([]) }
+                let inset = start - CGFloat(page) * Self.pageLength
+                pages[page].append(Slot(book: book, index: ids.count, column: column, inset: inset))
+                ids.append(book.id)
+                offsets.append(center - firstCenter)
+            }
+            columns.append(first..<ids.count)
+        }
+        self.length = length
+        self.firstCenter = firstCenter
+        lastCenter = spans.compactMap { $0.last.map { length - $0.thickness / 2 } }.max() ?? 0
+        maxThickness = spans.joined().map { $0.thickness }.max() ?? 0
+        self.ids = ids
+        self.offsets = offsets
+        self.columns = columns
+        self.pages = pages
+    }
 
-    /// The space after the last page, so the last spine can reach the viewport's center, less
-    /// the room the last page already leaves after it.
+    /// The space before the first page, so every column's first spine can reach the viewport's
+    /// center.
+    func leadingSpace(viewport: CGFloat) -> CGFloat { max(0, viewport / 2 - firstCenter) }
+
+    /// The space after the last page, so every column's last spine can reach the viewport's
+    /// center, less the room the last page already leaves after it.
     func trailingSpace(viewport: CGFloat) -> CGFloat {
         let pagesEnd = CGFloat(pages.count) * Self.pageLength
-        return max(0, (viewport - lastThickness) / 2 - (pagesEnd - length))
+        return max(0, viewport / 2 - (pagesEnd - lastCenter))
     }
 
-    /// The index of the spine nearest the center at `offset`, or `nil` for an empty track.
-    func index(nearest offset: CGFloat) -> Int? {
-        guard !offsets.isEmpty else { return nil }
+    /// The column that holds the book with `id`, or the first column when `id` is absent.
+    func column(of id: Int?) -> Int {
+        let index = id.flatMap { ids.firstIndex(of: $0) }
+        return index.flatMap { index in columns.firstIndex { $0.contains(index) } } ?? 0
+    }
+
+    /// The index of `column`'s spine nearest the center at `offset`, or `nil` for an empty or
+    /// missing column.
+    func index(nearest offset: CGFloat, in column: Int = 0) -> Int? {
+        guard columns.indices.contains(column), !columns[column].isEmpty else { return nil }
         // Binary search for the first spine whose midpoint with the next lies past `offset`.
-        var low = 0
-        var high = offsets.count - 1
+        var low = columns[column].lowerBound
+        var high = columns[column].upperBound - 1
         while low < high {
             let middle = (low + high) / 2
             if (offsets[middle] + offsets[middle + 1]) / 2 < offset {
@@ -665,20 +744,22 @@ struct SpineTrack {
         return low
     }
 
-    func id(nearest offset: CGFloat) -> Int? { index(nearest: offset).map { ids[$0] } }
+    func id(nearest offset: CGFloat, in column: Int = 0) -> Int? {
+        index(nearest: offset, in: column).map { ids[$0] }
+    }
 
     /// The offset that centers the book with `id`, or the first book when `id` is absent.
     func offset(of id: Int?) -> CGFloat {
-        id.flatMap { ids.firstIndex(of: $0) }.map { offsets[$0] } ?? 0
+        id.flatMap { ids.firstIndex(of: $0) }.map { offsets[$0] } ?? offsets.first ?? 0
     }
 }
 
-/// Where **Stack** lays each book in a scroll view `width` points wide, so the books look
+/// Where **Stack** lays each book in a stack `width` points wide, so the books look
 /// casually piled: the spine's size, how far the book lies off the stack's middle, and how far it
 /// turns about the vertical axis, so its spine faces a little left or right.
 ///
 /// Spines have the shelf's sizes (`CloudBook.shelfSpineSize(scale:)`) lying on their side, at the
-/// largest scale that fits the longest possible book across the screen. A book's offsets come from
+/// largest scale that fits the longest possible book across the stack. A book's offsets come from
 /// its ID, so it lies the same way on every launch and in every order. Each offset is the square
 /// of an even spread, keeping its sign, so most books lie nearly straight and few reach the
 /// limits. Each book lies flat on the one below it, level and touching along their length, as
@@ -731,7 +812,7 @@ struct StackArrangement {
         return CGSize(width: upright.height, height: upright.width)
     }
 
-    /// The distance from the scroll view's leading edge to the spine's, before its turn.
+    /// The distance from the stack's leading edge to the spine's, before its turn.
     func leading(of book: CloudBook) -> CGFloat {
         (width - spine(of: book).width) / 2 + shift(of: book)
     }
@@ -744,9 +825,10 @@ struct StackArrangement {
         maximum * spread(book, salt: 72)
     }
 
-    /// The books from the top of the stack to the bottom, each lying flat on the one below it.
-    func track(of books: [CloudBook]) -> SpineTrack {
-        SpineTrack(books: books) {
+    /// The books of each stack, side by side, from the top of the stack to the bottom, each
+    /// lying flat on the one below it. The stacks rest on one line.
+    func track(of stacks: [[CloudBook]]) -> SpineTrack {
+        SpineTrack(columns: stacks) {
             spine(of: $0).height
         } gap: { _, _ in
             0

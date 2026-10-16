@@ -258,7 +258,7 @@ final class ShelfLogicTests: XCTestCase {
             StackArrangement.twist(of: books[3]))
         XCTAssertNotEqual(StackArrangement.twist(of: books[3]), 0)
         // Each book lies flat on the one below it, touching along its length.
-        let track = layout.track(of: books)
+        let track = layout.track(of: [books])
         XCTAssertEqual(track.ids, books.map(\.id))
         for index in books.indices.dropLast() {
             let (above, below) = (books[index], books[index + 1])
@@ -372,6 +372,55 @@ final class ShelfLogicTests: XCTestCase {
             }
         }
         XCTAssertEqual(order, track.ids)
+    }
+
+    func testColumnsRestOnOneLineAndScrollTogether() {
+        let left = (1...5).map { book($0, "Left \($0)", pages: 40 + $0 * 90) }
+        let right = (6...8).map { book($0, "Right \($0)", pages: 300) }
+        let track = SpineTrack(columns: [left, right], thickness: \.slabThickness) { _, _ in 0 }
+        XCTAssertEqual(track.ids, (left + right).map(\.id))
+        XCTAssertEqual(track.columns, [0..<5, 5..<8])
+
+        var starts: [Int: CGFloat] = [:]
+        for (page, slots) in track.pages.enumerated() {
+            for slot in slots {
+                XCTAssertTrue(track.columns[slot.column].contains(slot.index))
+                starts[slot.index] = CGFloat(page) * SpineTrack.pageLength + slot.inset
+            }
+        }
+        let thickness = (left + right).map(\.slabThickness)
+        for column in track.columns {
+            // Each book touches the one below it, and the bottom books end together.
+            for index in column.dropLast() {
+                XCTAssertEqual(
+                    starts[index]! + thickness[index], starts[index + 1]!, accuracy: 0.001)
+            }
+            let last = column.upperBound - 1
+            XCTAssertEqual(starts[last]! + thickness[last], track.length, accuracy: 0.001)
+        }
+        // One offset centers a spine in either column, the higher first spine at 0.
+        let center = { (index: Int) in starts[index]! + thickness[index] / 2 }
+        XCTAssertEqual(
+            track.offsets[6] - track.offsets[1], center(6) - center(1), accuracy: 0.001)
+        XCTAssertEqual(min(track.offsets[0], track.offsets[5]), 0, accuracy: 0.001)
+        XCTAssertEqual(track.index(nearest: track.offsets[6], in: 1), 6)
+        XCTAssertEqual(track.index(nearest: -500, in: 1), 5)
+        XCTAssertEqual(track.index(nearest: track.offsets[2] + 1, in: 0), 2)
+        XCTAssertNil(track.index(nearest: 0, in: 2))
+        XCTAssertEqual(track.column(of: 7), 1)
+        XCTAssertEqual(track.column(of: 99), 0)
+
+        // Every column's first and last spines can reach the center.
+        let viewport: CGFloat = 500
+        XCTAssertEqual(
+            track.leadingSpace(viewport: viewport), viewport / 2 - min(center(0), center(5)),
+            accuracy: 0.001)
+        let content =
+            track.leadingSpace(viewport: viewport)
+            + CGFloat(track.pages.count) * SpineTrack.pageLength
+            + track.trailingSpace(viewport: viewport)
+        XCTAssertEqual(
+            content - viewport, max(track.offsets[4], track.offsets[7]), accuracy: 0.001)
     }
 
     func testShelfTrackLaysOutTheShelvedSpines() {
