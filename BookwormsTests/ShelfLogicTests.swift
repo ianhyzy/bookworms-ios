@@ -275,12 +275,14 @@ final class ShelfLogicTests: XCTestCase {
             }
         }
         let fade = StackArrangement.fade
+        let topFade = StackArrangement.topFade
         let stops = StackArrangement.maskStops(height: 1000, top: 30, bottom: 90)
-        assertLocations(stops, [0.03, (30 + fade) / 1000, 1 - (90 + fade) / 1000, 0.91])
+        assertLocations(stops, [0.03, (30 + topFade) / 1000, 1 - (90 + fade) / 1000, 0.91])
         XCTAssertEqual(stops.map(\.color), [.clear, .black, .black, .clear])
         // A short scroll view fades in to its middle, keeping the stops in order.
         assertLocations(
-            StackArrangement.maskStops(height: 200, top: 30, bottom: 90), [0.15, 0.5, 0.5, 0.55])
+            StackArrangement.maskStops(height: 200, top: 30, bottom: 90),
+            [0.15, min(0.5, (30 + topFade) / 200), 0.5, 0.55])
         XCTAssertEqual(StackArrangement.maskStops(height: 0, top: 30, bottom: 90).count, 0)
     }
 
