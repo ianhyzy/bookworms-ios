@@ -16,10 +16,11 @@ struct SeriesLookKey: Codable, Hashable, Sendable {
 /// Books with one look key (`lookKey(of:link:)`) form a look group. A group's first saved look
 /// (`SeriesLookV1`) decides how its books draw; a book whose link sets `ownLook` draws its own
 /// design instead. Before a group has a look, its books draw the design of the best-ranked book
-/// with one (`sources(of:lends:canLetter:)`). Each book keeps its own saved design either way, so
-/// changing these rules changes no saved data. Generation follows the same rules (`SpineWorker`),
-/// so a group's books usually save matching designs anyway. The Apple TV app mirrors
-/// `styleSeries`, `lookKey`, and `subseries`; keep them in step.
+/// with one (`sources(of:lends:canLetter:)`). Each book keeps its own saved design either way.
+/// Generation follows the same rules (`SpineWorker`), so a group's books usually save matching
+/// designs anyway. The Apple TV app mirrors `styleSeries`, `lookKey`, and `subseries`; keep them
+/// in step, because the look key names the look's record, and keys that differ between the apps
+/// give one group two looks.
 enum SeriesDesigns {
     /// The series whose look `book` draws, with the book's position in it: the series its link
     /// names, else its shortest series, or `nil` for no series.
@@ -69,7 +70,7 @@ enum SeriesDesigns {
     }
 
     /// Groups within long series that Hardcover does not record, keyed by Hardcover series ID
-    /// and then by `titleKey(_:)`: each group shares a design instead of the whole series.
+    /// and then by `titleKey(_:)`: each group shares a look instead of the whole series.
     /// Books of a listed series that no group names keep their own designs.
     ///
     /// Discworld (series 1018) follows the owner's choice of the common reading-order groups.
