@@ -295,8 +295,9 @@ actor SpineWorker {
     }
 
     /// Returns the design to save for `book`, and whether a model request made it, or `nil` when
-    /// iCloud already has this work or a design whose colors the reader chose (see
-    /// `SpineDesignV1.action(workItemHash:coverHash:readerChoseCover:drawsSeriesLook:)`).
+    /// iCloud already has this work at the run's tier or better, or a design whose colors the
+    /// reader chose (see
+    /// `SpineDesignV1.action(workItemHash:coverHash:readerChoseCover:runTier:drawsSeriesLook:)`).
     /// `forced` always makes a model design.
     private func design(
         for book: CloudBook, cover: CoverImage, workHash: String, context: WorkContext,
@@ -313,7 +314,8 @@ actor SpineWorker {
             let action = saved?
                 .action(
                     workItemHash: workHash, coverHash: cover.hash,
-                    readerChoseCover: readerChoseCover, drawsSeriesLook: look != nil)
+                    readerChoseCover: readerChoseCover, runTier: runModel?.tier ?? .local,
+                    drawsSeriesLook: look != nil)
             switch action ?? .redesign {
             case .keep: return nil
             case .save(let design): return (design, false)

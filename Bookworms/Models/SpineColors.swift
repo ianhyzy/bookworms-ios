@@ -92,23 +92,22 @@ extension SpineDesignV1 {
             && generatorVersion == other.generatorVersion && generatedAt == other.generatedAt
     }
 
-    /// What a generation run does with this saved design for a book whose work-item hash is
-    /// `workItemHash` and whose cover, downloaded for this run, hashes to `coverHash`.
+    /// What a generation run at `runTier` does with this saved design for a book whose work-item
+    /// hash is `workItemHash` and whose cover, downloaded for this run, hashes to `coverHash`.
     /// `readerChoseCover` tells whether the reader chose another cover since the book's last
     /// check, such as with **Change cover**. `drawsSeriesLook` tells whether the book draws its
     /// look group's `SeriesLookV1` instead of this design.
     ///
-    /// The reader's colors outlast generator, metadata, and cover-image changes: only a cover the
-    /// reader chose, with new image bytes, redesigns a recolored spine. Otherwise a recolored
-    /// design whose hashes changed is saved again under the new hashes, with its colors and
-    /// `generatedAt`. A design with the generator's colors is kept while both hashes match and it
-    /// comes from this generator or the book draws a series look. A look can come from another
-    /// generator, such as the Apple TV's, and redesigning a book that draws it changes nothing on
-    /// the shelf. A build with Private Cloud Compute also redesigns a design the on-device model
-    /// made in a `NO_PCC` test build (`isOnDeviceDesign`), so it doesn't keep the weaker model's
-    /// choices once the stronger one is available.
+    /// The reader's colors outlast generator, tier, metadata, and cover-image changes: only a
+    /// cover the reader chose, with new image bytes, redesigns a recolored spine. Otherwise a
+    /// recolored design whose hashes changed is saved again under the new hashes, with its colors
+    /// and `generatedAt`. A design with the generator's colors is kept while both hashes match and
+    /// it comes from this generator at `runTier` or a better tier (`tier`), or the book draws a
+    /// series look. A run redesigns a weaker tier's design, so a better model replaces a weaker
+    /// one's choices once it is available. A look can come from another generator, such as the
+    /// Apple TV's, and redesigning a book that draws it changes nothing on the shelf.
     func action(
-        workItemHash: String, coverHash: String, readerChoseCover: Bool,
+        workItemHash: String, coverHash: String, readerChoseCover: Bool, runTier: ModelTier,
         drawsSeriesLook: Bool = false
     ) -> SavedDesignAction {
         let newCover = self.coverHash != coverHash
@@ -120,21 +119,10 @@ extension SpineDesignV1 {
                     workItemHash: workItemHash, coverHash: coverHash, colors: colors,
                     provenance: provenance))
         }
-        #if NO_PCC
-            let replacesOnDeviceDesign = false
-        #else
-            let replacesOnDeviceDesign = isOnDeviceDesign
-        #endif
         let isKept =
-            (generatorVersion == CloudContract.generatorVersion && !replacesOnDeviceDesign)
+            (generatorVersion == CloudContract.generatorVersion && tier >= runTier)
             || drawsSeriesLook
         return isCurrent && isKept ? .keep : .redesign
-    }
-
-    /// Whether the on-device model made this design, in a `NO_PCC` test build: its provenance
-    /// has the `model:apple/on-device` token.
-    var isOnDeviceDesign: Bool {
-        provenance?.split(separator: " ").contains("model:apple/on-device") == true
     }
 
     /// The `provenance` token that names the model that made this design, such as

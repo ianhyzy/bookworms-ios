@@ -82,7 +82,7 @@ final class SpineColorsTests: XCTestCase {
         ) -> SavedDesignAction {
             design.action(
                 workItemHash: work ?? self.work, coverHash: cover ?? self.cover,
-                readerChoseCover: readerChoseCover)
+                readerChoseCover: readerChoseCover, runTier: .privateCloudCompute)
         }
 
         // Generator colors: kept only for the same work and cover from this generator.
@@ -90,17 +90,6 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertEqual(action(design(generator: "ios-pcc-v0")), .redesign)
         XCTAssertEqual(action(design(), work: otherWork), .redesign)
         XCTAssertEqual(action(design(), cover: otherCover), .redesign)
-        var onDevice = design()
-        onDevice.provenance = "model:apple/on-device"
-        XCTAssertTrue(onDevice.isOnDeviceDesign)
-        #if NO_PCC
-            XCTAssertEqual(action(onDevice), .keep, "A test build keeps its own on-device design")
-        #else
-            XCTAssertEqual(
-                action(onDevice), .redesign,
-                "A Private Cloud Compute build redesigns an on-device design")
-        #endif
-        XCTAssertEqual(action(onDevice.recolored(reader)), .keep, "Reader colors still win")
 
         // Reader colors outlast a generator change, and move to the new work-item hash.
         XCTAssertEqual(action(edited), .keep)
@@ -135,11 +124,46 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertEqual(
             foreign.action(
                 workItemHash: work, coverHash: cover, readerChoseCover: false,
-                drawsSeriesLook: true), .keep)
+                runTier: .privateCloudCompute, drawsSeriesLook: true), .keep)
         XCTAssertEqual(
             foreign.action(
                 workItemHash: otherWork, coverHash: cover, readerChoseCover: false,
-                drawsSeriesLook: true), .redesign)
+                runTier: .privateCloudCompute, drawsSeriesLook: true), .redesign)
+    }
+
+    func testRunsRedesignWeakerTiersUnlessTheReaderRecolored() {
+        func design(_ token: String?) -> SpineDesignV1 {
+            self.design(provenance: token)
+        }
+        func action(_ design: SpineDesignV1, runTier: ModelTier, drawsSeriesLook: Bool = false)
+            -> SavedDesignAction
+        {
+            design.action(
+                workItemHash: work, coverHash: cover, readerChoseCover: false, runTier: runTier,
+                drawsSeriesLook: drawsSeriesLook)
+        }
+        let pcc = design(nil)
+        let backup = design("model:openai/gpt-6-luna")
+        let onDevice = design("series-reuse:3 model:apple/on-device")
+        let local = design("model:local")
+
+        // A better tier redesigns a weaker one's design.
+        XCTAssertEqual(action(onDevice, runTier: .privateCloudCompute), .redesign)
+        XCTAssertEqual(action(backup, runTier: .privateCloudCompute), .redesign)
+        XCTAssertEqual(action(onDevice, runTier: .backup), .redesign)
+        XCTAssertEqual(action(local, runTier: .onDevice), .redesign)
+        // An equal or better tier's design is kept.
+        XCTAssertEqual(action(pcc, runTier: .onDevice), .keep)
+        XCTAssertEqual(action(pcc, runTier: .privateCloudCompute), .keep)
+        XCTAssertEqual(action(backup, runTier: .backup), .keep)
+        XCTAssertEqual(
+            action(design("model:anthropic/claude-haiku-5-5"), runTier: .backup), .keep,
+            "Another backup provider is the same tier")
+        XCTAssertEqual(action(onDevice, runTier: .onDevice), .keep)
+        XCTAssertEqual(action(local, runTier: .local), .keep)
+        // Reader colors still win, and a book that draws its series' look keeps the look's.
+        XCTAssertEqual(action(onDevice.recolored(reader), runTier: .privateCloudCompute), .keep)
+        XCTAssertEqual(action(local, runTier: .privateCloudCompute, drawsSeriesLook: true), .keep)
     }
 
     func testDesignsReadTheirTierFromProvenance() {
