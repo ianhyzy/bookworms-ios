@@ -230,9 +230,11 @@ enum SeriesDesigns {
 
     /// The looks to create for the look groups in `books` that have no saved look in `looks`.
     ///
-    /// A group gets a look when a member has a usable saved design (`isUsableSource`). The look
-    /// copies the member design made earliest (`generatedAt`, then the lower book ID) among
-    /// designs that are not series reuse copies, or among the copies when every design is one.
+    /// A group gets a look when a member has a usable saved design (`isUsableSource`) made for
+    /// the book as it is now: its work-item hash matches the book's
+    /// (`CloudContract.workItemHash(accountID:book:)`). The look copies the member design made
+    /// earliest (`generatedAt`, then the lower book ID), as stored, among designs that are not
+    /// series reuse copies, or among the copies when every design is one.
     static func missingLooks(
         books: [CloudBook], designs: [Int: SpineDesignV1],
         looks: [SeriesLookKey: SeriesLookV1], now: Date
@@ -240,7 +242,13 @@ enum SeriesDesigns {
         lookGroups(books)
             .compactMap { key, members in
                 guard looks[key] == nil else { return nil }
-                let usable = members.compactMap { designs[$0.id] }.filter(isUsableSource)
+                let usable = members.compactMap { book -> SpineDesignV1? in
+                    guard let design = designs[book.id], isUsableSource(design),
+                        design.workItemHash
+                            == CloudContract.workItemHash(accountID: design.accountID, book: book)
+                    else { return nil }
+                    return design
+                }
                 let originals = usable.filter { !$0.isSeriesReuse }
                 let source = (originals.isEmpty ? usable : originals)
                     .min { ($0.generatedAt, $0.bookID) < ($1.generatedAt, $1.bookID) }

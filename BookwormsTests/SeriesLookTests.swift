@@ -38,11 +38,10 @@ final class SeriesLookTests: XCTestCase {
 
     private func design(
         _ bookID: Int, at seconds: TimeInterval = 0, provenance: String? = nil,
-        family: String? = "EB Garamond"
+        family: String? = "EB Garamond", workItemHash: String = String(repeating: "a", count: 64)
     ) -> SpineDesignV1 {
         SpineDesignV1(
-            version: 1, accountID: "42", bookID: bookID,
-            workItemHash: String(repeating: "a", count: 64),
+            version: 1, accountID: "42", bookID: bookID, workItemHash: workItemHash,
             coverHash: String(repeating: "b", count: 64),
             generatorVersion: CloudContract.generatorVersion,
             generatedAt: created.addingTimeInterval(seconds), backgroundHex: "#1A2B3C",
@@ -271,13 +270,20 @@ final class SeriesLookTests: XCTestCase {
             book(7, series: 12),
         ]
         books[6].seriesLink = link(7, ownLook: true)
+        func current(_ id: Int) -> String {
+            CloudContract.workItemHash(accountID: "42", book: books[id - 1])
+        }
         let designs = [
             // A reuse copy made earliest loses to the earliest original.
-            1: design(1, at: 0, provenance: "series-reuse:9 generated-colors:000000,FFFFFF,FF0000"),
-            2: design(2, at: 30),
-            3: design(3, at: 20, family: "Impact"),
-            4: design(4, at: 50, provenance: "series-reuse:3"),
-            7: design(7, at: 10),
+            1: design(
+                1, at: 0, provenance: "series-reuse:9 generated-colors:000000,FFFFFF,FF0000",
+                workItemHash: current(1)),
+            2: design(2, at: 30, workItemHash: current(2)),
+            3: design(3, at: 20, family: "Impact", workItemHash: current(3)),
+            4: design(4, at: 50, provenance: "series-reuse:3", workItemHash: current(4)),
+            // Made for the book's earlier metadata, so it is out of date.
+            5: design(5, at: 5),
+            7: design(7, at: 10, workItemHash: current(7)),
         ]
         let made =
             SeriesDesigns.missingLooks(
@@ -285,7 +291,9 @@ final class SeriesLookTests: XCTestCase {
             )
             .sorted { $0.group < $1.group }
         XCTAssertEqual(made.map(\.group), ["|annauthor", "|anotherwriter"])
-        XCTAssertEqual(made.map(\.sourceBookID), [2, 4], "Book 3's Impact face is not usable")
+        XCTAssertEqual(
+            made.map(\.sourceBookID), [2, 4],
+            "Book 3's Impact face is not usable, and book 5's design is out of date")
         XCTAssertEqual(made.map(\.seriesID), [9, 9], "Book 7 keeps its own look")
         XCTAssertEqual(made.first?.origin, CloudContract.generatorVersion)
         XCTAssertEqual(made.first?.createdAt, created)

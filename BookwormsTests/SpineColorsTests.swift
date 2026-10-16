@@ -281,7 +281,8 @@ final class SpineColorsTests: XCTestCase {
     }
 
     /// A model reading a preview folder that holds `books`, their saved `designs`, and saved
-    /// `looks`; the folder is removed when the test ends. Loading creates the looks that the
+    /// `looks`; the folder is removed when the test ends. Each design is saved as made for its
+    /// book as it is now, with the book's work-item hash, so loading creates the looks that the
     /// designs decide (`SeriesDesigns.missingLooks`).
     @MainActor
     private func previewModel(
@@ -303,10 +304,13 @@ final class SpineColorsTests: XCTestCase {
         ]
         try JSONSerialization.data(withJSONObject: archive)
             .write(to: folder.appending(path: "library-v1.json"))
+        let current = designs.map { design in
+            books.first { $0.id == design.bookID }.map(design.current(for:)) ?? design
+        }
         try JSONEncoder()
             .encode(
                 Dictionary(
-                    uniqueKeysWithValues: designs.map {
+                    uniqueKeysWithValues: current.map {
                         (CloudContract.designRecordName(accountID: "42", bookID: $0.bookID), $0)
                     })
             )
@@ -499,12 +503,22 @@ final class SpineColorsTests: XCTestCase {
 extension SpineDesignV1 {
     /// The design, made a minute earlier.
     fileprivate func movedBack() -> SpineDesignV1 {
+        copy(generatedAt: generatedAt.addingTimeInterval(-60))
+    }
+
+    /// The design, made for `book` as it is now.
+    fileprivate func current(for book: CloudBook) -> SpineDesignV1 {
+        copy(workItemHash: CloudContract.workItemHash(accountID: accountID, book: book))
+    }
+
+    private func copy(workItemHash: String? = nil, generatedAt: Date? = nil) -> SpineDesignV1 {
         SpineDesignV1(
-            version: version, accountID: accountID, bookID: bookID, workItemHash: workItemHash,
-            coverHash: coverHash, generatorVersion: generatorVersion,
-            generatedAt: generatedAt.addingTimeInterval(-60), backgroundHex: backgroundHex,
-            foregroundHex: foregroundHex, accentHex: accentHex, typeface: typeface, weight: weight,
-            uppercase: uppercase, fontFamily: fontFamily, fontPostScriptName: fontPostScriptName,
-            instanceWeight: instanceWeight, provenance: provenance)
+            version: version, accountID: accountID, bookID: bookID,
+            workItemHash: workItemHash ?? self.workItemHash, coverHash: coverHash,
+            generatorVersion: generatorVersion, generatedAt: generatedAt ?? self.generatedAt,
+            backgroundHex: backgroundHex, foregroundHex: foregroundHex, accentHex: accentHex,
+            typeface: typeface, weight: weight, uppercase: uppercase, fontFamily: fontFamily,
+            fontPostScriptName: fontPostScriptName, instanceWeight: instanceWeight,
+            provenance: provenance)
     }
 }

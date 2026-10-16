@@ -363,9 +363,10 @@ final class AppModel {
     }
 
     /// Saves the series look of each look group that has none but has a member with a usable
-    /// saved design (`SeriesDesigns.missingLooks`), and shows the look each group keeps, which
-    /// another device may have saved first. A failed save leaves the group to the rank rule
-    /// until the next reload tries again.
+    /// saved design made for the book as it is now (`SeriesDesigns.missingLooks`), and shows the
+    /// look each group keeps, which another device may have saved first. Each save is tried on
+    /// its own: a failed save leaves its group to the rank rule until the next reload tries
+    /// again.
     private func createMissingLooks() async {
         guard let library else { return }
         var saved: [SeriesLookV1] = []
@@ -465,10 +466,10 @@ final class AppModel {
     /// it out of every series, and `ownLook` keeps its own design instead of its series' look.
     ///
     /// The choice goes to iCloud, so other devices and generation runs use it too. A look group
-    /// that the book joins and that has no look yet gets one when a member has a usable design
-    /// (`SeriesDesigns.missingLooks`). Throws when the choice cannot be saved, and then nothing
-    /// changes. Throws `CompanionError.bookNotInLibrary` unless the shown library includes
-    /// `book`.
+    /// that the book joins and that has no look yet gets one when a member has a usable, current
+    /// design (`SeriesDesigns.missingLooks`). Throws when the choice cannot be saved, and then
+    /// nothing changes. Throws `CompanionError.bookNotInLibrary` unless the shown library
+    /// includes `book`.
     func setSeriesLink(
         for book: CloudBook, linkedSeriesID: Int?, standsAlone: Bool, ownLook: Bool
     ) async throws {
