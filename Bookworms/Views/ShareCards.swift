@@ -311,8 +311,8 @@ struct TopFiveCard: View {
     /// A ranked book's title at 40 pixels or more, so it stays legible on a phone.
     ///
     /// With `keepsSubtitle`, the whole title wraps to as many as three lines, and drops its
-    /// subtitle or series name only when it needs more. Otherwise the title drops them to fit on
-    /// one line, and wraps to a second line only when its shortest form doesn't fit.
+    /// subtitle or series name only when it needs more. Otherwise the title takes one line, in
+    /// the longest form that fits on it, or else two lines, in the longest form that fits in two.
     @ViewBuilder
     private func title(_ book: CloudBook, keepsSubtitle: Bool) -> some View {
         let forms = ShareStyle.titles(book)
@@ -328,9 +328,10 @@ struct TopFiveCard: View {
                         .font(ShareStyle.serif(options[index].size, .semibold))
                         .lineLimit(1)
                 }
+                // Two lines cost the same height whatever they hold, so keep the subtitle when
+                // the whole title fits in them.
                 ShareFittingText(
-                    forms: Array(forms.suffix(1)), size: 44, minimumScale: 40 / 44, lines: 2,
-                    book: book
+                    forms: forms, size: 44, minimumScale: 40 / 44, lines: 2, book: book
                 ) {
                     ShareStyle.serif($0, .semibold)
                 }
