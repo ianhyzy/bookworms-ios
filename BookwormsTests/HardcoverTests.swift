@@ -481,7 +481,7 @@ final class HardcoverTests: XCTestCase {
 
     // MARK: - Library source
 
-    func testSignedInPhoneLibraryIsUsedOnlyWithoutAListingWorklist() {
+    func testSignedInPhoneLibraryIsUsedUnlessAWorklistListsAnotherAccount() {
         let phone = PhoneLibrary(
             accountID: "4242", username: nil, syncedAt: .distantPast, books: [])
         let listing = SpineWorklistV1(
@@ -493,7 +493,13 @@ final class HardcoverTests: XCTestCase {
         {
             WorkSource(worklist: worklist, signedInAccountID: signedIn, phone: phone)
         }
-        XCTAssertEqual(source(listing, "4242", phone), .worklist)
+        let otherAccount = SpineWorklistV1(
+            version: 1, accountID: "7", syncedAt: .distantPast, bookIDs: [1])
+        // With its own copy, a signed-in device designs it even when the Apple TV's worklist of
+        // the same account lists books: fixed covers make both hash the same.
+        XCTAssertEqual(source(listing, "4242", phone), .phone(phone))
+        XCTAssertEqual(source(otherAccount, "4242", phone), .worklist)
+        XCTAssertEqual(source(listing, "4242", nil), .worklist)
         XCTAssertEqual(source(listing, nil, nil), .worklist)
         XCTAssertEqual(source(nil, "4242", phone), .phone(phone))
         XCTAssertEqual(source(paused, "4242", phone), .phone(phone))

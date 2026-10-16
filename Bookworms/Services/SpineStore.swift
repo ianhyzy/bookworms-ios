@@ -77,27 +77,32 @@ extension SpineStore {
 enum WorkSource: Equatable {
     /// The Apple TV's worklist chose the account and books from its archive.
     case worklist
-    /// This iPhone's own Hardcover library.
+    /// This device's own Hardcover library.
     case phone(PhoneLibrary)
-    /// The newest Hardcover snapshot in the Apple TV archive.
+    /// The newest Hardcover snapshot in the archive.
     case archive
-    /// Nothing to design: the Apple TV paused generation and this iPhone is signed out, or
-    /// this iPhone is signed in but has no copy of the account's library.
+    /// Nothing to design: the Apple TV paused generation and this device is signed out, or
+    /// this device is signed in but has no copy of the account's library.
     case none
 
-    /// A worklist that lists books decides. Without one, a signed-in iPhone designs only its
-    /// own library (`phone`, when it belongs to `signedInAccountID`): the archive may belong to
-    /// another account, so it never stands in, even before the first download. Signed out, the
-    /// archive is used unless an empty worklist says the Apple TV turned Hardcover off.
+    /// Signed in with its own copy of the account's library (`phone`, when it belongs to
+    /// `signedInAccountID`), a device designs that copy unless a worklist lists books of another
+    /// account. A worklist of the same account doesn't decide: fixed covers make the copy's
+    /// books hash as the Apple TV's do (`CloudContract.workItemHash(accountID:book:)`), and the
+    /// copy can be newer than the worklist. Otherwise a worklist that lists books decides.
+    /// Without one, a signed-in device without its copy designs nothing, since the archive may
+    /// belong to another account, and a signed-out device uses the archive unless an empty
+    /// worklist says the Apple TV turned Hardcover off.
     init(worklist: SpineWorklistV1?, signedInAccountID: String?, phone: PhoneLibrary?) {
-        if let worklist, !worklist.bookIDs.isEmpty {
+        let listing = worklist.flatMap { $0.bookIDs.isEmpty ? nil : $0 }
+        if let phone, phone.accountID == signedInAccountID,
+            listing.map({ $0.accountID == phone.accountID }) ?? true
+        {
+            self = .phone(phone)
+        } else if listing != nil {
             self = .worklist
-        } else if let signedInAccountID {
-            if let phone, phone.accountID == signedInAccountID {
-                self = .phone(phone)
-            } else {
-                self = .none
-            }
+        } else if signedInAccountID != nil {
+            self = .none
         } else {
             self = worklist == nil ? .archive : .none
         }
