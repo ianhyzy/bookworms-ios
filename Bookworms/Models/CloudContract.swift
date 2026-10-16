@@ -642,6 +642,10 @@ enum CompanionError: LocalizedError, Sendable {
     /// A third-party spine designer rejected its key, model name, or account, or is not set up,
     /// with the reason.
     case providerRejected(String)
+    /// The backup model refused one book's request with HTTP 400, with the provider's message.
+    /// It fails only the book, unless the backup refuses several books in a row with the same
+    /// message (`SpineWorker.RefusalStreak`).
+    case providerRefused(String)
 
     var errorDescription: String? {
         switch self {
@@ -669,7 +673,7 @@ enum CompanionError: LocalizedError, Sendable {
         case .cloudConflict: "A concurrent iCloud update prevented saving."
         case .designChanged:
             "The spine was redesigned on another device, so these colors were not saved."
-        case .providerRejected(let reason): reason
+        case .providerRejected(let reason), .providerRefused(let reason): reason
         }
     }
 }

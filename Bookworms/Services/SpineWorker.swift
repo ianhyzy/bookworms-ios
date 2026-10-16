@@ -96,6 +96,32 @@ actor SpineWorker {
     /// the best one below the backup model after the backup rejected a request. `nil` between
     /// runs.
     private var runModel: ModelStatus?
+    /// The backup model's refusals of this run's latest books.
+    private var refusals = RefusalStreak()
+
+    /// Counts the backup model's refusals of consecutive books in a run with one message.
+    ///
+    /// An HTTP 400 usually refuses one book's request, such as for its crop, but some refuse
+    /// every request with these settings: Anthropic reports an account without credit as an
+    /// `invalid_request_error`, a text-only model refuses image input, and some
+    /// OpenAI-compatible endpoints refuse the JSON schema format. So the same refusal of
+    /// `limit` books in a row counts as a lasting rejection. Books that send the backup no
+    /// request, such as those that keep a saved design, leave the count alone.
+    struct RefusalStreak {
+        static let limit = 3
+        private var message: String?
+        private var count = 0
+
+        /// Counts a book's refusal with `message`. Returns `true`, and starts counting again,
+        /// when it makes `limit` refusals in a row with that message.
+        mutating func isLasting(after message: String) -> Bool {
+            count = message == self.message ? count + 1 : 1
+            self.message = message
+            guard count == Self.limit else { return false }
+            self = RefusalStreak()
+            return true
+        }
+    }
 
     static let busyRetryDelay: TimeInterval = 15 * 60
     /// How long a stop waits when its cause needs the user, such as a full iCloud storage plan.
@@ -142,6 +168,7 @@ actor SpineWorker {
         isRunning = true
         redesign = redesigning
         runModel = nil
+        refusals = RefusalStreak()
         snapshot.isRunning = true
         snapshot.error = nil
         snapshot.retryAfter = nil
@@ -414,32 +441,58 @@ actor SpineWorker {
     /// (`SpineDesigner.rejection`), so this run and later ones design with the best tier below
     /// the backup, down to local defaults, and the Spines tab shows the rejection. When the tier
     /// found can take no request now, such as Private Cloud Compute at its daily limit, the
-    /// rejection stops the run. A rejection of one request, such as a 400 for this book's crop,
-    /// fails only this book (`BookAnalyzer.modelFailure(_:)`).
+    /// rejection stops the run.
+    ///
+    /// An HTTP 400 refusal fails only this book (`BookAnalyzer.modelFailure(_:)`), unless it is
+    /// the third book in a row that the backup refuses with the same message
+    /// (`RefusalStreak`). That refusal counts as a lasting rejection for later books, and the
+    /// three books keep their failures.
     private func newDesign(
         for book: CloudBook, cover: CoverImage, workHash: String, accountID: String,
         mode: RunMode
     ) async throws -> SpineDesignV1 {
         guard let model = runModel else { throw CompanionError.modelUnavailable }
-        do {
-            return try await analyzer.design(
+        func design(using model: ModelStatus) async throws -> SpineDesignV1 {
+            try await analyzer.design(
                 book: book, accountID: accountID, workItemHash: workHash, cover: cover,
                 using: model)
-        } catch CompanionError.providerRejected(let reason) where model.tier == .backup {
-            model.designer.rememberRejection(reason)
-            var next = await analyzer.status(for: .appleOnly)
-            next.backupUnavailableReason = reason
-            guard Self.modelStop(next, mode: mode) == nil else {
-                throw CompanionError.providerRejected(reason)
-            }
-            runModel = next
-            snapshot.model = next
-            snapshot.error = Self.fallbackMessage(rejection: reason, next: next)
-            publish()
-            return try await analyzer.design(
-                book: book, accountID: accountID, workItemHash: workHash, cover: cover,
-                using: next)
         }
+        guard model.tier == .backup else { return try await design(using: model) }
+        // Any outcome but another refusal ends the streak.
+        var streak = refusals
+        refusals = RefusalStreak()
+        do {
+            return try await design(using: model)
+        } catch CompanionError.providerRejected(let reason) {
+            return try await design(
+                using: try await fallBack(from: model, rejection: reason, mode: mode))
+        } catch CompanionError.providerRefused(let reason) {
+            if streak.isLasting(after: reason) {
+                _ = try await fallBack(from: model, rejection: reason, mode: mode)
+            }
+            refusals = streak
+            throw CompanionError.providerRefused(reason)
+        }
+    }
+
+    /// Remembers `rejection` as the backup model's lasting rejection of `model`'s settings
+    /// (`SpineDesigner.rememberRejection(_:)`) and moves the run to the best tier below it, which
+    /// it returns. Throws `CompanionError.providerRejected`, which stops the run, when that tier
+    /// can take no request now.
+    private func fallBack(from model: ModelStatus, rejection: String, mode: RunMode) async throws
+        -> ModelStatus
+    {
+        model.designer.rememberRejection(rejection)
+        var next = await analyzer.status(for: .appleOnly)
+        next.backupUnavailableReason = rejection
+        guard Self.modelStop(next, mode: mode) == nil else {
+            throw CompanionError.providerRejected(rejection)
+        }
+        runModel = next
+        snapshot.model = next
+        snapshot.error = Self.fallbackMessage(rejection: rejection, next: next)
+        publish()
+        return next
     }
 
     /// The Spines tab's message when the backup model's `rejection` moves runs to `next`.
@@ -670,7 +723,7 @@ actor SpineWorker {
         switch error {
         case let error as CompanionError:
             switch error {
-            case .invalidCover, .coverTooLarge, .invalidDesign: return .skipBook
+            case .invalidCover, .coverTooLarge, .invalidDesign, .providerRefused: return .skipBook
             case .quotaReached(let resetDate): return .stopRun(retryAfter: resetDate)
             case .modelBusy(let retryAfter), .fontServiceUnavailable(let retryAfter):
                 return .stopRun(retryAfter: retryAfter ?? now.addingTimeInterval(busyRetryDelay))

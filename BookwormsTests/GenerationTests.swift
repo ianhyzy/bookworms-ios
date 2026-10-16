@@ -50,12 +50,30 @@ final class GenerationTests: XCTestCase {
             case .providerRejected = failure(429, code: "insufficient_quota")
         else { return XCTFail("An account without credit should move the run to the next tier") }
         // A rejection of one request, such as a content policy's for one crop, or an empty
-        // answer fails only the book.
-        guard case .invalidDesign = failure(400),
-            case .invalidDesign = failure(400, code: "invalid_request_error"),
+        // answer fails only the book. A 400 keeps its message, so the worker can tell when
+        // it repeats.
+        guard case .providerRefused("OpenAI: x") = failure(400),
+            case .providerRefused("OpenAI: x") = failure(400, code: "invalid_request_error"),
+            case .invalidDesign = failure(422),
             case .invalidDesign = BookAnalyzer.modelFailure(
                 ProviderError(provider: .openAI, status: nil, retryAfter: nil, message: "x"))
         else { return XCTFail("A rejection of one request should fail only the book") }
+        XCTAssertEqual(SpineWorker.disposition(of: CompanionError.providerRefused("x")), .skipBook)
+    }
+
+    func testTheSameRefusalOfThreeBooksInARowIsLasting() {
+        var streak = SpineWorker.RefusalStreak()
+        XCTAssertFalse(streak.isLasting(after: "Anthropic: Your credit balance is too low."))
+        XCTAssertFalse(streak.isLasting(after: "Anthropic: Your credit balance is too low."))
+        XCTAssertFalse(
+            streak.isLasting(after: "Anthropic: Could not process image."),
+            "Another message starts a new streak")
+        XCTAssertFalse(streak.isLasting(after: "Anthropic: Could not process image."))
+        XCTAssertTrue(streak.isLasting(after: "Anthropic: Could not process image."))
+        XCTAssertFalse(
+            streak.isLasting(after: "Anthropic: Could not process image."),
+            "A lasting refusal starts the count again")
+        XCTAssertEqual(SpineWorker.RefusalStreak.limit, 3)
     }
 
     func testLastingBackupRejectionsLastUntilTheSettingsChange() async {

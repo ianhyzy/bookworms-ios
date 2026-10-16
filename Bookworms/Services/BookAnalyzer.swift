@@ -276,6 +276,7 @@ actor BookAnalyzer {
     /// Throws `CompanionError.quotaReached`, `.modelBusy`, or `.fontServiceUnavailable`, or an
     /// offline `URLError`, when the run should stop; `.providerRejected` when the backup model
     /// rejects its key, model name, or account (`ProviderError.isLasting`) or is not set up;
+    /// `.providerRefused` when the backup model refuses this request with HTTP 400;
     /// `.modelUnavailable` when the tier's model is unavailable; and `.invalidDesign` when this
     /// book cannot get a valid design.
     func design(
@@ -422,10 +423,12 @@ actor BookAnalyzer {
             }
         case let error as ProviderError:
             // A rejected key, model name, or account without credit repeats for every book, so
-            // the run moves to the next tier. Another rejection, such as a 400 for this book's
-            // crop, fails only this book.
+            // the run moves to the next tier. A 400 usually refuses only this book's request,
+            // such as its crop, so it fails the book, and the worker watches for one that
+            // repeats (`SpineWorker.RefusalStreak`).
             if error.isLasting { return .providerRejected(error.localizedDescription) }
             if error.isTransient { return .modelBusy(error.retryAfter) }
+            if error.status == 400 { return .providerRefused(error.localizedDescription) }
             return .invalidDesign
         case is GeneratedContent.ParsingError: return .invalidDesign
         case is SystemLanguageModel.Error: return .modelUnavailable

@@ -164,7 +164,8 @@ struct ProviderError: LocalizedError {
     /// A rejected key or model name, or an account without credit, which every later request
     /// with these settings repeats: a 401 or 403, a 402 Payment Required, a 404, OpenAI's
     /// `insufficient_quota`, which it sends with a 429, or Gemini's `API_KEY_INVALID`, which it
-    /// sends with a 400. Any other 400 rejects one request, such as one book's crop.
+    /// sends with a 400. Any other 400 fails one book, such as for its crop, unless the same
+    /// message refuses several books in a row (`SpineWorker.RefusalStreak`).
     var isLasting: Bool {
         [401, 402, 403, 404].contains(status)
             || ["insufficient_quota", "API_KEY_INVALID"].contains(code)
