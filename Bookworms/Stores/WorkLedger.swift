@@ -7,12 +7,12 @@ import Foundation
 /// changed, its last check ran at a model tier below the run's, or its last check is seven days
 /// old, or one day old when it saved a design that awaits its font
 /// (`SpineDesignV1.awaitsFont`). A recheck reads the book's saved design first and downloads the
-/// cover only when the run would not keep that design or the reader chose the cover
-/// (`SpineWorker`). So a weekly recheck of a current design downloads no default cover, and a
-/// design deleted from iCloud is still made again within a week. A failed book waits 24 hours
-/// unless its work-item hash or chosen cover changed. A library sync alone does not trigger a
-/// recheck: it would read every book's design from iCloud, and download every chosen cover,
-/// after each sync.
+/// cover only when the run would not keep that design, the reader chose the cover, or the
+/// design's cover hash differs from the one this device last checked (`SpineWorker`). So a
+/// weekly recheck of a current design downloads no default cover, and a design deleted from
+/// iCloud is still made again within a week. A failed book waits 24 hours unless its work-item
+/// hash or chosen cover changed. A library sync alone does not trigger a recheck: it would read
+/// every book's design from iCloud, and download every chosen cover, after each sync.
 actor WorkLedger {
     private struct LedgerState: Codable {
         var cloudUserRecordName: String?
@@ -91,6 +91,13 @@ actor WorkLedger {
     /// reader chose.
     func readerChoseCover(recordName: String, chosenCover: URL?) -> Bool {
         entries[recordName].map { $0.chosenCover != chosenCover } ?? false
+    }
+
+    /// Whether the book's last check on this device ended with a design of `coverHash`. A book
+    /// without an entry counts as matching, so a new or reset ledger downloads no cover for a
+    /// current design; a failed check doesn't match.
+    func lastCheckMatches(recordName: String, coverHash: String) -> Bool {
+        entries[recordName].map { $0.coverHash == coverHash } ?? true
     }
 
     /// Records a successful check at `tier` (`Entry.tier`), which saved a design that awaits

@@ -378,10 +378,13 @@ actor SpineWorker {
     /// The saved design is checked before the cover downloads with `covers`. A saved design that
     /// stays under its own cover hash is kept without a download, so a recheck of a current
     /// design costs one iCloud read. That needs the book's default cover, unchanged since its last
-    /// check on this device: the default covers' URLs enter the work-item hash and stay fixed
+    /// check on this device, and a design of the cover hash that check ended with, or a book
+    /// without a check here: the default covers' URLs enter the work-item hash and stay fixed
     /// between syncs (`HardcoverClient.coverURLs(edition:book:otherEditions:editionIsInLanguage:previous:)`),
-    /// so a design with the book's work-item hash came from those URLs. A new image behind the
-    /// same URL goes unnoticed until the book's metadata or cover URLs change.
+    /// so a design with the book's work-item hash came from those URLs unless another device
+    /// made it from a cover the reader chose there. The cover hash catches that design once this
+    /// device has checked the book. A new image behind the same URL goes unnoticed until the
+    /// book's metadata or cover URLs change.
     ///
     /// The book whose design upgrades its group's look (`SeriesLookV1.upgradeSource(among:)`)
     /// is designed as if the group had no look, so a weaker tier's look gets a design from the
@@ -433,6 +436,8 @@ actor SpineWorker {
             return .keep(saved)
         }
         if let saved, book.chosenCoverURL == nil, !readerChoseCover,
+            await ledger.lastCheckMatches(
+                recordName: Self.recordName(context.accountID, book), coverHash: saved.coverHash),
             try await savedAction(coverHash: saved.coverHash) == .keep
         {
             return (await kept(saved), saved.coverHash)

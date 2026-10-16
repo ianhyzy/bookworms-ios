@@ -451,6 +451,30 @@ final class GenerationTests: XCTestCase {
         XCTAssertFalse(rechecked)
     }
 
+    /// Only a design of the cover hash that this device's last check ended with skips the cover
+    /// download, so a design that another device made from a cover the reader chose there, and
+    /// later removed, is checked against the default cover.
+    func testOnlyADesignOfTheLastCheckedCoverSkipsTheDownload() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appending(path: "bookworms-ledger-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let ledger = WorkLedger(url: url)
+        let unchecked = await ledger.lastCheckMatches(recordName: "record", coverHash: "default")
+        XCTAssertTrue(unchecked, "A book this device never checked downloads no cover")
+
+        try await ledger.recordSuccess(
+            recordName: "record", workItemHash: "work", coverHash: "default", now: now)
+        let same = await ledger.lastCheckMatches(recordName: "record", coverHash: "default")
+        let chosenElsewhere = await ledger.lastCheckMatches(
+            recordName: "record", coverHash: "chosen")
+        XCTAssertTrue(same)
+        XCTAssertFalse(chosenElsewhere)
+
+        try await ledger.recordFailure(recordName: "record", workItemHash: "work", now: now)
+        let failed = await ledger.lastCheckMatches(recordName: "record", coverHash: "default")
+        XCTAssertFalse(failed)
+    }
+
     func testRunsPreferPrivateCloudComputeThenTheBackupThenTheOnDeviceModelThenLocalDefaults()
         async
     {
