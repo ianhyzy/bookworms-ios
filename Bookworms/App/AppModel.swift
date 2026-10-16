@@ -49,6 +49,10 @@ final class AppModel {
         path: "Bookworms/library-snapshot.json")
     /// When a load last returned a result; a failed load does not count.
     @ObservationIgnored private var lastReload: Date?
+    /// Whether the shown library is a load's result from this session, with the saves made since.
+    /// The launch cache and the library a failed load leaves on screen may be out of date, such as
+    /// missing a look another device saved, so the catch-up (`createMissingLooks()`) skips them.
+    @ObservationIgnored private var showsLoadedLibrary = false
     /// Set when a saved design names a book or account the shown library lacks, or a failed load
     /// showed the phone library without designs.
     @ObservationIgnored private var needsReload = false
@@ -175,8 +179,8 @@ final class AppModel {
         return library?.looks[key]
     }
 
-    /// Reloads the library and designs, then creates missing series looks
-    /// (`createMissingLooks()`) while it loads the fonts the designs name.
+    /// Reloads the library and designs, then, after a successful load, creates missing series
+    /// looks (`createMissingLooks()`) while it loads the fonts the designs name.
     ///
     /// When signed in to Hardcover, first downloads the account's library if the copy on this
     /// iPhone is missing or a few hours old; a failed download keeps that copy and is reported.
@@ -220,6 +224,7 @@ final class AppModel {
                     // reload to show.
                     needsReload = appliedDuringLoad.contains { snapshot.designs[$0.bookID] == nil }
                     setLibrary(snapshot)
+                    showsLoadedLibrary = true
                     persist()
                 } else {
                     clearLibrary()
@@ -235,6 +240,7 @@ final class AppModel {
             needsReload = false
         } catch {
             loadError = error.localizedDescription
+            showsLoadedLibrary = false
             if !isPreview, revision == account.libraryRevision,
                 let accountID = account.summary?.accountID, library?.accountID != accountID,
                 let phone = PhoneLibrary.load(), phone.accountID == accountID
@@ -367,8 +373,11 @@ final class AppModel {
     /// look each group keeps, which another device may have saved first. Each save is tried on
     /// its own: a failed save leaves its group to the rank rule until the next reload tries
     /// again.
+    ///
+    /// Does nothing unless a load in this session showed the library (`showsLoadedLibrary`), so
+    /// neither the launch cache nor a failed load's library seeds a look.
     private func createMissingLooks() async {
-        guard let library else { return }
+        guard showsLoadedLibrary, let library else { return }
         var saved: [SeriesLookV1] = []
         for look in SeriesDesigns.missingLooks(
             books: library.books, designs: library.designs, looks: library.looks, now: .now)
@@ -467,9 +476,10 @@ final class AppModel {
     ///
     /// The choice goes to iCloud, so other devices and generation runs use it too. A look group
     /// that the book joins and that has no look yet gets one when a member has a usable, current
-    /// design (`SeriesDesigns.missingLooks`). Throws when the choice cannot be saved, and then
-    /// nothing changes. Throws `CompanionError.bookNotInLibrary` unless the shown library
-    /// includes `book`.
+    /// design (`SeriesDesigns.missingLooks`) and a load in this session showed the library
+    /// (`createMissingLooks()`). Throws when the choice cannot be saved, and then nothing
+    /// changes. Throws `CompanionError.bookNotInLibrary` unless the shown library includes
+    /// `book`.
     func setSeriesLink(
         for book: CloudBook, linkedSeriesID: Int?, standsAlone: Bool, ownLook: Bool
     ) async throws {
@@ -499,6 +509,7 @@ final class AppModel {
         persistTask?.cancel()
         persistTask = nil
         library = nil
+        showsLoadedLibrary = false
         books = []
         social.prepare(mine: [])
         alignSeries()

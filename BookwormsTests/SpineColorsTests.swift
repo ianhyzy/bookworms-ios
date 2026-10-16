@@ -333,6 +333,35 @@ final class SpineColorsTests: XCTestCase {
     }
 
     @MainActor
+    func testOnlyALoadedLibrarySeedsASeriesLook() async throws {
+        let books = [seriesBook(1, position: 1), seriesBook(2, position: 2)]
+        let (model, folder) = try await previewModel(books: books, designs: [])
+        let designsURL = folder.appending(path: "spine-designs-v1.json")
+        try Data("not json".utf8).write(to: designsURL)
+        await model.reload()
+        XCTAssertNotNil(model.loadError)
+
+        // The failed load leaves the library on screen; a design shown on it seeds no look.
+        let current = design(for: 1).current(for: books[0])
+        model.apply(current)
+        try await model.setSeriesLink(
+            for: books[0], linkedSeriesID: nil, standsAlone: false, ownLook: false)
+        let key = try XCTUnwrap(SeriesDesigns.lookKey(of: books[0], link: nil))
+        let store = LocalSpineStore(folder: folder)
+        let unseeded = try await store.seriesLooks(accountID: "42", keys: [key])
+        XCTAssertEqual(model.library?.looks, [:])
+        XCTAssertEqual(unseeded, [:])
+
+        try JSONEncoder()
+            .encode([CloudContract.designRecordName(accountID: "42", bookID: 1): current])
+            .write(to: designsURL)
+        await model.reload()
+        let seeded = try await store.seriesLooks(accountID: "42", keys: [key])
+        XCTAssertEqual(seeded[key]?.sourceBookID, 1, "A successful load seeds the look")
+        XCTAssertEqual(model.library?.looks[key]?.sourceBookID, 1)
+    }
+
+    @MainActor
     func testSeriesActionsActOnTheSourceOfTheSeriesLook() async throws {
         let books = [
             seriesBook(1, by: "Ann Author", position: 1),
