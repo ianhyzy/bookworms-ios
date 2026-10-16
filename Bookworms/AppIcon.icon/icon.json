@@ -15,6 +15,23 @@
       "layers" : [
         {
           "blend-mode" : "normal",
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : { "solid" : "srgb:1.00000,1.00000,1.00000,1.00000" }
+            },
+            {
+              "appearance" : "tinted",
+              "value" : { "solid" : "srgb:1.00000,1.00000,1.00000,1.00000" }
+            }
+          ],
+          "glass" : false,
+          "hidden" : false,
+          "image-name" : "eyes.png",
+          "name" : "Eye whites"
+        },
+        {
+          "blend-mode" : "normal",
           "glass" : true,
           "hidden" : false,
           "image-name" : "bookworms.png",
@@ -30,6 +47,6 @@
     }
   ],
   "supported-platforms" : {
-    "squares" : [ "macOS" ]
+    "squares" : "shared"
   }
 }

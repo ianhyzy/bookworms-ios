@@ -400,7 +400,7 @@ The 3D views share their RealityKit pieces. `BookGeometry` builds each book's me
 
 To test the Mac app with your iCloud library, run `script/run_mac.sh`. It builds an optimized app, signs it with the team's Apple Development certificate and the existing Xcode-managed "Mac Team Provisioning Profile: gay.ian.Bookworms.Mac", installs it as `~/Applications/Bookworms.app`, and opens it; Xcode's account is not needed. The profile grants the shared iCloud container and push but not the managed Private Cloud Compute capability, so the script uses `config/NoPCC-macOS.entitlements` and `NO_PCC`, as `script/install_on_device.sh` does for the iPhone: Apple's model reports itself unavailable, and a third-party model chosen in Settings designs spines. The Mac build uses the bundle ID `gay.ian.Bookworms.Mac`, so it replaces an installed Bookworms Spines menu bar companion. `script/run_mac.sh --preview` copies the private preview library into the app's container and reads it instead of iCloud.
 
-The Mac's icon is `Bookworms/AppIconMac.icon`, an Icon Composer icon with the bookworms on one glass layer over a cream gradient; the iPhone keeps `AppIcon` in the asset catalog.
+The iPhone and the Mac share `Bookworms/AppIcon.icon`, an Icon Composer icon with the bookworms on a glass layer over a cream gradient. The eye whites (`eyes.png`, cut from `bookworms.png`) are a separate layer on top, filled white in the dark, clear, and tinted appearances so the eyes stay white on a dark icon; the light icon keeps their cream.
 
 To test on an iPhone before Apple grants the Private Cloud Compute capability, run `script/install_on_device.sh`. It signs an optimized build with `config/NoPCC.entitlements`, compiles it with `NO_PCC` so the app never creates the model, registers the iPhone with the team if needed, and installs it. Generation then reports Private Cloud Compute as unavailable; the Share, Library, and Desk tabs work with the iCloud or Hardcover library. A development-signed build reads the CloudKit Development environment, the same one development builds of the Apple TV app use.
 
@@ -587,6 +587,6 @@ The tests use fictional books, covers, and canned Hardcover responses, and need 
 
 ## Credits
 
-Spine fonts are open-source Google Fonts families (SIL Open Font License or Apache License), downloaded at runtime with their license files. The app icon uses the Bookworms Apple TV artwork. Its dark variant (`AppIcon-Dark.png`) is the same art with the cream background removed, so iOS draws its dark backdrop behind the worms while their eyes and the book's pages keep their light color.
+Spine fonts are open-source Google Fonts families (SIL Open Font License or Apache License), downloaded at runtime with their license files. The app icon uses the Bookworms Apple TV artwork.
 
 The pile's table (`TableWood`) is [White Oak Veneer](https://polyhaven.com/a/white_oak_veneer) by Jenelle van Heerden from Poly Haven, under [CC0](https://polyhaven.com/license). The bundled file is the 2K diffuse map scaled to 1024 pixels; the app tints it a darker brown, and the Shelf's bookcase darkens it to walnut. The room's light, the page edges' texture, and the impact sounds are generated in code.
