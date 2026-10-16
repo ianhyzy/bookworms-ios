@@ -21,6 +21,11 @@ import SwiftUI
 /// The view draws with a transparent background, so the wall shows around the table, and
 /// takes no gestures of its own: the SwiftUI gestures on it find books with the scene's rays.
 struct DeskSceneView {
+    /// Whether the desk saves power under heat or in Low Power Mode, when an iPhone's view
+    /// draws no grounding shadows (see `DeskScenes.reducesEffects`).
+    // ponytail: a Mac's `ARView` has no render options, so the Mac keeps its grounding shadows;
+    // remove the books' `GroundingShadowComponent` there if that ever matters.
+    var reducesEffects = false
     /// Puts the scene that shows in `view`'s scene and starts its updates (see
     /// `DeskScenes.attach(to:)`).
     let attach: @MainActor (ARView) -> Void
@@ -36,9 +41,16 @@ struct DeskSceneView {
     }
 #else
     extension DeskSceneView: UIViewRepresentable {
-        func makeUIView(context: Context) -> SceneWindowView { SceneWindowView(attach: attach) }
+        func makeUIView(context: Context) -> SceneWindowView {
+            let view = SceneWindowView(attach: attach)
+            view.reducesEffects = reducesEffects
+            return view
+        }
 
-        func updateUIView(_ view: SceneWindowView, context: Context) { view.attach = attach }
+        func updateUIView(_ view: SceneWindowView, context: Context) {
+            view.attach = attach
+            view.reducesEffects = reducesEffects
+        }
 
         static func dismantleUIView(_ view: SceneWindowView, coordinator: ()) { view.dropView() }
     }
@@ -55,6 +67,12 @@ struct DeskSceneView {
 final class SceneWindowView: PlatformView {
     var attach: @MainActor (ARView) -> Void
     private var arView: ARView?
+    #if os(iOS)
+        /// Leaves out the soft shadows under the books while set, as each new `ARView` does.
+        var reducesEffects = false {
+            didSet { if reducesEffects != oldValue { setRenderOptions() } }
+        }
+    #endif
 
     init(attach: @escaping @MainActor (ARView) -> Void) {
         self.attach = attach
@@ -97,13 +115,27 @@ final class SceneWindowView: PlatformView {
                 frame: bounds, cameraMode: .nonAR, automaticallyConfigureSession: false)
             view.environment.background = .color(.clear)
             view.backgroundColor = .clear
-            view.renderOptions = [.disableMotionBlur, .disableDepthOfField, .disableCameraGrain]
             view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         #endif
         addSubview(view)
         arView = view
+        #if os(iOS)
+            setRenderOptions()
+        #endif
         attach(view)
     }
+
+    #if os(iOS)
+        /// Turns off the camera effects a nonAR view has no use for, and the grounding shadows
+        /// while the desk saves power.
+        private func setRenderOptions() {
+            var options: ARView.RenderOptions = [
+                .disableMotionBlur, .disableDepthOfField, .disableCameraGrain,
+            ]
+            if reducesEffects { options.insert(.disableGroundingShadows) }
+            arView?.renderOptions = options
+        }
+    #endif
 
     /// Removes the `ARView`, which ends its frame loop. Its scene goes with it and leaves the
     /// scene's entities for the next view.

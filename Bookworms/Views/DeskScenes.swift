@@ -47,14 +47,19 @@ final class DeskScenes {
     var dominoGeneration = 0
     /// The view the scenes show in, with the bars over it, which the scenes' views report.
     @ObservationIgnored var viewport: PileViewport?
+    /// Set under heat or in Low Power Mode, when the desk draws no dust and no soft shadows
+    /// (see `updatePowerState()`).
+    private(set) var reducesEffects = false
 
     let pile: BookPileScene
     let dominoes: DominoScene
+    @ObservationIgnored private let stage: DeskStage
     @ObservationIgnored private weak var view: ARView?
 
     init() {
         let factory = BookFactory()
         let stage = DeskStage()
+        self.stage = stage
         pile = BookPileScene(factory: factory, stage: stage)
         dominoes = DominoScene(factory: factory, stage: stage)
         factory.coverArrived = { [weak pile, weak dominoes] id, material in
@@ -75,6 +80,25 @@ final class DeskScenes {
             dominoes.attach(to: view)
             if PileSnapshotRenderer.isRendering { dominoes.detach() }
         }
+    }
+
+    /// Saves power while the device asks apps to: in Low Power Mode, or while its thermal state
+    /// is serious or critical. Then the desk drops its dust and its soft shadows, until the
+    /// condition passes. In Debug builds, `-BookwormsReducedEffects YES` saves power throughout.
+    func updatePowerState() {
+        let info = ProcessInfo.processInfo
+        var reduces: Bool
+        // `ThermalState` is not `Comparable`.
+        switch info.thermalState {
+        case .serious, .critical: reduces = true
+        default: reduces = info.isLowPowerModeEnabled
+        }
+        #if DEBUG
+            reduces = reduces || UserDefaults.standard.bool(forKey: "BookwormsReducedEffects")
+        #endif
+        guard reduces != reducesEffects else { return }
+        reducesEffects = reduces
+        stage.setReducesEffects(reduces)
     }
 
     /// **Set up dominoes**: hands the books on the desk to the dominoes as the chain of `books`,

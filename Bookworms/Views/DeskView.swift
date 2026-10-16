@@ -65,6 +65,23 @@ struct DeskView: View {
         .tint(ShelfPalette.lamp)
         // Outside the dark scheme and tint, so the account sheet follows the system appearance.
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
+        // Low Power Mode and heat change the desk's effects while Desk shows. The state is read
+        // before either task waits, so a change while Desk was hidden also counts.
+        .task {
+            desk.updatePowerState()
+            for await _ in NotificationCenter.default.messages(
+                of: ProcessInfo.self, for: .thermalStateDidChange)
+            {
+                desk.updatePowerState()
+            }
+        }
+        .task {
+            for await _ in NotificationCenter.default.messages(
+                of: ProcessInfo.self, for: .powerStateDidChange)
+            {
+                desk.updatePowerState()
+            }
+        }
     }
 
     @ViewBuilder private func content(_ shelf: Shelf, frame: TimeFrame?) -> some View {
@@ -75,7 +92,7 @@ struct DeskView: View {
                 let title = frame?.title ?? Self.years(of: shelf.books)
                 ZStack {
                     if !desk.hidesView {
-                        DeskSceneView { desk.attach(to: $0) }
+                        DeskSceneView(reducesEffects: desk.reducesEffects) { desk.attach(to: $0) }
                             .ignoresSafeArea()
                             .accessibilityHidden(true)
                     }
