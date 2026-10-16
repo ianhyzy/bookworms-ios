@@ -37,7 +37,8 @@ final class HardcoverAccount {
     }
 
     /// How old the copy on this device gets before `syncIfStale()` looks for a newer one in
-    /// iCloud, and how long it then waits before looking again.
+    /// iCloud, and how long it then waits before looking again. A download that is due
+    /// (`providerInterval`) looks first regardless.
     static let cloudCheckInterval: TimeInterval = 4 * 60 * 60
     /// How old the newest copy, on this device or in iCloud, gets before `syncIfStale()`
     /// downloads the library from Hardcover. **Sync now** downloads it at any time.
@@ -67,7 +68,8 @@ final class HardcoverAccount {
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let libraryURL: URL
     @ObservationIgnored private var signInTask: Task<Void, Never>?
-    @ObservationIgnored private var syncTask: Task<PhoneLibrary, any Error>?
+    @ObservationIgnored private var syncTask:
+        Task<(library: PhoneLibrary, publishes: Bool), any Error>?
     /// When `syncIfStale()` last read the iCloud archive in this session.
     @ObservationIgnored private var lastCloudCheck: Date?
     nonisolated static let summaryKey = "HardcoverAccount"
@@ -118,8 +120,9 @@ final class HardcoverAccount {
     /// Requests a code, waits for the reader to approve it on Hardcover, and saves the login.
     ///
     /// The `me` query checks the account before the token is saved. Signing in to another
-    /// account drops the cached library; reconnecting the same account keeps it until the next
-    /// sync. A sign-in already in progress continues, so the code the reader may be entering
+    /// account drops the cached library; reconnecting the same account keeps it and its sync
+    /// date, so `syncIfStale()` adopts only a newer iCloud copy and downloads on the usual
+    /// schedule. A sign-in already in progress continues, so the code the reader may be entering
     /// stays valid; only a failed or finished sign-in starts over.
     func startSignIn() {
         switch signIn {
@@ -144,8 +147,12 @@ final class HardcoverAccount {
                 try Task.checkCancellation()
                 do { try tokens.save(token) } catch { throw HardcoverError.credentialNotSaved }
                 let accountID = String(user.id)
-                if summary?.accountID != accountID { PhoneLibrary.delete(at: libraryURL) }
-                save(Summary(accountID: accountID, username: user.username))
+                let isSameAccount = summary?.accountID == accountID
+                if !isSameAccount { PhoneLibrary.delete(at: libraryURL) }
+                save(
+                    Summary(
+                        accountID: accountID, username: user.username,
+                        syncedAt: isSameAccount ? summary?.syncedAt : nil))
                 isSignedIn = true
                 needsReconnect = false
                 syncError = nil
@@ -165,15 +172,45 @@ final class HardcoverAccount {
 
     /// Downloads the account's library, replaces the cache, and publishes the library to the
     /// iCloud archive (`publishTask`). A failure keeps the cache; a rejected login sets
-    /// `needsReconnect`. The books keep the covers of the cached copy unless an upgrade applies
+    /// `needsReconnect`.
+    ///
+    /// The books keep the covers of the account's newest copy, the cached one or the archive's,
+    /// unless an upgrade applies
     /// (`HardcoverClient.coverURLs(edition:book:otherEditions:editionIsInLanguage:previous:)`).
-    func sync() async {
-        guard isSignedIn, !isSyncing, let token = tokens.read() else { return }
+    /// When the archive can't be read and this device has no copy, the download is saved but
+    /// not published, so a library whose covers were all picked again never replaces the
+    /// account's snapshot there.
+    func sync() async { await sync(readsArchive: true) }
+
+    /// Downloads the library as `sync()` describes, reading the archive's copy first unless
+    /// `readsArchive` is `false`, as when the caller has just read the archive and the cache
+    /// holds the account's newest copy.
+    private func sync(readsArchive: Bool) async {
+        guard isSignedIn, !isSyncing, let accountID = summary?.accountID,
+            let token = tokens.read()
+        else { return }
         isSyncing = true
         syncError = nil
         let revision = libraryRevision
-        let previous = PhoneLibrary.load(from: libraryURL)
-        let task = Task { [client] in try await client.library(token: token, previous: previous) }
+        let cached = PhoneLibrary.load(from: libraryURL)
+        let username = summary?.username
+        let task = Task { [client, cloud] in
+            var previous = cached
+            var publishes = true
+            if readsArchive, let cloud {
+                do {
+                    if let copy = try await cloud.archivedLibrary(accountID: accountID),
+                        copy.syncedAt > cached?.syncedAt ?? .distantPast
+                    {
+                        previous = PhoneLibrary(copy, username: username)
+                    }
+                } catch {
+                    publishes = cached?.accountID == accountID
+                }
+            }
+            let library = try await client.library(token: token, previous: previous)
+            return (library: library, publishes: publishes)
+        }
         syncTask = task
         let download = await task.result
         // Sign-out cancels the download and clears `isSyncing`, so a later sync may own it now.
@@ -186,14 +223,16 @@ final class HardcoverAccount {
             return await syncIfStale()
         }
         do {
-            let library = try download.get()
+            let (library, publishes) = try download.get()
             try library.save(to: libraryURL)
             save(
                 Summary(
                     accountID: library.accountID, username: library.username,
                     syncedAt: library.syncedAt))
             libraryChanged()
-            publishTask = Task { [cloud] in try? await cloud?.publishLibrary(library) }
+            if publishes {
+                publishTask = Task { [cloud] in try? await cloud?.publishLibrary(library) }
+            }
         } catch {
             syncError = Self.message(for: error)
             if [.invalidToken, .insufficientScope].contains(error as? HardcoverError) {
@@ -205,30 +244,39 @@ final class HardcoverAccount {
     /// Brings the cached library up to date, from iCloud when another device downloaded it
     /// recently.
     ///
-    /// Without a cached library, or once it is `cloudCheckInterval` old and the archive was not
-    /// read for as long, reads the account's newest snapshot in the iCloud archive and adopts it
-    /// when it is newer. Adoption needs no Hardcover login, so it works while `needsReconnect` is
-    /// set. Then downloads the library from Hardcover (`sync()`) only when the newest copy is
-    /// `providerInterval` old, which includes every case where iCloud is unavailable. Returns
-    /// early when a sign-in, sign-out, or sync changes the library during the iCloud read.
+    /// Reads the account's newest snapshot in the iCloud archive, and adopts it when it is
+    /// newer, before every download from Hardcover that is due, and otherwise without a cached
+    /// library or once it is `cloudCheckInterval` old and the archive was not read for as long.
+    /// Adoption needs no Hardcover login, so it works while `needsReconnect` is set. Then
+    /// downloads the library from Hardcover (`sync()`) only when the newest copy is
+    /// `providerInterval` old, which includes every case where iCloud is unavailable. A
+    /// sign-in, sign-out, or sync that changes the library during the iCloud read starts the
+    /// check again for the current account.
     func syncIfStale() async {
         guard isSignedIn, let accountID = summary?.accountID else { return }
         var newest =
             FileManager.default.fileExists(atPath: libraryURL.path()) ? summary?.syncedAt : nil
+        let isDue = newest.map { isOlder($0, than: Self.providerInterval) } ?? true
+        // A device that needs a new login can't download, so it keeps the slower cadence.
         let checksCloud =
-            newest.map {
+            (isDue && !needsReconnect)
+            || newest.map {
                 isOlder($0, than: Self.cloudCheckInterval)
                     && lastCloudCheck.map { isOlder($0, than: Self.cloudCheckInterval) } ?? true
             } ?? true
+        var archiveWasRead = false
         if let cloud, checksCloud {
             lastCloudCheck = .now
             let revision = libraryRevision
-            let copy = try? await cloud.archivedLibrary(accountID: accountID)
-            guard revision == libraryRevision, !isSyncing else { return }
+            var copy: CloudSourceSnapshot?
+            do {
+                copy = try await cloud.archivedLibrary(accountID: accountID)
+                archiveWasRead = true
+            } catch {}
+            guard !isSyncing else { return }
+            guard revision == libraryRevision else { return await syncIfStale() }
             if let copy, copy.syncedAt > newest ?? .distantPast {
-                let library = PhoneLibrary(
-                    accountID: copy.accountID, username: summary?.username,
-                    syncedAt: copy.syncedAt, books: copy.books, series: copy.series)
+                let library = PhoneLibrary(copy, username: summary?.username)
                 if (try? library.save(to: libraryURL)) != nil {
                     save(
                         Summary(
@@ -241,7 +289,7 @@ final class HardcoverAccount {
         }
         guard !needsReconnect, newest.map({ isOlder($0, than: Self.providerInterval) }) ?? true
         else { return }
-        await sync()
+        await sync(readsArchive: !archiveWasRead)
     }
 
     private func isOlder(_ date: Date, than interval: TimeInterval) -> Bool {
@@ -327,6 +375,15 @@ struct PhoneLibrary: Codable, Equatable, Sendable {
         ] {
             try? FileManager.default.removeItem(at: folder.appending(path: old))
         }
+    }
+}
+
+extension PhoneLibrary {
+    /// The account's snapshot from the iCloud archive, as this device caches it.
+    init(_ copy: CloudSourceSnapshot, username: String?) {
+        self.init(
+            accountID: copy.accountID, username: username, syncedAt: copy.syncedAt,
+            books: copy.books, series: copy.series)
     }
 }
 

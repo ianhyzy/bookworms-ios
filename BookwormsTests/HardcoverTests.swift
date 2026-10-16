@@ -479,6 +479,137 @@ final class HardcoverTests: XCTestCase {
         XCTAssertNotNil(archive.newestHardcoverSnapshot(accountID: "7"))
     }
 
+    @MainActor
+    func testADueDownloadReadsICloudFirstEvenRightAfterACheck() async throws {
+        let (tokens, defaults, library) = try Self.signedInStores()
+        defer { tokens.delete() }
+        try Self.cache(
+            PhoneLibrary(
+                accountID: "4242", username: "fictional_reader", syncedAt: Self.hoursAgo(30),
+                books: []),
+            at: library, defaults: defaults)
+        let folder = try Self.archiveFolder(with: [
+            CloudSourceSnapshot(
+                source: "hardcover", accountID: "7", books: [], syncedAt: Self.hoursAgo(1))
+        ])
+        let requests = RequestCount()
+        let account = HardcoverAccount(
+            tokens: tokens,
+            client: HardcoverClient { request in
+                await requests.add()
+                return Self.respond(400, "", to: request)
+            },
+            defaults: defaults, libraryURL: library)
+        account.cloud = LocalSpineStore(folder: folder)
+
+        // The archive has no newer copy and the download fails, so the copy stays a day old
+        // right after an iCloud read.
+        await account.syncIfStale()
+        XCTAssertNotNil(account.syncError)
+        XCTAssertFalse(account.needsReconnect)
+        let failed = await requests.count
+        XCTAssertGreaterThan(failed, 0)
+
+        // Another device then publishes the account's library.
+        let copy = CloudSourceSnapshot(
+            source: "hardcover", accountID: "4242", books: [], syncedAt: Self.hoursAgo(1))
+        let archiveURL = folder.appending(path: "library-v1.json")
+        try XCTUnwrap(CloudLibraryArchive.splice(copy, into: Data(contentsOf: archiveURL)))
+            .write(to: archiveURL)
+        await account.syncIfStale()
+        XCTAssertEqual(PhoneLibrary.load(from: library)?.syncedAt, copy.syncedAt)
+        let after = await requests.count
+        XCTAssertEqual(after, failed, "A copy from the last day needs no Hardcover request")
+    }
+
+    @MainActor
+    func testSyncNowKeepsTheArchivedCoversWithoutACopyOnThisDevice() async throws {
+        let (tokens, defaults, library) = try Self.signedInStores()
+        defer { tokens.delete() }
+        let saved = CloudBook(
+            id: 101, title: "The Lantern Keeper", author: "Mara Quill",
+            coverURL: URL(string: "https://covers.example.com/saved-alternate-101.jpg"),
+            detailCoverURL: URL(string: "https://covers.example.com/saved-101.jpg"))
+        let folder = try Self.archiveFolder(with: [
+            CloudSourceSnapshot(
+                source: "hardcover", accountID: "4242", books: [saved],
+                syncedAt: Self.hoursAgo(1))
+        ])
+        func account() -> HardcoverAccount {
+            let account = HardcoverAccount(
+                tokens: tokens, client: HardcoverClient(transport: Self.libraryTransport),
+                defaults: defaults, libraryURL: library)
+            account.cloud = LocalSpineStore(folder: folder)
+            return account
+        }
+
+        let first = account()
+        await first.sync()
+        let synced = try XCTUnwrap(PhoneLibrary.load(from: library))
+        XCTAssertEqual(synced.books.first?.detailCoverURL, saved.detailCoverURL)
+        XCTAssertEqual(synced.books.first?.coverURL, saved.coverURL)
+        await first.publishTask?.value
+        let archive = try JSONDecoder()
+            .decode(
+                CloudLibraryArchive.self,
+                from: Data(contentsOf: folder.appending(path: "library-v1.json")))
+        XCTAssertEqual(archive.newestHardcoverSnapshot(accountID: "4242")?.books, synced.books)
+
+        // With the archive unreadable and no copy here, the download saves but isn't published.
+        PhoneLibrary.delete(at: library)
+        try Data("unreadable".utf8).write(to: folder.appending(path: "library-v1.json"))
+        let second = account()
+        await second.sync()
+        XCTAssertNotNil(PhoneLibrary.load(from: library))
+        XCTAssertNil(second.publishTask)
+    }
+
+    @MainActor
+    func testReconnectingTheSameAccountKeepsTheCopysSyncDate() async throws {
+        let (tokens, defaults, library) = try Self.signedInStores()
+        defer { tokens.delete() }
+        let kept = PhoneLibrary(
+            accountID: "4242", username: "fictional_reader", syncedAt: Self.hoursAgo(5),
+            books: [])
+        try Self.cache(kept, at: library, defaults: defaults)
+        // An older copy in iCloud, as after this device's upload failed.
+        let folder = try Self.archiveFolder(with: [
+            CloudSourceSnapshot(
+                source: "hardcover", accountID: "4242", books: [], syncedAt: Self.hoursAgo(9))
+        ])
+        let account = HardcoverAccount(
+            tokens: tokens,
+            client: HardcoverClient { request in
+                switch request.url?.path() {
+                case "/oauth2/device":
+                    return Self.respond(
+                        200,
+                        #"{"device_code":"approved","user_code":"TEST-0001","verification_uri":"https://hardcover.app/link","expires_in":600,"interval":1}"#,
+                        to: request)
+                case "/oauth2/token":
+                    return Self.respond(
+                        200, #"{"access_token":"fictional-token","token_type":"Bearer"}"#,
+                        to: request)
+                default:
+                    return Self.respond(200, Self.me, to: request)
+                }
+            },
+            defaults: defaults, libraryURL: library)
+        account.cloud = LocalSpineStore(folder: folder)
+
+        account.startSignIn()
+        let deadline = Date.now.addingTimeInterval(10)
+        while account.signIn != nil, Date.now < deadline {
+            if case .failed(let message) = account.signIn { return XCTFail(message) }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertNil(account.signIn)
+        XCTAssertEqual(account.summary?.syncedAt, kept.syncedAt)
+
+        await account.syncIfStale()
+        XCTAssertEqual(PhoneLibrary.load(from: library)?.syncedAt, kept.syncedAt)
+    }
+
     // MARK: - Library source
 
     func testSignedInPhoneLibraryIsUsedUnlessAWorklistListsAnotherAccount() {
@@ -687,6 +818,13 @@ final class HardcoverTests: XCTestCase {
             "image":{"url":"http://covers.example.com/book-102.jpg","width":400,"height":600}}}
         ]}]}}
         """
+}
+
+/// Counts a transport's requests.
+private actor RequestCount {
+    private(set) var count = 0
+
+    func add() { count += 1 }
 }
 
 /// Replays poll results and records the waits between them.
