@@ -53,10 +53,7 @@ final class GenerationController {
     private init() {
         generatesWhileCharging =
             UserDefaults.standard.object(forKey: Self.chargingKey) as? Bool ?? true
-        var lastRun =
-            UserDefaults.standard.data(forKey: Self.lastRunKey)
-            .flatMap { try? JSONDecoder().decode(WorkerSnapshot.self, from: $0) }
-            ?? WorkerSnapshot()
+        var lastRun = Self.savedLastRun ?? WorkerSnapshot()
         lastRun.dropExpiredStop()
         worker = SpineWorker(store: AppModel.shared.store, lastRun: lastRun)
         status = lastRun
@@ -147,6 +144,32 @@ final class GenerationController {
         await worker.refreshModelStatus()
     }
 
+    /// Forgets the backup model's remembered rejection, because the reader changed its settings,
+    /// and the last run's message that a lower tier designs until then, in the Spines tab and in
+    /// the saved outcome. Then reads the model status again.
+    func backupSettingsChanged() async {
+        if let rejection = SpineDesigner.forgetRejection() {
+            await worker.clearMessage(about: rejection)
+            if var lastRun = Self.savedLastRun, lastRun.error?.contains(rejection) == true {
+                lastRun.error = nil
+                Self.savedLastRun = lastRun
+            }
+        }
+        await worker.refreshModelStatus()
+    }
+
+    /// The last run's outcome as saved in `UserDefaults`, or `nil` before the first run.
+    private static var savedLastRun: WorkerSnapshot? {
+        get {
+            UserDefaults.standard.data(forKey: lastRunKey)
+                .flatMap { try? JSONDecoder().decode(WorkerSnapshot.self, from: $0) }
+        }
+        set {
+            guard let newValue, let data = try? JSONEncoder().encode(newValue) else { return }
+            UserDefaults.standard.set(data, forKey: lastRunKey)
+        }
+    }
+
     /// Subscribes to Apple TV worklist changes once per launch.
     func installWorklistSubscription() async {
         guard !installedSubscription else { return }
@@ -226,9 +249,7 @@ final class GenerationController {
         case .status(let snapshot):
             // A new finish date marks the end of a run, which is the outcome worth saving.
             if snapshot.lastRunAt != status.lastRunAt {
-                if let data = try? JSONEncoder().encode(snapshot) {
-                    UserDefaults.standard.set(data, forKey: Self.lastRunKey)
-                }
+                Self.savedLastRun = snapshot
                 // Shows books the Apple TV added while the app was suspended.
                 Task { await AppModel.shared.reloadIfStale() }
             }

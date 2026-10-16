@@ -125,10 +125,14 @@ struct SpineDesigner: Hashable, Sendable {
             ["settings": settingsID, "message": message], forKey: Self.rejectionKey)
     }
 
-    /// Forgets a remembered rejection, because the reader changed the settings. A new key needs
-    /// this: the settings ID records only whether a key exists.
-    static func forgetRejection() {
-        UserDefaults.standard.removeObject(forKey: rejectionKey)
+    /// Forgets a remembered rejection, because the reader changed the settings, and returns its
+    /// message, or `nil` without one. A new key needs this: the settings ID records only whether
+    /// a key exists.
+    @discardableResult static func forgetRejection() -> String? {
+        let defaults = UserDefaults.standard
+        let message = (defaults.dictionary(forKey: rejectionKey) as? [String: String])?["message"]
+        defaults.removeObject(forKey: rejectionKey)
+        return message
     }
 
     /// Identifies these settings for `rejection`: the provider, model name, base URL, and

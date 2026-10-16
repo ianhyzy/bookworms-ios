@@ -150,6 +150,15 @@ actor SpineWorker {
         publish()
     }
 
+    /// Clears the Spines tab's message about the backup model's `rejection` after the reader's
+    /// change to its settings made the app forget it, so the tab no longer says that a lower
+    /// tier designs until then. A run in progress keeps its tier.
+    func clearMessage(about rejection: String) {
+        guard snapshot.error?.contains(rejection) == true else { return }
+        snapshot.error = nil
+        publish()
+    }
+
     /// Designs the books that need it, until the queue is empty or a stop condition.
     ///
     /// With `redesigning`, the run first designs that book anew at its tier even when its saved
