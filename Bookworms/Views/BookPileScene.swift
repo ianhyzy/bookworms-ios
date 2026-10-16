@@ -1218,6 +1218,9 @@ final class BookPileScene {
             stage.setLampColor(color)
             stir()
         }
+        // A resting pile waits for its still, so a book that starts moving then stirs it at
+        // once, before the still can replace the view.
+        if isResting, shelf.children.contains(where: Self.moves) { stir() }
         sinceCheck += deltaTime
         if sinceCheck >= Self.restCheck {
             checkRest(after: sinceCheck)
