@@ -96,7 +96,8 @@ struct BookDetailView: View {
             let text = await Self.plainText(book.description)
             if !Task.isCancelled { about = text }
         }
-        .onChange(of: design?.generatedAt) {
+        // A new design of the spine's source, not a recoloring of its look or design.
+        .onChange(of: model.library?.designs[model.designSource(for: book).id]?.generatedAt) {
             designedCover = model.designSource(for: book).chosenCoverURL
         }
         .sheet(isPresented: $choosesCover) {
@@ -936,7 +937,8 @@ private struct SpineDesignCard: View {
             Task { [model, book] in try? await model.recolor(book, to: draft) }
         }
         // A new design, such as a redesign from a new cover, replaces the colors being picked.
-        .onChange(of: design?.generatedAt) {
+        // Recoloring a look sets its edit date, so the source's stored design tells instead.
+        .onChange(of: model.library?.designs[model.designSource(for: book).id]?.generatedAt) {
             draft = nil
             redesignedAt = nil
         }
@@ -1008,7 +1010,8 @@ private struct SpineDesignCard: View {
                     .font(.footnote)
                     .foregroundStyle(cardNote)
                 }
-                Text("Created \(design.generatedAt, format: .dateTime.year().month().day())")
+                let created = model.drawnLook(of: book)?.createdAt ?? design.generatedAt
+                Text("Created \(created, format: .dateTime.year().month().day())")
                     .font(.footnote)
                     .foregroundStyle(cardNote)
             } else {

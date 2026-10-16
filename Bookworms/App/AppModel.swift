@@ -168,7 +168,7 @@ final class AppModel {
     }
 
     /// The series look that `book` draws, if any.
-    private func drawnLook(of book: CloudBook) -> SeriesLookV1? {
+    func drawnLook(of book: CloudBook) -> SeriesLookV1? {
         guard lookDesigns[book.id] != nil,
             let key = SeriesDesigns.lookKey(of: book, link: book.seriesLink)
         else { return nil }
