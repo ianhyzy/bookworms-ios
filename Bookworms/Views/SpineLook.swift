@@ -40,6 +40,18 @@ struct FontFace: @unchecked Sendable, Equatable {
     }
 
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.postScriptName == rhs.postScriptName }
+
+    /// Returns whether the face has a glyph for every non-whitespace character in `text`, which
+    /// callers pass as it renders.
+    func covers(_ text: String) -> Bool {
+        let characters = Array(
+            String(text.precomposedStringWithCanonicalMapping.filter { !$0.isWhitespace }).utf16)
+        guard !characters.isEmpty else { return true }
+        var glyphs = [CGGlyph](repeating: 0, count: characters.count)
+        return CTFontGetGlyphsForCharacters(
+            CTFontCreateWithFontDescriptor(descriptor, 32, nil), characters, &glyphs,
+            characters.count)
+    }
 }
 
 /// Loads the Google Fonts faces that saved designs name, so spines render in their chosen type.
@@ -55,6 +67,8 @@ final class SpineFonts {
     @ObservationIgnored private var loads: [String: Task<Void, Never>] = [:]
     /// Faces whose family or file is unusable. Network failures are not listed, so they retry.
     @ObservationIgnored private var unusable = Set<String>()
+    /// Called on the main actor after each face loads, whichever caller started the load.
+    @ObservationIgnored var onFaceLoaded: (() -> Void)?
 
     func face(for design: SpineDesignV1?) -> FontFace? {
         guard let design, let key = Self.key(design) else { return nil }
@@ -101,6 +115,7 @@ final class SpineFonts {
                         descriptor: descriptor,
                         postScriptName: GoogleFonts.postScriptName(of: descriptor)
                             ?? font.postScriptName)
+                    onFaceLoaded?()
                 } else {
                     unusable.insert(key)
                 }

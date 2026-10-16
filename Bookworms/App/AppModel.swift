@@ -17,6 +17,9 @@ final class AppModel {
     private(set) var library: LibrarySnapshot?
     /// The library's books, most recently finished first, then unfinished books by title.
     private(set) var books: [CloudBook] = []
+    /// Maps each book that shares a series design to the book whose design it draws with
+    /// (`SeriesDesigns.sources`). Recomputed when the library changes or any face loads.
+    private(set) var seriesSources: [Int: Int] = [:]
     private(set) var isLoading = false
     private(set) var loadError: String?
     /// The visible tab. Other features switch it, such as **Share** from a book's details.
@@ -47,12 +50,22 @@ final class AppModel {
         [(accountID: String, bookID: Int, url: URL?)] = []
     /// The cache write that `apply(_:)` deferred until a run's saves pause.
     @ObservationIgnored private var persistTask: Task<Void, Never>?
+    /// Glyph checks by face and lettering, so each runs once rather than on every library change.
+    @ObservationIgnored private var coverage: [String: Bool] = [:]
 
-    private init() {
-        if let path = UserDefaults.standard.string(forKey: "BookwormsPreviewFolder") {
-            let folder =
-                path.hasPrefix("/")
-                ? URL(filePath: path) : URL.cachesDirectory.appending(path: "Bookworms/\(path)")
+    private convenience init() {
+        self.init(
+            previewFolder: UserDefaults.standard.string(forKey: "BookwormsPreviewFolder")
+                .map {
+                    $0.hasPrefix("/")
+                        ? URL(filePath: $0) : URL.cachesDirectory.appending(path: "Bookworms/\($0)")
+                })
+    }
+
+    /// Creates a model that reads `previewFolder` instead of iCloud when one is given. The app
+    /// uses `shared`; tests make their own model with a preview folder.
+    init(previewFolder: URL?) {
+        if let folder = previewFolder {
             self.store = LocalSpineStore(folder: folder)
             isPreview = true
         } else {
@@ -65,6 +78,8 @@ final class AppModel {
             }
         }
         account.onLibraryChange = { [unowned self] in self.accountLibraryChanged() }
+        // A face that any screen loads can change which books its source's font can letter.
+        fonts.onFaceLoaded = { [unowned self] in self.alignSeries() }
     }
 
     /// Opens the Share tab with `book` as the featured book.
@@ -74,9 +89,25 @@ final class AppModel {
     }
 
     func look(for book: CloudBook) -> SpineLook {
-        let design = library?.designs[book.id]
+        let design = design(for: book)
         return SpineLook(book: book, design: design, face: fonts.face(for: design))
     }
+
+    /// The design `book` draws with: its series source's design when it shares one (see
+    /// `SeriesDesigns`), otherwise its own.
+    func design(for book: CloudBook) -> SpineDesignV1? {
+        library?.designs[seriesSources[book.id] ?? book.id]
+    }
+
+    /// The book whose design and cover set `book`'s spine: its series source, or `book` itself.
+    func designSource(for book: CloudBook) -> CloudBook {
+        guard let id = seriesSources[book.id], id != book.id else { return book }
+        return library?.books.first { $0.id == id } ?? book
+    }
+
+    /// Whether `book` shares its spine design with other books in its series, so changing the
+    /// design changes theirs too.
+    func sharesSeriesDesign(_ book: CloudBook) -> Bool { seriesSources[book.id] != nil }
 
     /// Reloads the library and designs, then loads the fonts the designs name.
     ///
@@ -143,7 +174,9 @@ final class AppModel {
         // The change's own reload returned early because this one was running.
         if revision != account.libraryRevision { return await reload() }
         // Fonts load after `isLoading` clears, so a slow download never blocks the next reload.
-        if let designs = library?.designs.values { await fonts.load(Array(designs)) }
+        if let designs = library?.designs.values {
+            await fonts.load(Array(designs))
+        }
     }
 
     /// Shows the new phone library after a Hardcover sign-in, sync, or sign-out. The shown
@@ -191,8 +224,10 @@ final class AppModel {
         Task { await fonts.load([design]) }
     }
 
-    /// Shows `colors` on `book`'s spine at once and saves them to its design as the reader's
+    /// Shows `colors` on the spine `book` draws and saves them to that design as the reader's
     /// colors (see `SpineDesignV1.recolored(_:)`), through the store the library comes from.
+    /// A book that shares its series' design recolors the series source, which recolors every
+    /// book in the series.
     ///
     /// Throws when the colors cannot be saved, and then they stay on screen until the next
     /// reload. Throws `CompanionError.invalidDesign`, before showing anything, when the colors
@@ -200,7 +235,7 @@ final class AppModel {
     /// When iCloud holds another design, such as a redesign from another device, reloads to show
     /// it and throws `CompanionError.designChanged`.
     func recolor(_ book: CloudBook, to colors: SpineColors) async throws {
-        guard let design = library?.designs[book.id] else {
+        guard let design = design(for: book) else {
             throw CompanionError.bookNotInLibrary
         }
         let recolored = design.recolored(colors)
@@ -260,12 +295,15 @@ final class AppModel {
         persistTask = nil
         library = nil
         books = []
+        alignSeries()
         try? FileManager.default.removeItem(at: cacheURL)
     }
 
     private func setLibrary(_ snapshot: LibrarySnapshot) {
         let previousBooks = library?.books
         library = snapshot
+        // Before the early return: a new or recolored design can change a series' source.
+        alignSeries()
         guard previousBooks != snapshot.books else { return }
         books = snapshot.books.sorted { lhs, rhs in
             switch (lhs.finished, rhs.finished) {
@@ -275,6 +313,26 @@ final class AppModel {
             default: lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
             }
         }
+    }
+
+    /// Recomputes `seriesSources` from the library and the loaded faces. A book whose lettering
+    /// the source's loaded face lacks glyphs for keeps its own design; until a face loads, the
+    /// source's system typeface letters every book.
+    private func alignSeries() {
+        let sources =
+            library.map { library in
+                SeriesDesigns.sources(books: library.books, designs: library.designs) {
+                    book, design in
+                    guard let face = fonts.face(for: design) else { return true }
+                    let text = SeriesDesigns.lettering(of: book, uppercase: design.uppercase)
+                    let key = face.postScriptName + "\n" + text
+                    if let covered = coverage[key] { return covered }
+                    let covered = face.covers(text)
+                    coverage[key] = covered
+                    return covered
+                }
+            } ?? [:]
+        if sources != seriesSources { seriesSources = sources }
     }
 
     /// Writes the shown library to the launch cache, replacing any deferred write.

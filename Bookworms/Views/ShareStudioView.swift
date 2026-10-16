@@ -105,7 +105,7 @@ struct ShareStudioView: View {
         var books = template.books(from: library, in: frame, bookID: bookID, direction: direction)
         if template == .pile { books = Array(books.prefix(PileSnapshotRenderer.maximumBooks)) }
         // Only the drawn books' designs, so a design saved for another book changes nothing.
-        let designs = books.map { model.library?.designs[$0.id] }
+        let designs = books.map { model.design(for: $0) }
         // Spine Spectrum draws no lettering, and the pile renderer waits for its own fonts, so a
         // newly loaded face changes neither; restarting a pile would only delay it. Other
         // templates re-render only when a face for one of their own books arrives.
@@ -682,7 +682,7 @@ struct ShareStudioView: View {
             // This waits for every face, including ones another feature is already downloading.
             let lettered =
                 template == .yearStack ? books : request.coverStyle == .threeD ? covered : []
-            await model.fonts.load(lettered.compactMap { model.library?.designs[$0.id] })
+            await model.fonts.load(lettered.compactMap { model.design(for: $0) })
             let coverSize = template.isSingleBook ? 1200 : template == .topFive ? 900 : 700
             input.covers = await loadCovers(covered, maximumPixelSize: coverSize)
             guard !Task.isCancelled else { return }
