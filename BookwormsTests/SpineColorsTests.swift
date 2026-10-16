@@ -166,6 +166,23 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertEqual(action(local, runTier: .privateCloudCompute, drawsSeriesLook: true), .keep)
     }
 
+    func testSavesKeepTheFirstDesignAtATierAndTakeBetterTiers() {
+        let onDevice = design(provenance: "model:apple/on-device")
+        let pcc = design().movedBack()
+        // A better tier's design of the same work replaces a weaker one's.
+        XCTAssertFalse(onDevice.outlasts(pcc, replacing: false))
+        // The first design saved at a tier, or at a better one, stays.
+        XCTAssertTrue(pcc.outlasts(onDevice, replacing: false))
+        XCTAssertTrue(design().outlasts(pcc, replacing: false))
+        // Reader colors stay, and a redesign the reader asked for replaces only an older design.
+        XCTAssertTrue(onDevice.recolored(reader).outlasts(pcc, replacing: false))
+        XCTAssertFalse(pcc.outlasts(design(), replacing: true))
+        XCTAssertTrue(design().outlasts(pcc, replacing: true))
+        // A design from another generator never stays.
+        let television = design(generator: CloudContract.appleTVGeneratorVersion)
+        XCTAssertFalse(television.outlasts(onDevice, replacing: false))
+    }
+
     func testDesignsReadTheirTierFromProvenance() {
         XCTAssertEqual(design().tier, .privateCloudCompute)
         XCTAssertNil(design().modelToken)

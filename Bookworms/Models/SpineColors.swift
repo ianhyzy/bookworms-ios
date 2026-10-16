@@ -92,6 +92,21 @@ extension SpineDesignV1 {
             && generatorVersion == other.generatorVersion && generatedAt == other.generatedAt
     }
 
+    /// Whether saving `design` leaves this saved design in place: both are the same work from
+    /// the same generator, and this one comes from `design`'s tier or a better one or carries
+    /// the reader's colors. So the first device to save a work at a tier keeps it, and a better
+    /// tier's design replaces a weaker one's. With `replacing`, for a redesign the reader asked
+    /// for, only a saved design that is no older stays.
+    func outlasts(_ design: SpineDesignV1, replacing: Bool) -> Bool {
+        guard accountID == design.accountID, bookID == design.bookID,
+            workItemHash == design.workItemHash, coverHash == design.coverHash,
+            generatorVersion == design.generatorVersion
+        else { return false }
+        return replacing
+            ? generatedAt >= design.generatedAt
+            : tier >= design.tier || generatedColors != nil
+    }
+
     /// What a generation run at `runTier` does with this saved design for a book whose work-item
     /// hash is `workItemHash` and whose cover, downloaded for this run, hashes to `coverHash`.
     /// `readerChoseCover` tells whether the reader chose another cover since the book's last

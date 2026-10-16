@@ -18,9 +18,8 @@ protocol SpineStore: Sendable {
     /// so a stale result is not saved after the Apple TV changed accounts or removed the book, or
     /// the reader picked another cover.
     func isStillCurrent(_ context: WorkContext, book: CloudBook) async throws -> Bool
-    /// Saves `design` unless a design of the same work from the same generator already exists,
-    /// such as one another device's run saved first. With `replacing`, for a redesign the reader
-    /// asked for, `design` replaces such a design unless that design is no older.
+    /// Saves `design` unless the saved design outlasts it (`SpineDesignV1.outlasts(_:replacing:)`),
+    /// such as one of the same work that another device's run saved first at the same tier.
     func save(_ design: SpineDesignV1, replacing: Bool) async throws
     /// Saves `design`'s colors to the saved design that it recolors (see
     /// `SpineDesignV1.isSameDesign(as:)`), keeping the saved font and every other field. Throws

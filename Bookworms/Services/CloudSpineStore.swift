@@ -98,17 +98,7 @@ actor CloudSpineStore: SpineStore {
 
     func save(_ design: SpineDesignV1, replacing: Bool) async throws {
         try await write(design) { existing in
-            // Another run already saved this work from this generator, so the first design
-            // saved stays; only a newer redesign the reader asked for replaces it.
-            if let existing, existing.accountID == design.accountID,
-                existing.bookID == design.bookID, existing.workItemHash == design.workItemHash,
-                existing.coverHash == design.coverHash,
-                existing.generatorVersion == design.generatorVersion,
-                !replacing || existing.generatedAt >= design.generatedAt
-            {
-                return nil
-            }
-            return design
+            existing?.outlasts(design, replacing: replacing) == true ? nil : design
         }
     }
 
