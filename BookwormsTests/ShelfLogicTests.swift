@@ -409,6 +409,13 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertNil(track.index(nearest: 0, in: 2))
         XCTAssertEqual(track.column(of: 7), 1)
         XCTAssertEqual(track.column(of: 99), 0)
+        // Above the shorter right stack's top, the left stack reports the centered book.
+        XCTAssertLessThan(track.offsets[0], track.offsets[5])
+        let rightStart = starts[5]! - min(center(0), center(5))
+        XCTAssertEqual(track.column(at: rightStart + 1, preferring: 1), 1)
+        XCTAssertEqual(track.column(at: rightStart - 1, preferring: 1), 0)
+        XCTAssertEqual(track.column(at: rightStart - 1, preferring: 0), 0)
+        XCTAssertEqual(track.column(at: -500, preferring: 1), 1)
 
         // Every column's first and last spines can reach the center.
         let viewport: CGFloat = 500

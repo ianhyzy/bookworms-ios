@@ -113,15 +113,16 @@ struct SpineCarousel: View {
     }
 
     /// Stack, in as many side-by-side stacks as the width holds at full scale, such as in a wide
-    /// Mac window. Each column holds the next run of books in order. 3D stacks rest on one line
-    /// and scroll together, as stacks of books on a shelf would, and the caption names the book
-    /// centered in the stack that holds the book it named last (`CenterTracking`). Flat stacks
-    /// each scroll on their own, and the caption names the book centered in the stack scrolled
-    /// last.
+    /// Mac window. Each column holds the next run of books in order, the runs differing by at
+    /// most one book. 3D stacks rest on one line and scroll together, as stacks of books on a
+    /// shelf would, and the caption names the centered book of one stack (`CenterTracking`).
+    /// Flat stacks each scroll on their own, and the caption names the book centered in the
+    /// stack scrolled last.
     @ViewBuilder private func stack(in size: CGSize) -> some View {
         let columns = StackArrangement.columns(in: size.width, books: books.count)
-        let perColumn = (books.count + columns - 1) / columns
-        let runs = (0..<columns).map { Array(books.dropFirst($0 * perColumn).prefix(perColumn)) }
+        // Where each run starts; the first `books.count % columns` runs take one more book.
+        let bound = { ($0 * books.count + columns - 1) / columns }
+        let runs = (0..<columns).map { Array(books[bound($0)..<bound($0 + 1)]) }
         let arrangement = StackArrangement(width: size.width / CGFloat(columns))
         if columns == 1 || style == .threeD {
             stackScroll(
@@ -172,6 +173,10 @@ struct SpineCarousel: View {
         return ScrollView(.vertical) {
             VStack(spacing: 0) {
                 Color.clear.frame(height: track.leadingSpace(viewport: size.height))
+                // VoiceOver reads the books in the layout's order, page by page across the
+                // stacks, because the stack builds a page of every stack at a time: an order
+                // that finished one stack first would put a page's newly built books in an
+                // earlier stack behind the book VoiceOver is on.
                 LazyVStack(spacing: 0) {
                     ForEach(track.pages.indices, id: \.self) { page in
                         ZStack(alignment: .topLeading) {
@@ -195,8 +200,6 @@ struct SpineCarousel: View {
                                 )
                                 // Each book lies over the top board of the book below it.
                                 .zIndex(-Double(slot.index))
-                                // VoiceOver reads each stack from top to bottom, then the next.
-                                .accessibilitySortPriority(-Double(slot.index))
                             }
                         }
                         .frame(
@@ -205,8 +208,6 @@ struct SpineCarousel: View {
                         .zIndex(-Double(page))
                     }
                 }
-                // Scopes the sort priorities to the books.
-                .accessibilityElement(children: .contain)
                 Color.clear.frame(height: track.trailingSpace(viewport: size.height) + bleed)
             }
         }
@@ -532,10 +533,10 @@ private struct PulledSpine: ViewModifier {
 /// from the end of the scroll view's content inset, as `ScrollPosition` does; the scroll view
 /// takes a top inset where it meets the navigation bar.
 ///
-/// When columns scroll together, scrolling reports the centered book of the column that holds
-/// `centeredID`: the column of a tapped book, of the first book after a new sort, or the first
-/// column at launch. Scrolling never moves `centeredID` to another column, so the caption keeps
-/// naming books of the stack the reader chose.
+/// When columns scroll together, scrolling reports the centered book of `column`: the column of
+/// a tapped book, of the first book after a new sort, or the first column at launch. Where that
+/// column's stack does not reach the center, as above a shorter stack's top book, scrolling
+/// reports the nearest column that does, so the caption always names a book at the center.
 private struct CenterTracking: ViewModifier {
     let track: SpineTrack
     let axis: Axis
@@ -547,8 +548,10 @@ private struct CenterTracking: ViewModifier {
     /// The book that scrolling last brought to the center, which tells scrolling apart from
     /// other changes to `centeredID`.
     @State private var scrolledID: Int?
-    /// The column whose centered book scrolling reports, which held `centeredID` when the
-    /// carousel last scrolled to it. Kept, so that a scroll frame never looks `centeredID` up.
+    /// The column whose centered book scrolling reports while its stack reaches the center,
+    /// which held `centeredID` when the carousel last scrolled to it. Only that scroll sets it,
+    /// so a glide that passes above a shorter stack still ends on the book it glides to, and a
+    /// scroll frame never looks `centeredID` up.
     @State private var column = 0
 
     func body(content: Content) -> some View {
@@ -563,7 +566,9 @@ private struct CenterTracking: ViewModifier {
             } action: { old, offset in
                 // The first call reports the starting offset, before `onAppear` scrolls to
                 // `centeredID`, so only an actual change moves `centeredID`.
-                guard offset != old, let id = track.id(nearest: offset, in: column),
+                guard offset != old,
+                    let id = track.id(
+                        nearest: offset, in: track.column(at: offset, preferring: column)),
                     id != scrolledID
                 else { return }
                 scrolledID = id
@@ -584,11 +589,12 @@ private struct CenterTracking: ViewModifier {
             // equal, so both are watched.
             .onChange(of: track.ids) { scrollToCenteredBook() }
             .onChange(of: track.offsets) { scrollToCenteredBook() }
-            // A new carousel, such as after a mode switch, opens on the centered book. One that
-            // reappears, such as after Back from details, keeps its offset, because a free
-            // scroll rarely rests exactly on a book's.
+            // A new carousel, such as after a mode switch, opens on the centered book, or on the
+            // first book before scrolling centers one, which side-by-side stacks need not center
+            // at offset 0. One that reappears, such as after Back from details, keeps its
+            // offset, because a free scroll rarely rests exactly on a book's.
             .onAppear {
-                if centeredID != scrolledID { scrollToCenteredBook() }
+                if centeredID == nil || centeredID != scrolledID { scrollToCenteredBook() }
             }
             .scrollIndicators(.hidden)
             // The stack's books fade out before its ends, and the shelf's top board meets the
@@ -639,6 +645,9 @@ struct SpineTrack {
     let offsets: [CGFloat]
     /// Each column's span of `ids` and `offsets`.
     let columns: [Range<Int>]
+    /// The offset that brings each column's start to the center. Columns end together, so a
+    /// column's spines lie across the center at every offset from its start to the end.
+    private let starts: [CGFloat]
     let pages: [[Slot]]
     /// From the longest column's start to the end, where every column ends.
     let length: CGFloat
@@ -701,6 +710,7 @@ struct SpineTrack {
         }
         self.length = length
         self.firstCenter = firstCenter
+        starts = origins.map { $0 - firstCenter }
         lastCenter = spans.compactMap { $0.last.map { length - $0.thickness / 2 } }.max() ?? 0
         maxThickness = spans.joined().map { $0.thickness }.max() ?? 0
         self.ids = ids
@@ -724,6 +734,15 @@ struct SpineTrack {
     func column(of id: Int?) -> Int {
         let index = id.flatMap { ids.firstIndex(of: $0) }
         return index.flatMap { index in columns.firstIndex { $0.contains(index) } } ?? 0
+    }
+
+    /// `preferred` when its spines lie across the center at `offset`, and otherwise the nearest
+    /// column whose spines do. `preferred` when none does, as past the track's start.
+    func column(at offset: CGFloat, preferring preferred: Int) -> Int {
+        let reaches = { starts[$0] <= offset }
+        guard starts.indices.contains(preferred), !reaches(preferred) else { return preferred }
+        return starts.indices.lazy.filter(reaches)
+            .min { abs($0 - preferred) < abs($1 - preferred) } ?? preferred
     }
 
     /// The index of `column`'s spine nearest the center at `offset`, or `nil` for an empty or
