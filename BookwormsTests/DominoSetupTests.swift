@@ -190,6 +190,12 @@ final class DominoSetupTests: XCTestCase {
             let step = DominoSetup.step(count: count)
             XCTAssertLessThanOrEqual(step, DominoSetup.longestStep)
             XCTAssertLessThanOrEqual(step * Float(max(count - 1, 0)), DominoSetup.spread + 1e-4)
+            // The books start ever faster, in the same time as at the average step.
+            let steps = (0..<max(count - 1, 0)).map { DominoSetup.step(after: $0, count: count) }
+            XCTAssertEqual(steps.reduce(0, +), step * Float(max(count - 1, 0)), accuracy: 1e-3)
+            for (earlier, later) in zip(steps, steps.dropFirst()) {
+                XCTAssertLessThan(later, earlier, "\(count)")
+            }
         }
         XCTAssertEqual(DominoSetup.hold(at: 0), DominoSetup.longestHold)
         XCTAssertEqual(DominoSetup.hold(at: DominoSetup.latestStart), 0)
@@ -203,14 +209,13 @@ final class DominoSetupTests: XCTestCase {
                 yaw: Float(index) * 0.7)
         }
         let places = slots.map(DominoLayout.standingPose(of:))
-        // Starts each book as the scene does: in order, a step apart, held back while its way
+        // Starts each book as the scene does: in order, ever faster, held back while its way
         // is blocked, and let go once it has waited as long as it may.
         var schedule = DominoSetup.Schedule()
         var forced = Set<Int>()
         var due: Float = 0
         var held: Float?
         var time: Float = 0
-        let step = DominoSetup.step(count: slots.count)
         while schedule.moves.count < slots.count {
             let index = schedule.moves.count
             if time >= due {
@@ -224,7 +229,7 @@ final class DominoSetupTests: XCTestCase {
                 {
                     schedule.commit(move)
                     held = nil
-                    due += step
+                    due += DominoSetup.step(after: index, count: slots.count)
                     continue
                 }
                 held = held ?? time
@@ -235,7 +240,7 @@ final class DominoSetupTests: XCTestCase {
                             to: places[index], lift: DominoSetup.lifts.upperBound))
                     forced.insert(index)
                     held = nil
-                    due += step
+                    due += DominoSetup.step(after: index, count: slots.count)
                     continue
                 }
             }
