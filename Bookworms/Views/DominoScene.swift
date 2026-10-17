@@ -531,12 +531,9 @@ final class DominoStatus {
 /// The chain's front is the book after the last one that tilted past about 26 degrees. Each
 /// frame checks only the next three books, so the work per frame does not grow with the
 /// chain, and a book that the chain skips counts as passed. A book that falls before the first
-/// push starts the chain as a push does. Once the chain has started, a front that holds still
-/// for `nudgeWait`, as when a book leans on the next without knocking it over, tips the book a
-/// push would tip, once, so the books fall one into the next from the first push to the last
-/// (see `nudge()`). The chain is stalled once its front has not moved on for `stallTime`: no
-/// book has started to fall, and the book at the front has stopped tipping, so a slow first tip
-/// after a push does not count as a stall. While the chain waits
+/// push starts the chain as a push does. The chain is stalled once its front has not moved
+/// on for `stallTime`: no book has started to fall, and the book at the front has stopped
+/// tipping, so a slow first tip after a push does not count as a stall. While the chain waits
 /// for a push, a pointing hand floats before the book a push tips (`DominoLayout.pushTarget`),
 /// hovering with a faint glow behind it (see `updateHand`).
 ///
@@ -585,9 +582,6 @@ final class DominoScene {
     static let slowMotion: Double = 0.8
     /// How fast a push tips a book forward, in radians per second.
     private static let pushSpeed: Float = 2.5
-    /// How long the front of a running chain holds still before the book it stopped at tips on
-    /// its own, and before the chain counts as stalled, in seconds.
-    private static let nudgeWait: TimeInterval = 0.3
     private static let stallTime: TimeInterval = 1
     /// The cosine of the tilt past which a book counts as fallen.
     private static let fallenTilt: Float = 0.9
@@ -693,8 +687,6 @@ final class DominoScene {
     private var farthest: Float = 0 {
         didSet { updateClockRate() }
     }
-    /// The book that the chain's front last tipped on its own (see `nudge()`).
-    private var nudged: Int?
     /// The overview camera, and the camera that pinches and drags move.
     private var view = PileCamera()
     /// The camera that shows the whole path.
@@ -1114,7 +1106,6 @@ final class DominoScene {
         clock = 0
         lastAdvance = 0
         farthest = 0
-        nudged = nil
         cameraMove = nil
         lifter.reset()
         entering = []
@@ -1818,7 +1809,14 @@ final class DominoScene {
     func pushNext() {
         guard status.phase.waitsForPush, next < books.count, flying == nil else { return }
         let book = books[target]
-        tip(target)
+        let slot = slots[target]
+        let forward = SIMD3(slot.heading.x, 0, slot.heading.y)
+        let spin = simd_cross([0, 1, 0], forward) * Self.pushSpeed
+        // About the leading bottom edge, the back cover's, so the book tips over instead of
+        // sliding back.
+        let arm = SIMD3(0, slot.size.y / 2, 0) - forward * slot.size.z / 2
+        book.components.set(
+            PhysicsMotionComponent(linearVelocity: simd_cross(spin, arm), angularVelocity: spin))
         started = true
         lastAdvance = clock
         poke = 0
@@ -1826,30 +1824,6 @@ final class DominoScene {
         feedback.impact(
             impulse: 0, mass: book.components[PhysicsBodyComponent.self]?.massProperties.mass ?? 0,
             position: book.position(relativeTo: root), pan: pan, minimum: 0.2)
-    }
-
-    /// Tips the book a push tips (see `target`) as a push would, once per book, when the front
-    /// of a running chain has held still for `nudgeWait`: the book at the front leans on it
-    /// without knocking it over, or fell short of it. The books then fall one into the next
-    /// without waiting for a push. A chain that still holds stalls, and waits for one.
-    private func nudge() {
-        let index = target
-        guard nudged != index else { return }
-        nudged = index
-        tip(index)
-        lastAdvance = clock
-    }
-
-    /// Sets the book at `index` tipping forward along the path at `pushSpeed`, about its leading
-    /// bottom edge, the back cover's, so it tips over instead of sliding back.
-    private func tip(_ index: Int) {
-        let slot = slots[index]
-        let forward = SIMD3(slot.heading.x, 0, slot.heading.y)
-        let spin = simd_cross([0, 1, 0], forward) * Self.pushSpeed
-        let arm = SIMD3(0, slot.size.y / 2, 0) - forward * slot.size.z / 2
-        let motion = PhysicsMotionComponent(
-            linearVelocity: simd_cross(spin, arm), angularVelocity: spin)
-        books[index].components.set(motion)
     }
 
     /// Zooms toward the point under `focus` by `magnification`, or slides the camera across
@@ -1961,7 +1935,6 @@ final class DominoScene {
                 farthest = front
                 lastAdvance = clock
             }
-            if started, next < books.count, clock - lastAdvance > Self.nudgeWait { nudge() }
             tearCobwebs()
         }
         let fallen = DominoLayout.phase(
