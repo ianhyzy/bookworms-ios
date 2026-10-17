@@ -34,8 +34,8 @@ final class ShelfPullOut {
     /// How the book lies in its place, which the hidden spine reports with `home`.
     var rest = PullOutPath.Rest()
     /// Where **Stack**'s camera sits across from the book in its place (`PullOutPath.eye`),
-    /// which a 3D stacked book reports as it is pulled.
-    var eye = SIMD2<Double>.zero
+    /// which a 3D stacked book reports as it is pulled, or `nil` until it does.
+    var eye: SIMD2<Double>?
     /// The frame of **Shelf**'s lamp in global coordinates, which the lamp reports. While a book
     /// is out, the flight draws the lamp over the book, so the book keeps the light its spine had.
     var lampFrame: CGRect?
@@ -73,7 +73,7 @@ final class ShelfPullOut {
         guard self.book == nil else { return }
         revision &+= 1
         home = nil
-        eye = .zero
+        eye = nil
         pose = .resting
         progress = 0
         showsText = false
@@ -482,7 +482,7 @@ private struct PullOutFlightHost: View {
                             home: home, upright: pullOut.upright, stage: stage,
                             pose: pullOut.pose, aspect: Book3DView.aspect(of: cover),
                             thicknessRatio: Book3DView.thicknessRatio(of: current, cover: cover),
-                            rest: pullOut.rest, eye: pullOut.eye),
+                            rest: pullOut.rest, eye: pullOut.eye ?? .zero),
                         lamp: pullOut.upright ? pullOut.lampFrame?.applying(shift) : nil,
                         progress: pullOut.progress
                     )

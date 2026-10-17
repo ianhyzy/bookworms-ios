@@ -442,13 +442,16 @@ private struct StackedBook: View {
         let roll = -Double.pi / 2
         let scrollEye = ScrollEye(point: eye, roll: roll)
         // Plain boxes keep scrolling cheap. The pulled book is bound from the tap on, as the
-        // flight and the details draw it, so the flight takes over from it without a change.
+        // flight and the details draw it, so the flight takes over from it without a change. A
+        // 3D book stays a box that follows the stack's eye until it reports the eye it saw, so
+        // the bound book never draws a frame seen from its own axis.
+        let isBound = isPulled && (camera == nil || pullOut.eye != nil)
         Book3DView(
             book: book, look: look, cover: cover, height: spine.width, yaw: .pi / 2 + rest.yaw,
             pitch: rest.pitch, thicknessRatio: spine.height / spine.width, lighting: rest.lighting,
-            bound: isPulled, distance: rest.distance.map { CGFloat($0 * length) },
-            eye: isPulled ? pullOut.eye * length : .zero,
-            scrollEye: camera != nil && !isPulled ? scrollEye : nil, roll: roll
+            bound: isBound, distance: rest.distance.map { CGFloat($0 * length) },
+            eye: isBound ? (pullOut.eye ?? .zero) * length : .zero,
+            scrollEye: camera != nil && !isBound ? scrollEye : nil, roll: roll
         )
         .background {
             // Reports the eye that the box saw as the book is pulled, before it moves, and
