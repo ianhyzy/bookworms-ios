@@ -214,12 +214,13 @@ struct HotTakesCard: View {
     private func hero(_ book: CloudBook) -> some View {
         let isSquare = input.aspect == .square
         let ratio = ShareCover.aspect(of: input.covers[book.id], style: input.coverStyle)
+        // A turned 3D book draws up to about 10 percent taller than its height.
+        let fill: CGFloat = input.coverStyle == .threeD ? 0.9 : 1
         let cover = GeometryReader { proxy in
             ShareCover(
                 book: book, look: input.look(for: book), cover: input.covers[book.id],
                 style: input.coverStyle,
-                // A turned 3D book draws up to about 10 percent taller than its height.
-                height: min(proxy.size.height * 0.9, proxy.size.width * 0.86 / ratio),
+                height: min(proxy.size.height * fill, proxy.size.width * 0.86 / ratio),
                 yaw: 0.55 + (ShareStyle.unit(input.seed, book.id, 6) - 0.5) * 0.12
             )
             .shadow(color: .black.opacity(0.5), radius: 32, y: 24)
