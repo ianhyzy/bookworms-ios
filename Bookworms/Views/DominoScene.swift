@@ -747,6 +747,8 @@ final class DominoScene {
     /// it out.
     private var spread: PileSpread?
     private var spreadTask: Task<Void, Never>?
+    /// The task loading the snapping book's sharper cover (`sharpenCover(of:)`).
+    private var coverTask: Task<Void, Never>?
     /// The finale, from the moment every book has fallen until the books stand again.
     private var ending: Ending?
     /// The books setting themselves up from where they lay, from a handover until every book
@@ -1118,6 +1120,8 @@ final class DominoScene {
         spread = nil
         spreadTask?.cancel()
         spreadTask = nil
+        coverTask?.cancel()
+        coverTask = nil
         ending = nil
         arrangement = nil
         arrangementTask?.cancel()
@@ -2324,10 +2328,12 @@ final class DominoScene {
     /// flourish arrives during it.
     private func sharpenCover(of book: CloudBook) {
         guard let covers else { return }
-        Task { [factory] in
+        coverTask?.cancel()
+        coverTask = Task { [factory] in
             guard
                 let cover = await covers.image(
-                    for: book, maximumPixelSize: DominoFinale.snapCoverPixels)
+                    for: book, maximumPixelSize: DominoFinale.snapCoverPixels),
+                !Task.isCancelled
             else { return }
             await factory.addCover(cover, to: book.id)
         }
