@@ -52,11 +52,13 @@ struct DominoCameraPose: Equatable {
 /// chain, the camera films nearer beside the front, so each swing fits. Round some turns, it
 /// films the rows either side nearly beside the front and cranes high over the turn with a
 /// small swing. The camera's height, bearing, and distance also drift slowly, as a drone's
-/// would. It pushes in, lowers its angle, and turns a little toward a few of the densest
-/// cobwebs, at most one every six seconds or so, and films the row where one tears from as
-/// near behind the front as fits, so the web comes toward the camera. It also pushes in when
-/// the chain slows or stops. The pushes do not add up: the strongest sets how close the camera
-/// comes.
+/// would. It pushes in and lowers its angle for a few of the densest cobwebs, at most one every
+/// five or six seconds, and films the row where one tears from as near behind the front as fits,
+/// so the web comes toward the camera. It also pushes in when the chain slows or stops. The
+/// pushes do not add up: the strongest sets how close the camera comes. However the camera
+/// moves, it keeps looking at the front: the point it looks at follows the front alone, and its
+/// springs stiffen as the chain speeds up (see `step`), so it trails a fast front by about as
+/// little as a typical one.
 ///
 /// Before the push, the camera holds `opening`, then cranes down and swings round to the first
 /// book. It follows the front to the last book, eases to a stop there, and holds while that
@@ -134,8 +136,9 @@ struct DominoCameraRig {
     /// estimate's lead fades at `leadRate` per second, and returns as fast once the front moves.
     static let stillTime: Float = 0.03
     static let leadRate: Float = 15
-    /// The eye's and target's springs while the chain runs, in radians per second. They follow
-    /// the goal's own velocity as well, so stiffness sets only how fast they correct an error.
+    /// The eye's and target's springs while the chain runs at a typical pace, in radians per
+    /// second, stiffer in proportion for a faster chain. They follow the goal's own velocity as
+    /// well, so stiffness sets only how fast they correct an error.
     static let eyeStiffness: Float = 5
     static let targetStiffness: Float = 8
     /// Both springs for the establishing move, whose goal eases in and out on its own: stiff,
@@ -173,11 +176,31 @@ struct DominoCameraRig {
     static let zoomStiffness: Float = 2.5
     /// The step the springs integrate by, at most.
     static let substep: Float = 1.0 / 240
-    /// The chain's typical pace in the scene's slow motion (`DominoScene.slowMotion`), in units
-    /// per second, which times the swings and the moves before the chain has a pace of its own.
+    /// The chain's typical pace at its first books, in the scene's slow motion
+    /// (`DominoScene.slowMotion`), in units per second. Sped up as the chain falls (see
+    /// `pace(at:)`), it times the swings, and the moves before the chain has a pace of its own.
     static let typicalPace: Float = 9.5
-    /// How long a swing round a turn takes at a typical pace, in seconds, at the least and
-    /// most, and how fast it turns on average within those, in radians per second: a bigger
+
+    /// The chain's typical pace once its front has come `distance` along the path, as the
+    /// scene speeds the simulation up (`DominoLayout.speedUp(at:)`).
+    static func pace(at distance: Float) -> Float {
+        typicalPace * DominoLayout.speedUp(at: distance)
+    }
+
+    /// The seconds a chain's front takes to come `distance` along the path at `pace(at:)`.
+    ///
+    /// With a speed-up of a − b·e^(−s/r), where a is `DominoLayout.fastest`, b is a − 1, and r
+    /// is `DominoLayout.speedUpReach`, the integral of 1 / pace from 0 to s is
+    /// r / (a × `typicalPace`) × ln(a·e^(s/r) − b).
+    static func fallTime(to distance: Float) -> Float {
+        let fastest = DominoLayout.fastest
+        let reach = DominoLayout.speedUpReach
+        let share = exp(max(distance, 0) / reach)
+        return reach / (fastest * typicalPace) * log(fastest * share - (fastest - 1))
+    }
+
+    /// How long a swing round a turn takes at the turn's typical pace, in seconds, at the least
+    /// and most, and how fast it turns on average within those, in radians per second: a bigger
     /// swing takes longer. Where the rows are long enough, every swing also leaves at least
     /// `dwell` seconds of each row and turn steady, so the camera never swings from one turn
     /// straight into the next. A swing's middle comes `swingLead` seconds before the front
@@ -266,18 +289,14 @@ struct DominoCameraRig {
     /// stopping against the path's end.
     static let endEase: Float = 4
     /// The least density of a cobweb the camera pushes in on, over a gap of about 85 days, and
-    /// the least distance between two such webs, about six seconds of the chain's run.
+    /// the least distance between two such webs: six seconds of the chain's first books, and
+    /// about five once it nears real time (`pace(at:)`).
     static let heroDensity: Float = 0.5
     static let heroSpacing: Float = 6 * typicalPace
     /// At the peak of a cobweb's push in, how much closer the camera comes, as a share of its
-    /// distance; how much it lowers its angle, in radians; and how far the point it looks at
-    /// leans from the front toward the web, in units: a little, since the narrow view shows
-    /// only a few units across at the front. The lean grows smoothly with the web's distance
-    /// from the front and levels off beyond about `webLean.knee` units, so it eases through 0
-    /// over about half a second as the front passes the web, rather than flipping.
+    /// distance, and how much it lowers its angle, in radians.
     static let webPush: Float = 0.3
     static let webLowering: Float = 3 * .pi / 180
-    static let webLean: (most: Float, knee: Float) = (0.8, 3)
     /// How much closer the camera comes when the chain stops, as a share of its distance.
     static let slowPush: Float = 0.2
     /// How long before the front reaches a cobweb its push in peaks, in seconds, so the camera
@@ -412,7 +431,7 @@ struct DominoCameraRig {
             Self.establishTimes.upperBound)
     }
 
-    /// Stops pushing in on and leaning toward the cobweb at `distance`, which a book lifted
+    /// Stops pushing in on the cobweb at `distance`, which a book lifted
     /// out of the chain tore. The rows' shots, which the webs helped choose, stay as they are.
     mutating func forgetCobweb(at distance: Float) {
         cobwebs.removeAll { abs($0.distance - distance) < 1e-3 }
@@ -475,7 +494,7 @@ struct DominoCameraRig {
         let ending = min(max(length - led, 0) / 2, 1)
         cruised = cruised || (input.started && pace >= Self.cruise)
         let pushGoal = SIMD2(
-            running ? cobwebPush(at: estimate).push : 0,
+            running ? cobwebPush(at: estimate) : 0,
             cruised ? (1 - Self.ease(min(pace / Self.cruise, 1))) * ending : 0)
         let slowStiffness =
             pushGoal.y < push.y ? Self.slowStiffness.farther : Self.slowStiffness.closer
@@ -501,12 +520,15 @@ struct DominoCameraRig {
         let targetDrift = Self.clamped((goal.target - start.target) / deltaTime, to: limit)
         let scripted = self.scripted
         let returning = 0.3 + 0.7 * Self.ease(min(sinceReset / Self.returnTime, 1))
-        let eyeStiffness =
-            (Self.eyeStiffness + (Self.scriptedStiffness - Self.eyeStiffness) * scripted)
-            * returning
-        let targetStiffness =
-            (Self.targetStiffness + (Self.scriptedStiffness - Self.targetStiffness) * scripted)
-            * returning
+        // A faster chain carries the goal round the same turns faster, which a spring of the
+        // same stiffness trails farther, so the run's springs stiffen with the chain's slowly
+        // smoothed pace, and the front stays as near the composition as at a typical pace.
+        let quick = max(speed / Self.typicalPace, 1)
+        func runStiffness(_ running: Float) -> Float {
+            (running * quick + (Self.scriptedStiffness - running * quick) * scripted) * returning
+        }
+        let eyeStiffness = runStiffness(Self.eyeStiffness)
+        let targetStiffness = runStiffness(Self.targetStiffness)
         let floor = self.floor(at: eye, front: estimate)
         for index in 1...steps {
             let share = Float(index) / Float(steps)
@@ -559,14 +581,19 @@ struct DominoCameraRig {
         func vary(_ index: Int, _ salt: Float) -> Float {
             (Float(index) * 0.618_034 + salt).truncatingRemainder(dividingBy: 1)
         }
-        let pace = typicalPace
         let rows = path.row(at: length).row + 1
+        // The chain's typical pace round each turn, which speeds up as the chain falls, so
+        // later rows go by faster, and their swings take a longer stretch of the path.
+        func pace(_ turn: Int) -> Float {
+            Self.pace(at: path.start(ofRow: turn) + path.rowLength(turn))
+        }
         // The longest swing round a turn leaves `dwell` of the shorter of its rows, with that
         // row's turn, steady; the widest turns at `swingRate` for that long. Rows can differ in
         // length, as the worm's do.
         func longest(_ turn: Int) -> Float {
             let period = min(path.period(turn), path.period(turn + 1))
-            return min(max(period / pace - dwell, swingTimes.lowerBound), swingTimes.upperBound)
+            return min(
+                max(period / pace(turn) - dwell, swingTimes.lowerBound), swingTimes.upperBound)
         }
         func widest(_ turn: Int) -> Float { swingRate * longest(turn) }
         // A swing turns the camera by a straight angle less both rows' angles from behind, so
@@ -635,8 +662,8 @@ struct DominoCameraRig {
                 over[turn] ? min(max(craneOver - higher, 0), craneRate * time / .pi) : crane * swing
             return Swing(
                 middle: path.start(ofRow: turn) + path.rowLength(turn) + .pi * path.radius / 2
-                    - swingLead * pace,
-                reach: time * pace / 2,
+                    - swingLead * pace(turn),
+                reach: time * pace(turn) / 2,
                 lift: abs(to.elevation - from.elevation) / 2 + extra)
         }
         return (shots, swings)
@@ -702,11 +729,8 @@ struct DominoCameraRig {
             * SIMD3(cos(elevation) * cos(azimuth), sin(elevation), cos(elevation) * sin(azimuth))
         eye.y = max(eye.y, floor(at: eye, front: front))
         let orbit = Orbit(DominoCameraPose(eye: eye, target: [focus.x, height, focus.y]))
-        // The view leans a little toward a cobweb as the front nears it, keeping the tear well
-        // inside the view.
-        let lean = cobwebPush(at: front).lean
         return Filming(
-            orbit: orbit, lean: [lean.x, 0, lean.y], third: 1,
+            orbit: orbit, third: 1,
             composition: Self.composition
                 + [0, (Self.landingComposition - Self.composition.y) * settling],
             roll: Self.bank * turning * pace)
@@ -723,17 +747,16 @@ struct DominoCameraRig {
         let share = Self.ease(progress)
         return compose(
             Filming(
-                orbit: orbit, lean: follow.lean * share, third: follow.third * share,
+                orbit: orbit, third: follow.third * share,
                 composition: follow.composition, roll: 0))
     }
 
     /// The pose of `filming`: its view turned so the orbit's target shows at its composition,
-    /// leaning toward the cobwebs, and rolled.
+    /// and rolled.
     private func compose(_ filming: Filming) -> DominoCameraPose {
         var pose = Self.composed(
             filming.orbit, at: filming.composition, in: area, fieldOfView: fieldOfView,
             aspect: aspect, weight: filming.third)
-        pose.target += filming.lean
         pose.roll = filming.roll
         return pose
     }
@@ -757,25 +780,17 @@ struct DominoCameraRig {
     /// How far to push in for the cobwebs near `front`, over `webReach` either side of its
     /// peak: most `webLead` before the front reaches a web, timed at the slowly smoothed
     /// `speed`, which holds steady from book to book. It grows in over `webRamp` after the chain
-    /// starts. Also returns how far the view leans toward the webs: toward each, by its push
-    /// (see `webLean`).
-    private func cobwebPush(at front: Float) -> (push: Float, lean: SIMD2<Float>) {
+    /// starts.
+    private func cobwebPush(at front: Float) -> Float {
         let rate = max(speed, 4)
         let ramp = Self.ease(min(sinceStart / Self.webRamp, 1))
-        let here = point(at: front)
-        var result: (push: Float, lean: SIMD2<Float>) = (0, .zero)
+        var push: Float = 0
         for web in cobwebs {
             let time = ((web.distance - front) / rate - Self.webLead) / Self.webReach
             guard abs(time) < 1 else { continue }
-            let push = (1 - time * time) * (1 - time * time) * ramp
-            result.push = max(result.push, push)
-            let toward = point(at: web.distance) - here
-            let reach = simd_length(toward)
-            let knee = Self.webLean.knee
-            result.lean +=
-                toward * (Self.webLean.most / (reach * reach + knee * knee).squareRoot()) * push
+            push = max(push, (1 - time * time) * (1 - time * time) * ramp)
         }
-        return result
+        return push
     }
 
     // MARK: Path
@@ -930,11 +945,9 @@ struct DominoCameraRig {
 }
 
 extension DominoCameraRig {
-    /// What the rig aims for: an orbit about the front, how far the view leans from the
-    /// orbit's target toward the cobwebs, and the camera's bank.
+    /// What the rig aims for: an orbit about the front, and the camera's bank.
     fileprivate struct Filming {
         var orbit: Orbit
-        var lean: SIMD3<Float>
         /// How far toward `composition` the orbit's target shows, from 0 for the middle to 1.
         var third: Float
         /// Where the orbit's target shows in the rig's area, as shares of its width and height.

@@ -7,18 +7,21 @@ import simd
 /// book falls.
 ///
 /// At once, the camera starts one slow move from wherever it films to the spread's view, where
-/// it comes to rest `moveTime` seconds later (`view(from:to:progress:)`). The move starts from
+/// it comes to rest `moveTime` seconds later (`view(from:to:around:progress:)`). The move starts from
 /// the view as it shows, carried on by the camera's own motion for a moment (`coast`), so the
-/// camera neither stops dead nor drifts on with the camera mode. `gatherDelay` seconds in,
-/// while the camera still moves, the books start to gather into a face-up spread
-/// (`PileSpread`): each lifts off the desk, flies in an arc to its place, turning face up on
-/// the way, and settles flat, one after another in the spread's order, so a book lands only
-/// after the books it rests on. Every book but the spread's last has landed `settleMargin`
-/// before the camera comes to rest. The spread's last book is the last book read, the chain's
-/// last, which the spread puts down last, so no book rests on it (`PileSpread`'s `last`). It
-/// waits where it fell; as the camera settles, it springs up out of the spread toward the
-/// viewer, hangs there a beat, and slams down into its place, landing `snapLanding` after the
-/// camera stops (`snapPose(from:to:top:time:)`).
+/// camera neither stops dead nor drifts on with the camera mode. It first pulls back and cranes
+/// up about the point it looked at, which, after the Follow camera, moves onto where the last
+/// book lands, and from `aimDelay` turns its aim toward the spread, ahead of the books. `gatherDelay` seconds in, while the camera still
+/// moves, the books start to gather into a face-up spread (`PileSpread`): each lifts off the
+/// desk, flies in an arc to its place, turning face up on the way, and settles flat, one after
+/// another in the spread's order, so a book lands only after the books it rests on. Every book
+/// but the spread's last has landed `settleMargin` before the camera comes to rest. The
+/// spread's last book is the last book read, the chain's last, which the spread puts down last,
+/// so no book rests on it (`PileSpread`'s `last`). It waits where it fell; as the camera comes
+/// to rest, it springs up close to the camera, its cover turned squarely to the viewer and large
+/// in the middle of the view (`snapTop(size:seenBy:aspect:)`), hangs there a beat, and slams
+/// down into its place, landing `snapLanding` after the camera stops
+/// (`snapPose(from:to:top:time:)`).
 /// Out of the lamp's beam, the room lights it more (`DeskStage.light(_:boost:)`), so it stays
 /// lit rather than going dark (`boost(at:over:radius:)`).
 /// The poses are pure functions of time, so tests replay them.
@@ -37,18 +40,28 @@ enum DominoFinale {
     /// higher every fourth book's does, so books in the air at once cross at different heights.
     static let rise: Float = 2.6
     static let riseStep: Float = 0.4
-    /// The last book's flourish: how long it takes to spring to the top of its arc, to hang
-    /// there, and to drop into its place, in seconds, and how long after the camera comes to
-    /// rest it lands.
-    static let snapRise: Float = 0.45
-    static let snapHang: Float = 0.3
-    static let snapDrop: Float = 0.2
-    static let snapLanding: Float = 0.2
-    /// How far the last book springs from its place toward the spread's camera, as a share of
-    /// the way: it rises toward the viewer, showing larger, where its place shows on screen.
-    static let snapReach: Float = 0.45
+    /// When the camera's aim starts to turn from where the chain ended toward the spread, in
+    /// seconds after the last book falls: a second before the books start to gather, so the aim
+    /// leads them there.
+    static let aimDelay: Float = 1.5
+    /// The last book's flourish: how long it takes to spring up to the camera, to hang there,
+    /// and to drop into its place, in seconds, and how long after the camera comes to rest it
+    /// lands: late enough that the camera has come to rest by the time the book hangs in front
+    /// of it.
+    static let snapRise: Float = 0.35
+    static let snapHang: Float = 0.4
+    static let snapDrop: Float = 0.18
+    static let snapLanding: Float = 0.7
+    /// How much of the view the last book fills as it hangs before the camera: this share of the
+    /// view's width, or of its height for a book that would otherwise be too tall to fit.
+    static let snapWidth: Float = 0.7
+    static let snapHeight: Float = 0.6
+    /// The longest side of the cover the last book wears from the finale on, in pixels: about as
+    /// many as its cover covers on a phone's screen as it hangs, more than five times the
+    /// chain's (`BookFactory.coverPixels(for:)`), so its lettering stays sharp.
+    static let snapCoverPixels = 1280
     /// The most the room's light on the last book brightens out of the lamp's beam, in stops.
-    static let boostLimit: Float = 2.5
+    static let boostLimit: Float = 4.5
     /// The time constant, in seconds, with which the camera's motion as the last book falls
     /// dies away in the move (`coast`): the camera carries on that many seconds' worth of it.
     static let coastTime: Float = 0.25
@@ -80,9 +93,21 @@ enum DominoFinale {
     /// How high the arc of the book at `index` peaks above the higher of its ends.
     static func peak(of index: Int) -> Float { rise + riseStep * Float(index % 4) }
 
-    /// Where the last book hangs over its `place` before it slams into it, seen by `camera`.
-    static func snapTop(over place: SIMD3<Float>, seenBy camera: PileCamera) -> SIMD3<Float> {
-        place + (camera.transform.translation - place) * snapReach
+    /// Where the last book, of `size` (see `BookShape.size`), hangs before it slams into its
+    /// place, seen by `camera` in a view of width-to-height `aspect`: in the middle of the view,
+    /// facing the camera squarely, head up, as near as fills `snapWidth` of the view's width or
+    /// `snapHeight` of its height, whichever comes first. A book facing the camera on its axis
+    /// shows as a rectangle, so its cover reads as if held up to the viewer. The book lies
+    /// wholly within the view, and even the smallest, 1.7 units tall, hangs about 4 units from
+    /// the camera, well past its near plane.
+    static func snapTop(size: SIMD3<Float>, seenBy camera: PileCamera, aspect: Float) -> Transform {
+        let slope = tan(PileCamera.fieldOfView / 2)
+        let depth =
+            max(size.x / (snapWidth * aspect), size.y / snapHeight) / (2 * slope) + size.z / 2
+        let shown = camera.transform
+        return Transform(
+            scale: .one, rotation: shown.rotation,
+            translation: shown.translation + shown.rotation.act([0, 0, -depth]))
     }
 
     /// How many stops brighter the room lights the last book at `point`, over its `place`,
@@ -144,26 +169,31 @@ enum DominoFinale {
     }
 
     /// The last book's pose `time` seconds into its flourish, from `from`, where it lay, to
-    /// `to`, its place: it springs up and across to `top`, slowing to a stop there as it turns
-    /// face up, hangs a beat, drifting on a little and back, then drops onto its place,
-    /// speeding up as a falling book does, and lands at full speed.
-    static func snapPose(from: Transform, to: Transform, top: SIMD3<Float>, time: Float)
+    /// `to`, its place: it springs up to `top`, fast at first and slowing to a stop there as it
+    /// turns its cover to the camera, hangs a beat, drifting a little nearer and back, then
+    /// slams down onto its place, speeding up hard all the way, as a book thrown down does. It
+    /// lies flat by the last third of the drop, so it comes down flat onto the books under its
+    /// place, and lands at full speed.
+    static func snapPose(from: Transform, to: Transform, top: Transform, time: Float)
         -> Transform
     {
         if time < snapRise {
             let share = max(time, 0) / snapRise
-            let eased = 1 - (1 - share) * (1 - share)
+            let eased = 1 - (1 - share) * (1 - share) * (1 - share)
             return Transform(
-                scale: to.scale, rotation: turn(from.rotation, to: to.rotation, by: eased),
-                translation: from.translation + (top - from.translation) * eased)
+                scale: to.scale, rotation: turn(from.rotation, to: top.rotation, by: eased),
+                translation: from.translation + (top.translation - from.translation) * eased)
         }
         let hang = (time - snapRise) / snapHang
         let drop = min(max((time - snapRise - snapHang) / snapDrop, 0), 1)
         let float = hang < 1 ? sin(.pi * hang) : 0
+        let toward = top.rotation.act([0, 0, 1])
         return Transform(
-            scale: to.scale, rotation: to.rotation,
-            translation: top + (top - to.translation) * 0.04 * float * float
-                + (to.translation - top) * drop * drop)
+            scale: to.scale,
+            rotation: turn(
+                top.rotation, to: to.rotation, by: DominoCameraRig.ease(min(drop * 1.5, 1))),
+            translation: top.translation + toward * 0.25 * float * float
+                + (to.translation - top.translation) * drop * drop * drop)
     }
 
     /// How far the camera's move has come at `progress` of its time: it gets under way at
@@ -176,23 +206,38 @@ enum DominoFinale {
     }
 
     /// The camera `progress` of the way from `from` to the spread's view `to`, along
-    /// `glide(_:)`. It swings about the point it looks at on the table, so it cranes and pulls
-    /// back in one sweep rather than sliding along a line: the point moves straight across the
-    /// table, the turn and pitch change evenly, and the distance by an even ratio, so the zoom
-    /// keeps one pace. Any roll `from` has eases out.
-    static func view(from: Transform, to: PileCamera, progress: Float) -> Transform {
+    /// `glide(_:)`. It swings about the point it looks at, so it cranes and pulls back in one
+    /// sweep rather than sliding along a line: the turn and pitch change evenly, and the
+    /// distance by an even ratio, so the zoom keeps one pace. The point starts where the view's
+    /// axis meets the table, or as deep as `focus`, such as where the last book lands, and moves
+    /// onto `focus` by `aimDelay`, so the camera centers on it as it pulls back, or holds still
+    /// without one. It then moves straight to the spread's, easing in and out, and arrives with
+    /// the rest of the move, so the camera keeps the books in the middle of the view as they
+    /// gather. Any roll `from` has eases out.
+    static func view(
+        from: Transform, to: PileCamera, around focus: SIMD3<Float>? = nil, progress: Float
+    ) -> Transform {
         let share = glide(progress)
+        let aim = DominoCameraRig.ease(
+            min(max(progress * moveTime - aimDelay, 0) / (moveTime - aimDelay), 1))
         let forward = from.rotation.act([0, 0, -1])
         // A view that looks level or up meets the table nowhere; it turns about a point ahead.
         let reach =
-            PileCamera.intersect((from.translation, forward), height: 0)
+            focus.map { simd_dot($0 - from.translation, forward) }
+            ?? PileCamera.intersect((from.translation, forward), height: 0)
             .map { simd_distance($0, from.translation) } ?? PileCamera.distance
         let depth = min(max(reach, 1), 4 * PileCamera.distance)
         let start = PileCamera(
             target: from.translation + forward * depth, yaw: atan2(-forward.x, -forward.z),
             zoom: PileCamera.distance / depth, pitch: asin(min(max(-forward.y, -1), 1)))
+        let centered =
+            focus.map {
+                start.target
+                    + ($0 - start.target)
+                    * DominoCameraRig.ease(min(max(progress * moveTime / aimDelay, 0), 1))
+            } ?? start.target
         let camera = PileCamera(
-            target: start.target + (to.target - start.target) * share,
+            target: centered + (to.target - centered) * aim,
             yaw: start.yaw + remainder(to.yaw - start.yaw, 2 * .pi) * share,
             zoom: start.zoom * pow(to.zoom / start.zoom, share),
             pitch: start.pitch + (to.pitch - start.pitch) * share)
@@ -239,10 +284,12 @@ enum DominoFinale {
 /// The recording starts at the push and ends `hold` seconds after the heading starts to show.
 /// The finale, from the last book's fall, keeps live speed, so the run before it gets what is
 /// left (`runBudget`). While the books fall, the recording keeps fewer frames than the view
-/// shows when the run would otherwise run long: it estimates the run's live length from how far
-/// the chain has fallen, or, before a twentieth of the way, from the path's length at the
-/// camera's typical pace, and plays the rest of the run as fast as it must to end within the
-/// budget, easing between speeds over about half a second. The recording's frames come at
+/// shows when the run would otherwise run long: it estimates the run's live length from how long
+/// the chain has taken to fall as far as it has, scaled by the share of the whole run that part
+/// takes at the camera's typical pace as the chain speeds up (`DominoCameraRig.fallTime(to:)`),
+/// or, before a twentieth of the way, from that typical run's length alone, and plays the rest
+/// of the run as fast as it must to end within the budget, easing between speeds over about half
+/// a second. The recording's frames come at
 /// `PileMovieTiming.framesPerSecond`, each showing the view as it was at its start. Live time
 /// the recording leaves out, such as while a book is out at its details, passes with no frames
 /// (`skip(_:)`), and its hits are left out too.
@@ -259,6 +306,8 @@ struct DominoMovieTiming {
 
     /// The live seconds the run is estimated to take before it has a pace of its own.
     let estimate: Double
+    /// The path's length, up to the last book.
+    private let length: Float
     /// Seconds of the live view since the push.
     private(set) var live: Double = 0
     /// Seconds of video since the push.
@@ -271,7 +320,8 @@ struct DominoMovieTiming {
 
     /// The timing of a run along a path `length` units long.
     init(length: Float) {
-        estimate = Double(length / DominoCameraRig.typicalPace)
+        self.length = length
+        estimate = Double(DominoCameraRig.fallTime(to: length))
     }
 
     /// Whether the recording has its most frames.
@@ -284,7 +334,10 @@ struct DominoMovieTiming {
     mutating func advance(by deltaTime: Double, progress: Double?) -> ClosedRange<Int>? {
         live += deltaTime
         if let progress {
-            let total = progress < 0.05 ? max(estimate, live) : live / progress
+            let total =
+                progress < 0.05
+                ? max(estimate, live)
+                : live * estimate / Double(DominoCameraRig.fallTime(to: Float(progress) * length))
             let wanted = max(1, (total - live) / max(Self.runBudget - video, 0.25))
             speed += (wanted - speed) * min(1, deltaTime / 0.5)
         } else {

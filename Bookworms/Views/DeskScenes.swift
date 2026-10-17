@@ -103,6 +103,9 @@ final class DeskScenes {
         case .desk:
             pile.attach(to: view)
             if PileSnapshotRenderer.isRendering { pile.detach() }
+            // A view that returns, as from another tab, counts the pile's rest afresh, so the
+            // dust drifts in again before the desk pauses.
+            pile.stir()
         case .dominoes:
             dominoes.attach(to: view)
             if PileSnapshotRenderer.isRendering { dominoes.detach() }
@@ -220,9 +223,23 @@ final class DeskScenes {
         // The dominoes' view, which tells the scene, does not show yet.
         dominoes.setReduceMotion(reduceMotion)
         dominoGeneration += 1
-        dominoes.receive(handover, books: books, generation: dominoGeneration, viewport: viewport)
+        if Self.handsBooksOver {
+            dominoes.receive(
+                handover, books: books, generation: dominoGeneration, viewport: viewport)
+        }
         pile.removeBooks()
         mode = .dominoes
+    }
+
+    /// Whether **Set up dominoes** hands the desk's books to the dominoes. In Debug builds,
+    /// `-BookwormsDominoesFromAbove YES` keeps them back, so the chain stands up from above, as
+    /// another time frame's chain does.
+    private static var handsBooksOver: Bool {
+        #if DEBUG
+            !UserDefaults.standard.bool(forKey: "BookwormsDominoesFromAbove")
+        #else
+            true
+        #endif
     }
 
     /// **Set up again**: sets the dominoes' books up again from where they lie.
