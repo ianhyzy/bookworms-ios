@@ -105,10 +105,12 @@ final class DominoTests: XCTestCase {
         XCTAssertEqual(speeds.first, 1)
         XCTAssertEqual(speeds, speeds.sorted())
         XCTAssertLessThan(speeds.last!, DominoLayout.fastest)
-        // A year's chain, about 35 units, ends a little faster; the longest, about 410 units,
-        // about twice as fast.
-        XCTAssertEqual(DominoLayout.speedUp(at: 35), 1.2, accuracy: 0.05)
-        XCTAssertEqual(DominoLayout.speedUp(at: 410), 2.1, accuracy: 0.1)
+        // A year's chain, about 35 units, ends a little faster; a chain of 150 units or more
+        // nearly at real time, and never faster.
+        XCTAssertEqual(DominoLayout.speedUp(at: 35), 1.11, accuracy: 0.01)
+        XCTAssertEqual(DominoLayout.speedUp(at: 150), 1.23, accuracy: 0.01)
+        // Real time is 1 / `DominoScene.slowMotion`, 0.8, of the slow motion.
+        XCTAssertEqual(DominoLayout.fastest, 1 / 0.8, accuracy: 1e-6)
         // The run's time at the typical pace is the integral of one over the sped-up pace.
         var time: Float = 0
         for step in 0..<4_100 {

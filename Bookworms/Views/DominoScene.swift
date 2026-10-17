@@ -375,16 +375,17 @@ enum DominoLayout {
     /// of knocking it over.
     static func mass(height: Float) -> Float { 0.2 * height }
 
-    /// The most the chain speeds up, as a multiple of `DominoScene.slowMotion`, and how far
+    /// The most the chain speeds up, as a multiple of `DominoScene.slowMotion`: to real time,
+    /// past which the books would fall as if gravity were stronger, like toys. Also how far
     /// along the path, in units, it gets about 63 percent of the way there.
-    static let fastest: Float = 2.25
-    static let speedUpReach: Float = 200
+    static let fastest: Float = 1.25
+    static let speedUpReach: Float = 60
 
     /// How many times faster than `DominoScene.slowMotion` the simulation runs once the chain's
     /// front has come `distance` along the path: 1 at the first book, rising smoothly toward
-    /// `fastest`, so the longer a chain falls, the faster it falls. A year's chain, about 35
-    /// units long, ends about 1.2 times as fast as it starts, and the longest chain, about 410
-    /// units, about twice as fast.
+    /// `fastest`, so the longer a chain falls, the faster it falls, up to real time. A year's
+    /// chain, about 35 units long, ends about 1.1 times as fast as it starts, and a chain of 150
+    /// units or more nearly at real time.
     static func speedUp(at distance: Float) -> Float {
         fastest - (fastest - 1) * exp(-max(distance, 0) / speedUpReach)
     }
@@ -511,9 +512,9 @@ final class DominoStatus {
 /// places it, and a cobweb (`Cobweb`) between each pair of books whose finishes lie
 /// `DominoLayout.cobwebDays` or more apart.
 ///
-/// The simulation runs in slow motion, at `slowMotion` of real time, and speeds up as the chain
-/// falls (`DominoLayout.speedUp(at:)`). It runs at full speed while the books set themselves
-/// up, and stands still while a book is out at its details.
+/// The simulation starts in slow motion, at `slowMotion` of real time, and speeds up toward
+/// real time as the chain falls (`DominoLayout.speedUp(at:)`). It runs at full speed while the
+/// books set themselves up, and stands still while a book is out at its details.
 /// Frame times, such as the books' moves into place, the stall time, and the cameras, stay in
 /// real time.
 ///
@@ -1719,8 +1720,9 @@ final class DominoScene {
 
     /// The simulation's speed: still while a book is out, full while the books set themselves
     /// up, so the books that still lie settle as they would, and otherwise `slowMotion`, sped up
-    /// for how far the chain has fallen (`DominoLayout.speedUp(at:)`). Gravity, the pushes, and
-    /// every collision speed up together, so the books fall as they would, only faster.
+    /// toward real time for how far the chain has fallen (`DominoLayout.speedUp(at:)`). Gravity,
+    /// the pushes, and every collision speed up together, so the books fall as they would, only
+    /// less slowly.
     private func updateClockRate() {
         let rate =
             flying != nil
