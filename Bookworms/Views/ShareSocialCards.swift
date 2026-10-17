@@ -41,7 +41,8 @@ struct TasteMatchCard: View {
                 colors: [theme.backdropLight.color, theme.backdropDark.color],
                 startPoint: .top, endPoint: .bottom)
             VStack(alignment: .leading, spacing: 0) {
-                let gap: CGFloat = aspect == .story ? 32 : 22
+                // Wider than the 16 points between a label and its books, so sections read apart.
+                let gap: CGFloat = aspect == .story ? 48 : 36
                 ShareReadersHeader(
                     social: social, label: "Taste match", size: metrics.avatar, theme: theme)
                 Spacer(minLength: gap)
@@ -96,6 +97,8 @@ struct TasteMatchCard: View {
                     .minimumScaleFactor(0.9)
             }
         }
+        // The covers' growth takes spare height, not the text's.
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     /// One book the readers rated far apart: its cover, title, both ratings, and a playful
@@ -181,7 +184,8 @@ struct BookSwapCard: View {
                 colors: [theme.backdropLight.color, theme.backdropDark.color],
                 startPoint: .top, endPoint: .bottom)
             VStack(alignment: .leading, spacing: 0) {
-                let gap: CGFloat = aspect == .story ? 40 : 24
+                // Wider than the 16 points between a label and its books, so sections read apart.
+                let gap: CGFloat = aspect == .story ? 64 : 48
                 ShareReadersHeader(
                     social: social, label: "Book swap", size: metrics.avatar, theme: theme)
                 Spacer(minLength: gap)
@@ -256,6 +260,8 @@ struct ShareReadersHeader: View {
                 }
             }
         }
+        // The covers' growth takes spare height, not the names'.
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -307,17 +313,19 @@ struct ShareCoverRow: View {
     var stars: (size: CGFloat, isMuted: Bool)?
 
     var body: some View {
+        // A turned 3D book draws up to about 10 percent taller than its height.
+        let fill: CGFloat = input.coverStyle == .threeD ? 0.9 : 1
+        let titleSize: CGFloat = 30
         HStack(alignment: .top, spacing: 28) {
             ForEach(books.prefix(TasteMatch.limit)) { book in
                 let cover = input.covers[book.id]
                 let ratio = ShareCover.aspect(of: cover, style: input.coverStyle)
                 VStack(spacing: 12) {
                     GeometryReader { proxy in
-                        // A turned 3D book draws up to about 10 percent taller than its height.
                         ShareCover(
                             book: book, look: input.look(for: book), cover: cover,
                             style: input.coverStyle,
-                            height: min(proxy.size.height * 0.9, proxy.size.width * 0.95 / ratio),
+                            height: min(proxy.size.height * fill, proxy.size.width * 0.95 / ratio),
                             yaw: 0.5 + (ShareStyle.unit(input.seed, book.id, 6) - 0.5) * 0.12
                         )
                         .shadow(color: .black.opacity(0.45), radius: 18, y: 14)
@@ -329,12 +337,15 @@ struct ShareCoverRow: View {
                         ShareStars(rating: rating, size: stars.size, isMuted: stars.isMuted)
                     }
                     ShareFittingText(
-                        forms: ShareStyle.titles(book), size: 30, minimumScale: 0.85,
+                        forms: ShareStyle.titles(book), size: titleSize, minimumScale: 0.85,
                         lines: titleLines, book: book
                     ) {
                         ShareStyle.serif($0, .semibold)
                     }
                     .multilineTextAlignment(.center)
+                    // Every title takes the height of `titleLines` lines, as `ShareFittingText`
+                    // estimates a line, so the covers above share one height and one line.
+                    .frame(minHeight: CGFloat(titleLines) * titleSize * 1.2, alignment: .top)
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -367,5 +378,7 @@ struct ShareInviteLine: View {
         .lineLimit(1)
         .minimumScaleFactor(0.8)
         .frame(maxWidth: .infinity)
+        // Shrinks only to fit the width; a card's growing covers cannot squeeze it shorter.
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
