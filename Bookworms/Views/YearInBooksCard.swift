@@ -8,8 +8,9 @@ import SwiftUI
 ///
 /// The sections span the safe area from top to bottom. The chart takes the height its tallest
 /// stack needs, up to a share of the card; the records' covers grow into what is left, and the
-/// gaps between sections share the rest equally. The records appear only where they fit, and
-/// Square sets the totals in one row.
+/// gaps between sections share the rest equally. The records appear only where they fit. Square,
+/// and any card that shows the records, sets the totals in one row, which leaves the records'
+/// covers room to grow; the chart then takes a smaller share.
 struct YearInBooksCard: View {
     let input: ShareInput
 
@@ -59,6 +60,7 @@ struct YearInBooksCard: View {
         let aspect = input.aspect
         let area = aspect.size.height - aspect.insets.top - aspect.insets.bottom
         let gap: CGFloat = aspect == .square ? 24 : 32
+        let share: CGFloat = !records.isEmpty ? 0.24 : aspect == .story ? 0.34 : 0.4
         return VStack(spacing: 0) {
             Text(heading)
                 .font(ShareStyle.serif(aspect == .square ? 76 : 88, .semibold))
@@ -66,10 +68,10 @@ struct YearInBooksCard: View {
                 .minimumScaleFactor(0.6)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: gap)
-            tiles(stats, theme: theme)
+            tiles(stats, theme: theme, isCompact: aspect == .square || !records.isEmpty)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: gap)
-            chart(stats, maximumHeight: area * (aspect == .story ? 0.34 : 0.4))
+            chart(stats, maximumHeight: area * share)
                 .layoutPriority(2)
             if !stats.genres.isEmpty || stats.topAuthor != nil || !stats.formats.isEmpty {
                 Spacer(minLength: gap)
@@ -91,9 +93,9 @@ struct YearInBooksCard: View {
 
     // MARK: - Totals
 
-    /// The totals on panels from `theme`, which differ only slightly in hue.
-    private func tiles(_ stats: YearInBooks, theme: ShareTheme) -> some View {
-        let isCompact = input.aspect == .square
+    /// The totals on panels from `theme`, which differ only slightly in hue: two a row, or with
+    /// `isCompact`, all in one row with shorter labels.
+    private func tiles(_ stats: YearInBooks, theme: ShareTheme, isCompact: Bool) -> some View {
         let count = stats.books.count
         var tiles = [Tile(value: count.formatted(), label: count == 1 ? "Book" : "Books")]
         if stats.pages > 0 {
@@ -101,7 +103,7 @@ struct YearInBooksCard: View {
                 Tile(
                     value: stats.pages.formatted(),
                     label: stats.booksWithPages < count
-                        // Square's narrow tiles leave out the total, which the Books tile shows.
+                        // Narrow tiles leave out the total, which the Books tile shows.
                         ? isCompact
                             ? "Pages in \(Self.count(stats.booksWithPages, "book"))"
                             : "Pages in \(stats.booksWithPages.formatted()) of \(count.formatted()) books"
@@ -124,7 +126,7 @@ struct YearInBooksCard: View {
                         ? "Busiest \(unit)"
                         : "Busiest \(unit) · \(Self.count(busiest.books.count, "book"))"))
         }
-        // Two tiles a row, or every tile in one row on a square; a lone last tile spans its row.
+        // Two tiles a row, or every compact tile in one row; a lone last tile spans its row.
         let numbered = Array(tiles.enumerated())
         let perRow = isCompact ? tiles.count : 2
         let rows = stride(from: 0, to: numbered.count, by: perRow)
@@ -365,7 +367,8 @@ struct YearInBooksCard: View {
                     recordCover(entry.book).frame(width: width)
                 }
             }
-            .frame(minHeight: 130, maxHeight: 340)
+            // The records show only where their covers can be large enough to recognize.
+            .frame(minHeight: 200, maxHeight: 340)
             Grid(horizontalSpacing: spacing, verticalSpacing: 8) {
                 GridRow {
                     ForEach(entries, id: \.book.id) { entry in

@@ -163,7 +163,8 @@ final class ShareRenderTests: XCTestCase {
     }
 
     /// Top Five's fan reaches as far above its middle as below it, so the space over the books
-    /// matches the space under them, and its turned books stay inside its width.
+    /// matches the space under them, stays inside its height, and its turned books reach no
+    /// further than `TopFiveCard.overhang` past its width.
     @MainActor
     func testTopFiveFanIsCenteredInItsSpace() {
         let size = CGSize(width: 920, height: 560)
@@ -187,10 +188,12 @@ final class ShareRenderTests: XCTestCase {
                 let top = extents.map(\.minY).min() ?? 0
                 let bottom = extents.map(\.maxY).max() ?? 0
                 XCTAssertEqual(-top, bottom, accuracy: 0.01, "\(count) \(style) books")
+                XCTAssertLessThanOrEqual(bottom, size.height / 2, "\(count) \(style) books")
+                let reach = size.width / 2 + TopFiveCard.overhang
                 XCTAssertGreaterThanOrEqual(
-                    extents.map(\.minX).min() ?? 0, -size.width / 2, "\(count) \(style) books")
+                    extents.map(\.minX).min() ?? 0, -reach, "\(count) \(style) books")
                 XCTAssertLessThanOrEqual(
-                    extents.map(\.maxX).max() ?? 0, size.width / 2, "\(count) \(style) books")
+                    extents.map(\.maxX).max() ?? 0, reach, "\(count) \(style) books")
             }
         }
     }
@@ -361,17 +364,19 @@ final class ShareRenderTests: XCTestCase {
     }
 
     /// A reread is a current read that keeps its previous finish date; Currently Reading shows
-    /// its start date instead.
+    /// its start date instead, and Just Finished names the finish date.
     func testCurrentReadDetailsShowTheStartDate() {
         let reread = CloudBook(
             id: 60, title: "Fictional Reread", author: "Author", coverURL: nil,
             detailCoverURL: nil, pages: 412, finished: "2021-03-03", isReading: true,
             started: "2026-10-01")
-        let reading = ShareStyle.details(reread, isReading: true)
+        let reading = ShareStyle.details(reread, isReading: true).joined(separator: " · ")
         XCTAssertTrue(reading.hasPrefix("Started "), reading)
         XCTAssertTrue(reading.contains("2026"), reading)
         XCTAssertFalse(reading.contains("2021"), reading)
-        XCTAssertTrue(ShareStyle.details(reread).contains("2021"), "Just Finished shows the finish")
+        let finished = ShareStyle.details(reread).joined(separator: " · ")
+        XCTAssertTrue(finished.hasPrefix("Finished "), finished)
+        XCTAssertTrue(finished.contains("2021"), "Just Finished shows the finish")
     }
 
     /// The format reads as the Shelf labels it, including a book read in print and on audio,
@@ -382,7 +387,9 @@ final class ShareRenderTests: XCTestCase {
                 CloudBook(
                     id: 61, title: "Fictional Format", author: "Author", coverURL: nil,
                     detailCoverURL: nil, format: format, pages: 300, finished: "2025-01-02",
-                    audioSeconds: 36_000))
+                    audioSeconds: 36_000)
+            )
+            .joined(separator: " · ")
         }
         let both = details("Both")
         XCTAssertTrue(both.hasPrefix("Physical & audiobook · "), both)
