@@ -427,7 +427,7 @@ enum ShareStyle {
         return forms
     }
 
-    /// Small tracked capitals that name what a card shows, such as "FINISHED".
+    /// Small tracked capitals that name what a card shows, such as "MY REVIEW".
     static func label(_ text: String) -> some View {
         Text(text.uppercased())
             .font(.system(size: 30, weight: .semibold))
@@ -469,9 +469,10 @@ enum ShareStyle {
     }
 
     /// The book's format when it is not print alone, labeled as the Shelf labels it, its finish
-    /// date (or start date, for a current read or a book not yet finished), and its length,
-    /// joined with middle dots. Missing parts are left out. An audiobook's length is its
-    /// listening time; any other book's is its page count.
+    /// date, such as "Finished Nov 30, 2025" (or "Started" and the start date, for a current
+    /// read or a book not yet finished), and its length, joined with middle dots. Missing parts
+    /// are left out. An audiobook's length is its listening time; any other book's is its page
+    /// count.
     ///
     /// A reread keeps its previous finish date while it is a current read, so `isReading` shows
     /// the start date instead.
@@ -481,7 +482,7 @@ enum ShareStyle {
         if let format, format != "Physical" { parts.append(format) }
         // Dates are calendar days at noon UTC; the format keeps UTC so they show the recorded day.
         if !isReading, let date = book.finishedDate {
-            parts.append(date.formatted(ShelfLabels.finishedFormat))
+            parts.append("Finished " + date.formatted(ShelfLabels.finishedFormat))
         } else if let date = book.startedDate {
             parts.append("Started " + date.formatted(ShelfLabels.finishedFormat))
         }

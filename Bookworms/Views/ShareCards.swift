@@ -69,25 +69,28 @@ struct FeaturedBookCard: View {
         }
     }
 
+    /// The title and author, the rating or progress, and the details line, such as "Finished
+    /// Nov 30, 2025 · 736 pages", with wider gaps between these groups than within them.
     private func details(_ book: CloudBook, alignment: HorizontalAlignment) -> some View {
         let isSquare = input.aspect == .square
         let isReading = input.template == .currentlyReading
-        let label = isReading ? "Currently reading" : book.finishedDate != nil ? "Finished" : nil
         let details = ShareStyle.details(book, isReading: isReading)
-        return VStack(alignment: alignment, spacing: 18) {
-            if let label {
-                ShareStyle.label(label).foregroundStyle(ShareStyle.gold)
+        return VStack(alignment: alignment, spacing: 36) {
+            VStack(alignment: alignment, spacing: 14) {
+                if isReading {
+                    ShareStyle.label("Currently reading").foregroundStyle(ShareStyle.gold)
+                }
+                ShareFittingText(
+                    forms: ShareStyle.titles(book), size: isSquare ? 64 : 80, minimumScale: 0.5,
+                    lines: isSquare ? 4 : 3, book: book
+                ) {
+                    ShareStyle.serif($0, .semibold)
+                }
+                Text(SpineView.shortAuthor(book.author))
+                    .font(ShareStyle.serif(40))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.75)
             }
-            ShareFittingText(
-                forms: ShareStyle.titles(book), size: isSquare ? 64 : 80, minimumScale: 0.5,
-                lines: isSquare ? 4 : 3, book: book
-            ) {
-                ShareStyle.serif($0, .semibold)
-            }
-            Text(SpineView.shortAuthor(book.author))
-                .font(ShareStyle.serif(40))
-                .lineLimit(2)
-                .minimumScaleFactor(0.75)
             if isReading {
                 if let progress = book.progress {
                     progressBar(progress, width: isSquare ? 250 : 440)

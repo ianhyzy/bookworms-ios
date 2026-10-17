@@ -361,7 +361,7 @@ final class ShareRenderTests: XCTestCase {
     }
 
     /// A reread is a current read that keeps its previous finish date; Currently Reading shows
-    /// its start date instead.
+    /// its start date instead, and Just Finished names the finish date.
     func testCurrentReadDetailsShowTheStartDate() {
         let reread = CloudBook(
             id: 60, title: "Fictional Reread", author: "Author", coverURL: nil,
@@ -371,7 +371,9 @@ final class ShareRenderTests: XCTestCase {
         XCTAssertTrue(reading.hasPrefix("Started "), reading)
         XCTAssertTrue(reading.contains("2026"), reading)
         XCTAssertFalse(reading.contains("2021"), reading)
-        XCTAssertTrue(ShareStyle.details(reread).contains("2021"), "Just Finished shows the finish")
+        let finished = ShareStyle.details(reread)
+        XCTAssertTrue(finished.hasPrefix("Finished "), finished)
+        XCTAssertTrue(finished.contains("2021"), "Just Finished shows the finish")
     }
 
     /// The format reads as the Shelf labels it, including a book read in print and on audio,
