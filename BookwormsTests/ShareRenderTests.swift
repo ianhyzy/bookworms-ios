@@ -163,7 +163,8 @@ final class ShareRenderTests: XCTestCase {
     }
 
     /// Top Five's fan reaches as far above its middle as below it, so the space over the books
-    /// matches the space under them, and its turned books stay inside its width.
+    /// matches the space under them, stays inside its height, and its turned books reach no
+    /// further than `TopFiveCard.overhang` past its width.
     @MainActor
     func testTopFiveFanIsCenteredInItsSpace() {
         let size = CGSize(width: 920, height: 560)
@@ -187,10 +188,12 @@ final class ShareRenderTests: XCTestCase {
                 let top = extents.map(\.minY).min() ?? 0
                 let bottom = extents.map(\.maxY).max() ?? 0
                 XCTAssertEqual(-top, bottom, accuracy: 0.01, "\(count) \(style) books")
+                XCTAssertLessThanOrEqual(bottom, size.height / 2, "\(count) \(style) books")
+                let reach = size.width / 2 + TopFiveCard.overhang
                 XCTAssertGreaterThanOrEqual(
-                    extents.map(\.minX).min() ?? 0, -size.width / 2, "\(count) \(style) books")
+                    extents.map(\.minX).min() ?? 0, -reach, "\(count) \(style) books")
                 XCTAssertLessThanOrEqual(
-                    extents.map(\.maxX).max() ?? 0, size.width / 2, "\(count) \(style) books")
+                    extents.map(\.maxX).max() ?? 0, reach, "\(count) \(style) books")
             }
         }
     }
