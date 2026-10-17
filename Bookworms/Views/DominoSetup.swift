@@ -8,8 +8,9 @@ import simd
 /// tiles of its wood, which repeats every `tile` units, so the table looks the same while each
 /// slot lies clear of the books that are still lying when its book lands there.
 ///
-/// The books then go one after another in finish order, `step(count:)` apart, so a large frame
-/// sets up within a few seconds, and never many in one frame
+/// The books then go one after another in finish order, ever faster, `step(count:)` apart on
+/// average (`step(after:count:)`), so a large frame sets up within a few seconds, and never many
+/// in one frame
 /// (`nextStart(after:startedAt:step:)`). Each book's move (`Move`) starts from where the book
 /// lies at that moment, since the books still lying are rigid bodies that settle as books under
 /// them leave:
@@ -63,11 +64,18 @@ enum DominoSetup {
         time < latestStart ? longestHold : 0
     }
 
-    /// The seconds from one book's start to the next in a setup of `count` books: `longestStep`,
-    /// or less for a long chain, so every book starts within `spread` of the first unless one
-    /// is held back or frames come slowly.
+    /// The average seconds from one book's start to the next in a setup of `count` books:
+    /// `longestStep`, or less for a long chain, so every book starts within `spread` of the
+    /// first unless one is held back or frames come slowly.
     static func step(count: Int) -> Float {
         min(longestStep, spread / Float(max(count - 1, 1)))
+    }
+
+    /// The seconds from the start of the book at `index` to the next one's in a setup of
+    /// `count` books: the books start ever faster, averaging `step(count:)`, as they drop into
+    /// a chain standing up from above (`DominoLayout.entryShare(_:of:)`).
+    static func step(after index: Int, count: Int) -> Float {
+        Float(DominoLayout.entryGap(after: index, of: count, step: Double(step(count: count))))
     }
 
     /// When the next book is due after a book due at `due` starts at `time`: `step` after `due`,

@@ -278,7 +278,6 @@ final class DominoCameraTests: XCTestCase {
     func testShotsVaryAndSwingsFitBetweenTheTurns() {
         for count in [39, 120, 276] {
             let rig = chain(count).rig
-            let pace = DominoCameraRig.typicalPace
             XCTAssertEqual(rig.swings.count, rig.shots.count - 1, "\(count)")
             for (row, shot) in rig.shots.enumerated() {
                 XCTAssertGreaterThanOrEqual(shot.elevation, DominoCameraRig.elevations.lowerBound)
@@ -300,13 +299,15 @@ final class DominoCameraTests: XCTestCase {
                 let distance = abs(shot.share - before.share) > 0.01
                 XCTAssertTrue(bearing || height || distance, "\(count) \(row)")
             }
-            // Rows long enough for the longest swing keep `dwell` steady between swings.
-            let roomy =
-                rig.path.period / pace - DominoCameraRig.dwell
-                >= DominoCameraRig.swingTimes.upperBound
             for (turn, swing) in rig.swings.enumerated() {
-                // A swing keeps within its average rate at a typical pace, and leaves part of
-                // each row and turn steady before the next.
+                // A swing keeps within its average rate at the turn's typical pace, which speeds
+                // up as the chain falls, and leaves part of each row and turn steady before the
+                // next where the rows are long enough for the longest swing.
+                let pace = DominoCameraRig.pace(
+                    at: rig.path.start(ofRow: turn) + rig.path.rowLength(turn))
+                let roomy =
+                    rig.path.period / pace - DominoCameraRig.dwell
+                    >= DominoCameraRig.swingTimes.upperBound
                 let size = abs(rig.shots[turn + 1].azimuth - rig.shots[turn].azimuth)
                 let time = 2 * swing.reach / pace
                 XCTAssertLessThanOrEqual(size, DominoCameraRig.swingRate * time * 1.001)

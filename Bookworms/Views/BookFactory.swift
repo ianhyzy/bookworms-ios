@@ -188,8 +188,10 @@ final class BookFactory {
     /// Puts a cover onto a built book's front, cropped to its front board, and hands the new
     /// material to `coverArrived`.
     func addCover(_ cover: UIImage, to id: Int) async {
+        // A caller cancelled while the texture loaded, such as a scene that reset, no longer
+        // wants the cover.
         guard let parts = parts[id], let image = Self.crop(cover, to: parts.shape),
-            let texture = await Self.texture(image)
+            let texture = await Self.texture(image), !Task.isCancelled
         else { return }
         let material = Self.jacket(texture, binding: parts.shape.binding)
         self.parts[id]?.materials[Int(BookSlot.cover)] = material
