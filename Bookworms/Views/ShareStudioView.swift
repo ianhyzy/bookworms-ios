@@ -57,6 +57,12 @@ struct ShareStudioView: View {
     @State private var files: SharedFiles?
     /// Whether **Share** is adding the credit and writing the files.
     @State private var isPreparing = false
+    /// Whether a finger, or on a Mac the mouse button, holds the preview, which then shows
+    /// full size (`RootView`).
+    @GestureState private var holdsPreview = false
+    /// VoiceOver's focus on the preview, which returns there when the full-size view closes.
+    @AccessibilityFocusState private var focusesPreview: Bool
+    @Environment(\.fullSizeShareImage) private var fullSizeImage
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.horizontalSizeClass) private var sizeClass
 
@@ -297,8 +303,9 @@ struct ShareStudioView: View {
         }
     }
 
-    /// Draws covers as 3D books when on and flat when off. It is disabled where the template
-    /// has one style: Desk's books are always 3D, and Year in Books on Square shows no covers.
+    /// Draws covers as 3D books when on and flat when off: a round glass button with a cube,
+    /// filled and tinted while on. It is disabled where the template has one style: Desk's books
+    /// are always 3D, and Year in Books on Square shows no covers.
     private var coverToggle: some View {
         let isOn = Binding {
             template == .pile || coverStyle == .threeD
@@ -309,12 +316,18 @@ struct ShareStudioView: View {
         let help =
             template == .yearInBooks
             ? "Draws the records' covers as 3D books when they fit" : "Draws covers as 3D books"
-        return Toggle("3D books", systemImage: "view.3d", isOn: isOn)
-            .toggleStyle(.button)
-            .labelStyle(.iconOnly)
-            .help(help)
-            .accessibilityHint(help)
-            .disabled(!template.hasCoverStyle || (template == .yearInBooks && aspect == .square))
+        return Toggle(isOn: isOn) {
+            Label("3D books", systemImage: isOn.wrappedValue ? "cube.fill" : "cube")
+                // Grows the circle to the 44-point touch target.
+                .padding(4)
+        }
+        .toggleStyle(.button)
+        .labelStyle(.iconOnly)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .help(help)
+        .accessibilityHint(help)
+        .disabled(!template.hasCoverStyle || (template == .yearInBooks && aspect == .square))
     }
 
     @ViewBuilder
@@ -441,6 +454,10 @@ struct ShareStudioView: View {
     }
 
     /// The preview's image in a box shaped like it, with the render's progress over it.
+    ///
+    /// Holding the image shows it full size until the finger lifts; VoiceOver's **Show full
+    /// size** action shows it until dismissed. The hold starts after a moment without movement,
+    /// so a scroll that starts on the preview still scrolls.
     private func box(isPending: Bool, maxHeight: CGFloat) -> some View {
         let size = aspect.size
         return ZStack {
@@ -450,7 +467,27 @@ struct ShareStudioView: View {
                 Image(uiImage: image.image)
                     .resizable()
                     .scaledToFit()
+                    .gesture(
+                        LongPressGesture(minimumDuration: 0.25)
+                            // The drag keeps the hold going, wherever the finger moves, until it
+                            // lifts.
+                            .sequenced(before: DragGesture(minimumDistance: 0))
+                            .updating($holdsPreview) { value, state, _ in
+                                if case .second(true, _) = value { state = true }
+                            }
+                    )
+                    // A render that finishes during the hold replaces the image shown.
+                    .onChange(of: holdsPreview ? image.image : nil) { _, shown in
+                        fullSizeImage.wrappedValue = shown
+                    }
+                    .onChange(of: fullSizeImage.wrappedValue == nil) { _, isClosed in
+                        if isClosed { focusesPreview = true }
+                    }
                     .accessibilityLabel("\(image.name) preview")
+                    .accessibilityFocused($focusesPreview)
+                    .accessibilityAction(named: "Show full size") {
+                        fullSizeImage.wrappedValue = image.image
+                    }
             }
             if template == .pile && isPending {
                 // A pile takes seconds to load its covers and lay its books out.
@@ -840,6 +877,11 @@ struct ShareStudioView: View {
         renderedRequest = request
         #if DEBUG
             ShareDebug.write(image)
+            // `-BookwormsShareFullSize YES` shows each image full size, as holding the preview
+            // does.
+            if UserDefaults.standard.bool(forKey: "BookwormsShareFullSize"), let image {
+                fullSizeImage.wrappedValue = image.image
+            }
         #endif
     }
 
@@ -902,6 +944,40 @@ private struct RenderRequest: Equatable {
         var options = self
         options.designs = []
         return options
+    }
+}
+
+extension EnvironmentValues {
+    /// The share image that `RootView` shows full size over the tabs and bars, or `nil`. The
+    /// Share tab sets it while its preview is held.
+    @Entry var fullSizeShareImage: Binding<UIImage?> = .constant(nil)
+}
+
+/// A share image filling the screen at its own aspect on black, over the tabs and bars. A tap,
+/// or VoiceOver's escape gesture, closes it.
+struct FullSizeShareImage: View {
+    let image: UIImage
+    let close: () -> Void
+    @AccessibilityFocusState private var isFocused: Bool
+
+    var body: some View {
+        Image(uiImage: image)
+            .resizable()
+            .scaledToFit()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(.black)
+            .ignoresSafeArea()
+            .contentShape(.rect)
+            .onTapGesture(perform: close)
+            .accessibilityElement()
+            .accessibilityLabel("Full-size preview")
+            .accessibilityHint("Double-tap to close")
+            .accessibilityAddTraits([.isImage, .isModal])
+            .accessibilityAction(.default, close)
+            .accessibilityAction(.escape, close)
+            .accessibilityFocused($isFocused)
+            // VoiceOver moves to the image, which it opened from the preview's action.
+            .onAppear { isFocused = true }
     }
 }
 

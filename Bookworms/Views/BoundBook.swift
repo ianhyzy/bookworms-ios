@@ -26,6 +26,9 @@ struct BoundBook: View {
     var height: CGFloat
     var yaw: Double
     var pitch: Double
+    /// Whether the front cover takes the light's overall shade (`Book3DView.shadesCover`). Its
+    /// rounded edges and joint keep their shading either way.
+    var shadesCover = true
     var thicknessRatio: CGFloat?
     var lighting: Double
 
@@ -60,7 +63,7 @@ struct BoundBook: View {
     {
         content(sheet, model, edge: edge)
             .frame(width: sheet.size.width, height: sheet.size.height)
-            .overlay(Color.black.opacity(sheet.base))
+            .overlay(Color.black.opacity(sheet.content == .front && !shadesCover ? 0 : sheet.base))
             .overlay {
                 if let across = sheet.across {
                     LinearGradient(stops: across, startPoint: .leading, endPoint: .trailing)

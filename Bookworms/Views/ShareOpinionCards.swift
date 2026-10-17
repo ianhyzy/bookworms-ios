@@ -3,7 +3,9 @@ import SwiftUI
 /// The reader's review of one book under its cover, title, and rating.
 ///
 /// A long review shows as an excerpt that ends at a word with an ellipsis. The text takes the
-/// largest size that fits, so a short review reads like a pull quote.
+/// largest size at which it fits whole, so a short review reads like a pull quote, and the cover
+/// then takes the largest height that leaves the text that size. Past the smallest size and
+/// cover, the text truncates at the bottom.
 struct ReviewCard: View {
     let input: ShareInput
 
@@ -13,16 +15,22 @@ struct ReviewCard: View {
         }
     }
 
+    /// The review's longest excerpt, its type sizes, largest first, and the cover heights,
+    /// tallest first.
+    private var metrics: (limit: Int, sizes: [CGFloat], covers: [CGFloat]) {
+        switch input.aspect {
+        case .story: (720, [120, 96, 84, 72, 60, 52, 46, 40, 36], [680, 600, 520, 440])
+        case .portrait: (440, [100, 80, 68, 60, 52, 46, 40, 36, 32], [500, 440, 390, 340])
+        case .square: (300, [80, 64, 56, 52, 46, 40, 36, 32, 30], [380, 330, 300, 270])
+        }
+    }
+
     private func card(_ book: CloudBook, review: String) -> some View {
         let aspect = input.aspect
-        let look = input.look(for: book)
         let theme = input.theme
-        let coverHeight: CGFloat =
-            switch aspect {
-            case .story: 440
-            case .portrait: 340
-            case .square: 270
-            }
+        let metrics = metrics
+        let excerpt = ShareStyle.excerpt(review, limit: metrics.limit)
+        let options = metrics.sizes.flatMap { size in metrics.covers.map { (size, $0) } }
         return ZStack {
             // A glow in the spine's color family behind the cover, fading to a dark field for the
             // text.
@@ -33,63 +41,62 @@ struct ReviewCard: View {
                 ],
                 center: UnitPoint(x: 0.25, y: aspect == .story ? 0.25 : 0.2), startRadius: 0,
                 endRadius: aspect.size.width)
-            VStack(alignment: .leading, spacing: aspect == .story ? 64 : 40) {
-                HStack(spacing: 44) {
-                    ShareCover(
-                        book: book, look: look, cover: input.covers[book.id],
-                        style: input.coverStyle, height: coverHeight,
-                        yaw: 0.5 + (ShareStyle.unit(input.seed, book.id, 4) - 0.5) * 0.12
-                    )
-                    .shadow(color: .black.opacity(0.5), radius: 28, y: 20)
-                    VStack(alignment: .leading, spacing: 14) {
-                        ShareStyle.label("My review").foregroundStyle(ShareStyle.gold)
-                        ShareFittingText(
-                            forms: ShareStyle.titles(book), size: aspect == .square ? 52 : 60,
-                            minimumScale: 0.6, lines: 3, book: book
-                        ) {
-                            ShareStyle.serif($0, .semibold)
-                        }
-                        // The title starts beside the cover, close to the glow's center.
-                        .environment(\.bookTextGround, theme.glow)
-                        Text(SpineView.shortAuthor(book.author))
-                            .font(ShareStyle.serif(36))
-                            .opacity(0.85)
-                            .lineLimit(2)
-                            .minimumScaleFactor(30 / 36)
-                        if input.showsRatings, let rating = book.rating, rating > 0 {
-                            ShareStars(rating: rating, size: 38)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            ViewThatFits(in: .vertical) {
+                ForEach(options.indices, id: \.self) { index in
+                    content(
+                        book, excerpt: excerpt, size: options[index].0,
+                        coverHeight: options[index].1)
                 }
-                quote(review, of: book)
             }
             .foregroundStyle(ShareStyle.cream.color)
             .padding(aspect.insets)
         }
     }
 
-    /// The review beside a gold rule, at the largest size whose full text fits. Past the
-    /// smallest size, the text truncates at the bottom.
-    private func quote(_ review: String, of book: CloudBook) -> some View {
-        let (limit, sizes): (Int, [CGFloat]) =
-            switch input.aspect {
-            case .story: (720, [72, 60, 52, 46, 40, 36])
-            case .portrait: (440, [60, 52, 46, 40, 36, 32])
-            case .square: (300, [52, 46, 40, 36, 32, 30])
+    private func content(_ book: CloudBook, excerpt: String, size: CGFloat, coverHeight: CGFloat)
+        -> some View
+    {
+        let aspect = input.aspect
+        let look = input.look(for: book)
+        let theme = input.theme
+        return VStack(alignment: .leading, spacing: aspect == .story ? 64 : 40) {
+            HStack(spacing: 44) {
+                ShareCover(
+                    book: book, look: look, cover: input.covers[book.id],
+                    style: input.coverStyle, height: coverHeight,
+                    yaw: 0.5 + (ShareStyle.unit(input.seed, book.id, 4) - 0.5) * 0.12
+                )
+                .shadow(color: .black.opacity(0.5), radius: 28, y: 20)
+                VStack(alignment: .leading, spacing: 14) {
+                    ShareStyle.label("My review").foregroundStyle(ShareStyle.gold)
+                    ShareFittingText(
+                        forms: ShareStyle.titles(book), size: aspect == .square ? 52 : 60,
+                        minimumScale: 0.6, lines: 3, book: book
+                    ) {
+                        ShareStyle.serif($0, .semibold)
+                    }
+                    // The title starts beside the cover, close to the glow's center.
+                    .environment(\.bookTextGround, theme.glow)
+                    Text(SpineView.shortAuthor(book.author))
+                        .font(ShareStyle.serif(36))
+                        .opacity(0.85)
+                        .lineLimit(2)
+                        .minimumScaleFactor(30 / 36)
+                    if input.showsRatings, let rating = book.rating, rating > 0 {
+                        ShareStars(rating: rating, size: 38)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-        let excerpt = ShareStyle.excerpt(review, limit: limit)
-        return ViewThatFits(in: .vertical) {
-            ForEach(sizes, id: \.self) { size in
-                BookText(excerpt, of: book)
-                    .font(ShareStyle.serif(size))
-                    .lineSpacing(size * 0.18)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .padding(.leading, 34)
-        .background(alignment: .leading) {
-            Capsule().fill(ShareStyle.gold).frame(width: 6)
+            // The review beside a gold rule.
+            BookText(excerpt, of: book)
+                .font(ShareStyle.serif(size))
+                .lineSpacing(size * 0.18)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 34)
+                .background(alignment: .leading) {
+                    Capsule().fill(ShareStyle.gold).frame(width: 6)
+                }
         }
     }
 }
@@ -97,8 +104,8 @@ struct ReviewCard: View {
 /// Up to three books whose rating differs most from Hardcover's readers, or from another
 /// reader's (`ShareInput.social`), with both ratings and the gap in stars.
 ///
-/// Several takes stack as rows. A single take gets a large cover instead, so the card does not
-/// leave most of its height empty. Compared with another reader, the card ends with the
+/// Several takes stack as rows that share the height below the heading. A single take gets a
+/// cover that fills that height instead. Compared with another reader, the card ends with the
 /// invitation to compare on Hardcover.
 struct HotTakesCard: View {
     let input: ShareInput
@@ -128,10 +135,9 @@ struct HotTakesCard: View {
         let aspect = input.aspect
         let isHero = input.books.count == 1
         let theme = input.theme
-        return VStack(
-            alignment: isHero && aspect != .square ? .center : .leading,
-            spacing: aspect == .square ? 24 : 36
-        ) {
+        let spacing: CGFloat = aspect == .square ? 24 : 36
+        return VStack(alignment: isHero && aspect != .square ? .center : .leading, spacing: spacing)
+        {
             VStack(alignment: isHero && aspect != .square ? .center : .leading, spacing: 8) {
                 Text(heading)
                     .font(ShareStyle.serif(aspect == .story ? 84 : 68, .semibold))
@@ -154,10 +160,27 @@ struct HotTakesCard: View {
                         ShareCover.aspect(of: input.covers[$0.id], style: input.coverStyle)
                     }
                     .max()
-                ForEach(input.books) { book in
-                    row(book, coverAspect: slot ?? 2 / 3, panel: panel)
+                GeometryReader { proxy in
+                    let count = CGFloat(input.books.count)
+                    let height = min(
+                        maximumRowHeight, (proxy.size.height - spacing * (count - 1)) / count)
+                    VStack(spacing: spacing) {
+                        ForEach(input.books) { book in
+                            row(book, coverAspect: slot ?? 2 / 3, panel: panel, height: height)
+                        }
+                    }
+                    .frame(width: proxy.size.width, height: proxy.size.height)
                 }
             }
+        }
+    }
+
+    /// The tallest a take's row grows, so two takes do not turn into posters.
+    private var maximumRowHeight: CGFloat {
+        switch input.aspect {
+        case .story: 570
+        case .portrait: 450
+        case .square: 375
         }
     }
 
@@ -185,18 +208,24 @@ struct HotTakesCard: View {
         return "\(subject) I \(input.direction.title.lowercased()) than \(rival.name) did"
     }
 
-    /// One take: a large cover with the title, the gap, and both ratings below it, or beside
-    /// it on a square.
+    /// One take: a cover as large as the room allows, with the title, the gap, and both
+    /// ratings below it, or beside it on a square.
     @ViewBuilder
     private func hero(_ book: CloudBook) -> some View {
         let isSquare = input.aspect == .square
-        let cover = ShareCover(
-            book: book, look: input.look(for: book), cover: input.covers[book.id],
-            style: input.coverStyle,
-            height: isSquare ? 560 : input.aspect == .story ? 640 : 440,
-            yaw: 0.55 + (ShareStyle.unit(input.seed, book.id, 6) - 0.5) * 0.12
-        )
-        .shadow(color: .black.opacity(0.5), radius: 32, y: 24)
+        let ratio = ShareCover.aspect(of: input.covers[book.id], style: input.coverStyle)
+        // A turned 3D book draws up to about 10 percent taller than its height.
+        let fill: CGFloat = input.coverStyle == .threeD ? 0.9 : 1
+        let cover = GeometryReader { proxy in
+            ShareCover(
+                book: book, look: input.look(for: book), cover: input.covers[book.id],
+                style: input.coverStyle,
+                height: min(proxy.size.height * fill, proxy.size.width * 0.86 / ratio),
+                yaw: 0.55 + (ShareStyle.unit(input.seed, book.id, 6) - 0.5) * 0.12
+            )
+            .shadow(color: .black.opacity(0.5), radius: 32, y: 24)
+            .frame(width: proxy.size.width, height: proxy.size.height)
+        }
         let details = VStack(alignment: isSquare ? .leading : .center, spacing: 12) {
             ShareFittingText(
                 forms: ShareStyle.titles(book), size: isSquare ? 52 : 60, minimumScale: 0.6,
@@ -214,9 +243,10 @@ struct HotTakesCard: View {
         .multilineTextAlignment(isSquare ? .leading : .center)
         // The stack would otherwise shrink the title to share height it has to spare.
         .fixedSize(horizontal: false, vertical: true)
+        .layoutPriority(1)
         if isSquare {
             HStack(spacing: 40) {
-                cover
+                cover.frame(width: 470)
                 details.frame(maxWidth: .infinity, alignment: .leading)
             }
         } else {
@@ -227,21 +257,13 @@ struct HotTakesCard: View {
         }
     }
 
-    /// One take in a row on `panel`, its cover centered in a slot `coverAspect` times as wide as
-    /// the cover is tall.
-    private func row(_ book: CloudBook, coverAspect: CGFloat, panel: Color) -> some View {
+    /// One take in a row `height` tall on `panel`, its cover centered in a slot `coverAspect`
+    /// times as wide as the cover is tall.
+    private func row(_ book: CloudBook, coverAspect: CGFloat, panel: Color, height: CGFloat)
+        -> some View
+    {
         let look = input.look(for: book)
         let isSquare = input.aspect == .square
-        let base: CGFloat =
-            switch input.aspect {
-            case .story: 380
-            case .portrait: 300
-            case .square: 250
-            }
-        // Two takes get taller rows than three, so the card stays full. The invitation of a
-        // comparison with another reader takes some of the height.
-        let height =
-            (input.books.count == 2 ? base * 1.25 : base) * (input.social == nil ? 1 : 0.9)
         let coverHeight = height - 56
         return HStack(spacing: 28) {
             ShareCover(

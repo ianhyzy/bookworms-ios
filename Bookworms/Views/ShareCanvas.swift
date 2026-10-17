@@ -427,7 +427,7 @@ enum ShareStyle {
         return forms
     }
 
-    /// Small tracked capitals that name what a card shows, such as "FINISHED".
+    /// Small tracked capitals that name what a card shows, such as "MY REVIEW".
     static func label(_ text: String) -> some View {
         Text(text.uppercased())
             .font(.system(size: 30, weight: .semibold))
@@ -469,24 +469,24 @@ enum ShareStyle {
     }
 
     /// The book's format when it is not print alone, labeled as the Shelf labels it, its finish
-    /// date (or start date, for a current read or a book not yet finished), and its length,
-    /// joined with middle dots. Missing parts are left out. An audiobook's length is its
-    /// listening time; any other book's is its page count.
+    /// date, such as "Finished Nov 30, 2025" (or "Started" and the start date, for a current
+    /// read or a book not yet finished), and its length, in that order. Missing parts are left
+    /// out. An audiobook's length is its listening time; any other book's is its page count.
     ///
     /// A reread keeps its previous finish date while it is a current read, so `isReading` shows
     /// the start date instead.
-    static func details(_ book: CloudBook, isReading: Bool = false) -> String {
+    static func details(_ book: CloudBook, isReading: Bool = false) -> [String] {
         let format = ShelfLabels.format(book.format)
         var parts: [String] = []
         if let format, format != "Physical" { parts.append(format) }
         // Dates are calendar days at noon UTC; the format keeps UTC so they show the recorded day.
         if !isReading, let date = book.finishedDate {
-            parts.append(date.formatted(ShelfLabels.finishedFormat))
+            parts.append("Finished " + date.formatted(ShelfLabels.finishedFormat))
         } else if let date = book.startedDate {
             parts.append("Started " + date.formatted(ShelfLabels.finishedFormat))
         }
         if let length = ShelfLabels.length(of: book, width: .narrow) { parts.append(length) }
-        return parts.joined(separator: " · ")
+        return parts
     }
 }
 
@@ -645,8 +645,8 @@ struct ShareStars: View {
     }
 }
 
-/// A book's cover on a card, `height` tall: a lit 3D book, or the flat cover with rounded
-/// corners. The caller adds the shadow.
+/// A book's cover on a card, `height` tall: a lit 3D book, whose front cover is as bright as
+/// the flat one, or the flat cover with rounded corners. The caller adds the shadow.
 ///
 /// A book without a downloaded cover gets one in its spine colors, titled in the share serif.
 struct ShareCover: View {
@@ -670,9 +670,10 @@ struct ShareCover: View {
     var body: some View {
         switch style {
         case .threeD:
+            // The cover keeps the colors it has flat; the spine and edges take the shading.
             Book3DView(
                 book: Self.lettered(book), look: look, cover: cover, height: height, yaw: yaw,
-                pitch: pitch)
+                pitch: pitch, shadesCover: false)
         case .flat:
             let width = height * Self.aspect(of: cover, style: .flat)
             let shape = RoundedRectangle(cornerRadius: max(4, height * 0.025))

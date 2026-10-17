@@ -152,6 +152,9 @@ struct RootView: View {
     @Environment(GenerationController.self) private var generation
     @Environment(\.scenePhase) private var scenePhase
     @State private var showsAccount = false
+    /// The share image shown full size over every tab and bar, while the Share tab's preview is
+    /// held.
+    @State private var fullSizeShareImage: UIImage?
 
     var body: some View {
         @Bindable var model = model
@@ -180,6 +183,12 @@ struct RootView: View {
             // iPhone's tab bar turns dark over them instead (see `DeskView`).
             .tint([.library, .desk].contains(model.selectedTab) ? ShelfPalette.lamp : nil)
         #endif
+        .environment(\.fullSizeShareImage, $fullSizeShareImage)
+        .overlay {
+            if let image = fullSizeShareImage {
+                FullSizeShareImage(image: image) { fullSizeShareImage = nil }
+            }
+        }
         // Hardcover is the library's own source, so each launch without a working sign-in, and
         // a sign-in that stops working, offers it over whichever tab shows. Outside the Mac's
         // tint, so the sheet follows the system appearance.

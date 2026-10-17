@@ -26,6 +26,10 @@ struct Book3DView: View {
     /// How much of the light's shading the faces show, from 0, every face evenly lit as a flat
     /// spine on the shelf is, to 1. A book pulled off the shelf starts unshaded, as its spine.
     var lighting: Double = 1
+    /// Whether a bound book's front cover takes the light's shading. Share images leave it
+    /// unshaded, so a 3D cover shows the same colors as a flat one, while the spine, edges, and
+    /// boards keep theirs. A plain box (`bound` off) always shades it.
+    var shadesCover = true
     /// Whether the book draws its binding (`BoundBook`). **Stack**, which draws many books at
     /// once while it scrolls, draws plain boxes, which cost about half as much, except for the
     /// book being pulled out.
@@ -36,6 +40,7 @@ struct Book3DView: View {
             if bound {
                 BoundBook(
                     book: book, look: look, cover: cover, height: height, yaw: yaw, pitch: pitch,
+                    shadesCover: shadesCover,
                     thicknessRatio: thicknessRatio, lighting: lighting)
             } else {
                 box
