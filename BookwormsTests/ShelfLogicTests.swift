@@ -296,9 +296,16 @@ final class ShelfLogicTests: XCTestCase {
                 slidesInStack: true))
         XCTAssertEqual(
             StackStyle.threeD.rest(of: top),
-            PullOutPath.Rest(
-                yaw: -StackStyle.lookDown, pitch: twist, lighting: StackStyle.lighting,
-                slidesInStack: true))
+            PullOutPath.Rest(pitch: twist, lighting: StackStyle.lighting, slidesInStack: true))
+    }
+
+    func testStackCameraLooksThroughANormalLens() {
+        // A 50 mm lens on a full-frame camera, across the area's diagonal.
+        let size = CGSize(width: 402, height: 740)
+        let distance = StackCamera.distance(viewing: size)
+        XCTAssertEqual(distance / hypot(402, 740), 50 / 43.27, accuracy: 1e-6)
+        // Farther than the area is tall, unlike a wide-angle lens.
+        XCTAssertGreaterThan(distance, size.height)
     }
 
     func testOneEyeShowsTopsBelowItAndUndersidesAboveIt() {
@@ -585,7 +592,8 @@ final class ShelfLogicTests: XCTestCase {
     private func drawnSize(_ pose: PullOutPath.Pose, aspect: CGFloat) -> CGSize {
         let projection = BookProjection(
             width: pose.height * aspect, height: pose.height,
-            thickness: pose.height * pose.thicknessRatio, yaw: pose.yaw, pitch: pose.pitch)
+            thickness: pose.height * pose.thicknessRatio, yaw: pose.yaw, pitch: pose.pitch,
+            distance: Double(pose.distance))
         return CGSize(
             width: projection.bounds.width * pose.scale,
             height: projection.bounds.height * pose.scale)
@@ -779,21 +787,27 @@ final class ShelfLogicTests: XCTestCase {
 
     func testThreeDStackedBookStartsAsItLiesAndLandsInTheDetails() {
         let home = CGRect(x: 40, y: 400, width: 280, height: 32)
-        let rest = PullOutPath.Rest(
-            yaw: -0.3, pitch: 0.2, lighting: 0.6)
+        // Seen by the stack's camera, about 3.6 lengths from its center, from a little above.
+        let rest = PullOutPath.Rest(pitch: 0.2, lighting: 0.6, distance: 3.6)
+        let eye = SIMD2<Double>(0.05, -0.02)
         let path = PullOutPath(
             home: home, upright: false, stage: CGRect(x: 0, y: 100, width: 402, height: 380),
-            pose: .resting, aspect: 2 / 3, thicknessRatio: 0.1, rest: rest)
+            pose: .resting, aspect: 2 / 3, thicknessRatio: 0.1, rest: rest, eye: eye)
 
-        // Drawn as the stack draws it: turned to show its top board and an end, and shaded.
+        // Drawn as the stack draws it: turned, shaded, and seen from the stack's eye.
         let start = path.pose(at: 0)
         XCTAssertEqual(start.center, CGPoint(x: home.midX, y: home.midY))
         XCTAssertEqual(start.height, 280, accuracy: 0.001)
         XCTAssertEqual(start.thicknessRatio, 32 / 280, accuracy: 0.0001)
         XCTAssertEqual(
             start.scale,
-            1 / PullOutPath.spineMagnification(aspect: 2 / 3, thicknessRatio: 32 / 280),
+            1
+                / PullOutPath.spineMagnification(
+                    aspect: 2 / 3, thicknessRatio: 32 / 280, distance: 3.6),
             accuracy: 0.0001)
+        XCTAssertEqual(start.distance, 3.6 * 280, accuracy: 0.001)
+        XCTAssertEqual(start.eye.x, 0.05 * 280, accuracy: 0.001)
+        XCTAssertEqual(start.eye.y, -0.02 * 280, accuracy: 0.001)
         XCTAssertEqual(start.roll, -.pi / 2, accuracy: 0.0001)
         XCTAssertEqual(sin(start.yaw - rest.yaw), 1, accuracy: 0.0001)
         XCTAssertEqual(start.pitch, 0.2, accuracy: 0.0001)
@@ -820,10 +834,13 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(out.center.x - start.center.x, slide.offset.width, accuracy: 0.001)
         XCTAssertEqual(out.scale / start.scale, slide.scale, accuracy: 0.0001)
 
+        // It lands seen as the details see their book.
         let end = path.pose(at: 1)
         XCTAssertEqual(end.roll, 0, accuracy: 0.0001)
         XCTAssertEqual(end.yaw, BookPose.resting.yaw, accuracy: 0.0001)
         XCTAssertEqual(end.pitch, BookPose.resting.pitch, accuracy: 0.0001)
         XCTAssertEqual(end.lighting, 1, accuracy: 0.0001)
+        XCTAssertEqual(end.distance, BookProjection.standardDistance * 380, accuracy: 0.001)
+        XCTAssertEqual(end.eye, .zero)
     }
 }
