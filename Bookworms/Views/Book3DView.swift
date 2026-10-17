@@ -220,13 +220,15 @@ struct ScrollEye: Sendable, Equatable {
     /// bounds in the scroll view.
     func point(inViewOf size: CGSize, framed frame: CGRect) -> CGPoint {
         let (cosine, sine) = (cos(roll), sin(roll))
-        let corners = [
-            CGPoint.zero, CGPoint(x: size.width, y: 0), CGPoint(x: 0, y: size.height),
-            CGPoint(x: size.width, y: size.height),
-        ]
-        .map { CGPoint(x: $0.x * cosine - $0.y * sine, y: $0.x * sine + $0.y * cosine) }
-        let low = CGPoint(x: corners.map(\.x).min()!, y: corners.map(\.y).min()!)
-        let span = max(corners.map(\.x).max()! - low.x, corners.map(\.y).max()! - low.y)
+        let (width, height) = (size.width, size.height)
+        // The turned view's corners are 0, a, b, and a + b for its turned width and height
+        // vectors a and b, so their bounds follow without building them; this runs every
+        // scroll frame for each face of each box.
+        let low = CGPoint(
+            x: min(0, width * cosine) + min(0, -height * sine),
+            y: min(0, width * sine) + min(0, height * cosine))
+        let span = max(
+            width * abs(cosine) + height * abs(sine), width * abs(sine) + height * abs(cosine))
         let scale = max(frame.width, frame.height) / max(span, .ulpOfOne)
         // The turned view's top-leading corner lies at `frame.origin`.
         let turned = CGPoint(
