@@ -362,6 +362,18 @@ final class ShelfLogicTests: XCTestCase {
         }
     }
 
+    func testStackedBooksAreLitFromAbove() {
+        // Laid on its back by the stack's quarter turn, a book's top board, its front cover,
+        // catches more of the light than its underside does.
+        let lying = BookProjection(
+            width: 200, height: 300, thickness: 40, yaw: .pi / 2, pitch: 0, distance: 1_000,
+            roll: -.pi / 2)
+        let shade = { (kind: BookProjection.FaceKind) in
+            lying.faces.first { $0.kind == kind }!.shade
+        }
+        XCTAssertLessThan(shade(.front), shade(.back))
+    }
+
     func testScrollEyeUndoesTheStackedBooksTurnAndScale() {
         // A view 50 by 300 points, scaled by 0.9 and turned a quarter turn back about its
         // center, as the stack lays a book down, centered at (200, 400).

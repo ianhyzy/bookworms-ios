@@ -529,7 +529,7 @@ private struct PullOutFlight: View, Animatable {
         Book3DView(
             book: book, look: look, cover: cover, height: pose.height, yaw: pose.yaw,
             pitch: pose.pitch, thicknessRatio: pose.thicknessRatio, lighting: pose.lighting,
-            distance: pose.distance, eye: pose.eye
+            distance: pose.distance, eye: pose.eye, roll: pose.roll
         )
         .scaleEffect(pose.scale)
         .rotationEffect(.radians(pose.roll))

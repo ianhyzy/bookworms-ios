@@ -25,9 +25,9 @@ enum StackStyle: String {
     /// undersides, where the books next to them leave those in view.
     case threeD = "3d"
 
-    /// The shading of a 3D book's faces. `Book3DView` lights an upright book from its upper
-    /// left, which lies at the lower left of a book on its back, so full shading would darken
-    /// the top boards most.
+    /// How much of the light's shading a 3D book's faces show (`Book3DView.lighting`): less
+    /// than the details' book shows, so the stack's spines stay bright. The light falls from the
+    /// screen's upper left (`Book3DView.roll`), so top boards show lighter than undersides.
     static let lighting = 0.6
     /// How far a 2D book turns at most, in radians: about 3 degrees, so the books barely face
     /// left or right and never show their page edges.
@@ -434,7 +434,9 @@ private struct StackedBook: View {
             spine: spine, aspect: Book3DView.aspect(of: cover), rest: rest)
         let length = Double(spine.width)
         let isPulled = pullOut.book?.id == book.id
-        let scrollEye = ScrollEye(point: eye, roll: -.pi / 2)
+        // Lying on its back, head on the left.
+        let roll = -Double.pi / 2
+        let scrollEye = ScrollEye(point: eye, roll: roll)
         // Plain boxes keep scrolling cheap. The pulled book is bound from the tap on, as the
         // flight and the details draw it, so the flight takes over from it without a change.
         Book3DView(
@@ -442,7 +444,7 @@ private struct StackedBook: View {
             pitch: rest.pitch, thicknessRatio: spine.height / spine.width, lighting: rest.lighting,
             bound: isPulled, distance: rest.distance.map { CGFloat($0 * length) },
             eye: isPulled ? pullOut.eye * length : .zero,
-            scrollEye: camera != nil && !isPulled ? scrollEye : nil
+            scrollEye: camera != nil && !isPulled ? scrollEye : nil, roll: roll
         )
         .background {
             // Reports the eye that the box saw as the book is pulled, before it moves, and
@@ -456,7 +458,7 @@ private struct StackedBook: View {
             }
         }
         .scaleEffect(scale)
-        .rotationEffect(.radians(-.pi / 2))
+        .rotationEffect(.radians(roll))
         .frame(width: drawn.width, height: drawn.height)
         // Read from the tap on, not from `isOut`: this view must already depend on `progress`
         // when `ShelfPullOut.fly` animates it, or the animation never reaches the slide and the

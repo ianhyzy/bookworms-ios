@@ -28,9 +28,11 @@ struct BoundBook: View {
     var pitch: Double
     var thicknessRatio: CGFloat?
     var lighting: Double
-    /// `BookProjection`'s camera distance and eye.
+    /// `BookProjection`'s camera distance and eye, and the turn that the caller gives the drawn
+    /// book in the screen's plane (`Book3DView.roll`).
     var distance: Double? = nil
     var eye = SIMD2<Double>.zero
+    var roll = 0.0
 
     var body: some View {
         let model = BoundBookModel(
@@ -38,7 +40,7 @@ struct BoundBook: View {
             height: Double(height),
             thickness: Double(
                 height * (thicknessRatio ?? Book3DView.thicknessRatio(of: book, cover: cover))),
-            yaw: yaw, pitch: pitch, lighting: lighting, distance: distance, eye: eye)
+            yaw: yaw, pitch: pitch, lighting: lighting, distance: distance, eye: eye, roll: roll)
         let edge = cover?.spineEdgeColors ?? []
         ZStack(alignment: .topLeading) {
             ForEach(model.items.indices, id: \.self) { index in
@@ -231,12 +233,12 @@ struct BoundBookModel {
     init(
         book: CloudBook, look: SpineLook, coverAspect: CGFloat, height: Double,
         thickness: Double, yaw: Double, pitch: Double, lighting: Double,
-        distance: Double? = nil, eye: SIMD2<Double> = .zero
+        distance: Double? = nil, eye: SIMD2<Double> = .zero, roll: Double = 0
     ) {
         let (bigX, bigY, bigZ) = (height * Double(coverAspect) / 2, height / 2, thickness / 2)
         let camera = BookCamera(
             width: 2 * bigX, height: height, thickness: thickness, yaw: yaw, pitch: pitch,
-            lighting: lighting, distance: distance, eye: eye)
+            lighting: lighting, distance: distance, eye: eye, roll: roll)
         bounds = camera.bounds
         let shape = BookShape(of: book, coverAspect: coverAspect)
         let hard = shape.binding == .hardcover
@@ -552,9 +554,9 @@ struct BoundBookModel {
 /// for rounded edges. Like `BookProjection`, it keeps the bounds of the camera on the axis when
 /// `eye` moves it across the view.
 struct BookCamera {
-    static let light = simd_normalize(SIMD3<Double>(-0.35, -0.6, 0.72))
-    static let halfway = simd_normalize(light + SIMD3<Double>(0, 0, 1))
-
+    /// `BookProjection.light(roll:)`, and the direction halfway between it and the view.
+    let light: SIMD3<Double>
+    let halfway: SIMD3<Double>
     let rotation: simd_double3x3
     let distance: Double
     let lighting: Double
@@ -568,8 +570,10 @@ struct BookCamera {
 
     init(
         width: Double, height: Double, thickness: Double, yaw: Double, pitch: Double,
-        lighting: Double, distance: Double? = nil, eye: SIMD2<Double> = .zero
+        lighting: Double, distance: Double? = nil, eye: SIMD2<Double> = .zero, roll: Double = 0
     ) {
+        light = BookProjection.light(roll: roll)
+        halfway = simd_normalize(light + SIMD3<Double>(0, 0, 1))
         rotation = BookProjection.rotation(yaw: yaw, pitch: pitch)
         self.distance = distance ?? BookProjection.standardDistance * max(width, height)
         across = eye
@@ -623,13 +627,13 @@ struct BookCamera {
     /// `BookProjection`'s shade for a face with `normal`, scaled by `lighting`.
     func shade(_ normal: SIMD3<Double>) -> Double {
         let turned = simd_normalize(rotation * normal)
-        return 0.42 * (1 - max(0, simd_dot(turned, Self.light))) * lighting
+        return 0.42 * (1 - max(0, simd_dot(turned, light))) * lighting
     }
 
     /// A soft specular highlight, for rounded edges that catch the light.
     func gloss(_ normal: SIMD3<Double>) -> Double {
         let turned = simd_normalize(rotation * normal)
-        return 0.3 * pow(max(0, simd_dot(turned, Self.halfway)), 16) * lighting
+        return 0.3 * pow(max(0, simd_dot(turned, halfway)), 16) * lighting
     }
 
     func transform(origin: SIMD3<Double>, u: SIMD3<Double>, v: SIMD3<Double>, size: CGSize)

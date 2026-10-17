@@ -39,6 +39,9 @@ struct Book3DView: View {
     /// follows that eye at render time, so a scrolling stack's books turn their tops and
     /// undersides to one eye without updating their bodies. It replaces `eye`.
     var scrollEye: ScrollEye? = nil
+    /// How far the caller turns the drawn book in the screen's plane (`rotationEffect`), so the
+    /// light still falls from the screen's upper left (`BookProjection.light(roll:)`).
+    var roll = 0.0
 
     var body: some View {
         Group {
@@ -46,8 +49,7 @@ struct Book3DView: View {
                 BoundBook(
                     book: book, look: look, cover: cover, height: height, yaw: yaw, pitch: pitch,
                     thicknessRatio: thicknessRatio, lighting: lighting,
-                    distance: distance.map(Double.init),
-                    eye: eye)
+                    distance: distance.map(Double.init), eye: eye, roll: roll)
             } else {
                 box
             }
@@ -60,7 +62,7 @@ struct Book3DView: View {
         let projection = BookProjection(
             width: height * coverAspect, height: height,
             thickness: height * (thicknessRatio ?? Self.thicknessRatio(of: book, cover: cover)),
-            yaw: yaw, pitch: pitch, distance: distance.map(Double.init), eye: eye)
+            yaw: yaw, pitch: pitch, distance: distance.map(Double.init), eye: eye, roll: roll)
         let camera = projection.camera
         return ZStack(alignment: .topLeading) {
             ForEach(scrollEye == nil ? projection.visibleFaces : projection.faces) { face in
@@ -344,9 +346,11 @@ struct BookProjection {
     ///     `standardDistance` times the longer of `width` and `height`.
     ///   - eye: The camera's offset across the view from the book's center, in the plane through
     ///     the spine's center.
+    ///   - roll: How far the caller turns the projected book in the screen's plane, which turns
+    ///     the light the other way (`light(roll:)`).
     init(
         width w: CGFloat, height h: CGFloat, thickness t: CGFloat, yaw: Double, pitch: Double,
-        distance: Double? = nil, eye: SIMD2<Double> = .zero
+        distance: Double? = nil, eye: SIMD2<Double> = .zero, roll: Double = 0
     ) {
         let rotation = Self.rotation(yaw: yaw, pitch: pitch)
         let distance = distance ?? Self.standardDistance * Double(max(w, h))
@@ -367,8 +371,7 @@ struct BookProjection {
             distance: distance, anchor: (rotation * SIMD3(-x, 0, 0)).z, offset: -minimum)
         self.camera = camera
 
-        // Light from the upper left, in front of the book.
-        let light = simd_normalize(SIMD3<Double>(-0.35, -0.6, 0.72))
+        let light = Self.light(roll: roll)
         faces = FaceKind.allCases.compactMap { kind in
             // Each face: its local origin, then the model vectors of its local x and y axes.
             let (origin, u, v): (SIMD3<Double>, SIMD3<Double>, SIMD3<Double>) =
@@ -407,6 +410,18 @@ struct BookProjection {
             return face
         }
         visibleFaces = faces.filter { camera.shows($0, from: eye) }
+    }
+
+    /// The direction toward the light, from the screen's upper left and in front of the book, in
+    /// the coordinates of a book that the caller turns by `roll` in the screen's plane
+    /// (`rotationEffect`). A book that **Stack** lays on its back, a quarter turn back, is lit on
+    /// its top board, as a room's light from above lights a real stack.
+    static func light(roll: Double) -> SIMD3<Double> {
+        let light = simd_normalize(SIMD3<Double>(-0.35, -0.6, 0.72))
+        // Undoes the turn, which takes +x toward +y for a positive `roll`.
+        let (cosine, sine) = (cos(roll), sin(roll))
+        return SIMD3(
+            light.x * cosine + light.y * sine, light.y * cosine - light.x * sine, light.z)
     }
 
     /// Rotation by `yaw` about y, then by `pitch` about x.
