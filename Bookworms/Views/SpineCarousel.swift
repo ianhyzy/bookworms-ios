@@ -962,8 +962,8 @@ struct StackArrangement {
     static let maximumShift: CGFloat = 0.03
     /// How far a book can turn about the screen's vertical axis, so its spine faces a little
     /// left or right, in radians: about 7 degrees. Seen by `StackCamera`, a 3D book shows the
-    /// page edges at the end it turns toward the eye only when it is short and turned near
-    /// the limit.
+    /// page edges at an end only when the eye lies past that end, as it does for a short book
+    /// turned near the limit, or for a stack to one side of a wide Mac window.
     static let maximumTwist = 0.12
     /// Space between the screen's edges and the longest book lying in the middle.
     static let margin: CGFloat = 16
