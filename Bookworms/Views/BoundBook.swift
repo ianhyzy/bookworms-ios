@@ -31,6 +31,11 @@ struct BoundBook: View {
     var shadesCover = true
     var thicknessRatio: CGFloat?
     var lighting: Double
+    /// `BookProjection`'s camera distance and eye, and the turn that the caller gives the drawn
+    /// book in the screen's plane (`Book3DView.roll`).
+    var distance: Double? = nil
+    var eye = SIMD2<Double>.zero
+    var roll = 0.0
 
     var body: some View {
         let model = BoundBookModel(
@@ -38,7 +43,7 @@ struct BoundBook: View {
             height: Double(height),
             thickness: Double(
                 height * (thicknessRatio ?? Book3DView.thicknessRatio(of: book, cover: cover))),
-            yaw: yaw, pitch: pitch, lighting: lighting)
+            yaw: yaw, pitch: pitch, lighting: lighting, distance: distance, eye: eye, roll: roll)
         let edge = cover?.spineEdgeColors ?? []
         ZStack(alignment: .topLeading) {
             ForEach(model.items.indices, id: \.self) { index in
@@ -230,12 +235,13 @@ struct BoundBookModel {
 
     init(
         book: CloudBook, look: SpineLook, coverAspect: CGFloat, height: Double,
-        thickness: Double, yaw: Double, pitch: Double, lighting: Double
+        thickness: Double, yaw: Double, pitch: Double, lighting: Double,
+        distance: Double? = nil, eye: SIMD2<Double> = .zero, roll: Double = 0
     ) {
         let (bigX, bigY, bigZ) = (height * Double(coverAspect) / 2, height / 2, thickness / 2)
         let camera = BookCamera(
             width: 2 * bigX, height: height, thickness: thickness, yaw: yaw, pitch: pitch,
-            lighting: lighting)
+            lighting: lighting, distance: distance, eye: eye, roll: roll)
         bounds = camera.bounds
         let shape = BookShape(of: book, coverAspect: coverAspect)
         let hard = shape.binding == .hardcover
@@ -548,24 +554,33 @@ struct BoundBookModel {
 }
 
 /// `BookProjection`'s camera and light for a box of the given size, with a specular highlight
-/// for rounded edges.
+/// for rounded edges. Like `BookProjection`, it keeps the bounds of the camera on the axis when
+/// `eye` moves it across the view.
 struct BookCamera {
-    static let light = simd_normalize(SIMD3<Double>(-0.35, -0.6, 0.72))
-    static let halfway = simd_normalize(light + SIMD3<Double>(0, 0, 1))
-
+    /// `BookProjection.light(roll:)`, and the direction halfway between it and the view.
+    let light: SIMD3<Double>
+    let halfway: SIMD3<Double>
     let rotation: simd_double3x3
     let distance: Double
     let lighting: Double
     /// Shifts projected points into the view, as `BookProjection` does.
     let offset: SIMD2<Double>
     let bounds: CGSize
+    /// The camera's offset across the view, and the depth of the plane it leaves in place
+    /// (`BookProjection.Camera`).
+    let across: SIMD2<Double>
+    let anchor: Double
 
     init(
         width: Double, height: Double, thickness: Double, yaw: Double, pitch: Double,
-        lighting: Double
+        lighting: Double, distance: Double? = nil, eye: SIMD2<Double> = .zero, roll: Double = 0
     ) {
+        light = BookProjection.light(roll: roll)
+        halfway = simd_normalize(light + SIMD3<Double>(0, 0, 1))
         rotation = BookProjection.rotation(yaw: yaw, pitch: pitch)
-        distance = 3.2 * max(width, height)
+        self.distance = distance ?? BookProjection.standardDistance * max(width, height)
+        across = eye
+        anchor = (rotation * SIMD3(-width / 2, 0, 0)).z
         self.lighting = lighting
         let (x, y, z) = (width / 2, height / 2, thickness / 2)
         var low = SIMD2<Double>(repeating: .infinity)
@@ -574,7 +589,7 @@ struct BookCamera {
             for cy in [-y, y] {
                 for cz in [-z, z] {
                     let q = rotation * SIMD3(cx, cy, cz)
-                    let point = SIMD2(q.x, q.y) * (distance / (distance - q.z))
+                    let point = SIMD2(q.x, q.y) * (self.distance / (self.distance - q.z))
                     low = simd_min(low, point)
                     high = simd_max(high, point)
                 }
@@ -585,10 +600,18 @@ struct BookCamera {
     }
 
     /// The camera's position in the book's coordinates.
-    var eye: SIMD3<Double> { rotation.transpose * SIMD3(0, 0, distance) }
+    var eye: SIMD3<Double> { rotation.transpose * SIMD3(across.x, across.y, distance) }
+
+    /// `vector`, turned toward the camera and sheared as `BookProjection.Camera` shears it for
+    /// `across`: a point by its depth in front of the spine's plane, a direction by its own.
+    private func turned(_ vector: SIMD3<Double>, point: Bool) -> SIMD3<Double> {
+        let q = rotation * vector
+        let shift = -across * ((point ? q.z - anchor : q.z) / (distance - anchor))
+        return SIMD3(q.x + shift.x, q.y + shift.y, q.z)
+    }
 
     func point(_ p: SIMD3<Double>) -> CGPoint {
-        let q = rotation * p
+        let q = turned(p, point: true)
         let scale = distance / (distance - q.z)
         return CGPoint(x: q.x * scale + offset.x, y: q.y * scale + offset.y)
     }
@@ -601,27 +624,27 @@ struct BookCamera {
     }
 
     func sees(_ point: SIMD3<Double>, facing normal: SIMD3<Double>) -> Bool {
-        simd_dot(rotation * normal, SIMD3(0, 0, distance) - rotation * point) > 0
+        simd_dot(rotation * normal, SIMD3(across.x, across.y, distance) - rotation * point) > 0
     }
 
     /// `BookProjection`'s shade for a face with `normal`, scaled by `lighting`.
     func shade(_ normal: SIMD3<Double>) -> Double {
         let turned = simd_normalize(rotation * normal)
-        return 0.42 * (1 - max(0, simd_dot(turned, Self.light))) * lighting
+        return 0.42 * (1 - max(0, simd_dot(turned, light))) * lighting
     }
 
     /// A soft specular highlight, for rounded edges that catch the light.
     func gloss(_ normal: SIMD3<Double>) -> Double {
         let turned = simd_normalize(rotation * normal)
-        return 0.3 * pow(max(0, simd_dot(turned, Self.halfway)), 16) * lighting
+        return 0.3 * pow(max(0, simd_dot(turned, halfway)), 16) * lighting
     }
 
     func transform(origin: SIMD3<Double>, u: SIMD3<Double>, v: SIMD3<Double>, size: CGSize)
         -> ProjectionTransform
     {
         BookProjection.homography(
-            origin: rotation * origin, u: rotation * u / Double(size.width),
-            v: rotation * v / Double(size.height), distance: distance, offset: offset)
+            origin: turned(origin, point: true), u: turned(u, point: false) / Double(size.width),
+            v: turned(v, point: false) / Double(size.height), distance: distance, offset: offset)
     }
 }
 

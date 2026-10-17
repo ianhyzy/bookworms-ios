@@ -34,6 +34,18 @@ struct Book3DView: View {
     /// once while it scrolls, draws plain boxes, which cost about half as much, except for the
     /// book being pulled out.
     var bound = true
+    /// The camera's distance from the book's center in points, or `nil` for the details'
+    /// camera (`BookProjection.standardDistance`).
+    var distance: CGFloat? = nil
+    /// Where the camera sits across from the book's center, in points (`BookProjection`).
+    var eye = SIMD2<Double>.zero
+    /// For a plain box in a scroll view, where the scroll view's camera looks out from. The box
+    /// follows that eye at render time, so a scrolling stack's books turn their tops and
+    /// undersides to one eye without updating their bodies. It replaces `eye`.
+    var scrollEye: ScrollEye? = nil
+    /// How far the caller turns the drawn book in the screen's plane (`rotationEffect`), so the
+    /// light still falls from the screen's upper left (`BookProjection.light(roll:)`).
+    var roll = 0.0
 
     var body: some View {
         Group {
@@ -41,7 +53,8 @@ struct Book3DView: View {
                 BoundBook(
                     book: book, look: look, cover: cover, height: height, yaw: yaw, pitch: pitch,
                     shadesCover: shadesCover,
-                    thicknessRatio: thicknessRatio, lighting: lighting)
+                    thicknessRatio: thicknessRatio, lighting: lighting,
+                    distance: distance.map(Double.init), eye: eye, roll: roll)
             } else {
                 box
             }
@@ -54,13 +67,26 @@ struct Book3DView: View {
         let projection = BookProjection(
             width: height * coverAspect, height: height,
             thickness: height * (thicknessRatio ?? Self.thicknessRatio(of: book, cover: cover)),
-            yaw: yaw, pitch: pitch)
+            yaw: yaw, pitch: pitch, distance: distance.map(Double.init), eye: eye, roll: roll)
+        let camera = projection.camera
         return ZStack(alignment: .topLeading) {
-            ForEach(projection.visibleFaces) { face in
-                content(for: face.kind, size: face.size)
+            ForEach(scrollEye == nil ? projection.visibleFaces : projection.faces) { face in
+                let shaded = content(for: face.kind, size: face.size)
                     .frame(width: face.size.width, height: face.size.height)
                     .overlay(Color.black.opacity(face.shade * lighting))
-                    .projectionEffect(face.transform)
+                if let scrollEye {
+                    shaded.projectionEffect(face.transform)
+                        .visualEffect { content, proxy in
+                            // Every face view starts at the box's origin, so its coordinates are
+                            // the box's.
+                            let eye = camera.eye(at: scrollEye.point(in: proxy))
+                            let correction = camera.correction(of: face, from: eye)
+                            let opacity: Double = camera.shows(face, from: eye) ? 1 : 0
+                            return content.transformEffect(correction).opacity(opacity)
+                        }
+                } else {
+                    shaded.projectionEffect(face.transform)
+                }
             }
         }
         .frame(
@@ -176,31 +202,165 @@ private struct PageEdgeView: View {
     }
 }
 
+/// Where a scroll view's camera looks out from, for a box that follows it
+/// (`Book3DView.scrollEye`).
+struct ScrollEye: Sendable, Equatable {
+    /// The eye's point in the scroll view's visible coordinates
+    /// (`NamedCoordinateSpace.scrollView`).
+    var point: CGPoint
+    /// How far the box turns in the screen's plane on its way to the scroll view, as
+    /// `rotationEffect` turns it. On the way, the box may also be scaled evenly and moved, but
+    /// not otherwise transformed.
+    var roll: Double
+
+    /// `point` in the coordinates of the view that `proxy` measures.
+    ///
+    /// A geometry proxy cannot convert the scroll view's bounds through a turn, so this undoes
+    /// the turn and scale from the view's frame in the scroll view, which bounds the turned view.
+    func point(in proxy: GeometryProxy) -> CGPoint {
+        point(inViewOf: proxy.size, framed: proxy.frame(in: .scrollView))
+    }
+
+    /// `point` in the coordinates of a view `size` big whose turned and scaled drawing `frame`
+    /// bounds in the scroll view.
+    func point(inViewOf size: CGSize, framed frame: CGRect) -> CGPoint {
+        let (cosine, sine) = (cos(roll), sin(roll))
+        let (width, height) = (size.width, size.height)
+        // The turned view's corners are 0, a, b, and a + b for its turned width and height
+        // vectors a and b, so their bounds follow without building them; this runs every
+        // scroll frame for each face of each box.
+        let low = CGPoint(
+            x: min(0, width * cosine) + min(0, -height * sine),
+            y: min(0, width * sine) + min(0, height * cosine))
+        let span = max(
+            width * abs(cosine) + height * abs(sine), width * abs(sine) + height * abs(cosine))
+        let scale = max(frame.width, frame.height) / max(span, .ulpOfOne)
+        // The turned view's top-leading corner lies at `frame.origin`.
+        let turned = CGPoint(
+            x: (self.point.x - frame.minX) / scale + low.x,
+            y: (self.point.y - frame.minY) / scale + low.y)
+        return CGPoint(
+            x: turned.x * cosine + turned.y * sine, y: -turned.x * sine + turned.y * cosine)
+    }
+}
+
 /// The perspective projection of a book-shaped box.
 ///
 /// Coordinates follow SwiftUI: x right, y down, z toward the viewer. The book stands upright with
-/// its front cover facing +z and its spine on the left (-x). A pinhole camera sits on the z axis.
+/// its front cover facing +z and its spine on the left (-x). A pinhole camera sits `distance` in
+/// front of the book's center. By default it sits on the z axis, as the details see their book;
+/// `eye` moves it across, as one camera sees every book of **Stack** (`StackCamera`). The camera
+/// moves within the plane square to the view, so points on the plane through the spine's center
+/// project where they would with the camera on the axis: a stacked book's spine stays in its
+/// place while its top or underside comes into view. `bounds` and every face's view space are
+/// those of the camera on the axis, so a book keeps its layout as the eye moves, and faces the eye
+/// reveals draw past them.
 struct BookProjection {
     enum FaceKind: CaseIterable { case front, back, spine, foreEdge, top, bottom }
 
-    struct Face: Identifiable {
+    /// The camera's distance from the book's center, in the longer of its width and height,
+    /// unless the caller places the camera.
+    static let standardDistance = 3.2
+
+    struct Face: Identifiable, Sendable {
         let kind: FaceKind
         /// The face view's size in points, equal to the face's size in the model.
         let size: CGSize
-        /// Maps the face view's local coordinates to the container's.
-        let transform: ProjectionTransform
+        /// Maps the face view's local coordinates to the container's, seen from the projection's
+        /// `eye`.
+        fileprivate(set) var transform = ProjectionTransform()
         /// The opacity of a black overlay that darkens faces turned from the light.
         let shade: Double
+        /// The face's corner, its axes per point of the face view, its center, and its outward
+        /// normal, all turned toward the camera, from the book's center.
+        fileprivate let origin: SIMD3<Double>
+        fileprivate let u: SIMD3<Double>
+        fileprivate let v: SIMD3<Double>
+        fileprivate let center: SIMD3<Double>
+        fileprivate let normal: SIMD3<Double>
+        /// How much the camera on the axis magnifies the face at each point of the container:
+        /// `x * depth.x + y * depth.y + depth.z`, since its inverse depth varies linearly over
+        /// the projected plane.
+        fileprivate let depth: SIMD3<Double>
         var id: FaceKind { kind }
     }
 
-    let visibleFaces: [Face]
-    /// The projected book's size; faces map into `0...width` by `0...height`.
-    let bounds: CGSize
+    /// The camera, apart from where `eye` places it across the view.
+    struct Camera: Sendable, Equatable {
+        /// The distance from the book's center along the view.
+        let distance: Double
+        /// The depth of the spine's center, whose plane the eye's offset leaves in place.
+        let anchor: Double
+        /// Shifts projected points into the view.
+        let offset: SIMD2<Double>
 
-    init(width w: CGFloat, height h: CGFloat, thickness t: CGFloat, yaw: Double, pitch: Double) {
+        /// Where an eye that looks out from `point` in the view's coordinates sits across from
+        /// the book's center, in the plane through the spine's center.
+        func eye(at point: CGPoint) -> SIMD2<Double> {
+            // The view magnifies that plane by `distance / (distance - anchor)`.
+            (SIMD2(point.x, point.y) - offset) * (distance - anchor) / distance
+        }
+
+        func shows(_ face: Face, from eye: SIMD2<Double>) -> Bool {
+            simd_dot(face.normal, SIMD3(eye.x, eye.y, distance) - face.center) > 0
+        }
+
+        /// What turns the face that the camera on the axis projects into the face that `eye`
+        /// sees, in the container's coordinates.
+        ///
+        /// `transform(of:from:)` moves each point by `-eye` times its depth in front of the
+        /// spine's plane over `distance - anchor`, before projecting it; once projected, that is
+        /// `-eye * (k - distance / (distance - anchor))` for a point the camera on the axis
+        /// magnifies by `k`. Over a face, `k` is linear (`Face.depth`), so the change is affine,
+        /// which a visual effect can apply; it cannot apply a projective transform.
+        func correction(of face: Face, from eye: SIMD2<Double>) -> CGAffineTransform {
+            let (a, b) = (face.depth.x, face.depth.y)
+            let c = face.depth.z - distance / (distance - anchor)
+            return CGAffineTransform(
+                a: 1 - eye.x * a, b: -eye.y * a, c: -eye.x * b, d: 1 - eye.y * b,
+                tx: -eye.x * c, ty: -eye.y * c)
+        }
+
+        /// The map from `face`'s view to the container's, seen from `eye`.
+        ///
+        /// An eye across from the axis sees what the camera on the axis sees of the box sheared
+        /// across the view in proportion to depth, by `-eye / (distance - anchor)` per point in
+        /// front of the spine's plane, so the projection stays a homography.
+        func transform(of face: Face, from eye: SIMD2<Double>) -> ProjectionTransform {
+            let shear = -eye / (distance - anchor)
+            func sheared(_ vector: SIMD3<Double>, depth: Double) -> SIMD3<Double> {
+                SIMD3(vector.x + shear.x * depth, vector.y + shear.y * depth, vector.z)
+            }
+            return BookProjection.homography(
+                origin: sheared(face.origin, depth: face.origin.z - anchor),
+                u: sheared(face.u, depth: face.u.z), v: sheared(face.v, depth: face.v.z),
+                distance: distance, offset: offset)
+        }
+    }
+
+    /// The faces that `eye` sees.
+    let visibleFaces: [Face]
+    /// Every face that does not face away from the view, which an eye anywhere in front of the
+    /// book might see.
+    let faces: [Face]
+    /// The projected book's size, seen from the axis; faces map into `0...width` by
+    /// `0...height`, and faces an eye across from it reveals reach past them.
+    let bounds: CGSize
+    let camera: Camera
+
+    /// - Parameters:
+    ///   - distance: The camera's distance from the book's center, or `nil` for
+    ///     `standardDistance` times the longer of `width` and `height`.
+    ///   - eye: The camera's offset across the view from the book's center, in the plane through
+    ///     the spine's center.
+    ///   - roll: How far the caller turns the projected book in the screen's plane, which turns
+    ///     the light the other way (`light(roll:)`).
+    init(
+        width w: CGFloat, height h: CGFloat, thickness t: CGFloat, yaw: Double, pitch: Double,
+        distance: Double? = nil, eye: SIMD2<Double> = .zero, roll: Double = 0
+    ) {
         let rotation = Self.rotation(yaw: yaw, pitch: pitch)
-        let distance = 3.2 * Double(max(w, h))
+        let distance = distance ?? Self.standardDistance * Double(max(w, h))
         func project(_ point: SIMD3<Double>) -> SIMD2<Double> {
             let p = rotation * point
             let scale = distance / (distance - p.z)
@@ -214,11 +374,12 @@ struct BookProjection {
         let minimum = corners.reduce(corners[0]) { simd_min($0, $1) }
         let maximum = corners.reduce(corners[0]) { simd_max($0, $1) }
         bounds = CGSize(width: maximum.x - minimum.x, height: maximum.y - minimum.y)
+        let camera = Camera(
+            distance: distance, anchor: (rotation * SIMD3(-x, 0, 0)).z, offset: -minimum)
+        self.camera = camera
 
-        // Light from the upper left, in front of the book.
-        let light = simd_normalize(SIMD3<Double>(-0.35, -0.6, 0.72))
-        let camera = SIMD3<Double>(0, 0, distance)
-        visibleFaces = FaceKind.allCases.compactMap { kind in
+        let light = Self.light(roll: roll)
+        faces = FaceKind.allCases.compactMap { kind in
             // Each face: its local origin, then the model vectors of its local x and y axes.
             let (origin, u, v): (SIMD3<Double>, SIMD3<Double>, SIMD3<Double>) =
                 switch kind {
@@ -234,15 +395,40 @@ struct BookProjection {
             let ru = rotation * u
             let rv = rotation * v
             let normal = simd_normalize(simd_cross(ru, rv))
-            guard simd_dot(normal, camera - (o + ru / 2 + rv / 2)) > 0 else { return nil }
+            // Turned more than 30 degrees away from the view, as a stacked book's fore edge is, so
+            // no eye within 30 degrees of the view sees it.
+            guard normal.z > -0.5 else { return nil }
             let size = CGSize(width: simd_length(u), height: simd_length(v))
-            return Face(
-                kind: kind, size: size,
-                transform: Self.homography(
-                    origin: o, u: ru / Double(size.width), v: rv / Double(size.height),
-                    distance: distance, offset: -minimum),
-                shade: 0.42 * (1 - max(0, simd_dot(normal, light))))
+            let (unitU, unitV) = (ru / Double(size.width), rv / Double(size.height))
+            let center = o + ru / 2 + rv / 2
+            let shade = 0.42 * (1 - max(0, simd_dot(normal, light)))
+            // The camera on the axis magnifies a point `p` of the face's plane by
+            // `distance / (distance - p.z)`, which is linear in its projection `q` from the
+            // center: `(n.xy · q - n.z * distance) / (n · p - n.z * distance)`. A face of the box
+            // never lies in a plane through the camera.
+            let reach = simd_dot(normal, o) - normal.z * distance
+            let slope = SIMD2(normal.x, normal.y) / reach
+            let depth = SIMD3(
+                slope.x, slope.y, -normal.z * distance / reach - simd_dot(slope, camera.offset))
+            var face = Face(
+                kind: kind, size: size, shade: shade, origin: o, u: unitU, v: unitV,
+                center: center, normal: normal, depth: depth)
+            face.transform = camera.transform(of: face, from: eye)
+            return face
         }
+        visibleFaces = faces.filter { camera.shows($0, from: eye) }
+    }
+
+    /// The direction toward the light, from the screen's upper left and in front of the book, in
+    /// the coordinates of a book that the caller turns by `roll` in the screen's plane
+    /// (`rotationEffect`). A book that **Stack** lays on its back, a quarter turn back, is lit on
+    /// its top board, as a room's light from above lights a real stack.
+    static func light(roll: Double) -> SIMD3<Double> {
+        let light = simd_normalize(SIMD3<Double>(-0.35, -0.6, 0.72))
+        // Undoes the turn, which takes +x toward +y for a positive `roll`.
+        let (cosine, sine) = (cos(roll), sin(roll))
+        return SIMD3(
+            light.x * cosine + light.y * sine, light.y * cosine - light.x * sine, light.z)
     }
 
     /// Rotation by `yaw` about y, then by `pitch` about x.
