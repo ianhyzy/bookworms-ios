@@ -167,24 +167,47 @@ enum DominoLayout {
     /// The latest a book of the chain starts its drop after the first, in seconds.
     static let entrySpread: TimeInterval = 1.2
 
-    /// The seconds from one book's drop to the next one's down a chain of `count` books: 0.05, or
-    /// less in a chain too long for that, so every drop starts within `entrySpread` of the first.
+    /// The average seconds from one book's drop to the next one's down a chain of `count`
+    /// books: 0.05, or less in a chain too long for that, so every drop starts within
+    /// `entrySpread` of the first.
     static func entryStep(count: Int) -> TimeInterval {
         min(0.05, entrySpread / Double(max(count - 1, 1)))
     }
 
-    /// How much longer than a book takes to build the drops wait from one to the next, so the
-    /// books waiting to drop build up while later books build, and the longest they wait.
+    /// How much longer than a book takes to build the drops wait from one to the next on
+    /// average, so the books waiting to drop build up while later books build.
     static let buildMargin: Double = 1.15
-    static let slowestStep: TimeInterval = 0.08
 
-    /// The seconds from one drop to the next down a chain of `count` books that have taken
-    /// `perBook` seconds each to build on average: `entryStep(count:)`, or `buildMargin` times
-    /// the build time when that is longer, up to `slowestStep`. The drops then run on steadily,
-    /// a little slower than the books build, instead of a batch at once and then a pause while
-    /// the next builds, and a chain built at once still drops within `entrySpread`.
+    /// The average seconds from one drop to the next down a chain of `count` books that have
+    /// taken `perBook` seconds each to build on average: `entryStep(count:)`, or `buildMargin`
+    /// times the build time when that is longer. The drops then never run out of built books,
+    /// however slowly the books build, so they run on without a pause while the next batch
+    /// builds, and a chain built at once still drops within `entrySpread`.
     static func entryStep(count: Int, perBook: TimeInterval) -> TimeInterval {
-        max(entryStep(count: count), min(slowestStep, perBook * buildMargin))
+        max(entryStep(count: count), perBook * buildMargin)
+    }
+
+    /// How many times as fast as the first books the last ones start into their places as a
+    /// chain sets up, from above or from the desk.
+    static let entryQuickening: Double = 3
+
+    /// When the book at `index` of `count` starts into its place, as a share of the time from
+    /// the first book's start to the last book's. The books start ever faster, their rate
+    /// growing by the same factor each second, the last `entryQuickening` times as fast as the
+    /// first, so the longer a setup runs, the faster its books come. The first books come about 1.8 times as far apart as the average
+    /// and the last about 0.6 times, so a setup takes as long as at its average pace, and,
+    /// starting slower than the books build, never runs out of built books.
+    static func entryShare(_ index: Int, of count: Int) -> Double {
+        guard count > 1 else { return 0 }
+        let share = Double(min(max(index, 0), count - 1)) / Double(count - 1)
+        return log(1 + (entryQuickening - 1) * share) / log(entryQuickening)
+    }
+
+    /// The seconds from the start of the book at `index` to the next one's, down a setup of
+    /// `count` books whose starts come `step` seconds apart on average (see `entryShare`).
+    static func entryGap(after index: Int, of count: Int, step: TimeInterval) -> TimeInterval {
+        step * Double(max(count - 1, 0))
+            * (entryShare(index + 1, of: count) - entryShare(index, of: count))
     }
 
     /// The gap from the back cover of a book of `height` to the next book's front cover on a
@@ -740,10 +763,8 @@ final class DominoScene {
 
     /// The books' setup from where they lay (see `DominoSetup`).
     private struct Arrangement {
-        /// The seconds from one book's start to the next (`DominoSetup.step(count:)`), and the
-        /// seconds since the first book was due, once the books are ready to move; less than 0
-        /// while the first book waits for the camera.
-        let step: Float
+        /// The seconds since the first book was due, once the books are ready to move; less
+        /// than 0 while the first book waits for the camera.
         var time: Float?
         var schedule = DominoSetup.Schedule()
         /// The next book to start, in chain order, when it may start, and since when its way
@@ -763,8 +784,7 @@ final class DominoScene {
             var log: [String] = []
         #endif
 
-        init(count: Int, step: Float) {
-            self.step = step
+        init(count: Int) {
             moves = Array(repeating: nil, count: count)
             landed = Array(repeating: false, count: count)
         }
@@ -972,9 +992,11 @@ final class DominoScene {
     /// `batchSize` at a time. Each batch waits at most `coverWait` for its covers, and the next
     /// batch builds while its cobwebs' meshes generate, so it stands up only once the next
     /// batch is built; the first batch also waits for the room's light. Each book then drops
-    /// into its place from above the view (see `spawn`), as far behind the one before as the
-    /// books have taken to build on average (`DominoLayout.entryStep(count:perBook:)`), so
-    /// the drops run on without a pause while later books build. `loading` is set until the
+    /// into its place from above the view (see `spawn`), behind the one before, at a pace that
+    /// averages a little slower than the books have taken to build
+    /// (`DominoLayout.entryStep(count:perBook:)`) and speeds up as the drops go on
+    /// (`DominoLayout.entryShare(_:of:)`), so the drops run on without a pause while later
+    /// books build. `loading` is set until the
     /// first batch starts to drop. A chain that `receive(_:books:generation:viewport:)` set up
     /// from the desk has every book already. Returns once every book stands, when the Follow
     /// camera is built, or when the task is cancelled.
@@ -1003,7 +1025,9 @@ final class DominoScene {
             let built = min(end + Self.batchSize, plan.count) - first
             let perBook = end - first == plan.count ? 0 : (entryClock - began) / Double(built)
             let step = DominoLayout.entryStep(count: plan.count, perBook: perBook)
-            for slot in batch { spawn(slot, cobweb: cobwebs[slot.book.id], step: step) }
+            for slot in batch {
+                spawn(slot, cobweb: cobwebs[slot.book.id], step: step, of: plan.count)
+            }
             spawned = end
             if loading.isLoading { loading.isLoading = false }
         }
@@ -1203,9 +1227,12 @@ final class DominoScene {
     /// Stands the book of `slot`, with `cobweb` hanging between it and the book before it.
     ///
     /// Unless Reduce Motion is on, the book waits out of sight for its turn to drop into its
-    /// place, `step` seconds after the book before it, and its cobweb waits unseen for it to
-    /// land (see `enter(by:)`).
-    private func spawn(_ slot: DominoSlot, cobweb: HangingCobweb?, step: TimeInterval) {
+    /// place, behind the book before it by its share of `step`, the average gap down a chain of
+    /// `count` books (`DominoLayout.entryGap(after:of:step:)`), and its cobweb waits unseen for
+    /// it to land (see `enter(by:)`).
+    private func spawn(
+        _ slot: DominoSlot, cobweb: HangingCobweb?, step: TimeInterval, of count: Int
+    ) {
         let enters = !reducesMotion
         guard
             let book = factory.makeBook(
@@ -1228,7 +1255,8 @@ final class DominoScene {
         guard enters else { return }
         book.isEnabled = false
         web?.components.set(OpacityComponent(opacity: 0))
-        let start = max(entryClock, lastEntry + step)
+        let gap = DominoLayout.entryGap(after: books.count - 2, of: count, step: step)
+        let start = max(entryClock, lastEntry + gap)
         lastEntry = start
         entering.append(Entry(book: books.count - 1, start: start, web: web))
     }
@@ -1385,8 +1413,7 @@ final class DominoScene {
         }
         spawned = plan.slots.count
         loading.isLoading = false
-        arrangement = Arrangement(
-            count: books.count, step: DominoSetup.step(count: books.count))
+        arrangement = Arrangement(count: books.count)
         updateClockRate()
         arrangementTask = Task { await prepareArrangement(key: key) }
     }
@@ -1571,7 +1598,8 @@ final class DominoScene {
             arrangement.heldSince = nil
             arrangement.next += 1
             arrangement.nextStart = DominoSetup.nextStart(
-                after: arrangement.nextStart, startedAt: time, step: arrangement.step)
+                after: arrangement.nextStart, startedAt: time,
+                step: DominoSetup.step(after: index, count: books.count))
             books[index].components[PhysicsBodyComponent.self]?.mode = .kinematic
             books[index].components.set(PhysicsMotionComponent())
         }

@@ -431,9 +431,35 @@ final class DominoTests: XCTestCase {
         // Books that take 50 milliseconds each to build drop a little more slowly, so the books
         // waiting to drop build up while later ones build.
         XCTAssertEqual(DominoLayout.entryStep(count: 276, perBook: 0.05), 0.0575, accuracy: 1e-9)
-        // However slowly they build, they drop at most 80 milliseconds apart.
-        XCTAssertEqual(
-            DominoLayout.entryStep(count: 276, perBook: 0.5), DominoLayout.slowestStep)
+        // However slowly they build, the drops keep behind them, so they never run out of
+        // built books and pause.
+        XCTAssertEqual(DominoLayout.entryStep(count: 276, perBook: 0.2), 0.23, accuracy: 1e-9)
+    }
+
+    func testDropsSpeedUpAsTheSetupGoesOn() {
+        for count in [2, 16, 39, 267] {
+            let gaps = (0..<count - 1).map { DominoLayout.entryGap(after: $0, of: count, step: 1) }
+            // The gaps add up to the setup's time at its average pace.
+            XCTAssertEqual(gaps.reduce(0, +), Double(count - 1), accuracy: 1e-9, "\(count)")
+            // Each gap is shorter than the one before.
+            for (earlier, later) in zip(gaps, gaps.dropFirst()) {
+                XCTAssertLessThan(later, earlier, "\(count)")
+            }
+        }
+        let gaps = (0..<266).map { DominoLayout.entryGap(after: $0, of: 267, step: 1) }
+        // The last books come about three times as fast as the first.
+        XCTAssertEqual(gaps[0] / gaps[265], DominoLayout.entryQuickening, accuracy: 0.05)
+        XCTAssertEqual(gaps[0], 1.82, accuracy: 0.01)
+        XCTAssertEqual(gaps[265], 0.61, accuracy: 0.01)
+        XCTAssertEqual(DominoLayout.entryShare(0, of: 267), 0)
+        XCTAssertEqual(DominoLayout.entryShare(266, of: 267), 1, accuracy: 1e-12)
+        XCTAssertEqual(DominoLayout.entryGap(after: -1, of: 267, step: 1), 0)
+        // Starting slower than the books build, the drops stay behind a build that keeps its
+        // pace: each book starts no sooner than at the steady pace.
+        for index in 0..<267 {
+            XCTAssertGreaterThanOrEqual(
+                DominoLayout.entryShare(index, of: 267), Double(index) / 266 - 1e-12)
+        }
     }
 
     // MARK: Worm path
