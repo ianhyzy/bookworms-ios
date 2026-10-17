@@ -56,8 +56,12 @@ enum DominoFinale {
     /// view's width, or of its height for a book that would otherwise be too tall to fit.
     static let snapWidth: Float = 0.7
     static let snapHeight: Float = 0.6
+    /// The longest side of the cover the last book wears from the finale on, in pixels: about as
+    /// many as its cover covers on a phone's screen as it hangs, more than five times the
+    /// chain's (`BookFactory.coverPixels(for:)`), so its lettering stays sharp.
+    static let snapCoverPixels = 1280
     /// The most the room's light on the last book brightens out of the lamp's beam, in stops.
-    static let boostLimit: Float = 2.5
+    static let boostLimit: Float = 4.5
     /// The time constant, in seconds, with which the camera's motion as the last book falls
     /// dies away in the move (`coast`): the camera carries on that many seconds' worth of it.
     static let coastTime: Float = 0.25

@@ -637,6 +637,8 @@ final class DominoScene {
     /// The current view's anchor that holds `root` (see `attach`).
     private var holder: AnchorEntity?
     private let factory: BookFactory
+    /// The covers the books wear, which a chain's setup hands over (see `sharpenCover(of:)`).
+    private var covers: CoverStore?
     private let stage: DeskStage
     /// The radius of the lamp's pool over the chain, which the finale's boost measures from.
     private var poolRadius: Float = 6
@@ -996,6 +998,7 @@ final class DominoScene {
     func setUp(_ books: [CloudBook], generation: Int, viewport: PileViewport, model: AppModel)
         async
     {
+        covers = model.covers
         guard planSetUp(books, generation: generation, viewport: viewport), let key else {
             return
         }
@@ -2311,6 +2314,23 @@ final class DominoScene {
             start: camera.transform, motion: moves ? motion : Motion(),
             focus: moves && mode == .follow ? [landing.x, last.size.z / 2, landing.y] : nil,
             slots: placed.slots, camera: placed.camera)
+        if !reducesMotion, let book = placed.slots.last?.book { sharpenCover(of: book) }
+    }
+
+    /// Gives `book`, the spread's last, a cover of `DominoFinale.snapCoverPixels` before its
+    /// flourish hangs it large before the camera, about five times as large as the chain shows
+    /// it. The cover arrives through the factory (`BookFactory.addCover(_:to:)`), which keeps
+    /// it for the book from then on; a cover that takes longer than the six seconds before the
+    /// flourish arrives during it.
+    private func sharpenCover(of book: CloudBook) {
+        guard let covers else { return }
+        Task { [factory] in
+            guard
+                let cover = await covers.image(
+                    for: book, maximumPixelSize: DominoFinale.snapCoverPixels)
+            else { return }
+            await factory.addCover(cover, to: book.id)
+        }
     }
 
     /// Leaves the camera on `view`, where pinches and drags take over.
