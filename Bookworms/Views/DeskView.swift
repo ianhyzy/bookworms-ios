@@ -62,9 +62,33 @@ struct DeskView: View {
         }
         // The walnut backdrop is dark in both appearances, so text and bars use dark styles.
         .environment(\.colorScheme, .dark)
+        #if os(iOS)
+            // The tab bar belongs to the tab view, outside the dark scheme, and its glass stays
+            // light over the dark wall in light appearance, so the tab asks for a dark bar too.
+            .toolbarColorScheme(.dark, for: .tabBar)
+            // The scheme applies only while the bar's background shows.
+            .toolbarBackgroundVisibility(.visible, for: .tabBar)
+        #endif
         .tint(ShelfPalette.lamp)
         // Outside the dark scheme and tint, so the account sheet follows the system appearance.
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
+        // Low Power Mode and heat change the desk's effects while Desk shows. The state is read
+        // before either task waits, so a change while Desk was hidden also counts.
+        .task {
+            desk.updatePowerState()
+            for await _ in NotificationCenter.default.messages(
+                of: ProcessInfo.self, for: .thermalStateDidChange)
+            {
+                desk.updatePowerState()
+            }
+        }
+        .task {
+            for await _ in NotificationCenter.default.messages(
+                of: ProcessInfo.self, for: .powerStateDidChange)
+            {
+                desk.updatePowerState()
+            }
+        }
     }
 
     @ViewBuilder private func content(_ shelf: Shelf, frame: TimeFrame?) -> some View {
@@ -74,11 +98,7 @@ struct DeskView: View {
             } else {
                 let title = frame?.title ?? Self.years(of: shelf.books)
                 ZStack {
-                    if !desk.hidesView {
-                        DeskSceneView { desk.attach(to: $0) }
-                            .ignoresSafeArea()
-                            .accessibilityHidden(true)
-                    }
+                    DeskCanvas(desk: desk)
                     switch desk.mode {
                     case .desk:
                         BookPileView(
@@ -139,6 +159,29 @@ struct DeskView: View {
             books = ShareDebug.samples(books)
         #endif
         return books
+    }
+}
+
+/// The desk's view, or the resting pile's still in its place, which also lies under the view
+/// as it returns, until the view draws (see `DeskScenes`).
+///
+/// A view of its own, so a pause and a wake update only it, not the desk's body, which sorts
+/// the library.
+private struct DeskCanvas: View {
+    let desk: DeskScenes
+
+    var body: some View {
+        if let still = desk.still {
+            Image(uiImage: still)
+                .resizable()
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+        }
+        if !desk.hidesView && !desk.isPaused {
+            DeskSceneView { desk.attach(to: $0) }
+                .ignoresSafeArea()
+                .accessibilityHidden(true)
+        }
     }
 }
 

@@ -385,6 +385,9 @@ final class PileCalendar {
         label.isEnabled = true
     }
 
+    /// Whether a period's name glows on the table.
+    var isGlowing: Bool { glow != nil }
+
     /// Ends the glow at once, as its end would, such as when a book lifts toward its details,
     /// where the label would show over the book.
     func endGlow() {

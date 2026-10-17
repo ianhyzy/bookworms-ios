@@ -34,12 +34,13 @@ struct PileViewport: Equatable {
 ///
 /// The scene (`DeskScenes.pile`) draws in the desk's view, which lives only while Desk is on
 /// screen and no share sheet covers the pile (`DeskSceneView`), so a hidden tab runs no frame
-/// loop; the scene keeps its books, so the pile is as the reader left it on return. This view
-/// lays the gestures, controls, and details over it. Under pushed details, the table and books
-/// are disabled, so nothing simulates or draws. Leaving the pile other than for details, such
-/// as for another tab or for the dominoes, puts a lifted or returning book back at once. A
-/// memory warning while the tab is hidden frees the books and textures, and the books drop
-/// again on the reader's return.
+/// loop; the scene keeps its books, so the pile is as the reader left it on return. Once the
+/// pile rests, a still of it replaces the view until a touch or a change wakes the desk
+/// (`DeskScenes`). This view lays the gestures, controls, and details over it. Under pushed
+/// details, the table and books are disabled, so nothing simulates or draws. Leaving the pile
+/// other than for details, such as for another tab or for the dominoes, puts a lifted or
+/// returning book back at once. A memory warning while the tab is hidden frees the books and
+/// textures, and the books drop again on the reader's return.
 ///
 /// **Share** makes an image of `books`, up to `PileSnapshotRenderer.maximumBooks` of them, in a
 /// new pile headed `title`. While its sheet is open, the pile leaves the screen and keeps its
@@ -223,7 +224,7 @@ struct BookPileView: View {
             ) { _ in
                 guard !isShown else { return }
                 details.putBack(scene)
-                scene.release()
+                desk.releasePile()
             }
             // Stops sampling motion while nothing reads it, and takes a new reference afterward.
             .onChange(of: tracksMotion) { scene.setTilt(tiltMode, tracking: tracksMotion) }
@@ -236,9 +237,13 @@ struct BookPileView: View {
                 if playsFeedback { scene.feedback.start() } else { scene.feedback.stop() }
             }
             .onChange(of: reduceMotion, initial: true) { scene.setDust(!reduceMotion) }
-            .onChange(of: touches) { if !touches { endTouch() } }
+            // A touch wakes a paused desk at once, so its view is back before a hold picks up a
+            // book (`PileCarry.holdDelay`) or a tap lifts one.
+            .onChange(of: touches) { if touches { desk.wake() } else { endTouch() } }
             .sensoryFeedback(.impact(weight: .light), trigger: pickups)
-            .onChange(of: movesCamera) { if !movesCamera { scene.endCameraMove() } }
+            .onChange(of: movesCamera) {
+                if movesCamera { desk.wake() } else { scene.endCameraMove() }
+            }
             .toolbar {
                 if details.lift == nil {
                     ToolbarItem(placement: .topBarLeading) {
@@ -252,7 +257,24 @@ struct BookPileView: View {
                 }
             }
             .sheet(isPresented: $sharesPile) { PileSnapshotSheet(books: books, title: title) }
+            #if DEBUG
+                .onChange(of: desk.isPaused) { tapAfterPause() }
+            #endif
     }
+
+    #if DEBUG
+        /// Simulator hook: `-BookwormsPileWakeTap <seconds>` taps the middle of the screen that
+        /// long after the desk pauses, as a tap does whose touch the gesture never reported, so
+        /// the tap alone wakes the desk and lifts the book there.
+        private func tapAfterPause() {
+            let delay = UserDefaults.standard.double(forKey: "BookwormsPileWakeTap")
+            guard desk.isPaused, delay > 0, let size = viewport?.size else { return }
+            Task {
+                try? await Task.sleep(for: .seconds(delay))
+                tap(at: CGPoint(x: size.width / 2, y: size.height / 2), in: size)
+            }
+        }
+    #endif
 
     private var tiltMode: PileTilt { reduceMotion ? .off : tilt }
     /// The frame a drop goes through period by period, or `nil` for a drop in waves.
@@ -296,6 +318,7 @@ struct BookPileView: View {
                     touch = .pressing(
                         hold: Task {
                             try? await Task.sleep(for: PileCarry.holdDelay)
+                            await desk.awake()
                             guard !Task.isCancelled else { return }
                             if scene.pickUp(at: start, in: size, gentle: reduceMotion) {
                                 touch = .holding
@@ -316,7 +339,7 @@ struct BookPileView: View {
                 switch touch {
                 case .pressing(let hold):
                     hold.cancel()
-                    if !Self.wandered(value) { openBook(at: value.startLocation, in: size) }
+                    if !Self.wandered(value) { tap(at: value.startLocation, in: size) }
                 case .holding:
                     scene.throwBook(velocity: value.velocity, at: value.location, in: size)
                 default: break
@@ -336,6 +359,16 @@ struct BookPileView: View {
         if case .pressing(let hold) = touch { hold.cancel() }
         touch = nil
         scene.endDrag()
+    }
+
+    /// Opens the book under a tap at `point` once the desk's view can find it. A tap on a paused
+    /// desk wakes it, if the touch did not already, and the returning view takes a few frames
+    /// before the scene's rays find books.
+    private func tap(at point: CGPoint, in size: CGSize) {
+        Task {
+            await desk.awake()
+            openBook(at: point, in: size)
+        }
     }
 
     private func openBook(at point: CGPoint, in size: CGSize) {

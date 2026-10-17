@@ -14,7 +14,8 @@ import SwiftUI
 /// into the dark room outside the pool, which also hides the repeats of the table's texture.
 /// An image-based light, a dim room drawn in code with the lamp's glow in it, lights the
 /// shadows and gives the jackets' sheen something to reflect. Each lit entity receives it through
-/// `light(_:)`. Dust motes drift through the beam while `setDust(true)`.
+/// `light(_:)`. Dust motes drift through the beam while `setDust(true)`. Under heat or in Low
+/// Power Mode (`setReducesEffects(_:)`), the dust stops and fades out.
 ///
 /// Scene units are decimeters, but RealityKit treats them as meters, so the lamp's intensity
 /// grows with the square of its distance in those units to keep the pool equally bright.
@@ -33,6 +34,10 @@ final class DeskStage {
     /// Holds the brighter copy of the room's light that `light(_:boost:)` gives.
     private let boosted = Entity()
     private let dust = Entity()
+    /// Whether the dust shows, which Reduce Motion turns off (see `setDust(_:)`).
+    private var showsDust = false
+    /// Whether the stage saves power under heat or in Low Power Mode.
+    private var reducesEffects = false
     private var isBuilt = false
     private var environment: Task<Void, Never>?
     /// The middle and radius of the lamp's pool of light on the table.
@@ -86,7 +91,9 @@ final class DeskStage {
             motes.emitterShapeSize = Self.dustSize(radius: radius)
             dust.components.set(motes)
         } else {
-            dust.components.set(Self.dustMotes(radius: radius))
+            var motes = Self.dustMotes(radius: radius)
+            motes.isEmitting = !reducesEffects
+            dust.components.set(motes)
         }
     }
 
@@ -154,10 +161,32 @@ final class DeskStage {
     /// Shows or hides the dust drifting through the lamp's beam. Reduce Motion hides it, as
     /// motion the reader did not start.
     func setDust(_ enabled: Bool) {
-        if enabled, dust.parent == nil {
+        showsDust = enabled
+        updateDust()
+    }
+
+    /// Saves power while `reduces`, as Apple asks of apps under heat or in Low Power Mode: no
+    /// new dust drifts into the beam. Turning it off lets the dust drift in again.
+    func setReducesEffects(_ reduces: Bool) {
+        guard reduces != reducesEffects else { return }
+        reducesEffects = reduces
+        updateDust()
+    }
+
+    /// Adds the dust while it shows and removes it otherwise, and keeps it emitting unless the
+    /// stage saves power. An emitter that stops leaves its motes to fade out over their lives,
+    /// and one that starts again skips the warm-up a new emitter simulates (see `aim`).
+    private func updateDust() {
+        if showsDust, dust.parent == nil {
             root.addChild(dust)
-        } else if !enabled {
+        } else if !showsDust {
             dust.removeFromParent()
+        }
+        if var motes = dust.components[ParticleEmitterComponent.self],
+            motes.isEmitting == reducesEffects
+        {
+            motes.isEmitting = !reducesEffects
+            dust.components.set(motes)
         }
     }
 

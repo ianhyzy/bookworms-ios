@@ -1,3 +1,4 @@
+import Combine
 import RealityKit
 import SwiftUI
 
@@ -31,6 +32,13 @@ struct DeskHandover {
 /// again. They stay separate scenes because they share little else: the pile's walls, carrying,
 /// tilt, and box on one side, and the chain's path, cameras, recording, and finale on the other.
 /// The scene that does not show holds no books.
+///
+/// Once the Desk scene rests (`BookPileScene.restChanged`), the desk pauses: it takes a still
+/// of the view, shows the still in its place, and drops the view, which ends RealityKit's frame
+/// loop, since RealityKit has no public way to pause an `ARView` or lower its frame rate. A
+/// touch or any change to the scene wakes it (`wake()`): the view returns over the still, which
+/// stays until the view has drawn, so the swap does not show. The dominoes never pause, since
+/// their recording, hand, and clock need every frame.
 @MainActor
 @Observable
 final class DeskScenes {
@@ -45,21 +53,45 @@ final class DeskScenes {
     /// Count **Drop again** and **Set up again** presses; each drops or sets up the books again.
     var pileGeneration = 0
     var dominoGeneration = 0
-    /// The view the scenes show in, with the bars over it, which the scenes' views report.
-    @ObservationIgnored var viewport: PileViewport?
+    /// The view the scenes show in, with the bars over it, which the scenes' views report. A
+    /// new size wakes a paused desk, whose still has the old one.
+    @ObservationIgnored var viewport: PileViewport? {
+        didSet { if viewport != oldValue { wake() } }
+    }
+    /// Set under heat or in Low Power Mode, when the desk draws no dust and no soft shadows
+    /// under the books (see `updatePowerState()`).
+    @ObservationIgnored private var reducesEffects = false
+    /// Set while the Desk scene rests and its still shows in place of the view.
+    private(set) var isPaused = false
+    /// The view as the pile came to rest, which shows while the desk pauses and under the view
+    /// as it returns, until it draws. A full-screen still takes about 13 MB.
+    private(set) var still: UIImage?
 
     let pile: BookPileScene
     let dominoes: DominoScene
+    @ObservationIgnored private let stage: DeskStage
+    @ObservationIgnored private let factory: BookFactory
     @ObservationIgnored private weak var view: ARView?
+    /// Counts pauses and wakes, so a still that arrives after the pile stirred is dropped.
+    @ObservationIgnored private var restRequest = 0
+    /// Counts a returning view's first frames, after which the still goes.
+    @ObservationIgnored private var firstFrames: (any Cancellable)?
+    /// Work that waits for the view a paused desk makes when it wakes.
+    @ObservationIgnored private var onAttach: (() -> Void)?
 
     init() {
         let factory = BookFactory()
         let stage = DeskStage()
+        self.stage = stage
+        self.factory = factory
         pile = BookPileScene(factory: factory, stage: stage)
         dominoes = DominoScene(factory: factory, stage: stage)
         factory.coverArrived = { [weak pile, weak dominoes] id, material in
             pile?.retexture(id, cover: material)
             dominoes?.retexture(id, cover: material)
+        }
+        pile.restChanged = { [weak self] rests in
+            if rests { self?.pause() } else { self?.resume() }
         }
     }
 
@@ -75,13 +107,112 @@ final class DeskScenes {
             dominoes.attach(to: view)
             if PileSnapshotRenderer.isRendering { dominoes.detach() }
         }
+        if still != nil {
+            // The scene updates before each frame draws, so by the third update the first frame
+            // has drawn over the still.
+            var updates = 0
+            firstFrames = view.scene.subscribe(to: SceneEvents.Update.self) { [weak self] _ in
+                updates += 1
+                guard updates >= 3, let self else { return }
+                still = nil
+                firstFrames = nil
+            }
+        }
+        if let onAttach {
+            self.onAttach = nil
+            // Outside the view update that made the view.
+            Task { onAttach() }
+        }
+    }
+
+    /// Pauses the resting Desk scene: takes a still of the view, then drops the view for it,
+    /// unless the pile stirs first. While the view does not show the Desk scene, or when the
+    /// still fails, the pile counts its rest again, so the pause comes `restDelay` later.
+    private func pause() {
+        guard !isPaused else { return }
+        guard mode == .desk, !hidesView, let view else { return pile.stir() }
+        restRequest += 1
+        let request = restRequest
+        Task {
+            let image: UIImage? = await withCheckedContinuation { done in
+                view.snapshot(saveToHDR: false) { done.resume(returning: $0) }
+            }
+            // A pile that stirred meanwhile counts its rest again on its own.
+            guard request == restRequest else { return }
+            guard let image, mode == .desk, !hidesView else { return pile.stir() }
+            still = image
+            isPaused = true
+        }
+    }
+
+    /// Brings the view back, or keeps it, once the pile no longer rests.
+    private func resume() {
+        restRequest += 1
+        isPaused = false
+    }
+
+    /// Wakes a paused desk, or keeps a live one from pausing for another `restDelay`, for a
+    /// touch or another change that the Desk scene cannot see.
+    func wake() {
+        pile.stir()
+        resume()
+    }
+
+    /// Wakes the desk for a touch, and waits until a paused desk's view has drawn, for at most
+    /// half a second, so the scene can find the book under the touch. Returns at once while
+    /// the view shows.
+    func awake() async {
+        wake()
+        // ponytail: polls each frame for the still to go; resume a continuation from the frame
+        // count if more callers need to wait.
+        let deadline = ContinuousClock.now + .milliseconds(500)
+        while still != nil, !isPaused, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(16))
+        }
+    }
+
+    /// Frees the Desk scene's books and textures, and its still, while Desk is out of sight.
+    /// The books drop again when it next shows.
+    func releasePile() {
+        pile.release()
+        still = nil
+    }
+
+    /// Saves power while the device asks apps to: in Low Power Mode, or while its thermal state
+    /// is serious or critical. Then the desk drops its dust and the soft shadows under its
+    /// books, in both scenes, until the condition passes. In Debug builds,
+    /// `-BookwormsReducedEffects YES` saves power throughout.
+    func updatePowerState() {
+        let info = ProcessInfo.processInfo
+        var reduces: Bool
+        // `ThermalState` is not `Comparable`.
+        switch info.thermalState {
+        case .serious, .critical: reduces = true
+        default: reduces = info.isLowPowerModeEnabled
+        }
+        #if DEBUG
+            reduces = reduces || UserDefaults.standard.bool(forKey: "BookwormsReducedEffects")
+        #endif
+        guard reduces != reducesEffects else { return }
+        reducesEffects = reduces
+        stage.setReducesEffects(reduces)
+        factory.setGroundingShadows(!reduces, under: [pile.root, dominoes.root])
+        wake()
     }
 
     /// **Set up dominoes**: hands the books on the desk to the dominoes as the chain of `books`,
     /// the books the desk drops, which then set themselves up from where they lie, or, with
     /// `reduceMotion`, stand in their places at once. Does nothing before a view shows the desk.
     func setUpDominoes(books: [CloudBook], reduceMotion: Bool) {
-        guard mode == .desk, let view, let viewport else { return }
+        guard mode == .desk else { return }
+        if isPaused {
+            // The books go to the dominoes once the view returns.
+            onAttach = { [weak self] in
+                self?.setUpDominoes(books: books, reduceMotion: reduceMotion)
+            }
+            return wake()
+        }
+        guard let view, let viewport else { return }
         let handover = pile.handOff()
         pile.detach()
         dominoes.attach(to: view)

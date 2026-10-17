@@ -161,6 +161,50 @@ final class BookPileTests: XCTestCase {
         }
     }
 
+    func testTrayFitsThePlannedPile() throws {
+        func book(_ id: Int, pages: Int) -> CloudBook {
+            CloudBook(
+                id: id, title: "Fictional Book \(id)", author: "An Author", coverURL: nil,
+                detailCoverURL: nil, pages: pages)
+        }
+        let viewport = PileViewport(
+            size: CGSize(width: 402, height: 874),
+            insets: .init(top: 116, leading: 0, bottom: 83, trailing: 0))
+        let tallest = try XCTUnwrap(PileTray(viewport: viewport))
+        // A drop that fills the volume budget keeps the tallest pile's walls.
+        let long = (1...300).map { book($0, pages: 600 + ($0 * 337) % 600) }
+        let full = Array(PileLayout.dropped(long, count: 300))
+        XCTAssertEqual(PileTray(viewport: viewport, books: full), tallest)
+        // A year's 40 typical books pile under 2 units, so the far and side walls move out
+        // toward the screen's edges, and the near wall, where the bottom edge meets the table,
+        // stays.
+        let year = (1...40).map { book($0, pages: 150 + ($0 * 97) % 400) }
+        let height = PileTray.pileHeight(of: year, over: tallest)
+        XCTAssertGreaterThan(height, 1)
+        XCTAssertLessThan(height, 2)
+        let tray = try XCTUnwrap(PileTray(viewport: viewport, books: year))
+        XCTAssertEqual(tray, PileTray(viewport: viewport, pileHeight: height))
+        XCTAssertLessThan(tray.farZ, tallest.farZ - 2)
+        XCTAssertGreaterThan(tray.farHalfWidth, tallest.farHalfWidth)
+        XCTAssertGreaterThan(tray.nearHalfWidth, tallest.nearHalfWidth)
+        XCTAssertEqual(tray.nearZ, tallest.nearZ, accuracy: 0.0001)
+        // The far edge shows higher, nearer the bar's edge.
+        XCTAssertGreaterThan(
+            project([0, 0, tray.farZ]).y, project([0, 0, tallest.farZ]).y + 0.1)
+        // The emptiest drop's tray, the largest, still starts every book under the ceiling and
+        // keeps its far edge inside the box of Phone is the box.
+        let largest = try XCTUnwrap(PileTray(viewport: viewport, books: []))
+        let starts = (0..<3 as Range<UInt64>)
+            .flatMap { PileLayout.dropPlan(Self.books, in: largest, seed: $0) }
+        XCTAssertLessThan(
+            starts.map(\.transform.translation.y).max()! + 1.86,
+            PileLayout.ceiling(over: largest))
+        let box = try XCTUnwrap(PileBox(viewport: viewport))
+        for corner in largest.corners.prefix(2) {
+            XCTAssertTrue(box.contains(corner + [0, 0.1, 0], margin: 0.3))
+        }
+    }
+
     func testClampKeepsPointsInsideTheTray() {
         let tray = Self.tray
         let inside = SIMD3<Float>(0.5, 2, 0)
@@ -209,7 +253,7 @@ final class BookPileTests: XCTestCase {
                     XCTAssertEqual(Self.tray.clamp(position, margin: PileLayout.reach), position)
                     XCTAssertGreaterThanOrEqual(
                         position.y, PileLayout.spawnHeight(over: Self.tray))
-                    XCTAssertLessThan(position.y + reach, PileLayout.ceiling)
+                    XCTAssertLessThan(position.y + reach, PileLayout.ceiling(over: Self.tray))
                 }
                 for wave in stride(from: 0, to: plan.count, by: PileLayout.waveSize) {
                     let slots = plan[wave..<min(wave + PileLayout.waveSize, plan.count)]
@@ -227,50 +271,68 @@ final class BookPileTests: XCTestCase {
 
     func testDropsStartOutOfViewOfEveryCamera() throws {
         // iPhone-shaped views, from a small phone to a large one, with and without the time
-        // frame button's inset.
-        let views: [(CGSize, CGFloat, CGFloat)] = [
+        // frame button's inset, then Mac windows, from the default size to the smallest, with
+        // the toolbar's inset and no tab bar.
+        let phones: [(CGSize, CGFloat, CGFloat)] = [
             (CGSize(width: 375, height: 812), 100, 83), (CGSize(width: 402, height: 874), 116, 83),
             (CGSize(width: 402, height: 874), 166, 83), (CGSize(width: 440, height: 956), 170, 83),
         ]
-        let slope = tan(PileCamera.fieldOfView / 2)
-        for (size, top, bottom) in views {
-            let tray = try XCTUnwrap(
-                PileTray(
-                    viewport: PileViewport(
-                        size: size,
-                        insets: .init(top: top, leading: 0, bottom: bottom, trailing: 0))))
-            let plan = (0..<3 as Range<UInt64>)
-                .flatMap { PileLayout.dropPlan(Self.books, in: tray, seed: $0) }
-            let points = plan.flatMap(corners)
-            XCTAssertLessThan(
-                plan.map(\.transform.translation.y).max()! + 1.86, PileLayout.ceiling, "\(size)")
-            var shown = 0
-            for zoom in [PileCamera.zoomRange.lowerBound, 1.6, PileCamera.zoomRange.upperBound] {
-                // The targets a zoomed camera can move to (see `BookPileScene.moveCamera`).
-                let reach = 1 - 1 / zoom
-                for x in [-tray.farHalfWidth, tray.farHalfWidth] {
-                    for z in [tray.farZ, tray.nearZ] {
-                        for step in 0..<16 {
-                            let camera = PileCamera(
-                                target: [x * reach, 0, z * reach], yaw: Float(step) * .pi / 8,
-                                zoom: zoom)
-                            let eye = camera.transform.translation
-                            // Counts the corners on or under the plane through the camera
-                            // and the view's top edge.
-                            shown += points.count(where: { corner in
-                                let local = camera.rotation.inverse.act(corner - eye)
-                                return local.y <= -local.z * slope
-                            })
-                        }
-                    }
+        let macs: [(CGSize, CGFloat, CGFloat)] = [
+            (CGSize(width: 1180, height: 820), 52, 0), (CGSize(width: 960, height: 820), 52, 0),
+            (CGSize(width: 760, height: 560), 52, 0),
+        ]
+        // The highest ceiling over a phone's tray, from which the box's books fall.
+        var phoneCeiling: Float = 0
+        for (index, (size, top, bottom)) in (phones + macs).enumerated() {
+            let viewport = PileViewport(
+                size: size, insets: .init(top: top, leading: 0, bottom: bottom, trailing: 0))
+            // The tallest pile's tray, the smallest, and the emptiest drop's, the largest.
+            for tray in [PileTray(viewport: viewport), PileTray(viewport: viewport, books: [])] {
+                let tray = try XCTUnwrap(tray)
+                checkDropsStartOutOfView(over: tray, "\(size)")
+                if index < phones.count {
+                    phoneCeiling = max(phoneCeiling, PileLayout.ceiling(over: tray))
                 }
             }
-            XCTAssertEqual(shown, 0, "\(size)")
         }
         // The box closes only once a book from the ceiling has landed.
         let fall = stride(from: Float(0), to: 10, by: 0.01)
-            .first { fallen(after: $0) > PileLayout.ceiling }!
+            .first { fallen(after: $0) > phoneCeiling }!
         XCTAssertLessThan(Double(fall) + 0.5, PileLayout.boxDelay / .seconds(1))
+    }
+
+    /// Checks that every book a drop over `tray` plans starts under its ceiling and out of view
+    /// of every camera the reader can turn or zoom to.
+    private func checkDropsStartOutOfView(over tray: PileTray, _ message: String) {
+        let plan = (0..<3 as Range<UInt64>)
+            .flatMap { PileLayout.dropPlan(Self.books, in: tray, seed: $0) }
+        let points = plan.flatMap(corners)
+        XCTAssertLessThan(
+            plan.map(\.transform.translation.y).max()! + 1.86, PileLayout.ceiling(over: tray),
+            message)
+        let slope = tan(PileCamera.fieldOfView / 2)
+        var shown = 0
+        for zoom in [PileCamera.zoomRange.lowerBound, 1.6, PileCamera.zoomRange.upperBound] {
+            // The targets a zoomed camera can move to (see `BookPileScene.moveCamera`).
+            let reach = 1 - 1 / zoom
+            for x in [-tray.farHalfWidth, tray.farHalfWidth] {
+                for z in [tray.farZ, tray.nearZ] {
+                    for step in 0..<16 {
+                        let camera = PileCamera(
+                            target: [x * reach, 0, z * reach], yaw: Float(step) * .pi / 8,
+                            zoom: zoom)
+                        let eye = camera.transform.translation
+                        // Counts the corners on or under the plane through the camera and the
+                        // view's top edge.
+                        shown += points.count(where: { corner in
+                            let local = camera.rotation.inverse.act(corner - eye)
+                            return local.y <= -local.z * slope
+                        })
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(shown, 0, message)
     }
 
     /// How far a falling book drops in `time` seconds from rest, under gravity and air drag.

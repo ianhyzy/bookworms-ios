@@ -180,14 +180,14 @@ extension PileTray {
     /// normalized device y coordinates, in a view of width-to-height `aspect`. The camera must
     /// look at the table's center without turning, as the default camera and a zoomed one do.
     ///
-    /// A pile against the far or side walls rises toward the top or sides of the screen, so
-    /// those walls stand where the view's edges meet a pile `pileHeight` high: room for the
-    /// longest book, 2.8 units, standing on end on a 1.7-unit pile. `PileLayout.maximumVolume`
-    /// keeps a pile of long books from rising much higher. A pile against the near wall rises
+    /// The far and side walls stand where the view's edges meet a pile `pileHeight` high, by
+    /// default the tallest pile (`tallestPile`), so a pile up to that high stays on screen.
+    /// Books pushed against those walls, as **Tip the table** pushes them, can rise past a lower
+    /// `pileHeight` toward the top or sides of the screen. A pile against the near wall rises
     /// toward the middle of the screen, so that wall stands where the bottom edge meets the
     /// table.
     init?(
-        aspect: Float, safeTop: Float, safeBottom: Float, pileHeight: Float = 4.5,
+        aspect: Float, safeTop: Float, safeBottom: Float, pileHeight: Float = tallestPile,
         camera: PileCamera = PileCamera()
     ) {
         let top = camera.ray(ndc: [1, safeTop], aspect: aspect)
@@ -207,7 +207,9 @@ extension PileTray {
 
     /// Fits the tray between the bars that cover `viewport`'s edges, as `camera` sees it.
     /// Returns `nil` when the bars leave no room between them.
-    init?(viewport: PileViewport, pileHeight: Float = 4.5, camera: PileCamera = PileCamera()) {
+    init?(
+        viewport: PileViewport, pileHeight: Float = tallestPile, camera: PileCamera = PileCamera()
+    ) {
         let height = Float(viewport.size.height)
         guard viewport.size.width > 0, Float(viewport.insets.top + viewport.insets.bottom) < height
         else { return nil }
@@ -216,6 +218,34 @@ extension PileTray {
             safeTop: 1 - 2 * Float(viewport.insets.top) / height,
             safeBottom: -1 + 2 * Float(viewport.insets.bottom) / height, pileHeight: pileHeight,
             camera: camera)
+    }
+
+    /// Fits the tray between the bars for a drop of `books`, as `camera` sees it, with walls
+    /// where the view's edges meet the pile those books make (`pileHeight(of:over:)`), so a
+    /// small pile fills the screen as a full one does. Returns `nil` when the bars leave no
+    /// room between them.
+    init?(viewport: PileViewport, books: [CloudBook], camera: PileCamera = PileCamera()) {
+        guard let tallest = PileTray(viewport: viewport, camera: camera) else { return nil }
+        self.init(
+            viewport: viewport, pileHeight: Self.pileHeight(of: books, over: tallest),
+            camera: camera)
+    }
+
+    /// The most height the walls allow for: room for the longest book, 2.8 units, standing on
+    /// end on a 1.7-unit pile, as books that a full pile pushes against a wall stand.
+    /// `PileLayout.maximumVolume` keeps a pile of long books from rising much higher.
+    static let tallestPile: Float = 4.5
+
+    /// How high `books` pile on `tray`: their volume spread over the tray, doubled for a loose
+    /// pile, and a unit more for the books that lie across others or lean on them, which also
+    /// keeps the tray's far edge inside the box of **Phone is the box**, at most `tallestPile`.
+    /// `tray` is the tallest pile's, the smallest tray, so its area overstates the height a
+    /// little.
+    static func pileHeight(of books: [CloudBook], over tray: PileTray) -> Float {
+        let volume = books.map { BookShape(of: $0, coverAspect: 2 / 3).size }
+            .map { $0.x * $0.y * $0.z }
+            .reduce(0, +)
+        return min(tallestPile, 2 * volume / tray.area + 1)
     }
 
     /// The tray's area on the table, in square units.
@@ -260,14 +290,16 @@ enum PileLayout {
     /// units without drag, so about nine in ten land front cover up. Without drag they land at
     /// 51 to 62 units a second, and about twice as many land face down.
     static let airDrag: Float = 1
-    /// Above the highest start a drop plan gives on an iPhone, with room for a book lifted over
-    /// others (see `dropPlan`). The walls reach it.
-    static let ceiling: Float = 44
+    /// The height of the ceiling over `tray`, which the walls reach: 20 units over the drop
+    /// height, above the highest start a drop plan gives there, with room for a book lifted
+    /// over others (see `dropPlan`). A wider tray, such as a wide Mac window's, drops from
+    /// higher (`spawnHeight(over:)`), so its ceiling rises with it.
+    static func ceiling(over tray: PileTray) -> Float { spawnHeight(over: tray) + 20 }
     /// Half the largest book's diagonal, 3.72 units, and a little more: a book whose middle lies
     /// this far outside the view is wholly out of it.
     static let entryClearance: Float = 1.9
     /// How long after the last wave the box of **Phone is the box** closes: longer than a book
-    /// takes to fall from the ceiling under `airDrag`, so none is still in the air.
+    /// takes to fall from an iPhone's ceiling under `airDrag`, so none is still in the air.
     static let boxDelay = Duration.seconds(2.5)
     /// Half the longest book's length (`BookShape.longest`) plus a little, which keeps a new
     /// book clear of the walls.
@@ -560,6 +592,10 @@ final class PileStatus {
 /// The live Desk shares its desk and book parts with the dominoes (`DeskScenes`): `handOff()`
 /// gives the dominoes the books as they lie, and `adopt(_:camera:books:tidy:periods:generation:
 /// viewport:)` takes them back, wherever they lie, as the desk's arrangement until the next drop.
+///
+/// Once nothing in the scene has moved for `restDelay`, `restChanged` reports that the pile
+/// rests, so `DeskScenes` can stop drawing it, and the next change to the scene, or `stir()`,
+/// reports that it moves again.
 @MainActor
 final class BookPileScene {
     /// The scene root, which runs the physics simulation.
@@ -641,6 +677,19 @@ final class BookPileScene {
     /// which returns with the book.
     let lifter: BookLifter
     private var readerCamera = PileCamera()
+    /// Called with `true` once the pile has rested for `restDelay`, and with `false` when
+    /// something next changes the scene (see `stir()`).
+    var restChanged: ((Bool) -> Void)?
+    private var isResting = false
+    /// How long nothing has moved, as of the last check, and the time since that check.
+    private var stillTime: TimeInterval = 0
+    private var sinceCheck: TimeInterval = 0
+    /// The camera at the last check.
+    private var checkedCamera = Transform.identity
+
+    /// How long nothing must move before the pile rests, and how often `update` checks.
+    static let restDelay: TimeInterval = 10
+    private static let restCheck: TimeInterval = 0.5
 
     /// The walls' collision group, which a thrown-back book passes through.
     private static let wallGroup = CollisionGroup(rawValue: 1 << 1)
@@ -794,12 +843,21 @@ final class BookPileScene {
 
     // MARK: Building
 
-    /// Adds the table, walls, and lights once the view has room for the tray, and fits them to
-    /// each new size until the first books drop: a tab's first layouts pass through sizes it
-    /// never shows, such as one with a large title. Returns whether the tray changed.
+    /// Adds the table, walls, and lights once the view has room for the tray, fitted to the
+    /// pile of `books`, and fits them to each new size until the first books drop: a tab's
+    /// first layouts pass through sizes it never shows, such as one with a large title. A
+    /// `newPile` fits them again. Returns whether the tray changed.
+    ///
+    /// **Tip the table** slides the whole pile against one wall, where it rises higher than it
+    /// lies spread out, so with that tilt the walls leave room for the tallest pile instead.
     @discardableResult
-    private func build(_ viewport: PileViewport) -> Bool {
-        guard tray == nil || spawned == 0, let tray = PileTray(viewport: viewport),
+    private func build(_ viewport: PileViewport, for books: [CloudBook], newPile: Bool = false)
+        -> Bool
+    {
+        let tips = tilt == .table && Self.canTilt
+        guard tray == nil || spawned == 0 || newPile,
+            let tray = tips
+                ? PileTray(viewport: viewport) : PileTray(viewport: viewport, books: books),
             tray != self.tray
         else { return false }
         aspect = Float(viewport.size.width / viewport.size.height)
@@ -827,10 +885,12 @@ final class BookPileScene {
         walls.addChild(Self.makeWalls(around: tray))
     }
 
-    /// Static walls along the tray's edges and a ceiling above the drop height. They have no
-    /// model, so books seem to bump into the edges of the screen.
+    /// Static walls along the tray's edges and a ceiling above the drop height
+    /// (`PileLayout.ceiling(over:)`). They have no model, so books seem to bump into the edges
+    /// of the screen.
     private static func makeWalls(around tray: PileTray) -> Entity {
         let walls = Entity()
+        let ceiling = PileLayout.ceiling(over: tray)
         let material = PhysicsMaterialResource.generate(
             staticFriction: 0.1, dynamicFriction: 0.1, restitution: 0.3)
         func add(_ shape: ShapeResource, at position: SIMD3<Float>, yaw: Float = 0) {
@@ -854,11 +914,15 @@ final class BookPileScene {
             // Two units thick and long enough to close the corners, so a thrown book cannot
             // slip between walls.
             add(
-                .generateBox(width: 2, height: PileLayout.ceiling, depth: simd_length(along) + 4),
-                at: (start + end) / 2 + outward + [0, PileLayout.ceiling / 2, 0],
+                .generateBox(width: 2, height: ceiling, depth: simd_length(along) + 4),
+                at: (start + end) / 2 + outward + [0, ceiling / 2, 0],
                 yaw: atan2(along.x, along.z))
         }
-        add(.generateBox(width: 90, height: 2, depth: 90), at: [0, PileLayout.ceiling + 1, 0])
+        add(
+            .generateBox(
+                width: 2 * max(tray.farHalfWidth, tray.nearHalfWidth) + 8, height: 2,
+                depth: tray.nearZ - tray.farZ + 8),
+            at: [0, ceiling + 1, (tray.farZ + tray.nearZ) / 2])
         return walls
     }
 
@@ -870,22 +934,26 @@ final class BookPileScene {
     /// With `periods` set, the books drop period by period through that frame (see
     /// `PileLayout.periods`). Otherwise, books added to a dropped list, such as a book a library
     /// update adds, join the books still waiting, when the list keeps the earlier books in their
-    /// order. Any other change starts a new pile, which removes
-    /// every book, the lifted one too.
+    /// order. Any other change starts a new pile, which removes every book, the lifted one too,
+    /// and fits the walls and the lamp's pool to the new pile's books.
     func planDrop(
         _ books: [CloudBook], tidy: Bool, periods: TimeFrame? = nil, generation: Int,
         viewport: PileViewport
     ) {
-        let refits = build(viewport)
-        guard let tray else { return }
         let periods = tidy ? nil : periods
         let key = PlanKey(
             ids: books.map(\.id), tidy: tidy, periods: periods, generation: generation)
-        guard refits || key != planKey else { return }
-        if !refits, !tidy, periods == nil, let planKey, !planKey.tidy, planKey.periods == nil,
-            planKey.generation == generation,
-            let added = PileLayout.added(to: planKey.ids, in: books)
+        var added: [CloudBook]?
+        if !tidy, periods == nil, let planKey, !planKey.tidy, planKey.periods == nil,
+            planKey.generation == generation
         {
+            added = PileLayout.added(to: planKey.ids, in: books)
+        }
+        let refits = build(viewport, for: books, newPile: key != planKey && added == nil)
+        guard let tray else { return }
+        guard refits || key != planKey else { return }
+        stir()
+        if !refits, let added {
             // Plans the waiting books again with the new ones, so the next wave starts in a
             // fresh set of cells.
             let waiting = plan[spawned...].map(\.book) + added
@@ -1010,6 +1078,7 @@ final class BookPileScene {
     /// Removes every book and returns the camera and gravity to rest. Keeps the parts of the
     /// books in `ids` for the next drop.
     private func reset(keeping ids: Set<Int>) {
+        stir()
         shelf.children.removeAll()
         bookIDs = [:]
         falling = [:]
@@ -1075,6 +1144,7 @@ final class BookPileScene {
     /// Puts a cover that arrived after its book was built onto the book in the pile.
     func retexture(_ id: Int, cover: any RealityKit.Material) {
         for case let book as ModelEntity in shelf.children where bookIDs[book.id] == id {
+            stir()
             book.children.first?.components[ModelComponent.self]?
                 .materials[
                     Int(BookSlot.cover)] = cover
@@ -1097,6 +1167,7 @@ final class BookPileScene {
         book.transform = slot.transform
         shelf.addChild(book)
         bookIDs[book.id] = slot.book.id
+        stir()
         return book
     }
 
@@ -1143,7 +1214,54 @@ final class BookPileScene {
             shakeRest -= deltaTime
             shake(reading.acceleration)
         }
-        if let color = calendar.advance(by: Float(deltaTime)) { stage.setLampColor(color) }
+        if let color = calendar.advance(by: Float(deltaTime)) {
+            stage.setLampColor(color)
+            stir()
+        }
+        // A resting pile waits for its still, so a book that starts moving then stirs it at
+        // once, before the still can replace the view.
+        if isResting, shelf.children.contains(where: Self.moves) { stir() }
+        sinceCheck += deltaTime
+        if sinceCheck >= Self.restCheck {
+            checkRest(after: sinceCheck)
+            sinceCheck = 0
+        }
+    }
+
+    /// Counts `interval` toward the pile's rest if nothing moved, and reports the rest once it
+    /// lasts `restDelay`. Nothing may be held, flying, waiting to fall, or falling; no camera
+    /// may move; motion must not steer gravity; no period's name may glow; and every book must
+    /// be slower than a crawl. The physics engine puts bodies to sleep on its own, but reports
+    /// no sleep, so their speeds stand in for it. The dust does not count, so a still image
+    /// holds its motes wherever they drift.
+    private func checkRest(after interval: TimeInterval) {
+        let camera = camera.transform
+        defer { checkedCamera = camera }
+        guard carry == nil, cameraMove == nil, !isFlying, !tracksMotion, !loading.isLoading,
+            spawned == plan.count, falling.isEmpty, camera == checkedCamera,
+            !calendar.isGlowing, !shelf.children.contains(where: Self.moves)
+        else { return stir() }
+        stillTime += interval
+        if stillTime >= Self.restDelay, !isResting {
+            isResting = true
+            restChanged?(true)
+        }
+    }
+
+    /// Notes that something changed the scene, so the pile no longer rests, and reports that
+    /// to `restChanged` if it rested.
+    func stir() {
+        stillTime = 0
+        guard isResting else { return }
+        isResting = false
+        restChanged?(false)
+    }
+
+    /// Whether `book` moves faster than a crawl.
+    private static func moves(_ book: Entity) -> Bool {
+        guard let motion = book.components[PhysicsMotionComponent.self] else { return false }
+        return simd_length(motion.linearVelocity) > 0.05
+            || simd_length(motion.angularVelocity) > 0.1
     }
 
     /// Picks up the book under `point`, in a view of `size`, and returns whether there was one
@@ -1245,7 +1363,8 @@ final class BookPileScene {
         let rest = carry.halfThickness + PileCarry.lift
         let surface = surfaceHeight(of: carry, under: target) ?? carry.height - rest
         carry.height +=
-            (min(surface + rest, PileLayout.ceiling - 2) - carry.height) * min(1, deltaTime * 10)
+            (min(surface + rest, PileLayout.ceiling(over: tray) - 2) - carry.height)
+            * min(1, deltaTime * 10)
         target.y = carry.height
         // The box's walls and glass stop a dynamic book anyway; this keeps it from pressing on
         // them.
@@ -1281,8 +1400,8 @@ final class BookPileScene {
     /// falling from high above. Each hit's position is the point of first touch; its distance
     /// runs from the sweep's start to that point, not along the sweep, so it is not used.
     private func surfaceHeight(of carry: Carry, under point: SIMD3<Float>) -> Float? {
-        guard let scene = root.scene else { return nil }
-        let top = min(carry.height + 3, PileLayout.ceiling - 1)
+        guard let scene = root.scene, let tray else { return nil }
+        let top = min(carry.height + 3, PileLayout.ceiling(over: tray) - 1)
         let hits = scene.convexCast(
             convexShape: carry.shape, fromPosition: [point.x, top, point.z],
             fromOrientation: carry.level, toPosition: [point.x, 0, point.z],
@@ -1415,7 +1534,7 @@ final class BookPileScene {
         _ handover: DeskHandover, books: [CloudBook], tidy: Bool, periods: TimeFrame?,
         generation: Int, viewport: PileViewport
     ) {
-        build(viewport)
+        build(viewport, for: books)
         guard let fitted = tray else { return }
         reset(keeping: Set(handover.books.map(\.id)))
         let byID = Dictionary(books.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -1470,7 +1589,10 @@ final class BookPileScene {
     /// a new reference.
     func setTilt(_ tilt: PileTilt, tracking: Bool) {
         let tracking = tracking && tilt != .off && Self.canTilt
-        if tilt != self.tilt || tracking != tracksMotion { tiltReference = nil }
+        if tilt != self.tilt || tracking != tracksMotion {
+            tiltReference = nil
+            stir()
+        }
         self.tilt = tilt
         if tracking != tracksMotion {
             tracksMotion = tracking
@@ -1570,6 +1692,7 @@ final class BookPileScene {
     private func setGravity(_ gravity: SIMD3<Float>) {
         guard simd_distance(gravity, self.gravity) > PileLayout.gravity * 0.03 else { return }
         self.gravity = gravity
+        stir()
         root.components[PhysicsSimulationComponent.self]?.gravity = gravity
         for case let book as ModelEntity in shelf.children where book !== carry?.book {
             book.applyLinearImpulse(simd_normalize(gravity) * 1e-4, relativeTo: nil)
@@ -1645,14 +1768,7 @@ final class BookPileScene {
         private func waitForRest() async {
             for _ in 0..<40 {
                 try? await Task.sleep(for: .milliseconds(500))
-                let moving = shelf.children.contains { book in
-                    guard let motion = book.components[PhysicsMotionComponent.self] else {
-                        return false
-                    }
-                    return simd_length(motion.linearVelocity) > 0.05
-                        || simd_length(motion.angularVelocity) > 0.1
-                }
-                if !moving { return }
+                if !shelf.children.contains(where: Self.moves) { return }
             }
         }
 
