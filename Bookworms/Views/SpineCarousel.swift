@@ -40,8 +40,8 @@ enum StackStyle: String {
     ///
     /// Nothing fades: the book shows every face throughout. The book slides out inside the
     /// stack, in its order among its neighbors, until it is clear of the book above
-    /// (`Rest.slidesInStack`), and the flight then draws it in front of the stack. The books around it make a little room
-    /// while it is out (`StackRoom`).
+    /// (`Rest.slidesInStack`), and the flight then draws it in front of the stack. The books
+    /// around it make a little room while it is out (`StackRoom`).
     func rest(of book: CloudBook) -> PullOutPath.Rest {
         switch self {
         case .flat:

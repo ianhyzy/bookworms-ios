@@ -198,7 +198,8 @@ private struct PageEdgeView: View {
 /// Where a scroll view's camera looks out from, for a box that follows it
 /// (`Book3DView.scrollEye`).
 struct ScrollEye: Sendable, Equatable {
-    /// The eye's point in the scroll view's visible coordinates (`NamedCoordinateSpace.scrollView`).
+    /// The eye's point in the scroll view's visible coordinates
+    /// (`NamedCoordinateSpace.scrollView`).
     var point: CGPoint
     /// How far the box turns in the screen's plane on its way to the scroll view, as
     /// `rotationEffect` turns it. On the way, the box may also be scaled evenly and moved, but
