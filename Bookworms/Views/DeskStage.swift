@@ -14,7 +14,8 @@ import SwiftUI
 /// into the dark room outside the pool, which also hides the repeats of the table's texture.
 /// An image-based light, a dim room drawn in code with the lamp's glow in it, lights the
 /// shadows and gives the jackets' sheen something to reflect. Each lit entity receives it through
-/// `light(_:)`. Dust motes drift through the beam while `setDust(true)`, catching its light.
+/// `light(_:)`. Dust motes drift through the beam while `setDust(true)`, catching its light, or
+/// fine, faint ones for a camera that films low among them (`setDust(_:fine:)`).
 /// While a scene rests (`setSettled(_:)`), and under heat or in Low Power Mode
 /// (`setReducesEffects(_:)`), no new motes drift in, and those in the beam fade out.
 ///
@@ -35,8 +36,10 @@ final class DeskStage {
     /// Holds the brighter copy of the room's light that `light(_:boost:)` gives.
     private let boosted = Entity()
     private let dust = Entity()
-    /// Whether the dust shows, which Reduce Motion turns off (see `setDust(_:)`).
+    /// Whether the dust shows, which Reduce Motion turns off, and whether its motes are the fine
+    /// ones (see `setDust(_:fine:)`).
     private var showsDust = false
+    private var finesDust = false
     /// Whether the stage saves power under heat or in Low Power Mode.
     private var reducesEffects = false
     /// Whether the scene rests, so it can pause on a still (see `setSettled(_:)`).
@@ -93,6 +96,7 @@ final class DeskStage {
             dust.components.set(motes)
         } else {
             var motes = Self.dustMotes(radius: radius)
+            Self.dress(&motes.mainEmitter, fine: finesDust)
             motes.isEmitting = emitsDust
             dust.components.set(motes)
         }
@@ -120,7 +124,9 @@ final class DeskStage {
         shadow.lightSize = 1.5
         lamp.shadow = shadow
         lamp.look(at: placement.aim, from: placement.position, relativeTo: nil)
-        dust.position = center + [0, 2.5, 0]
+        // Over the beam's axis, which runs from the lamp to the pool's middle, at the dust's
+        // middle height (see `dustSize`).
+        dust.position = center + Self.lampOffset * (2 / Self.lampOffset.y)
     }
 
     /// Waits until the room's light reaches the scene, as a still image needs before it
@@ -160,9 +166,13 @@ final class DeskStage {
     }
 
     /// Shows or hides the dust drifting through the lamp's beam. Reduce Motion hides it, as
-    /// motion the reader did not start.
-    func setDust(_ enabled: Bool) {
+    /// motion the reader did not start. `fine` motes, about 3 mm across, faint, and lit by the
+    /// lamp, suit a camera that films low among them, as the dominoes' Follow camera does,
+    /// where a mote of the desk's that drifts near the lens shows as a large glowing disc.
+    /// Motes already drifting keep their look until they fade.
+    func setDust(_ enabled: Bool, fine: Bool = false) {
         showsDust = enabled
+        finesDust = fine
         updateDust()
     }
 
@@ -197,9 +207,10 @@ final class DeskStage {
             dust.removeFromParent()
         }
         if var motes = dust.components[ParticleEmitterComponent.self],
-            motes.isEmitting != emitsDust
+            motes.isEmitting != emitsDust || motes.mainEmitter.isLightingEnabled != finesDust
         {
             motes.isEmitting = emitsDust
+            Self.dress(&motes.mainEmitter, fine: finesDust)
             dust.components.set(motes)
         }
     }
@@ -263,14 +274,15 @@ final class DeskStage {
         return table
     }
 
-    /// The longest a mote drifts, in seconds.
-    nonisolated static let longestMoteLife: Double = 5
+    /// The longest a mote drifts, in seconds: short enough that a scene that comes to rest
+    /// shows its dust for several seconds before the motes must fade for its still
+    /// (`BookPileScene`'s `dustStop`).
+    nonisolated static let longestMoteLife: Double = 3
 
-    /// Slow motes, 5 to 9 mm across, in the beam over the middle of the pool: specks of the
-    /// lamp's warm light that brighten what lies behind them, as dust catching a beam does.
-    /// About 140 drift at a time, each fading in and out over 3 to `longestMoteLife` seconds.
-    /// The emitter has no warm-up, which a new emitter simulates in a single frame, stalling
-    /// the render, so the motes fill the beam over their first few seconds.
+    /// Slow motes in the beam around its axis, over the middle of the pool. About 140 drift at
+    /// a time, each fading in and out over 2 to `longestMoteLife` seconds. The emitter has no
+    /// warm-up, which a new emitter simulates in a single frame, stalling the render, so the
+    /// motes fill the beam over their first few seconds. `dress(_:fine:)` sets their look.
     private static func dustMotes(radius: Float) -> ParticleEmitterComponent {
         var emitter = ParticleEmitterComponent()
         emitter.emitterShape = .box
@@ -280,23 +292,34 @@ final class DeskStage {
         emitter.speedVariation = 0.03
         emitter.timing = .repeating(emit: .init(duration: 60))
         var motes = emitter.mainEmitter
-        motes.birthRate = 36
-        motes.lifeSpanVariation = 1
+        motes.birthRate = 56
+        motes.lifeSpanVariation = 0.5
         motes.lifeSpan = longestMoteLife - motes.lifeSpanVariation
-        motes.size = 0.07
-        motes.sizeVariation = 0.02
         motes.opacityCurve = .gradualFadeInOut
-        motes.color = .constant(.single(UIColor(red: 1, green: 0.8, blue: 0.52, alpha: 0.8)))
         motes.noiseStrength = 0.04
         motes.noiseScale = 0.6
         motes.noiseAnimationSpeed = 0.1
         motes.acceleration = [0, -0.004, 0]
-        motes.isLightingEnabled = false
-        motes.blendMode = .additive
         motes.billboardMode = .billboard
-        motes.image = moteImage
         emitter.mainEmitter = motes
         return emitter
+    }
+
+    /// Gives `motes` the desk's look: 5 to 9 mm across, specks of the lamp's warm light that
+    /// brighten what lies behind them, as dust catching a beam does. `fine` motes are 2 to 4 mm
+    /// across, faint, and lit by the lamp, so they show only in its beam, and stay small and
+    /// faint enough not to show as discs when a camera passes close to them.
+    private static func dress(_ motes: inout ParticleEmitterComponent.ParticleEmitter, fine: Bool) {
+        motes.size = fine ? 0.03 : 0.07
+        motes.sizeVariation = fine ? 0.01 : 0.02
+        motes.color = .constant(
+            .single(
+                fine
+                    ? UIColor(red: 1, green: 0.9, blue: 0.75, alpha: 0.35)
+                    : UIColor(red: 1, green: 0.8, blue: 0.52, alpha: 0.8)))
+        motes.isLightingEnabled = fine
+        motes.blendMode = fine ? .alpha : .additive
+        motes.image = fine ? nil : moteImage
     }
 
     /// A mote's image: a bright core that fades out softly, so a mote reads as a speck of light.
@@ -323,9 +346,12 @@ final class DeskStage {
         }
     }()
 
-    /// The box the motes are born in over a pool of `radius`.
+    /// The box the motes are born in over a pool of `radius`: from half a unit to 3.5 units
+    /// above the table, and 0.7 of the pool's radius across, so that, about the beam's axis,
+    /// even its corners lie in the beam's full light and no mote glows where the beam would
+    /// leave it dark.
     private static func dustSize(radius: Float) -> SIMD3<Float> {
-        [radius * 0.9, 4, radius * 0.9]
+        [radius * 0.7, 3, radius * 0.7]
     }
 
     /// Builds the room's light once, the first time a stage needs it.

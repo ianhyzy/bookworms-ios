@@ -945,7 +945,7 @@ final class DominoScene {
     func setReduceMotion(_ reduces: Bool) {
         let before = mode
         reducesMotion = reduces
-        stage.setDust(!reduces)
+        stage.setDust(!reduces, fine: true)
         handDrift = reduces ? nil : Drift(start: .now)
         guard ending == nil else { return }
         if reduces {
