@@ -301,6 +301,84 @@ final class ShelfLogicTests: XCTestCase {
                 slidesInStack: true))
     }
 
+    func testOneEyeShowsTopsBelowItAndUndersidesAboveIt() {
+        // A book lying on its back, seen as the stack draws it: upright in the model, with its
+        // front cover toward +x, which the stack's turn makes the screen's up.
+        func book(eye: SIMD2<Double>) -> BookProjection {
+            BookProjection(
+                width: 200, height: 300, thickness: 40, yaw: .pi / 2, pitch: 0.05,
+                distance: 1_000, eye: eye)
+        }
+        func kinds(_ projection: BookProjection) -> Set<BookProjection.FaceKind> {
+            Set(projection.visibleFaces.map(\.kind))
+        }
+        func apply(_ m: ProjectionTransform, _ p: CGPoint) -> CGPoint {
+            let w = p.x * m.m13 + p.y * m.m23 + m.m33
+            return CGPoint(
+                x: (p.x * m.m11 + p.y * m.m21 + m.m31) / w,
+                y: (p.x * m.m12 + p.y * m.m22 + m.m32) / w)
+        }
+        let level = book(eye: .zero)
+        XCTAssertFalse(kinds(level).contains(.front))
+        XCTAssertFalse(kinds(level).contains(.back))
+        // Below the eye, the front cover, on top, shows; above it, the back cover.
+        let below = book(eye: [120, 0])
+        let above = book(eye: [-120, 0])
+        XCTAssertTrue(kinds(below).contains(.front))
+        XCTAssertFalse(kinds(below).contains(.back))
+        XCTAssertTrue(kinds(above).contains(.back))
+        XCTAssertFalse(kinds(above).contains(.front))
+        // The eye keeps the layout and leaves the spine's center in place.
+        XCTAssertEqual(below.bounds, level.bounds)
+        let spine = { (projection: BookProjection) in
+            projection.faces.first { $0.kind == .spine }!
+        }
+        let middle = CGPoint(x: spine(level).size.width / 2, y: spine(level).size.height / 2)
+        let still = apply(spine(level).transform, middle)
+        let moved = apply(spine(below).transform, middle)
+        XCTAssertEqual(moved.x, still.x, accuracy: 0.5)
+        XCTAssertEqual(moved.y, still.y, accuracy: 0.5)
+        // The affine correction that scrolling applies matches the projection from the eye.
+        for face in level.faces {
+            let seen = below.faces.first { $0.kind == face.kind }!
+            let correction = level.camera.correction(of: face, from: [120, 0])
+            for corner in [
+                CGPoint.zero, CGPoint(x: face.size.width, y: 0),
+                CGPoint(x: 0, y: face.size.height),
+                CGPoint(x: face.size.width, y: face.size.height),
+            ] {
+                let corrected = apply(face.transform, corner).applying(correction)
+                let expected = apply(seen.transform, corner)
+                XCTAssertEqual(corrected.x, expected.x, accuracy: 1e-6)
+                XCTAssertEqual(corrected.y, expected.y, accuracy: 1e-6)
+            }
+        }
+    }
+
+    func testScrollEyeUndoesTheStackedBooksTurnAndScale() {
+        // A view 50 by 300 points, scaled by 0.9 and turned a quarter turn back about its
+        // center, as the stack lays a book down, centered at (200, 400).
+        let size = CGSize(width: 50, height: 300)
+        let (scale, roll) = (0.9, -Double.pi / 2)
+        let center = CGPoint(x: 200, y: 400)
+        func screen(_ p: CGPoint) -> CGPoint {
+            let x = (p.x - size.width / 2) * scale
+            let y = (p.y - size.height / 2) * scale
+            return CGPoint(
+                x: center.x + x * cos(roll) - y * sin(roll),
+                y: center.y + x * sin(roll) + y * cos(roll))
+        }
+        let frame = CGRect(
+            x: center.x - size.height * scale / 2, y: center.y - size.width * scale / 2,
+            width: size.height * scale, height: size.width * scale)
+        for local in [CGPoint(x: 10, y: 20), CGPoint(x: -300, y: 120), CGPoint(x: 25, y: 150)] {
+            let found = ScrollEye(point: screen(local), roll: roll)
+                .point(inViewOf: size, framed: frame)
+            XCTAssertEqual(found.x, local.x, accuracy: 1e-9)
+            XCTAssertEqual(found.y, local.y, accuracy: 1e-9)
+        }
+    }
+
     func testShelvedDoorstoppersStandTallerAndThickerThanNovellas() {
         // Every variety of a 900-page book outsizes every variety of a 120-page one.
         let novellas = (1...20).map { book($0, "Novella", pages: 120).shelfSpineSize(scale: 150) }
