@@ -296,9 +296,106 @@ final class ShelfLogicTests: XCTestCase {
                 slidesInStack: true))
         XCTAssertEqual(
             StackStyle.threeD.rest(of: top),
-            PullOutPath.Rest(
-                yaw: -StackStyle.lookDown, pitch: twist, lighting: StackStyle.lighting,
-                slidesInStack: true))
+            PullOutPath.Rest(pitch: twist, lighting: StackStyle.lighting, slidesInStack: true))
+    }
+
+    func testStackCameraLooksThroughANormalLens() {
+        // A 50 mm lens on a full-frame camera, across the area's diagonal.
+        let size = CGSize(width: 402, height: 740)
+        let distance = StackCamera.distance(viewing: size)
+        XCTAssertEqual(distance / hypot(402, 740), 50 / 43.27, accuracy: 1e-6)
+        // Farther than the area is tall, unlike a wide-angle lens.
+        XCTAssertGreaterThan(distance, size.height)
+    }
+
+    func testOneEyeShowsTopsBelowItAndUndersidesAboveIt() {
+        // A book lying on its back, seen as the stack draws it: upright in the model, with its
+        // front cover toward +x, which the stack's turn makes the screen's up.
+        func book(eye: SIMD2<Double>) -> BookProjection {
+            BookProjection(
+                width: 200, height: 300, thickness: 40, yaw: .pi / 2, pitch: 0.05,
+                distance: 1_000, eye: eye)
+        }
+        func kinds(_ projection: BookProjection) -> Set<BookProjection.FaceKind> {
+            Set(projection.visibleFaces.map(\.kind))
+        }
+        func apply(_ m: ProjectionTransform, _ p: CGPoint) -> CGPoint {
+            let w = p.x * m.m13 + p.y * m.m23 + m.m33
+            return CGPoint(
+                x: (p.x * m.m11 + p.y * m.m21 + m.m31) / w,
+                y: (p.x * m.m12 + p.y * m.m22 + m.m32) / w)
+        }
+        let level = book(eye: .zero)
+        XCTAssertFalse(kinds(level).contains(.front))
+        XCTAssertFalse(kinds(level).contains(.back))
+        // Below the eye, the front cover, on top, shows; above it, the back cover.
+        let below = book(eye: [120, 0])
+        let above = book(eye: [-120, 0])
+        XCTAssertTrue(kinds(below).contains(.front))
+        XCTAssertFalse(kinds(below).contains(.back))
+        XCTAssertTrue(kinds(above).contains(.back))
+        XCTAssertFalse(kinds(above).contains(.front))
+        // The eye keeps the layout and leaves the spine's center in place.
+        XCTAssertEqual(below.bounds, level.bounds)
+        let spine = { (projection: BookProjection) in
+            projection.faces.first { $0.kind == .spine }!
+        }
+        let middle = CGPoint(x: spine(level).size.width / 2, y: spine(level).size.height / 2)
+        let still = apply(spine(level).transform, middle)
+        let moved = apply(spine(below).transform, middle)
+        XCTAssertEqual(moved.x, still.x, accuracy: 0.5)
+        XCTAssertEqual(moved.y, still.y, accuracy: 0.5)
+        // The affine correction that scrolling applies matches the projection from the eye.
+        for face in level.faces {
+            let seen = below.faces.first { $0.kind == face.kind }!
+            let correction = level.camera.correction(of: face, from: [120, 0])
+            for corner in [
+                CGPoint.zero, CGPoint(x: face.size.width, y: 0),
+                CGPoint(x: 0, y: face.size.height),
+                CGPoint(x: face.size.width, y: face.size.height),
+            ] {
+                let corrected = apply(face.transform, corner).applying(correction)
+                let expected = apply(seen.transform, corner)
+                XCTAssertEqual(corrected.x, expected.x, accuracy: 1e-6)
+                XCTAssertEqual(corrected.y, expected.y, accuracy: 1e-6)
+            }
+        }
+    }
+
+    func testStackedBooksAreLitFromAbove() {
+        // Laid on its back by the stack's quarter turn, a book's top board, its front cover,
+        // catches more of the light than its underside does.
+        let lying = BookProjection(
+            width: 200, height: 300, thickness: 40, yaw: .pi / 2, pitch: 0, distance: 1_000,
+            roll: -.pi / 2)
+        let shade = { (kind: BookProjection.FaceKind) in
+            lying.faces.first { $0.kind == kind }!.shade
+        }
+        XCTAssertLessThan(shade(.front), shade(.back))
+    }
+
+    func testScrollEyeUndoesTheStackedBooksTurnAndScale() {
+        // A view 50 by 300 points, scaled by 0.9 and turned a quarter turn back about its
+        // center, as the stack lays a book down, centered at (200, 400).
+        let size = CGSize(width: 50, height: 300)
+        let (scale, roll) = (0.9, -Double.pi / 2)
+        let center = CGPoint(x: 200, y: 400)
+        func screen(_ p: CGPoint) -> CGPoint {
+            let x = (p.x - size.width / 2) * scale
+            let y = (p.y - size.height / 2) * scale
+            return CGPoint(
+                x: center.x + x * cos(roll) - y * sin(roll),
+                y: center.y + x * sin(roll) + y * cos(roll))
+        }
+        let frame = CGRect(
+            x: center.x - size.height * scale / 2, y: center.y - size.width * scale / 2,
+            width: size.height * scale, height: size.width * scale)
+        for local in [CGPoint(x: 10, y: 20), CGPoint(x: -300, y: 120), CGPoint(x: 25, y: 150)] {
+            let found = ScrollEye(point: screen(local), roll: roll)
+                .point(inViewOf: size, framed: frame)
+            XCTAssertEqual(found.x, local.x, accuracy: 1e-9)
+            XCTAssertEqual(found.y, local.y, accuracy: 1e-9)
+        }
     }
 
     func testShelvedDoorstoppersStandTallerAndThickerThanNovellas() {
@@ -507,7 +604,8 @@ final class ShelfLogicTests: XCTestCase {
     private func drawnSize(_ pose: PullOutPath.Pose, aspect: CGFloat) -> CGSize {
         let projection = BookProjection(
             width: pose.height * aspect, height: pose.height,
-            thickness: pose.height * pose.thicknessRatio, yaw: pose.yaw, pitch: pose.pitch)
+            thickness: pose.height * pose.thicknessRatio, yaw: pose.yaw, pitch: pose.pitch,
+            distance: Double(pose.distance))
         return CGSize(
             width: projection.bounds.width * pose.scale,
             height: projection.bounds.height * pose.scale)
@@ -701,40 +799,54 @@ final class ShelfLogicTests: XCTestCase {
 
     func testThreeDStackedBookStartsAsItLiesAndLandsInTheDetails() {
         let home = CGRect(x: 40, y: 400, width: 280, height: 32)
-        let rest = PullOutPath.Rest(
-            yaw: -0.3, pitch: 0.2, lighting: 0.6)
+        // Seen by the stack's camera, about 3.6 lengths from its center, from a little above.
+        let rest = PullOutPath.Rest(pitch: 0.2, lighting: 0.6, distance: 3.6)
+        let eye = SIMD2<Double>(0.05, -0.02)
         let path = PullOutPath(
             home: home, upright: false, stage: CGRect(x: 0, y: 100, width: 402, height: 380),
-            pose: .resting, aspect: 2 / 3, thicknessRatio: 0.1, rest: rest)
+            pose: .resting, aspect: 2 / 3, thicknessRatio: 0.1, rest: rest, eye: eye)
 
-        // Drawn as the stack draws it: turned to show its top board and an end, and shaded.
+        // Drawn as the stack draws it: turned, shaded, and seen from the stack's eye.
         let start = path.pose(at: 0)
         XCTAssertEqual(start.center, CGPoint(x: home.midX, y: home.midY))
         XCTAssertEqual(start.height, 280, accuracy: 0.001)
         XCTAssertEqual(start.thicknessRatio, 32 / 280, accuracy: 0.0001)
         XCTAssertEqual(
             start.scale,
-            1 / PullOutPath.spineMagnification(aspect: 2 / 3, thicknessRatio: 32 / 280),
+            1
+                / PullOutPath.spineMagnification(
+                    aspect: 2 / 3, thicknessRatio: 32 / 280, distance: 3.6),
             accuracy: 0.0001)
+        XCTAssertEqual(start.distance, 3.6 * 280, accuracy: 0.001)
+        XCTAssertEqual(start.eye.x, 0.05 * 280, accuracy: 0.001)
+        XCTAssertEqual(start.eye.y, -0.02 * 280, accuracy: 0.001)
         XCTAssertEqual(start.roll, -.pi / 2, accuracy: 0.0001)
         XCTAssertEqual(sin(start.yaw - rest.yaw), 1, accuracy: 0.0001)
         XCTAssertEqual(start.pitch, 0.2, accuracy: 0.0001)
         XCTAssertEqual(start.lighting, 0.6, accuracy: 0.0001)
         XCTAssertEqual(path.pose(at: -0.1), start)
-        // Turned to face a little left, it comes out toward the reader, a little left, and down
-        // the screen.
-        let placeTop = start.center.y + drawnSize(start, aspect: 2 / 3).width / 2 - home.height
+        // Turned to face a little left, it comes out toward the reader and a little left,
+        // growing about its middle, as a book coming straight toward the stack's eye does.
         let pulled = path.pose(at: PullOutPath.floatStart)
         XCTAssertLessThan(pulled.center.x, start.center.x)
-        XCTAssertGreaterThan(pulled.center.y, start.center.y)
+        XCTAssertEqual(pulled.center.y, start.center.y, accuracy: 0.001)
         XCTAssertGreaterThan(pulled.scale / start.scale, 1.1)
         XCTAssertEqual(pulled.roll, -.pi / 2, accuracy: 0.0001)
-        // It ends the slide just clear of the book above, before it rises or stands up, as far
-        // as the stack's own drawing of the slide moves it.
+        // It ends the slide before it rises or stands up, as far as the stack's own drawing of
+        // the slide moves it.
         let out = path.pose(at: PullOutPath.pullEnd)
         XCTAssertEqual(out.roll, -.pi / 2, accuracy: 0.0001)
+        // A flat book, which the book above covers, instead moves down the screen until it is
+        // just clear of the book above.
+        let flat = PullOutPath(
+            home: home, upright: false, stage: path.stage, pose: .resting, aspect: 2 / 3,
+            thicknessRatio: 0.1, rest: PullOutPath.Rest(pitch: 0.05, slidesInStack: true))
+        let flatStart = flat.pose(at: 0)
+        let flatOut = flat.pose(at: PullOutPath.pullEnd)
         XCTAssertEqual(
-            out.center.y - drawnSize(out, aspect: 2 / 3).width / 2, placeTop, accuracy: 0.5)
+            flatOut.center.y - drawnSize(flatOut, aspect: 2 / 3).width / 2,
+            flatStart.center.y + drawnSize(flatStart, aspect: 2 / 3).width / 2 - home.height,
+            accuracy: 0.5)
         let slide = PullOutPath.slide(
             at: PullOutPath.pullEnd, length: 280, thickness: 32,
             extent: drawnSize(start, aspect: 2 / 3).width, rest: rest)
@@ -742,10 +854,13 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(out.center.x - start.center.x, slide.offset.width, accuracy: 0.001)
         XCTAssertEqual(out.scale / start.scale, slide.scale, accuracy: 0.0001)
 
+        // It lands seen as the details see their book.
         let end = path.pose(at: 1)
         XCTAssertEqual(end.roll, 0, accuracy: 0.0001)
         XCTAssertEqual(end.yaw, BookPose.resting.yaw, accuracy: 0.0001)
         XCTAssertEqual(end.pitch, BookPose.resting.pitch, accuracy: 0.0001)
         XCTAssertEqual(end.lighting, 1, accuracy: 0.0001)
+        XCTAssertEqual(end.distance, BookProjection.standardDistance * 380, accuracy: 0.001)
+        XCTAssertEqual(end.eye, .zero)
     }
 }

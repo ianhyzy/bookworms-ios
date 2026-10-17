@@ -195,9 +195,11 @@ struct LibraryView: View {
 
     #if DEBUG
         /// Simulator screenshot hooks, read once the library loads:
-        /// `-BookwormsShelfScrollTo <index>` centers the book at that index, and
-        /// `-BookwormsOpenBook <bookID>` centers that book and, two seconds later, pulls it out
-        /// to its details, or pushes them with Reduce Motion on.
+        /// `-BookwormsShelfScrollTo <index>` centers the book at that index,
+        /// `-BookwormsShelfGlideTo <index>` centers the book at that index three seconds later,
+        /// gliding there from nearby, and `-BookwormsOpenBook <bookID>` centers that
+        /// book and, two seconds later, pulls it out to its details, or pushes them with Reduce
+        /// Motion on.
         private func applyDebugArguments() {
             guard model.library != nil else { return }
             let books = shownBooks(of: readBooks)
@@ -206,6 +208,14 @@ struct LibraryView: View {
                 books.indices.contains(index)
             {
                 centeredID = books[index].id
+            }
+            if let index = defaults.string(forKey: "BookwormsShelfGlideTo").flatMap(Int.init),
+                books.indices.contains(index)
+            {
+                Task {
+                    try? await Task.sleep(for: .seconds(3))
+                    centeredID = books[index].id
+                }
             }
             if let id = defaults.string(forKey: "BookwormsOpenBook").flatMap(Int.init),
                 path.isEmpty

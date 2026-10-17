@@ -33,6 +33,9 @@ final class ShelfPullOut {
     var home: CGRect?
     /// How the book lies in its place, which the hidden spine reports with `home`.
     var rest = PullOutPath.Rest()
+    /// Where **Stack**'s camera sits across from the book in its place (`PullOutPath.eye`),
+    /// which a 3D stacked book reports as it is pulled, or `nil` until it does.
+    var eye: SIMD2<Double>?
     /// The frame of **Shelf**'s lamp in global coordinates, which the lamp reports. While a book
     /// is out, the flight draws the lamp over the book, so the book keeps the light its spine had.
     var lampFrame: CGRect?
@@ -70,6 +73,7 @@ final class ShelfPullOut {
         guard self.book == nil else { return }
         revision &+= 1
         home = nil
+        eye = nil
         pose = .resting
         progress = 0
         showsText = false
@@ -158,10 +162,11 @@ final class ShelfPullOut {
 ///
 /// 1. The book slides out of its place, straight toward the reader, which shows as its spine
 ///    growing. On **Stack**, it comes out along the way its spine faces (`slide`), so a turned
-///    book also moves a little to that side, and down the screen, until it is clear of the
-///    book above, while the books above and below make a little room (`StackRoom`). The stack
-///    draws this part itself, under the books above (`Rest.slidesInStack`). The book casts a
-///    shadow on the shelf, and the faces' shading fades in.
+///    book also moves a little to that side, and a flat one down the screen, until it is clear
+///    of the book above, while the books above and below make a little room (`StackRoom`). The
+///    stack draws this part itself, under the book above in 2D and over the books around it in
+///    3D (`Rest.slidesInStack`). The book casts a shadow on the shelf, and the faces' shading
+///    fades in.
 /// 2. As the slide ends, the book starts to float to the stage, growing or shrinking to the
 ///    stage's height, and to turn from the way it lay (`Rest`) to the details' pose, while a book
 ///    from **Stack** stands up from lying on its back. On **Shelf**, the float and the turn start
@@ -188,6 +193,9 @@ struct PullOutPath {
         var thicknessRatio: CGFloat
         var yaw: Double
         var pitch: Double
+        /// The `Book3DView` camera distance and eye.
+        var distance: CGFloat
+        var eye: SIMD2<Double>
         /// A turn in the screen's plane, in radians: -π/2 lays an upright book on its back with
         /// its head on the left, as **Stack** shows books.
         var roll: Double
@@ -227,6 +235,10 @@ struct PullOutPath {
     let thicknessRatio: CGFloat
     /// How the book lay in its place, beyond facing its spine to the reader.
     var rest = Rest()
+    /// Where **Stack**'s camera sat across from the book's center as it lay, in book heights, in
+    /// the upright book's frame, before the roll that lays it down (`BookProjection`). The
+    /// flight moves the camera onto the book's axis as the book turns, as the details see it.
+    var eye = SIMD2<Double>.zero
 
     /// How a book lies in its place, as turns from facing its spine to the reader, upright on
     /// **Shelf** or on its back on **Stack**. The defaults lie straight, as a flat spine.
@@ -237,18 +249,25 @@ struct PullOutPath {
         var pitch = 0.0
         /// `Book3DView.lighting`, 0 for a flat spine.
         var lighting = 0.0
-        /// Whether the stack draws the book's slide out of its place itself (`slide`), so the
-        /// books above it still cover what lies under them. The flight takes over once the book
-        /// is clear of the stack.
+        /// The camera's distance from the book's center, in book heights; `nil` for the
+        /// details' camera (`BookProjection.standardDistance`).
+        var distance: Double? = nil
+        /// Whether the stack draws the book's slide out of its place itself (`slide`), so a flat
+        /// stack's book above keeps covering it. The flight takes over once the book is clear of
+        /// the stack.
         var slidesInStack = false
     }
 
     /// How much larger than the book's height `Book3DView` draws a book that faces its spine to
-    /// the viewer: the spine lies in front of the book's center, nearer the camera. A book drawn
-    /// in place of a spine shrinks by this factor to match the spine's length.
-    static func spineMagnification(aspect: CGFloat, thicknessRatio: CGFloat) -> CGFloat {
+    /// the viewer, with the camera `distance` book heights from its center (`Rest.distance`):
+    /// the spine lies in front of the book's center, nearer the camera. A book drawn in place of
+    /// a spine shrinks by this factor to match the spine's length.
+    static func spineMagnification(
+        aspect: CGFloat, thicknessRatio: CGFloat, distance: Double? = nil
+    ) -> CGFloat {
         BookProjection(
-            width: aspect, height: 1, thickness: thicknessRatio, yaw: .pi / 2, pitch: 0
+            width: aspect, height: 1, thickness: thicknessRatio, yaw: .pi / 2, pitch: 0,
+            distance: distance
         )
         .bounds.height
     }
@@ -262,7 +281,8 @@ struct PullOutPath {
         let lift = Self.phase(progress, from: Self.veilStart, to: 1, .easeInOut)
         let length = upright ? home.height : home.width
         let spineRatio = (upright ? home.width : home.height) / max(1, length)
-        let magnification = Self.spineMagnification(aspect: aspect, thicknessRatio: spineRatio)
+        let magnification = Self.spineMagnification(
+            aspect: aspect, thicknessRatio: spineRatio, distance: rest.distance)
         // The spine-on pose nearest the details' pose, so a book the reader spun turns back the
         // short way.
         let spineYaw = .pi / 2 + 2 * .pi * ((pose.yaw - .pi / 2) / (2 * .pi)).rounded()
@@ -275,23 +295,30 @@ struct PullOutPath {
                 at: progress, length: length, thickness: home.height,
                 extent: BookProjection(
                     width: length * aspect, height: length, thickness: length * spineRatio,
-                    yaw: spineYaw + rest.yaw, pitch: rest.pitch
+                    yaw: spineYaw + rest.yaw, pitch: rest.pitch,
+                    distance: rest.distance.map { $0 * Double(length) }
                 )
                 .bounds.width / magnification, rest: rest)
         let pulled = slide.scale / magnification
+        let height = Self.mix(length, stage.height, float)
         // A book that slides out inside the stack shades and casts its shadow once it is out.
         let outStart = rest.slidesInStack ? Self.pullEnd : 0
         return Pose(
             center: CGPoint(
                 x: Self.mix(home.midX + slide.offset.width, stage.midX, float),
                 y: Self.mix(home.midY + slide.offset.height, stage.midY, float)),
-            height: Self.mix(length, stage.height, float),
+            height: height,
             scale: Self.mix(pulled, 1, float),
             // Late in the turn, so a change in the lettering's line count, which a spine's
             // thickness sets, happens once the spine has turned away from the reader.
             thicknessRatio: Self.mix(spineRatio, thicknessRatio, turn * turn),
             yaw: Self.mix(spineYaw + rest.yaw, pose.yaw, turn),
             pitch: Self.mix(rest.pitch, pose.pitch, turn),
+            distance: height
+                * Self.mix(
+                    rest.distance ?? BookProjection.standardDistance,
+                    BookProjection.standardDistance, turn),
+            eye: eye * Double(height) * (1 - turn),
             roll: Self.mix(upright ? 0 : -.pi / 2, 0, turn),
             lighting: Self.mix(
                 rest.lighting, 1,
@@ -305,10 +332,12 @@ struct PullOutPath {
 
     /// How a book on its back has moved out of its place at `progress`, as an offset from its
     /// place and a scale, both relative to how it lay. The book comes straight toward the
-    /// reader along the way its spine faces: it grows by up to `pullScale`, moves a little to
-    /// the side it is turned to, and moves down the screen, as a book coming toward a camera
-    /// that looks down on it does, until its top edge, grown by `pullScale`, is just below the
-    /// top edge of its place, clear of the book above.
+    /// reader along the way its spine faces: it grows by up to `pullScale` and moves a little to
+    /// the side it is turned to. A book seen by the 3D stack's camera (`Rest.distance`) grows
+    /// about its middle, which lies about level with the camera's eye, as a book coming straight
+    /// toward that eye does; the stack draws it over the books around it. A flat stack draws the
+    /// book above over it, so a flat book also moves down the screen until its top edge, grown
+    /// by `pullScale`, is just below the top edge of its place, clear of the book above.
     ///
     /// - Parameters:
     ///   - length: The spine's length on screen.
@@ -319,10 +348,11 @@ struct PullOutPath {
         at progress: Double, length: CGFloat, thickness: CGFloat, extent: CGFloat, rest: Rest
     ) -> (offset: CGSize, scale: CGFloat) {
         let pull = phase(progress, from: 0, to: pullEnd, .easeInOut)
-        // `BookProjection`'s camera sits 3.2 lengths away, so growing by `pullScale` moves the
-        // book that much nearer.
-        let side = -sin(rest.pitch) * 3.2 * (pullScale - 1) * length
-        let down = max(0, extent * (1 + pullScale) / 2 - thickness)
+        // Growing by `pullScale` moves the book that much nearer the camera, which sits
+        // `distance` lengths away.
+        let distance = rest.distance ?? BookProjection.standardDistance
+        let side = -sin(rest.pitch) * distance * (pullScale - 1) * length
+        let down = rest.distance == nil ? max(0, extent * (1 + pullScale) / 2 - thickness) : 0
         return (CGSize(width: side * pull, height: down * pull), 1 + (pullScale - 1) * pull)
     }
 
@@ -452,7 +482,7 @@ private struct PullOutFlightHost: View {
                             home: home, upright: pullOut.upright, stage: stage,
                             pose: pullOut.pose, aspect: Book3DView.aspect(of: cover),
                             thicknessRatio: Book3DView.thicknessRatio(of: current, cover: cover),
-                            rest: pullOut.rest),
+                            rest: pullOut.rest, eye: pullOut.eye ?? .zero),
                         lamp: pullOut.upright ? pullOut.lampFrame?.applying(shift) : nil,
                         progress: pullOut.progress
                     )
@@ -495,12 +525,14 @@ private struct PullOutFlight: View, Animatable {
         let pose = path.pose(at: progress)
         let bounds = BookProjection(
             width: pose.height * path.aspect, height: pose.height,
-            thickness: pose.height * pose.thicknessRatio, yaw: pose.yaw, pitch: pose.pitch
+            thickness: pose.height * pose.thicknessRatio, yaw: pose.yaw, pitch: pose.pitch,
+            distance: Double(pose.distance)
         )
         .bounds
         Book3DView(
             book: book, look: look, cover: cover, height: pose.height, yaw: pose.yaw,
-            pitch: pose.pitch, thicknessRatio: pose.thicknessRatio, lighting: pose.lighting
+            pitch: pose.pitch, thicknessRatio: pose.thicknessRatio, lighting: pose.lighting,
+            distance: pose.distance, eye: pose.eye, roll: pose.roll
         )
         .scaleEffect(pose.scale)
         .rotationEffect(.radians(pose.roll))
