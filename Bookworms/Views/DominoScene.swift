@@ -1827,15 +1827,17 @@ final class DominoScene {
     }
 
     /// Zooms toward the point under `focus` by `magnification`, or slides the camera across
-    /// the table with a one-finger `translation`, keeping the path in view. Does nothing while
-    /// the finale moves the camera to the spread, or while a book is out at its details, so a
-    /// drag that goes on after a touch and hold has lifted a book leaves the view as it was.
+    /// the table with a one-finger `translation`, keeping the path in view. Does nothing from
+    /// when the finale starts until the last book lands in the spread, so the camera stays where
+    /// the last book hangs before it (`DominoFinale.snapTop(size:seenBy:aspect:)`), or while a
+    /// book is out at its details, so a drag that goes on after a touch and hold has lifted a
+    /// book leaves the view as it was.
     ///
     /// A drag that becomes a pinch, or a pinch that becomes a drag, starts a new move from the
     /// camera as it is, about the new focus and from the drag's translation so far, so the
     /// camera does not jump.
     func moveCamera(translation: CGSize, magnification: CGFloat, focus: CGPoint?, in size: CGSize) {
-        guard size.width > 0, size.height > 0, ending?.movesCamera != true, flying == nil else {
+        guard size.width > 0, size.height > 0, !isGathering, flying == nil else {
             return
         }
         if let move = cameraMove, move.pinches != (focus != nil) { cameraMove = nil }
