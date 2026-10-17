@@ -7,7 +7,7 @@ import simd
 /// book falls.
 ///
 /// At once, the camera starts one slow move from wherever it films to the spread's view, where
-/// it comes to rest `moveTime` seconds later (`view(from:to:progress:)`). The move starts from
+/// it comes to rest `moveTime` seconds later (`view(from:to:around:progress:)`). The move starts from
 /// the view as it shows, carried on by the camera's own motion for a moment (`coast`), so the
 /// camera neither stops dead nor drifts on with the camera mode. It first pulls back and cranes
 /// up about the point it looked at, where the chain ended, and from `aimDelay` turns its aim
@@ -187,7 +187,7 @@ enum DominoFinale {
         return Transform(
             scale: to.scale,
             rotation: turn(
-                top.rotation, to: to.rotation, by: DominoCameraRig.ease(min(drop / 0.7, 1))),
+                top.rotation, to: to.rotation, by: DominoCameraRig.ease(min(drop * 1.5, 1))),
             translation: top.translation + toward * 0.25 * float * float
                 + (to.translation - top.translation) * drop * drop * drop)
     }

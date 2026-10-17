@@ -2298,8 +2298,8 @@ final class DominoScene {
         let moves = follows && cameraMove == nil
         handoff = nil
         cameraMove = nil
-        // The last book's middle as it lies, its height past its place. The overview shows it
-        // with the rest of the chain, so the move does not turn to it.
+        // The last book's middle as it lies, half its height past its place. The overview shows
+        // it with the rest of the chain, so the move does not turn to it.
         let last = slots[slots.count - 1]
         let landing = last.position + last.heading * last.size.y / 2
         ending = Ending(
