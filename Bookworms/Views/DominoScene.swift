@@ -579,6 +579,9 @@ final class DominoScene {
     private static let handoffTurnRate: Float = 0.3
     private static let handoffSpeed: Float = 15
     private static let handoffTime: ClosedRange<Float> = 0.7...5
+    /// The share of a blend's time over which the view turns onto the next view's subject
+    /// (see `blended(_:to:progress:)`).
+    nonisolated private static let aimLead: Float = 0.6
     private static let coverWait = Duration.seconds(1.5)
     /// The longest the first book of a setup from the desk waits for the camera, in seconds.
     private static let setupLead: Float = 1.2
@@ -778,10 +781,12 @@ final class DominoScene {
     private struct Ending {
         /// Seconds since the last book fell.
         var clock: Float = 0
-        /// The view the camera moves from, as it showed when the last book fell, and the
-        /// camera's motion then, which carries into the move (`DominoFinale.coast`).
+        /// The view the camera moves from, as it showed when the last book fell, the camera's
+        /// motion then, which carries into the move (`DominoFinale.coast`), and, after the Follow
+        /// camera, where the last book lands, which the move centers on first.
         let start: Transform
         let motion: Motion
+        let focus: SIMD3<Float>?
         /// The spread's places and view, turned to the camera's yaw.
         let slots: [PileSlot]
         let camera: PileCamera
@@ -2293,9 +2298,14 @@ final class DominoScene {
         let moves = follows && cameraMove == nil
         handoff = nil
         cameraMove = nil
+        // The last book's middle as it lies, its height past its place. The overview shows it
+        // with the rest of the chain, so the move does not turn to it.
+        let last = slots[slots.count - 1]
+        let landing = last.position + last.heading * last.size.y / 2
         ending = Ending(
-            start: camera.transform, motion: moves ? motion : Motion(), slots: placed.slots,
-            camera: placed.camera)
+            start: camera.transform, motion: moves ? motion : Motion(),
+            focus: moves && mode == .follow ? [landing.x, last.size.z / 2, landing.y] : nil,
+            slots: placed.slots, camera: placed.camera)
     }
 
     /// Leaves the camera on `view`, where pinches and drags take over.
@@ -2521,14 +2531,12 @@ final class DominoScene {
                 from: DominoFinale.coast(
                     ending.start, velocity: ending.motion.velocity, spin: ending.motion.spin,
                     time: ending.clock),
-                to: ending.camera, progress: ending.clock / DominoFinale.moveTime)
+                to: ending.camera, around: ending.focus,
+                progress: ending.clock / DominoFinale.moveTime)
         } else if let blend = handoff {
             let time = blend.time + deltaTime
-            let share = DominoCameraRig.ease(min(time / blend.duration, 1))
-            let from = transform(of: blend.from)
-            shown = Transform(
-                rotation: simd_slerp(from.rotation, shown.rotation, share),
-                translation: from.translation + (shown.translation - from.translation) * share)
+            shown = Self.blended(
+                transform(of: blend.from), to: shown, progress: min(time / blend.duration, 1))
             handoff = time < blend.duration ? (blend.from, time, blend.duration) : nil
         }
         #if DEBUG
@@ -2541,6 +2549,49 @@ final class DominoScene {
         #if DEBUG
             logCamera(deltaTime, moved: moved)
         #endif
+    }
+
+    /// The view `progress` of the way, from 0 to 1, from `from` to `to`, as a camera operator
+    /// moves from one shot to the next: the point the view looks at, where it meets the table,
+    /// moves over the first `aimLead` of the time, so the camera turns onto the next shot's
+    /// subject first, such as the falling front, and keeps it in view as the eye travels over
+    /// the whole time. Both ease in and out, and the roll eases from one view's to the other's.
+    /// Turning and moving separately, a camera that travels far would look past its subject
+    /// for most of the way.
+    nonisolated static func blended(_ from: Transform, to: Transform, progress: Float)
+        -> Transform
+    {
+        func pose(_ view: Transform) -> DominoCameraPose? {
+            let back = view.rotation.act([0, 0, 1])
+            let level = simd_cross([0, 1, 0], back)
+            guard simd_length(level) > 1e-3 else { return nil }
+            let right = view.rotation.act([1, 0, 0])
+            let side = simd_normalize(level)
+            let reach =
+                PileCamera.intersect((view.translation, -back), height: 0)
+                .map { simd_distance($0, view.translation) } ?? PileCamera.distance
+            return DominoCameraPose(
+                eye: view.translation,
+                target: view.translation - back * min(max(reach, 1), 4 * PileCamera.distance),
+                roll: atan2(simd_dot(simd_cross(side, right), back), simd_dot(side, right)))
+        }
+        let share = DominoCameraRig.ease(min(max(progress, 0), 1))
+        let eye = from.translation + (to.translation - from.translation) * share
+        // A view that looks straight down or up has no roll to ease, and an eye that passes
+        // the point it looks at no view toward it; both turn as the eye travels instead.
+        guard let start = pose(from), let end = pose(to) else {
+            return Transform(
+                rotation: simd_slerp(from.rotation, to.rotation, share), translation: eye)
+        }
+        let aim = DominoCameraRig.ease(min(max(progress / aimLead, 0), 1))
+        let target = start.target + (end.target - start.target) * aim
+        guard simd_distance(eye, target) > 1 else {
+            return Transform(
+                rotation: simd_slerp(from.rotation, to.rotation, share), translation: eye)
+        }
+        let shot = DominoCameraPose(
+            eye: eye, target: target, roll: start.roll + (end.roll - start.roll) * share)
+        return Transform(rotation: shot.rotation, translation: eye)
     }
 
     /// The motion from `from` to `to` in `deltaTime` seconds, at most the speed of a blend

@@ -9,16 +9,19 @@ import simd
 /// At once, the camera starts one slow move from wherever it films to the spread's view, where
 /// it comes to rest `moveTime` seconds later (`view(from:to:progress:)`). The move starts from
 /// the view as it shows, carried on by the camera's own motion for a moment (`coast`), so the
-/// camera neither stops dead nor drifts on with the camera mode. `gatherDelay` seconds in,
-/// while the camera still moves, the books start to gather into a face-up spread
-/// (`PileSpread`): each lifts off the desk, flies in an arc to its place, turning face up on
-/// the way, and settles flat, one after another in the spread's order, so a book lands only
-/// after the books it rests on. Every book but the spread's last has landed `settleMargin`
-/// before the camera comes to rest. The spread's last book is the last book read, the chain's
-/// last, which the spread puts down last, so no book rests on it (`PileSpread`'s `last`). It
-/// waits where it fell; as the camera settles, it springs up out of the spread toward the
-/// viewer, hangs there a beat, and slams down into its place, landing `snapLanding` after the
-/// camera stops (`snapPose(from:to:top:time:)`).
+/// camera neither stops dead nor drifts on with the camera mode. It first pulls back and cranes
+/// up about the point it looked at, where the chain ended, and from `aimDelay` turns its aim
+/// toward the spread, ahead of the books. `gatherDelay` seconds in, while the camera still
+/// moves, the books start to gather into a face-up spread (`PileSpread`): each lifts off the
+/// desk, flies in an arc to its place, turning face up on the way, and settles flat, one after
+/// another in the spread's order, so a book lands only after the books it rests on. Every book
+/// but the spread's last has landed `settleMargin` before the camera comes to rest. The
+/// spread's last book is the last book read, the chain's last, which the spread puts down last,
+/// so no book rests on it (`PileSpread`'s `last`). It waits where it fell; as the camera comes
+/// to rest, it springs up close to the camera, its cover turned squarely to the viewer and large
+/// in the middle of the view (`snapTop(size:seenBy:aspect:)`), hangs there a beat, and slams
+/// down into its place, landing `snapLanding` after the camera stops
+/// (`snapPose(from:to:top:time:)`).
 /// Out of the lamp's beam, the room lights it more (`DeskStage.light(_:boost:)`), so it stays
 /// lit rather than going dark (`boost(at:over:radius:)`).
 /// The poses are pure functions of time, so tests replay them.
@@ -199,23 +202,38 @@ enum DominoFinale {
     }
 
     /// The camera `progress` of the way from `from` to the spread's view `to`, along
-    /// `glide(_:)`. It swings about the point it looks at on the table, so it cranes and pulls
-    /// back in one sweep rather than sliding along a line: the point moves straight across the
-    /// table, the turn and pitch change evenly, and the distance by an even ratio, so the zoom
-    /// keeps one pace. Any roll `from` has eases out.
-    static func view(from: Transform, to: PileCamera, progress: Float) -> Transform {
+    /// `glide(_:)`. It swings about the point it looks at, so it cranes and pulls back in one
+    /// sweep rather than sliding along a line: the turn and pitch change evenly, and the
+    /// distance by an even ratio, so the zoom keeps one pace. The point starts where the view's
+    /// axis meets the table, or as deep as `focus`, such as where the last book lands, and moves
+    /// onto `focus` by `aimDelay`, so the camera centers on it as it pulls back, or holds still
+    /// without one. It then moves straight to the spread's, easing in and out, and arrives with
+    /// the rest of the move, so the camera keeps the books in the middle of the view as they
+    /// gather. Any roll `from` has eases out.
+    static func view(
+        from: Transform, to: PileCamera, around focus: SIMD3<Float>? = nil, progress: Float
+    ) -> Transform {
         let share = glide(progress)
+        let aim = DominoCameraRig.ease(
+            min(max(progress * moveTime - aimDelay, 0) / (moveTime - aimDelay), 1))
         let forward = from.rotation.act([0, 0, -1])
         // A view that looks level or up meets the table nowhere; it turns about a point ahead.
         let reach =
-            PileCamera.intersect((from.translation, forward), height: 0)
+            focus.map { simd_dot($0 - from.translation, forward) }
+            ?? PileCamera.intersect((from.translation, forward), height: 0)
             .map { simd_distance($0, from.translation) } ?? PileCamera.distance
         let depth = min(max(reach, 1), 4 * PileCamera.distance)
         let start = PileCamera(
             target: from.translation + forward * depth, yaw: atan2(-forward.x, -forward.z),
             zoom: PileCamera.distance / depth, pitch: asin(min(max(-forward.y, -1), 1)))
+        let centered =
+            focus.map {
+                start.target
+                    + ($0 - start.target)
+                    * DominoCameraRig.ease(min(max(progress * moveTime / aimDelay, 0), 1))
+            } ?? start.target
         let camera = PileCamera(
-            target: start.target + (to.target - start.target) * share,
+            target: centered + (to.target - centered) * aim,
             yaw: start.yaw + remainder(to.yaw - start.yaw, 2 * .pi) * share,
             zoom: start.zoom * pow(to.zoom / start.zoom, share),
             pitch: start.pitch + (to.pitch - start.pitch) * share)

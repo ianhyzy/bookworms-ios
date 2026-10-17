@@ -120,6 +120,33 @@ final class DominoTests: XCTestCase {
         XCTAssertEqual(DominoCameraRig.fallTime(to: 0), 0, accuracy: 1e-6)
     }
 
+    func testABlendTurnsOntoTheNextShotsSubjectFirst() {
+        // From a high overview to a low view of the front far across the table.
+        let overview = PileCamera(target: [0, 0, 0], zoom: 0.5).transform
+        let low = DominoCameraPose(eye: [24, 3, 10], target: [16, 1, 2], roll: 0.04)
+        let follow = Transform(rotation: low.rotation, translation: low.eye)
+        // Where the low view's axis meets the table: the point it looks at.
+        let forward = follow.rotation.act([0, 0, -1])
+        let subject = follow.translation + forward * (-follow.translation.y / forward.y)
+        func blended(_ progress: Float) -> Transform {
+            DominoScene.blended(overview, to: follow, progress: progress)
+        }
+        XCTAssertEqual(
+            simd_distance(blended(0).translation, overview.translation), 0, accuracy: 1e-4)
+        XCTAssertEqual(
+            abs(simd_dot(blended(0).rotation.vector, overview.rotation.vector)), 1, accuracy: 1e-4)
+        XCTAssertEqual(simd_distance(blended(1).translation, follow.translation), 0, accuracy: 1e-4)
+        XCTAssertEqual(
+            abs(simd_dot(blended(1).rotation.vector, follow.rotation.vector)), 1, accuracy: 1e-4)
+        // From 60 percent of the way, the view looks straight at the next shot's subject as it
+        // travels on.
+        for progress: Float in [0.6, 0.7, 0.8, 0.9] {
+            let view = blended(progress)
+            let local = view.rotation.inverse.act(subject - view.translation)
+            XCTAssertLessThan(simd_length(SIMD2(local.x, local.y)) / -local.z, 1e-3, "\(progress)")
+        }
+    }
+
     func testChainRunsInFinishOrderWithCurrentReadsLast() {
         let books = [
             book(1, finished: "2025-03-10"), book(2, finished: nil),
@@ -573,6 +600,28 @@ final class DominoTests: XCTestCase {
             let late = simd_distance(pose(landing - 0.01).translation, pose(landing).translation)
             XCTAssertGreaterThan(late, early * 10)
         }
+    }
+
+    func testTheMoveCentersOnTheLastBookBeforeTurningToTheSpread() {
+        // A low Follow view of the chain's end, whose last book lies off its axis.
+        let pose = DominoCameraPose(eye: [-12, 4, 6], target: [-3, 1, 2])
+        let from = Transform(rotation: pose.rotation, translation: pose.eye)
+        let last = SIMD3<Float>(-3.5, 0.15, 3)
+        let to = PileCamera(target: [2, 0, -1], yaw: 0.4, zoom: 0.7)
+        func shown(_ time: Float) -> SIMD2<Float> {
+            let view = DominoFinale.view(
+                from: from, to: to, around: last, progress: time / DominoFinale.moveTime)
+            let local = view.rotation.inverse.act(last - view.translation)
+            return SIMD2(local.x, local.y) / -local.z
+        }
+        // By `aimDelay`, the book shows in the middle of the view as the camera pulls back.
+        XCTAssertGreaterThan(simd_length(shown(0)), 0.05)
+        XCTAssertLessThan(simd_length(shown(DominoFinale.aimDelay)), 1e-3)
+        XCTAssertLessThan(simd_length(shown(DominoFinale.gatherDelay)), 0.1)
+        // It still ends on the spread's view.
+        let end = DominoFinale.view(from: from, to: to, around: last, progress: 1)
+        XCTAssertEqual(
+            simd_distance(end.translation, to.transform.translation), 0, accuracy: 1e-3)
     }
 
     func testTheCameraMovesFromAnyViewToTheSpreadsAtRest() {
