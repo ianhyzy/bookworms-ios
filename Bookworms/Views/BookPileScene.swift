@@ -690,6 +690,9 @@ final class BookPileScene {
     /// How long nothing must move before the pile rests, and how often `update` checks.
     static let restDelay: TimeInterval = 10
     private static let restCheck: TimeInterval = 0.5
+    /// How long nothing must move before no new dust drifts in: the motes then fade out within
+    /// `DeskStage.longestMoteLife`, a second before the pile rests, so its still holds none.
+    private static let dustStop = restDelay - DeskStage.longestMoteLife - 1
 
     /// The walls' collision group, which a thrown-back book passes through.
     private static let wallGroup = CollisionGroup(rawValue: 1 << 1)
@@ -796,8 +799,12 @@ final class BookPileScene {
         }
     }
 
-    /// Takes the root out of the view's scene, so nothing draws while a pile image renders.
-    func detach() { root.removeFromParent() }
+    /// Takes the root out of the view's scene, so nothing draws while a pile image renders,
+    /// and lets the dust drift again for the scene that takes the desk.
+    func detach() {
+        root.removeFromParent()
+        stage.setSettled(false)
+    }
 
     /// Puts the root back under the current view's anchor after `detach`.
     func reattach() {
@@ -1232,8 +1239,9 @@ final class BookPileScene {
     /// lasts `restDelay`. Nothing may be held, flying, waiting to fall, or falling; no camera
     /// may move; motion must not steer gravity; no period's name may glow; and every book must
     /// be slower than a crawl. The physics engine puts bodies to sleep on its own, but reports
-    /// no sleep, so their speeds stand in for it. The dust does not count, so a still image
-    /// holds its motes wherever they drift.
+    /// no sleep, so their speeds stand in for it. The dust does not count: once nothing has
+    /// moved for `dustStop`, no new motes drift in (`DeskStage.setSettled(_:)`), so the last
+    /// have faded out before the rest is reported, and the still holds none.
     private func checkRest(after interval: TimeInterval) {
         let camera = camera.transform
         defer { checkedCamera = camera }
@@ -1242,6 +1250,7 @@ final class BookPileScene {
             !calendar.isGlowing, !shelf.children.contains(where: Self.moves)
         else { return stir() }
         stillTime += interval
+        if stillTime >= Self.dustStop { stage.setSettled(true) }
         if stillTime >= Self.restDelay, !isResting {
             isResting = true
             restChanged?(true)
@@ -1252,6 +1261,7 @@ final class BookPileScene {
     /// to `restChanged` if it rested.
     func stir() {
         stillTime = 0
+        stage.setSettled(false)
         guard isResting else { return }
         isResting = false
         restChanged?(false)
