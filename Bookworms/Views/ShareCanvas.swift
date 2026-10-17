@@ -470,13 +470,12 @@ enum ShareStyle {
 
     /// The book's format when it is not print alone, labeled as the Shelf labels it, its finish
     /// date, such as "Finished Nov 30, 2025" (or "Started" and the start date, for a current
-    /// read or a book not yet finished), and its length, joined with middle dots. Missing parts
-    /// are left out. An audiobook's length is its listening time; any other book's is its page
-    /// count.
+    /// read or a book not yet finished), and its length, in that order. Missing parts are left
+    /// out. An audiobook's length is its listening time; any other book's is its page count.
     ///
     /// A reread keeps its previous finish date while it is a current read, so `isReading` shows
     /// the start date instead.
-    static func details(_ book: CloudBook, isReading: Bool = false) -> String {
+    static func details(_ book: CloudBook, isReading: Bool = false) -> [String] {
         let format = ShelfLabels.format(book.format)
         var parts: [String] = []
         if let format, format != "Physical" { parts.append(format) }
@@ -487,7 +486,7 @@ enum ShareStyle {
             parts.append("Started " + date.formatted(ShelfLabels.finishedFormat))
         }
         if let length = ShelfLabels.length(of: book, width: .narrow) { parts.append(length) }
-        return parts.joined(separator: " · ")
+        return parts
     }
 }
 

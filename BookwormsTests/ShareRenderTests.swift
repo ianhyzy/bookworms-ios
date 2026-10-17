@@ -370,11 +370,11 @@ final class ShareRenderTests: XCTestCase {
             id: 60, title: "Fictional Reread", author: "Author", coverURL: nil,
             detailCoverURL: nil, pages: 412, finished: "2021-03-03", isReading: true,
             started: "2026-10-01")
-        let reading = ShareStyle.details(reread, isReading: true)
+        let reading = ShareStyle.details(reread, isReading: true).joined(separator: " · ")
         XCTAssertTrue(reading.hasPrefix("Started "), reading)
         XCTAssertTrue(reading.contains("2026"), reading)
         XCTAssertFalse(reading.contains("2021"), reading)
-        let finished = ShareStyle.details(reread)
+        let finished = ShareStyle.details(reread).joined(separator: " · ")
         XCTAssertTrue(finished.hasPrefix("Finished "), finished)
         XCTAssertTrue(finished.contains("2021"), "Just Finished shows the finish")
     }
@@ -387,7 +387,9 @@ final class ShareRenderTests: XCTestCase {
                 CloudBook(
                     id: 61, title: "Fictional Format", author: "Author", coverURL: nil,
                     detailCoverURL: nil, format: format, pages: 300, finished: "2025-01-02",
-                    audioSeconds: 36_000))
+                    audioSeconds: 36_000)
+            )
+            .joined(separator: " · ")
         }
         let both = details("Both")
         XCTAssertTrue(both.hasPrefix("Physical & audiobook · "), both)

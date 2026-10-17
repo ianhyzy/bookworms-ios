@@ -99,15 +99,27 @@ struct FeaturedBookCard: View {
                 ShareStars(rating: rating, size: 44)
             }
             if !details.isEmpty {
-                Text(details)
+                detailsLine(details)
                     .font(.system(size: 32))
                     .opacity(0.75)
-                    .lineLimit(2)
             }
         }
         .multilineTextAlignment(alignment == .center ? .center : .leading)
         .foregroundStyle(ShareStyle.cream.color)
         .layoutPriority(1)
+    }
+
+    /// The details' `parts` joined with middle dots on one line, or where that is too wide,
+    /// broken between parts, with the fewest lines and the most parts on the first, so no date
+    /// splits and no dot ends a line.
+    private func detailsLine(_ parts: [String]) -> some View {
+        let joined = { (parts: ArraySlice<String>) in parts.joined(separator: " · ") }
+        let breaks = (1..<parts.count).reversed()
+            .map { [joined(parts[..<$0]), joined(parts[$0...])] }
+        let lines = [[joined(parts[...])]] + breaks + [parts]
+        return ViewThatFits(in: .horizontal) {
+            ForEach(lines.indices, id: \.self) { Text(lines[$0].joined(separator: "\n")) }
+        }
     }
 
     /// A gold bar filled to `progress` (0...1), with the percentage beside it.
