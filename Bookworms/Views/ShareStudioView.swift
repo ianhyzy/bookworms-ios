@@ -297,8 +297,10 @@ struct ShareStudioView: View {
         }
     }
 
-    /// Draws covers as 3D books when on and flat when off. It is disabled where the template
-    /// has one style: Desk's books are always 3D, and Year in Books on Square shows no covers.
+    /// Draws covers as 3D books when on and flat when off: a round glass button with a cube, as
+    /// Photos marks its spatial scenes, filled and tinted while on. It is disabled where the
+    /// template has one style: Desk's books are always 3D, and Year in Books on Square shows no
+    /// covers.
     private var coverToggle: some View {
         let isOn = Binding {
             template == .pile || coverStyle == .threeD
@@ -309,12 +311,16 @@ struct ShareStudioView: View {
         let help =
             template == .yearInBooks
             ? "Draws the records' covers as 3D books when they fit" : "Draws covers as 3D books"
-        return Toggle("3D books", systemImage: "view.3d", isOn: isOn)
-            .toggleStyle(.button)
-            .labelStyle(.iconOnly)
-            .help(help)
-            .accessibilityHint(help)
-            .disabled(!template.hasCoverStyle || (template == .yearInBooks && aspect == .square))
+        return Toggle(
+            "3D books", systemImage: isOn.wrappedValue ? "cube.fill" : "cube", isOn: isOn
+        )
+        .toggleStyle(.button)
+        .labelStyle(.iconOnly)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .help(help)
+        .accessibilityHint(help)
+        .disabled(!template.hasCoverStyle || (template == .yearInBooks && aspect == .square))
     }
 
     @ViewBuilder
