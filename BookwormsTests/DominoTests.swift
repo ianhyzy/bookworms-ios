@@ -495,9 +495,12 @@ final class DominoTests: XCTestCase {
                     last + DominoFinale.flightTime,
                     DominoFinale.moveTime - DominoFinale.settleMargin + 1e-4, "\(count)")
             }
-            // The last book springs as the camera settles and lands just after it rests.
+            // The last book springs as the camera settles, reaches the camera once it rests,
+            // and lands just after.
             let landing = starts.last! + DominoFinale.snapTime
             XCTAssertLessThan(starts.last!, DominoFinale.moveTime, "\(count)")
+            XCTAssertGreaterThanOrEqual(
+                starts.last! + DominoFinale.snapRise, DominoFinale.moveTime, "\(count)")
             XCTAssertEqual(
                 landing, DominoFinale.moveTime + DominoFinale.snapLanding, accuracy: 1e-5)
             XCTAssertEqual(DominoFinale.duration(count: count), landing, accuracy: 1e-5)
@@ -513,35 +516,63 @@ final class DominoTests: XCTestCase {
             translation: [-6, 0.1, 4])
         let to = Transform(rotation: PileSpread.upright, translation: [3, 0.15, -2])
         let camera = PileCamera(target: [1, 0, -1], zoom: 1)
-        // It hangs toward the camera, larger, where its place shows on screen.
-        let top = DominoFinale.snapTop(over: to.translation, seenBy: camera)
-        XCTAssertGreaterThan(top.y, to.translation.y + 5)
-        let shown = camera.project(top, aspect: 0.5) - camera.project(to.translation, aspect: 0.5)
-        XCTAssertLessThan(simd_length(shown), 1e-4)
-        func pose(_ time: Float) -> Transform {
-            DominoFinale.snapPose(from: from, to: to, top: top, time: time)
-        }
-        XCTAssertEqual(simd_distance(pose(0).translation, from.translation), 0, accuracy: 1e-5)
-        // It reaches the top of its spring, face up, and hangs there a beat.
-        XCTAssertEqual(
-            simd_distance(pose(DominoFinale.snapRise).translation, top), 0, accuracy: 1e-4)
-        XCTAssertEqual(
-            abs(simd_dot(pose(DominoFinale.snapRise).rotation.vector, to.rotation.vector)), 1,
-            accuracy: 1e-5)
-        for share: Float in [0.25, 0.5, 0.75] {
-            let hanging = pose(DominoFinale.snapRise + DominoFinale.snapHang * share)
+        let slope = tan(PileCamera.fieldOfView / 2)
+        // A tall paperback in a phone's portrait view, and a wide hardcover in a Mac's window.
+        for (size, aspect): (SIMD3<Float>, Float) in [
+            ([1.1, 1.8, 0.25], 0.46), ([1.9, 2.4, 0.4], 1.5),
+        ] {
+            // It hangs in the middle of the view, facing the camera squarely, head up, near
+            // enough to fill the view's width or height as far as fits, and well past the near
+            // plane.
+            let top = DominoFinale.snapTop(size: size, seenBy: camera, aspect: aspect)
             XCTAssertEqual(
-                simd_distance(hanging.translation, top), 0,
-                accuracy: 0.05 * simd_distance(top, to.translation))
+                abs(simd_dot(top.rotation.vector, camera.rotation.vector)), 1, accuracy: 1e-5)
+            XCTAssertLessThan(simd_length(camera.project(top.translation, aspect: aspect)), 1e-4)
+            let cover = simd_distance(top.translation, camera.transform.translation) - size.z / 2
+            XCTAssertGreaterThan(cover, 3)
+            let width = size.x / (2 * cover * slope * aspect)
+            let height = size.y / (2 * cover * slope)
+            XCTAssertLessThanOrEqual(width, DominoFinale.snapWidth + 1e-4)
+            XCTAssertLessThanOrEqual(height, DominoFinale.snapHeight + 1e-4)
+            XCTAssertEqual(
+                max(width / DominoFinale.snapWidth, height / DominoFinale.snapHeight), 1,
+                accuracy: 1e-4)
+            func pose(_ time: Float) -> Transform {
+                DominoFinale.snapPose(from: from, to: to, top: top, time: time)
+            }
+            XCTAssertEqual(simd_distance(pose(0).translation, from.translation), 0, accuracy: 1e-5)
+            // It reaches the top of its spring, its cover to the camera, and hangs there a
+            // beat, drifting no nearer than keeps it in view.
+            let rise = DominoFinale.snapRise
+            XCTAssertEqual(
+                simd_distance(pose(rise).translation, top.translation), 0, accuracy: 1e-4)
+            XCTAssertEqual(
+                abs(simd_dot(pose(rise).rotation.vector, top.rotation.vector)), 1, accuracy: 1e-5)
+            for share: Float in [0.25, 0.5, 0.75] {
+                let hanging = pose(rise + DominoFinale.snapHang * share)
+                XCTAssertEqual(
+                    abs(simd_dot(hanging.rotation.vector, top.rotation.vector)), 1, accuracy: 1e-5)
+                XCTAssertLessThan(simd_distance(hanging.translation, top.translation), 0.3)
+            }
+            // It drops into its place and lands at full speed, flat for the last third of the
+            // drop and never below its place: the drop's last hundredth of a second covers far
+            // more ground than its first.
+            let drop = rise + DominoFinale.snapHang
+            let landing = DominoFinale.snapTime
+            XCTAssertEqual(
+                simd_distance(pose(landing).translation, to.translation), 0, accuracy: 1e-5)
+            for step in 0...20 {
+                let time = drop + DominoFinale.snapDrop * Float(step) / 20
+                XCTAssertGreaterThanOrEqual(pose(time).translation.y, to.translation.y - 1e-5)
+                guard step >= 14 else { continue }
+                XCTAssertEqual(
+                    abs(simd_dot(pose(time).rotation.vector, to.rotation.vector)), 1,
+                    accuracy: 1e-5)
+            }
+            let early = simd_distance(pose(drop).translation, pose(drop + 0.01).translation)
+            let late = simd_distance(pose(landing - 0.01).translation, pose(landing).translation)
+            XCTAssertGreaterThan(late, early * 10)
         }
-        // It drops into its place and lands at full speed: the drop's last hundredth of a
-        // second covers far more ground than its first.
-        let drop = DominoFinale.snapRise + DominoFinale.snapHang
-        let landing = DominoFinale.snapTime
-        XCTAssertEqual(simd_distance(pose(landing).translation, to.translation), 0, accuracy: 1e-5)
-        let early = pose(drop).translation.y - pose(drop + 0.01).translation.y
-        let late = pose(landing - 0.01).translation.y - pose(landing).translation.y
-        XCTAssertGreaterThan(late, early * 10)
     }
 
     func testTheCameraMovesFromAnyViewToTheSpreadsAtRest() {

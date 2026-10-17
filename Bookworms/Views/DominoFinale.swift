@@ -37,16 +37,22 @@ enum DominoFinale {
     /// higher every fourth book's does, so books in the air at once cross at different heights.
     static let rise: Float = 2.6
     static let riseStep: Float = 0.4
-    /// The last book's flourish: how long it takes to spring to the top of its arc, to hang
-    /// there, and to drop into its place, in seconds, and how long after the camera comes to
-    /// rest it lands.
-    static let snapRise: Float = 0.45
-    static let snapHang: Float = 0.3
-    static let snapDrop: Float = 0.2
-    static let snapLanding: Float = 0.2
-    /// How far the last book springs from its place toward the spread's camera, as a share of
-    /// the way: it rises toward the viewer, showing larger, where its place shows on screen.
-    static let snapReach: Float = 0.45
+    /// When the camera's aim starts to turn from where the chain ended toward the spread, in
+    /// seconds after the last book falls: a second before the books start to gather, so the aim
+    /// leads them there.
+    static let aimDelay: Float = 1.5
+    /// The last book's flourish: how long it takes to spring up to the camera, to hang there,
+    /// and to drop into its place, in seconds, and how long after the camera comes to rest it
+    /// lands: late enough that the camera has come to rest by the time the book hangs in front
+    /// of it.
+    static let snapRise: Float = 0.35
+    static let snapHang: Float = 0.4
+    static let snapDrop: Float = 0.18
+    static let snapLanding: Float = 0.7
+    /// How much of the view the last book fills as it hangs before the camera: this share of the
+    /// view's width, or of its height for a book that would otherwise be too tall to fit.
+    static let snapWidth: Float = 0.7
+    static let snapHeight: Float = 0.6
     /// The most the room's light on the last book brightens out of the lamp's beam, in stops.
     static let boostLimit: Float = 2.5
     /// The time constant, in seconds, with which the camera's motion as the last book falls
@@ -80,9 +86,21 @@ enum DominoFinale {
     /// How high the arc of the book at `index` peaks above the higher of its ends.
     static func peak(of index: Int) -> Float { rise + riseStep * Float(index % 4) }
 
-    /// Where the last book hangs over its `place` before it slams into it, seen by `camera`.
-    static func snapTop(over place: SIMD3<Float>, seenBy camera: PileCamera) -> SIMD3<Float> {
-        place + (camera.transform.translation - place) * snapReach
+    /// Where the last book, of `size` (see `BookShape.size`), hangs before it slams into its
+    /// place, seen by `camera` in a view of width-to-height `aspect`: in the middle of the view,
+    /// facing the camera squarely, head up, as near as fills `snapWidth` of the view's width or
+    /// `snapHeight` of its height, whichever comes first. A book facing the camera on its axis
+    /// shows as a rectangle, so its cover reads as if held up to the viewer. The book lies
+    /// wholly within the view, and even the smallest, 1.7 units tall, hangs about 4 units from
+    /// the camera, well past its near plane.
+    static func snapTop(size: SIMD3<Float>, seenBy camera: PileCamera, aspect: Float) -> Transform {
+        let slope = tan(PileCamera.fieldOfView / 2)
+        let depth =
+            max(size.x / (snapWidth * aspect), size.y / snapHeight) / (2 * slope) + size.z / 2
+        let shown = camera.transform
+        return Transform(
+            scale: .one, rotation: shown.rotation,
+            translation: shown.translation + shown.rotation.act([0, 0, -depth]))
     }
 
     /// How many stops brighter the room lights the last book at `point`, over its `place`,
@@ -144,26 +162,31 @@ enum DominoFinale {
     }
 
     /// The last book's pose `time` seconds into its flourish, from `from`, where it lay, to
-    /// `to`, its place: it springs up and across to `top`, slowing to a stop there as it turns
-    /// face up, hangs a beat, drifting on a little and back, then drops onto its place,
-    /// speeding up as a falling book does, and lands at full speed.
-    static func snapPose(from: Transform, to: Transform, top: SIMD3<Float>, time: Float)
+    /// `to`, its place: it springs up to `top`, fast at first and slowing to a stop there as it
+    /// turns its cover to the camera, hangs a beat, drifting a little nearer and back, then
+    /// slams down onto its place, speeding up hard all the way, as a book thrown down does. It
+    /// lies flat by the last third of the drop, so it comes down flat onto the books under its
+    /// place, and lands at full speed.
+    static func snapPose(from: Transform, to: Transform, top: Transform, time: Float)
         -> Transform
     {
         if time < snapRise {
             let share = max(time, 0) / snapRise
-            let eased = 1 - (1 - share) * (1 - share)
+            let eased = 1 - (1 - share) * (1 - share) * (1 - share)
             return Transform(
-                scale: to.scale, rotation: turn(from.rotation, to: to.rotation, by: eased),
-                translation: from.translation + (top - from.translation) * eased)
+                scale: to.scale, rotation: turn(from.rotation, to: top.rotation, by: eased),
+                translation: from.translation + (top.translation - from.translation) * eased)
         }
         let hang = (time - snapRise) / snapHang
         let drop = min(max((time - snapRise - snapHang) / snapDrop, 0), 1)
         let float = hang < 1 ? sin(.pi * hang) : 0
+        let toward = top.rotation.act([0, 0, 1])
         return Transform(
-            scale: to.scale, rotation: to.rotation,
-            translation: top + (top - to.translation) * 0.04 * float * float
-                + (to.translation - top) * drop * drop)
+            scale: to.scale,
+            rotation: turn(
+                top.rotation, to: to.rotation, by: DominoCameraRig.ease(min(drop / 0.7, 1))),
+            translation: top.translation + toward * 0.25 * float * float
+                + (to.translation - top.translation) * drop * drop * drop)
     }
 
     /// How far the camera's move has come at `progress` of its time: it gets under way at

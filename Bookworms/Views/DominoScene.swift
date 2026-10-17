@@ -2386,10 +2386,10 @@ final class DominoScene {
                         progress: time / DominoFinale.flightTime)
                     continue
                 }
+                let top = DominoFinale.snapTop(
+                    size: size(of: flight.book), seenBy: ending.camera, aspect: aspect)
                 book.transform = DominoFinale.snapPose(
-                    from: flight.from, to: flight.to,
-                    top: DominoFinale.snapTop(over: flight.to.translation, seenBy: ending.camera),
-                    time: time)
+                    from: flight.from, to: flight.to, top: top, time: time)
                 stage.light(
                     book,
                     boost: DominoFinale.boost(
