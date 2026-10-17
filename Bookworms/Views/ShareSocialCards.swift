@@ -11,8 +11,8 @@ import SwiftUI
 ///
 /// The card draws nothing without a score. Fewer rows fit on smaller sizes: a Story shows two
 /// fights, and Portrait and Square one. With no fights, a line says so, and the covers of the
-/// books both readers loved grow into the room. Leftover height spreads evenly between the
-/// sections.
+/// books both readers loved start larger. The covers grow into leftover height, and what they
+/// leave spreads evenly between the sections.
 struct TasteMatchCard: View {
     let input: ShareInput
 
@@ -54,6 +54,8 @@ struct TasteMatchCard: View {
                             input: input, books: match.agreements.map(\.book),
                             height: metrics.cover, titleLines: aspect == .square ? 1 : 2)
                     }
+                    // The covers grow before the gaps do.
+                    .layoutPriority(1)
                     Spacer(minLength: gap)
                 }
                 VStack(alignment: .leading, spacing: 16) {
@@ -146,8 +148,9 @@ struct TasteMatchCard: View {
 /// Each reader's favorites that the other hasn't shelved (`TasteMatch.forThem` and `forMe`):
 /// up to three covers for each, with the recommending reader's stars.
 ///
-/// A side without picks says so in a line instead, and the other side's covers grow into the
-/// room. Leftover height spreads evenly between the sections.
+/// A side without picks says so in a line instead, and the other side's covers start larger.
+/// The covers grow into leftover height, and what they leave spreads evenly between the
+/// sections.
 struct BookSwapCard: View {
     let input: ShareInput
 
@@ -182,13 +185,18 @@ struct BookSwapCard: View {
                 ShareReadersHeader(
                     social: social, label: "Book swap", size: metrics.avatar, theme: theme)
                 Spacer(minLength: gap)
+                // The covers grow before the gaps do.
                 side(
                     "\(other), read this next", books: match.forThem, isMuted: false,
-                    empty: "\(other) has read all my favorites.")
+                    empty: "\(other) has read all my favorites."
+                )
+                .layoutPriority(1)
                 Spacer(minLength: gap)
                 side(
                     "My next reads, from \(other)", books: match.forMe, isMuted: true,
-                    empty: "I've read all of \(other)'s favorites.")
+                    empty: "I've read all of \(other)'s favorites."
+                )
+                .layoutPriority(1)
                 Spacer(minLength: gap)
                 ShareInviteLine(username: social.owner.username)
             }
@@ -288,6 +296,9 @@ struct ShareAvatar: View {
 
 /// Up to three covers in a row, standing on one line, each with its title below and,
 /// optionally, the book's rating in stars.
+///
+/// The covers' row is at least `height` tall and grows by up to 40 percent into height the card
+/// has to spare; the covers fill it as far as their column's width allows.
 struct ShareCoverRow: View {
     let input: ShareInput
     let books: [CloudBook]
@@ -298,14 +309,22 @@ struct ShareCoverRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 28) {
             ForEach(books.prefix(TasteMatch.limit)) { book in
+                let cover = input.covers[book.id]
+                let ratio = ShareCover.aspect(of: cover, style: input.coverStyle)
                 VStack(spacing: 12) {
-                    ShareCover(
-                        book: book, look: input.look(for: book), cover: input.covers[book.id],
-                        style: input.coverStyle, height: height,
-                        yaw: 0.5 + (ShareStyle.unit(input.seed, book.id, 6) - 0.5) * 0.12
-                    )
-                    .shadow(color: .black.opacity(0.45), radius: 18, y: 14)
-                    .frame(height: height)
+                    GeometryReader { proxy in
+                        // A turned 3D book draws up to about 10 percent taller than its height.
+                        ShareCover(
+                            book: book, look: input.look(for: book), cover: cover,
+                            style: input.coverStyle,
+                            height: min(proxy.size.height * 0.9, proxy.size.width * 0.95 / ratio),
+                            yaw: 0.5 + (ShareStyle.unit(input.seed, book.id, 6) - 0.5) * 0.12
+                        )
+                        .shadow(color: .black.opacity(0.45), radius: 18, y: 14)
+                        .frame(
+                            width: proxy.size.width, height: proxy.size.height, alignment: .bottom)
+                    }
+                    .frame(minHeight: height, maxHeight: height * 1.4)
                     if let stars, let rating = book.rating {
                         ShareStars(rating: rating, size: stars.size, isMuted: stars.isMuted)
                     }
