@@ -2516,6 +2516,14 @@ final class DominoScene {
         follows && cameraMove == nil ? transform(of: .live(mode)) : view.transform
     }
 
+    /// Where the chain falls while it runs: the tipping book's middle, as the Follow camera
+    /// centers on it, which a blend between cameras keeps in view (see `blended`).
+    private var action: SIMD3<Float>? {
+        guard started, next < books.count, let rig else { return nil }
+        let point = rig.point(at: rig.estimate - DominoCameraRig.focusBack)
+        return [point.x, rig.tallest * DominoCameraRig.typicalHeight / 2, point.y]
+    }
+
     private func transform(of shot: Shot) -> Transform {
         switch shot {
         case .still(let transform):
@@ -2561,7 +2569,8 @@ final class DominoScene {
         } else if let blend = handoff {
             let time = blend.time + deltaTime
             shown = Self.blended(
-                transform(of: blend.from), to: shown, progress: min(time / blend.duration, 1))
+                transform(of: blend.from), to: shown, progress: min(time / blend.duration, 1),
+                keeping: action, aspect: aspect)
             handoff = time < blend.duration ? (blend.from, time, blend.duration) : nil
         }
         #if DEBUG
@@ -2583,9 +2592,16 @@ final class DominoScene {
     /// the whole time. Both ease in and out, and the roll eases from one view's to the other's.
     /// Turning and moving separately, a camera that travels far would look past its subject
     /// for most of the way.
-    nonisolated static func blended(_ from: Transform, to: Transform, progress: Float)
-        -> Transform
-    {
+    ///
+    /// With a `subject` in front of both views, such as the chain's falling front, the view
+    /// turns instead so the subject moves on screen straight from where `from` shows it to where
+    /// `to` does, over the first `aimLead` of the time, in a view `aspect` wide for its height:
+    /// a blend to a wider view, such as the overview, would otherwise turn toward the new
+    /// view's middle while the eye is still near the front, and sweep the front out of view.
+    nonisolated static func blended(
+        _ from: Transform, to: Transform, progress: Float,
+        keeping subject: SIMD3<Float>? = nil, aspect: Float = 1
+    ) -> Transform {
         func pose(_ view: Transform) -> DominoCameraPose? {
             let back = view.rotation.act([0, 0, 1])
             let level = simd_cross([0, 1, 0], back)
@@ -2609,13 +2625,42 @@ final class DominoScene {
                 rotation: simd_slerp(from.rotation, to.rotation, share), translation: eye)
         }
         let aim = DominoCameraRig.ease(min(max(progress / aimLead, 0), 1))
+        let roll = start.roll + (end.roll - start.roll) * share
+        let slope = tan(PileCamera.fieldOfView / 2)
+        // Where `view` shows `point`, in normalized device coordinates.
+        func shown(_ point: SIMD3<Float>, by view: Transform) -> SIMD2<Float>? {
+            let local = view.rotation.inverse.act(point - view.translation)
+            guard local.z < -1 else { return nil }
+            return SIMD2(local.x / aspect, local.y) / (-local.z * slope)
+        }
+        if let subject, simd_distance(eye, subject) > 1, let first = shown(subject, by: from),
+            let last = shown(subject, by: to)
+        {
+            // Looks at the subject, then turns the view until the subject shows at the point
+            // `aim` of the way between the two, as the Follow camera composes its shots, a
+            // few times over, so the view meets `to` exactly as the blend ends.
+            let place = first + (last - first) * aim
+            let reach = simd_distance(eye, subject) * slope
+            var view = Transform(
+                rotation: DominoCameraPose(eye: eye, target: subject, roll: roll).rotation,
+                translation: eye)
+            var target = subject
+            for _ in 0..<4 {
+                guard let seen = shown(subject, by: view) else { break }
+                let error = place - seen
+                target -=
+                    (view.rotation.act([1, 0, 0]) * error.x * aspect
+                        + view.rotation.act([0, 1, 0]) * error.y) * reach
+                view.rotation = DominoCameraPose(eye: eye, target: target, roll: roll).rotation
+            }
+            return view
+        }
         let target = start.target + (end.target - start.target) * aim
         guard simd_distance(eye, target) > 1 else {
             return Transform(
                 rotation: simd_slerp(from.rotation, to.rotation, share), translation: eye)
         }
-        let shot = DominoCameraPose(
-            eye: eye, target: target, roll: start.roll + (end.roll - start.roll) * share)
+        let shot = DominoCameraPose(eye: eye, target: target, roll: roll)
         return Transform(rotation: shot.rotation, translation: eye)
     }
 

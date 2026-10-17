@@ -149,6 +149,39 @@ final class DominoTests: XCTestCase {
         }
     }
 
+    func testABlendToAWiderViewKeepsTheFrontInView() {
+        // From a low view of the falling front to a high view of the whole chain, which shows
+        // the front off its middle.
+        let front: SIMD3<Float> = [0, 1.1, 0]
+        let low = DominoCameraPose(eye: [-8, 3.5, 8], target: front, roll: 0.03)
+        let follow = Transform(rotation: low.rotation, translation: low.eye)
+        let high = DominoCameraPose(eye: [16, 38, 29], target: [6, 0, 4])
+        let overview = Transform(rotation: high.rotation, translation: high.eye)
+        let aspect: Float = 0.46
+        func shown(_ progress: Float) -> SIMD2<Float> {
+            let view = DominoScene.blended(
+                follow, to: overview, progress: progress, keeping: front, aspect: aspect)
+            let local = view.rotation.inverse.act(front - view.translation)
+            return SIMD2(local.x / aspect, local.y) / (-local.z * tan(PileCamera.fieldOfView / 2))
+        }
+        let start = shown(0)
+        let end = shown(1)
+        XCTAssertLessThan(simd_length(start), 0.05)
+        XCTAssertLessThan(max(abs(end.x), abs(end.y)), 1)
+        // The front moves straight across the screen from one place to the other, so it never
+        // leaves the view.
+        var last: Float = 0
+        for step in 1...20 {
+            let place = shown(Float(step) / 20)
+            let along = simd_dot(place - start, end - start) / simd_length_squared(end - start)
+            XCTAssertGreaterThanOrEqual(along, last - 1e-3, "\(step)")
+            XCTAssertLessThanOrEqual(along, 1 + 1e-3, "\(step)")
+            let across = simd_length(place - start - (end - start) * along)
+            XCTAssertLessThan(across, 0.05, "\(step)")
+            last = along
+        }
+    }
+
     func testChainRunsInFinishOrderWithCurrentReadsLast() {
         let books = [
             book(1, finished: "2025-03-10"), book(2, finished: nil),
