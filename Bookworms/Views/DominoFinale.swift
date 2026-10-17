@@ -239,10 +239,12 @@ enum DominoFinale {
 /// The recording starts at the push and ends `hold` seconds after the heading starts to show.
 /// The finale, from the last book's fall, keeps live speed, so the run before it gets what is
 /// left (`runBudget`). While the books fall, the recording keeps fewer frames than the view
-/// shows when the run would otherwise run long: it estimates the run's live length from how far
-/// the chain has fallen, or, before a twentieth of the way, from the path's length at the
-/// camera's typical pace, and plays the rest of the run as fast as it must to end within the
-/// budget, easing between speeds over about half a second. The recording's frames come at
+/// shows when the run would otherwise run long: it estimates the run's live length from how long
+/// the chain has taken to fall as far as it has, scaled by the share of the whole run that part
+/// takes at the camera's typical pace as the chain speeds up (`DominoCameraRig.fallTime(to:)`),
+/// or, before a twentieth of the way, from that typical run's length alone, and plays the rest
+/// of the run as fast as it must to end within the budget, easing between speeds over about half
+/// a second. The recording's frames come at
 /// `PileMovieTiming.framesPerSecond`, each showing the view as it was at its start. Live time
 /// the recording leaves out, such as while a book is out at its details, passes with no frames
 /// (`skip(_:)`), and its hits are left out too.
@@ -259,6 +261,8 @@ struct DominoMovieTiming {
 
     /// The live seconds the run is estimated to take before it has a pace of its own.
     let estimate: Double
+    /// The path's length, up to the last book.
+    private let length: Float
     /// Seconds of the live view since the push.
     private(set) var live: Double = 0
     /// Seconds of video since the push.
@@ -271,7 +275,8 @@ struct DominoMovieTiming {
 
     /// The timing of a run along a path `length` units long.
     init(length: Float) {
-        estimate = Double(length / DominoCameraRig.typicalPace)
+        self.length = length
+        estimate = Double(DominoCameraRig.fallTime(to: length))
     }
 
     /// Whether the recording has its most frames.
@@ -284,7 +289,10 @@ struct DominoMovieTiming {
     mutating func advance(by deltaTime: Double, progress: Double?) -> ClosedRange<Int>? {
         live += deltaTime
         if let progress {
-            let total = progress < 0.05 ? max(estimate, live) : live / progress
+            let total =
+                progress < 0.05
+                ? max(estimate, live)
+                : live * estimate / Double(DominoCameraRig.fallTime(to: Float(progress) * length))
             let wanted = max(1, (total - live) / max(Self.runBudget - video, 0.25))
             speed += (wanted - speed) * min(1, deltaTime / 0.5)
         } else {

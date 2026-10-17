@@ -173,11 +173,31 @@ struct DominoCameraRig {
     static let zoomStiffness: Float = 2.5
     /// The step the springs integrate by, at most.
     static let substep: Float = 1.0 / 240
-    /// The chain's typical pace in the scene's slow motion (`DominoScene.slowMotion`), in units
-    /// per second, which times the swings and the moves before the chain has a pace of its own.
+    /// The chain's typical pace at its first books, in the scene's slow motion
+    /// (`DominoScene.slowMotion`), in units per second. Sped up as the chain falls (see
+    /// `pace(at:)`), it times the swings, and the moves before the chain has a pace of its own.
     static let typicalPace: Float = 9.5
-    /// How long a swing round a turn takes at a typical pace, in seconds, at the least and
-    /// most, and how fast it turns on average within those, in radians per second: a bigger
+
+    /// The chain's typical pace once its front has come `distance` along the path, as the
+    /// scene speeds the simulation up (`DominoLayout.speedUp(at:)`).
+    static func pace(at distance: Float) -> Float {
+        typicalPace * DominoLayout.speedUp(at: distance)
+    }
+
+    /// The seconds a chain's front takes to come `distance` along the path at `pace(at:)`.
+    ///
+    /// With a speed-up of a − b·e^(−s/r), where a is `DominoLayout.fastest`, b is a − 1, and r
+    /// is `DominoLayout.speedUpReach`, the integral of 1 / pace from 0 to s is
+    /// r / (a × `typicalPace`) × ln(a·e^(s/r) − b).
+    static func fallTime(to distance: Float) -> Float {
+        let fastest = DominoLayout.fastest
+        let reach = DominoLayout.speedUpReach
+        let share = exp(max(distance, 0) / reach)
+        return reach / (fastest * typicalPace) * log(fastest * share - (fastest - 1))
+    }
+
+    /// How long a swing round a turn takes at the turn's typical pace, in seconds, at the least
+    /// and most, and how fast it turns on average within those, in radians per second: a bigger
     /// swing takes longer. Where the rows are long enough, every swing also leaves at least
     /// `dwell` seconds of each row and turn steady, so the camera never swings from one turn
     /// straight into the next. A swing's middle comes `swingLead` seconds before the front
@@ -559,14 +579,19 @@ struct DominoCameraRig {
         func vary(_ index: Int, _ salt: Float) -> Float {
             (Float(index) * 0.618_034 + salt).truncatingRemainder(dividingBy: 1)
         }
-        let pace = typicalPace
         let rows = path.row(at: length).row + 1
+        // The chain's typical pace round each turn, which speeds up as the chain falls, so
+        // later rows go by faster, and their swings take a longer stretch of the path.
+        func pace(_ turn: Int) -> Float {
+            Self.pace(at: path.start(ofRow: turn) + path.rowLength(turn))
+        }
         // The longest swing round a turn leaves `dwell` of the shorter of its rows, with that
         // row's turn, steady; the widest turns at `swingRate` for that long. Rows can differ in
         // length, as the worm's do.
         func longest(_ turn: Int) -> Float {
             let period = min(path.period(turn), path.period(turn + 1))
-            return min(max(period / pace - dwell, swingTimes.lowerBound), swingTimes.upperBound)
+            return min(
+                max(period / pace(turn) - dwell, swingTimes.lowerBound), swingTimes.upperBound)
         }
         func widest(_ turn: Int) -> Float { swingRate * longest(turn) }
         // A swing turns the camera by a straight angle less both rows' angles from behind, so
@@ -635,8 +660,8 @@ struct DominoCameraRig {
                 over[turn] ? min(max(craneOver - higher, 0), craneRate * time / .pi) : crane * swing
             return Swing(
                 middle: path.start(ofRow: turn) + path.rowLength(turn) + .pi * path.radius / 2
-                    - swingLead * pace,
-                reach: time * pace / 2,
+                    - swingLead * pace(turn),
+                reach: time * pace(turn) / 2,
                 lift: abs(to.elevation - from.elevation) / 2 + extra)
         }
         return (shots, swings)

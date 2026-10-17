@@ -99,6 +99,27 @@ final class DominoTests: XCTestCase {
             DominoLayout.mass(height: BookShape.longest) / DominoLayout.mass(height: 1.7), 2)
     }
 
+    func testTheChainSpeedsUpTheLongerItFalls() {
+        let speeds = stride(from: 0, through: 500, by: 5)
+            .map { DominoLayout.speedUp(at: Float($0)) }
+        XCTAssertEqual(speeds.first, 1)
+        XCTAssertEqual(speeds, speeds.sorted())
+        XCTAssertLessThan(speeds.last!, DominoLayout.fastest)
+        // A year's chain, about 35 units, ends a little faster; the longest, about 410 units,
+        // about twice as fast.
+        XCTAssertEqual(DominoLayout.speedUp(at: 35), 1.2, accuracy: 0.05)
+        XCTAssertEqual(DominoLayout.speedUp(at: 410), 2.1, accuracy: 0.1)
+        // The run's time at the typical pace is the integral of one over the sped-up pace.
+        var time: Float = 0
+        for step in 0..<4_100 {
+            time += 0.1 / DominoCameraRig.pace(at: (Float(step) + 0.5) * 0.1)
+            guard step % 500 == 499 else { continue }
+            XCTAssertEqual(
+                DominoCameraRig.fallTime(to: Float(step + 1) * 0.1), time, accuracy: 1e-3 * time)
+        }
+        XCTAssertEqual(DominoCameraRig.fallTime(to: 0), 0, accuracy: 1e-6)
+    }
+
     func testChainRunsInFinishOrderWithCurrentReadsLast() {
         let books = [
             book(1, finished: "2025-03-10"), book(2, finished: nil),
@@ -652,15 +673,30 @@ final class DominoTests: XCTestCase {
         XCTAssertGreaterThan(simd_dot(SIMD3(head.x, 0, head.z), SIMD3(away.x, 0, away.z)), 0.9)
     }
 
-    /// Records a run that falls evenly over `run` live seconds at 60 frames per second, then
-    /// the finale and the hold, and returns the frames kept for each part.
+    /// The share of a chain `length` long that has fallen `share` of the way through its run,
+    /// as the scene speeds the chain up: where `DominoCameraRig.fallTime(to:)` reaches `share`
+    /// of the whole run's time.
+    private func fallen(_ share: Double, of length: Float) -> Double {
+        let (fastest, reach) = (DominoLayout.fastest, DominoLayout.speedUpReach)
+        let time = Float(share) * DominoCameraRig.fallTime(to: length)
+        let distance =
+            reach
+            * log(
+                (exp(time * fastest * DominoCameraRig.typicalPace / reach) + fastest - 1) / fastest)
+        return Double(distance / length)
+    }
+
+    /// Records a run that falls over `run` live seconds at 60 frames per second, speeding up as
+    /// the scene speeds the chain up, then the finale and the hold, and returns the frames kept
+    /// for each part.
     private func record(run: Double, length: Float) -> (run: Int, finale: Int, last: Int) {
         var timing = DominoMovieTiming(length: length)
         var frames = (run: 0, finale: 0, last: -1)
         let step = 1.0 / 60
         let finale = Double(DominoFinale.duration(count: 2)) + DominoMovieTiming.hold
         while timing.live < run + finale, !timing.isFull {
-            let progress = timing.live + step < run ? (timing.live + step) / run : nil
+            let progress =
+                timing.live + step < run ? fallen((timing.live + step) / run, of: length) : nil
             guard let kept = timing.advance(by: step, progress: progress) else { continue }
             XCTAssertEqual(kept.lowerBound, frames.last + 1, "frames follow on")
             frames.last = kept.upperBound
@@ -670,17 +706,21 @@ final class DominoTests: XCTestCase {
     }
 
     func testARecordingKeepsLiveSpeedUnlessItWouldRunLong() {
+        let finale = Double(DominoFinale.duration(count: 2)) + DominoMovieTiming.hold
         // A year's chain plays at live speed: 30 frames a second throughout.
         let year = record(run: 5, length: 5 * DominoCameraRig.typicalPace)
         XCTAssertEqual(Double(year.run), 5 * 30, accuracy: 2)
-        XCTAssertEqual(Double(year.finale), 8.2 * 30, accuracy: 2)
+        XCTAssertEqual(Double(year.finale), finale * 30, accuracy: 2)
         // A lifetime's chain speeds up to fit 30 seconds, and the finale keeps live speed.
         for (run, length): (Double, Float) in [(40, 380), (90, 900), (90, 300)] {
             let lifetime = record(run: run, length: length)
             XCTAssertLessThan(lifetime.last, DominoMovieTiming.frameLimit, "\(run) s")
             XCTAssertLessThanOrEqual(
                 Double(lifetime.run), DominoMovieTiming.runBudget * 30 + 30, "\(run) s")
-            XCTAssertEqual(Double(lifetime.finale), 8.2 * 30, accuracy: 2, "\(run) s")
+            XCTAssertEqual(Double(lifetime.finale), finale * 30, accuracy: 2, "\(run) s")
+            // It uses most of its budget rather than playing faster than it must.
+            XCTAssertGreaterThan(
+                Double(lifetime.run), DominoMovieTiming.runBudget * 30 * 0.85, "\(run) s")
         }
     }
 
