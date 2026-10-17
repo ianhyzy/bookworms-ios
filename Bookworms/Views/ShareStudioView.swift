@@ -60,6 +60,8 @@ struct ShareStudioView: View {
     /// Whether a finger, or on a Mac the mouse button, holds the preview, which then shows
     /// full size (`RootView`).
     @GestureState private var holdsPreview = false
+    /// VoiceOver's focus on the preview, which returns there when the full-size view closes.
+    @AccessibilityFocusState private var focusesPreview: Bool
     @Environment(\.fullSizeShareImage) private var fullSizeImage
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.horizontalSizeClass) private var sizeClass
@@ -301,10 +303,9 @@ struct ShareStudioView: View {
         }
     }
 
-    /// Draws covers as 3D books when on and flat when off: a round glass button with a cube, as
-    /// Photos marks its spatial scenes, filled and tinted while on. It is disabled where the
-    /// template has one style: Desk's books are always 3D, and Year in Books on Square shows no
-    /// covers.
+    /// Draws covers as 3D books when on and flat when off: a round glass button with a cube,
+    /// filled and tinted while on. It is disabled where the template has one style: Desk's books
+    /// are always 3D, and Year in Books on Square shows no covers.
     private var coverToggle: some View {
         let isOn = Binding {
             template == .pile || coverStyle == .threeD
@@ -315,9 +316,11 @@ struct ShareStudioView: View {
         let help =
             template == .yearInBooks
             ? "Draws the records' covers as 3D books when they fit" : "Draws covers as 3D books"
-        return Toggle(
-            "3D books", systemImage: isOn.wrappedValue ? "cube.fill" : "cube", isOn: isOn
-        )
+        return Toggle(isOn: isOn) {
+            Label("3D books", systemImage: isOn.wrappedValue ? "cube.fill" : "cube")
+                // Grows the circle to the 44-point touch target.
+                .padding(4)
+        }
         .toggleStyle(.button)
         .labelStyle(.iconOnly)
         .buttonStyle(.glass)
@@ -473,10 +476,15 @@ struct ShareStudioView: View {
                                 if case .second(true, _) = value { state = true }
                             }
                     )
-                    .onChange(of: holdsPreview) { _, holds in
-                        fullSizeImage.wrappedValue = holds ? image.image : nil
+                    // A render that finishes during the hold replaces the image shown.
+                    .onChange(of: holdsPreview ? image.image : nil) { _, shown in
+                        fullSizeImage.wrappedValue = shown
+                    }
+                    .onChange(of: fullSizeImage.wrappedValue == nil) { _, isClosed in
+                        if isClosed { focusesPreview = true }
                     }
                     .accessibilityLabel("\(image.name) preview")
+                    .accessibilityFocused($focusesPreview)
                     .accessibilityAction(named: "Show full size") {
                         fullSizeImage.wrappedValue = image.image
                     }
