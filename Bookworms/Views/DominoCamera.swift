@@ -53,7 +53,7 @@ struct DominoCameraPose: Equatable {
 /// films the rows either side nearly beside the front and cranes high over the turn with a
 /// small swing. The camera's height, bearing, and distance also drift slowly, as a drone's
 /// would. It pushes in and lowers its angle for a few of the densest cobwebs, at most one every
-/// six seconds or so, and films the row where one tears from as near behind the front as fits,
+/// five or six seconds, and films the row where one tears from as near behind the front as fits,
 /// so the web comes toward the camera. It also pushes in when the chain slows or stops. The
 /// pushes do not add up: the strongest sets how close the camera comes. However the camera
 /// moves, it keeps looking at the front: the point it looks at follows the front alone, and its
@@ -289,7 +289,8 @@ struct DominoCameraRig {
     /// stopping against the path's end.
     static let endEase: Float = 4
     /// The least density of a cobweb the camera pushes in on, over a gap of about 85 days, and
-    /// the least distance between two such webs, about six seconds of the chain's run.
+    /// the least distance between two such webs: six seconds of the chain's first books, and
+    /// about five once it nears real time (`pace(at:)`).
     static let heroDensity: Float = 0.5
     static let heroSpacing: Float = 6 * typicalPace
     /// At the peak of a cobweb's push in, how much closer the camera comes, as a share of its

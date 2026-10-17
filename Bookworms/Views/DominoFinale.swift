@@ -10,8 +10,8 @@ import simd
 /// it comes to rest `moveTime` seconds later (`view(from:to:around:progress:)`). The move starts from
 /// the view as it shows, carried on by the camera's own motion for a moment (`coast`), so the
 /// camera neither stops dead nor drifts on with the camera mode. It first pulls back and cranes
-/// up about the point it looked at, where the chain ended, and from `aimDelay` turns its aim
-/// toward the spread, ahead of the books. `gatherDelay` seconds in, while the camera still
+/// up about the point it looked at, which, after the Follow camera, moves onto where the last
+/// book lands, and from `aimDelay` turns its aim toward the spread, ahead of the books. `gatherDelay` seconds in, while the camera still
 /// moves, the books start to gather into a face-up spread (`PileSpread`): each lifts off the
 /// desk, flies in an arc to its place, turning face up on the way, and settles flat, one after
 /// another in the spread's order, so a book lands only after the books it rests on. Every book
