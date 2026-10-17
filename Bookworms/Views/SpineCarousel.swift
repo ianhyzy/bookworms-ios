@@ -39,9 +39,10 @@ enum StackStyle: String {
     /// `StackedBook` sets it.
     ///
     /// Nothing fades: the book shows every face throughout. The book slides out inside the
-    /// stack, in its order among its neighbors, until it is clear of the book above
-    /// (`Rest.slidesInStack`), and the flight then draws it in front of the stack. The books
-    /// around it make a little room while it is out (`StackRoom`).
+    /// stack (`Rest.slidesInStack`): in 2D under the book above, until it is clear of it, and in
+    /// 3D over the books around it, as a book that comes out in front of them. The flight then
+    /// draws it in front of the stack. The books around it make a little room while it is out
+    /// (`StackRoom`).
     func rest(of book: CloudBook) -> PullOutPath.Rest {
         switch self {
         case .flat:
@@ -210,6 +211,8 @@ struct SpineCarousel: View {
             height: top + size.height + bleed, top: band, bottom: track.maxThickness / 2 + rise)
         // The pulled book's index, which the books of its stack make room for.
         let pulled = pullOut.roomID.flatMap { track.ids.firstIndex(of: $0) }
+        // The book that is out, which a 3D stack draws over the books around it.
+        let out = pullOut.book?.id
         return ScrollView(.vertical) {
             VStack(spacing: 0) {
                 Color.clear.frame(height: top + track.leadingSpace(viewport: size.height))
@@ -244,7 +247,7 @@ struct SpineCarousel: View {
                                     EyeLevelOrder(
                                         index: slot.index,
                                         books: slot.inset...slot.inset + spine.height,
-                                        eye: camera.map { _ in eye.y }))
+                                        eye: camera.map { _ in eye.y }, isOut: slot.id == out))
                             }
                         }
                         .frame(
@@ -253,7 +256,8 @@ struct SpineCarousel: View {
                         .modifier(
                             EyeLevelOrder(
                                 index: page, books: extent(of: track.pages[page], in: arrangement),
-                                eye: camera.map { _ in eye.y }))
+                                eye: camera.map { _ in eye.y },
+                                isOut: track.pages[page].contains { $0.id == out }))
                     }
                 }
                 Color.clear.frame(height: track.trailingSpace(viewport: size.height) + bleed)
@@ -513,7 +517,8 @@ enum StackCamera {
 /// Orders a stacked book, or a page of them, as one eye sees them (`StackCamera`): below the eye,
 /// a book lies over the top board of the book below it, and above the eye, over the underside of
 /// the book above it. The book that the eye's level passes through lies over both, and so does
-/// its page over the other pages.
+/// its page over the other pages. A pulled book, and its page, lie over all of them while it is
+/// out, since it comes out in front of the stack.
 ///
 /// The span of the view's books, `books` in its own coordinates, decides which side of the eye's
 /// level the view lies on. Only a change of side updates the view, as a book's top or bottom
@@ -526,6 +531,8 @@ private struct EyeLevelOrder: ViewModifier {
     let books: ClosedRange<CGFloat>
     /// The eye's height in the scroll view's visible coordinates, or `nil` for a flat stack.
     let eye: CGFloat?
+    /// Whether the view holds the pulled book while it is out.
+    let isOut: Bool
     @State private var side = Side.below
 
     func body(content: Content) -> some View {
@@ -547,6 +554,7 @@ private struct EyeLevelOrder: ViewModifier {
 
     private var order: Double {
         guard eye != nil else { return -Double(index) }
+        if isOut { return Double(Int32.max) + 1 }
         switch side {
         case .above: return Double(index)
         case .below: return -Double(index)
@@ -557,9 +565,9 @@ private struct EyeLevelOrder: ViewModifier {
 }
 
 /// A stacked book's slide out of its place while it is pulled (`PullOutPath.slide`), drawn in
-/// the stack in the book's order among its neighbors (`EyeLevelOrder`), so a neighbor that lies
-/// over it keeps covering it. Once the book is clear of the stack, the flight draws it and the
-/// stack hides it.
+/// the stack: in 2D under the book above, which keeps covering what still lies under it, and in
+/// 3D over the books around it (`EyeLevelOrder`). Once the book is clear of the stack, the
+/// flight draws it and the stack hides it.
 ///
 /// SwiftUI animates `progress`, so the slide follows the flight frame by frame.
 private struct StackSlide: ViewModifier, Animatable {

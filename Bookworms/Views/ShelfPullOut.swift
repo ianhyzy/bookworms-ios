@@ -162,10 +162,11 @@ final class ShelfPullOut {
 ///
 /// 1. The book slides out of its place, straight toward the reader, which shows as its spine
 ///    growing. On **Stack**, it comes out along the way its spine faces (`slide`), so a turned
-///    book also moves a little to that side, and down the screen, until it is clear of the
-///    book above, while the books above and below make a little room (`StackRoom`). The stack
-///    draws this part itself, in the book's order among its neighbors (`Rest.slidesInStack`).
-///    The book casts a shadow on the shelf, and the faces' shading fades in.
+///    book also moves a little to that side, and a flat one down the screen, until it is clear
+///    of the book above, while the books above and below make a little room (`StackRoom`). The
+///    stack draws this part itself, under the book above in 2D and over the books around it in
+///    3D (`Rest.slidesInStack`). The book casts a shadow on the shelf, and the faces' shading
+///    fades in.
 /// 2. As the slide ends, the book starts to float to the stage, growing or shrinking to the
 ///    stage's height, and to turn from the way it lay (`Rest`) to the details' pose, while a book
 ///    from **Stack** stands up from lying on its back. On **Shelf**, the float and the turn start
@@ -251,9 +252,9 @@ struct PullOutPath {
         /// The camera's distance from the book's center, in book heights; `nil` for the
         /// details' camera (`BookProjection.standardDistance`).
         var distance: Double? = nil
-        /// Whether the stack draws the book's slide out of its place itself (`slide`), so a
-        /// neighbor that lies over the book keeps covering it. The flight takes over once the
-        /// book is clear of the stack.
+        /// Whether the stack draws the book's slide out of its place itself (`slide`), so a flat
+        /// stack's book above keeps covering it. The flight takes over once the book is clear of
+        /// the stack.
         var slidesInStack = false
     }
 
@@ -332,9 +333,11 @@ struct PullOutPath {
     /// How a book on its back has moved out of its place at `progress`, as an offset from its
     /// place and a scale, both relative to how it lay. The book comes straight toward the
     /// reader along the way its spine faces: it grows by up to `pullScale` and moves a little to
-    /// the side it is turned to. It also moves down the screen until its top edge, grown by
-    /// `pullScale`, is just below the top edge of its place, clear of the book above, which the
-    /// stack may draw over it.
+    /// the side it is turned to. A book seen by the 3D stack's camera (`Rest.distance`) grows
+    /// about its middle, which lies about level with the camera's eye, as a book coming straight
+    /// toward that eye does; the stack draws it over the books around it. A flat stack draws the
+    /// book above over it, so a flat book also moves down the screen until its top edge, grown
+    /// by `pullScale`, is just below the top edge of its place, clear of the book above.
     ///
     /// - Parameters:
     ///   - length: The spine's length on screen.
@@ -349,7 +352,7 @@ struct PullOutPath {
         // `distance` lengths away.
         let distance = rest.distance ?? BookProjection.standardDistance
         let side = -sin(rest.pitch) * distance * (pullScale - 1) * length
-        let down = max(0, extent * (1 + pullScale) / 2 - thickness)
+        let down = rest.distance == nil ? max(0, extent * (1 + pullScale) / 2 - thickness) : 0
         return (CGSize(width: side * pull, height: down * pull), 1 + (pullScale - 1) * pull)
     }
 

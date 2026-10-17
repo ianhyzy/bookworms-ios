@@ -825,20 +825,28 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(start.pitch, 0.2, accuracy: 0.0001)
         XCTAssertEqual(start.lighting, 0.6, accuracy: 0.0001)
         XCTAssertEqual(path.pose(at: -0.1), start)
-        // Turned to face a little left, it comes out toward the reader, a little left, and down
-        // the screen.
-        let placeTop = start.center.y + drawnSize(start, aspect: 2 / 3).width / 2 - home.height
+        // Turned to face a little left, it comes out toward the reader and a little left,
+        // growing about its middle, as a book coming straight toward the stack's eye does.
         let pulled = path.pose(at: PullOutPath.floatStart)
         XCTAssertLessThan(pulled.center.x, start.center.x)
-        XCTAssertGreaterThan(pulled.center.y, start.center.y)
+        XCTAssertEqual(pulled.center.y, start.center.y, accuracy: 0.001)
         XCTAssertGreaterThan(pulled.scale / start.scale, 1.1)
         XCTAssertEqual(pulled.roll, -.pi / 2, accuracy: 0.0001)
-        // It ends the slide just clear of the book above, before it rises or stands up, as far
-        // as the stack's own drawing of the slide moves it.
+        // It ends the slide before it rises or stands up, as far as the stack's own drawing of
+        // the slide moves it.
         let out = path.pose(at: PullOutPath.pullEnd)
         XCTAssertEqual(out.roll, -.pi / 2, accuracy: 0.0001)
+        // A flat book, which the book above covers, instead moves down the screen until it is
+        // just clear of the book above.
+        let flat = PullOutPath(
+            home: home, upright: false, stage: path.stage, pose: .resting, aspect: 2 / 3,
+            thicknessRatio: 0.1, rest: PullOutPath.Rest(pitch: 0.05, slidesInStack: true))
+        let flatStart = flat.pose(at: 0)
+        let flatOut = flat.pose(at: PullOutPath.pullEnd)
         XCTAssertEqual(
-            out.center.y - drawnSize(out, aspect: 2 / 3).width / 2, placeTop, accuracy: 0.5)
+            flatOut.center.y - drawnSize(flatOut, aspect: 2 / 3).width / 2,
+            flatStart.center.y + drawnSize(flatStart, aspect: 2 / 3).width / 2 - home.height,
+            accuracy: 0.5)
         let slide = PullOutPath.slide(
             at: PullOutPath.pullEnd, length: 280, thickness: 32,
             extent: drawnSize(start, aspect: 2 / 3).width, rest: rest)
