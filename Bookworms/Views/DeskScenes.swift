@@ -103,6 +103,9 @@ final class DeskScenes {
         case .desk:
             pile.attach(to: view)
             if PileSnapshotRenderer.isRendering { pile.detach() }
+            // A view that returns, as from another tab, counts the pile's rest afresh, so the
+            // dust drifts in again before the desk pauses.
+            pile.stir()
         case .dominoes:
             dominoes.attach(to: view)
             if PileSnapshotRenderer.isRendering { dominoes.detach() }
