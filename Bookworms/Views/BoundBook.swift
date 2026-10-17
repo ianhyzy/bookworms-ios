@@ -28,6 +28,9 @@ struct BoundBook: View {
     var pitch: Double
     var thicknessRatio: CGFloat?
     var lighting: Double
+    /// Whether the front cover takes the light's overall shade (`Book3DView.shadesCover`). Its
+    /// rounded edges and joint keep their shading either way.
+    var shadesCover: Bool
 
     var body: some View {
         let model = BoundBookModel(
@@ -35,7 +38,7 @@ struct BoundBook: View {
             height: Double(height),
             thickness: Double(
                 height * (thicknessRatio ?? Book3DView.thicknessRatio(of: book, cover: cover))),
-            yaw: yaw, pitch: pitch, lighting: lighting)
+            yaw: yaw, pitch: pitch, lighting: lighting, shadesCover: shadesCover)
         let edge = cover?.spineEdgeColors ?? []
         ZStack(alignment: .topLeading) {
             ForEach(model.items.indices, id: \.self) { index in
@@ -227,7 +230,7 @@ struct BoundBookModel {
 
     init(
         book: CloudBook, look: SpineLook, coverAspect: CGFloat, height: Double,
-        thickness: Double, yaw: Double, pitch: Double, lighting: Double
+        thickness: Double, yaw: Double, pitch: Double, lighting: Double, shadesCover: Bool
     ) {
         let (bigX, bigY, bigZ) = (height * Double(coverAspect) / 2, height / 2, thickness / 2)
         let camera = BookCamera(
@@ -272,7 +275,7 @@ struct BoundBookModel {
                         Sheet(
                             content: front ? .front : .back, size: size,
                             transform: camera.transform(origin: origin, u: u, v: v, size: size),
-                            base: camera.shade(face),
+                            base: front && !shadesCover ? 0 : camera.shade(face),
                             across: Self.stops(
                                 length: width, start: front ? spineSide : foreSide,
                                 end: front ? foreSide : spineSide),

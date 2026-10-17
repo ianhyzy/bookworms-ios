@@ -645,8 +645,8 @@ struct ShareStars: View {
     }
 }
 
-/// A book's cover on a card, `height` tall: a lit 3D book, or the flat cover with rounded
-/// corners. The caller adds the shadow.
+/// A book's cover on a card, `height` tall: a lit 3D book, whose front cover is as bright as
+/// the flat one, or the flat cover with rounded corners. The caller adds the shadow.
 ///
 /// A book without a downloaded cover gets one in its spine colors, titled in the share serif.
 struct ShareCover: View {
@@ -670,9 +670,10 @@ struct ShareCover: View {
     var body: some View {
         switch style {
         case .threeD:
+            // The cover keeps the colors it has flat; the spine and edges take the shading.
             Book3DView(
                 book: Self.lettered(book), look: look, cover: cover, height: height, yaw: yaw,
-                pitch: pitch)
+                pitch: pitch, shadesCover: false)
         case .flat:
             let width = height * Self.aspect(of: cover, style: .flat)
             let shape = RoundedRectangle(cornerRadius: max(4, height * 0.025))

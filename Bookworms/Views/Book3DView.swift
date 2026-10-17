@@ -30,13 +30,17 @@ struct Book3DView: View {
     /// once while it scrolls, draws plain boxes, which cost about half as much, except for the
     /// book being pulled out.
     var bound = true
+    /// Whether the front cover takes the light's shading. Share images leave it unshaded, so a
+    /// 3D cover shows the same colors as a flat one, while the spine, edges, and boards keep
+    /// theirs.
+    var shadesCover = true
 
     var body: some View {
         Group {
             if bound {
                 BoundBook(
                     book: book, look: look, cover: cover, height: height, yaw: yaw, pitch: pitch,
-                    thicknessRatio: thicknessRatio, lighting: lighting)
+                    thicknessRatio: thicknessRatio, lighting: lighting, shadesCover: shadesCover)
             } else {
                 box
             }
@@ -54,7 +58,10 @@ struct Book3DView: View {
             ForEach(projection.visibleFaces) { face in
                 content(for: face.kind, size: face.size)
                     .frame(width: face.size.width, height: face.size.height)
-                    .overlay(Color.black.opacity(face.shade * lighting))
+                    .overlay(
+                        Color.black.opacity(
+                            face.kind == .front && !shadesCover ? 0 : face.shade * lighting)
+                    )
                     .projectionEffect(face.transform)
             }
         }
