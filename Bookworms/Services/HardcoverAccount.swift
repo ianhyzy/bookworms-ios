@@ -77,21 +77,55 @@ final class HardcoverAccount {
     @ObservationIgnored private var lastCloudCheck: Date?
     nonisolated static let summaryKey = "HardcoverAccount"
 
+    /// Whether this launch keeps a Hardcover login of its own: a preview launch
+    /// (`-BookwormsPreviewFolder`), the Debug stub sign-in (`-BookwormsStubSignIn`), or a unit
+    /// test run.
+    ///
+    /// Such a launch keeps its login (`loginStore`), account summary (`summaryDefaults`), and
+    /// library (`PhoneLibrary.url`) apart from the reader's, so it never reads, prompts for, or
+    /// deletes the reader's own login or library.
+    nonisolated static let usesScratchLogin = isScratchLaunch(
+        defaults: .standard, environment: ProcessInfo.processInfo.environment)
+
+    /// The Keychain item that holds this launch's Hardcover login.
+    nonisolated static let loginStore = KeychainSecret(
+        service: usesScratchLogin
+            ? "gay.ian.Bookworms.iOS.hardcover.scratch" : "gay.ian.Bookworms.iOS.hardcover")
+
+    /// The user defaults that hold this launch's account summary.
+    nonisolated static var summaryDefaults: UserDefaults {
+        usesScratchLogin ? UserDefaults(suiteName: "gay.ian.Bookworms.scratch")! : .standard
+    }
+
+    /// Whether a launch with these launch arguments and user `defaults` and this process
+    /// `environment` keeps a login of its own (`usesScratchLogin`).
+    nonisolated static func isScratchLaunch(
+        defaults: UserDefaults, environment: [String: String]
+    ) -> Bool {
+        var stubsSignIn = false
+        #if DEBUG
+            stubsSignIn = defaults.bool(forKey: "BookwormsStubSignIn")
+        #endif
+        return stubsSignIn || defaults.string(forKey: "BookwormsPreviewFolder") != nil
+            || environment["XCTestConfigurationFilePath"] != nil
+    }
+
     /// The signed-in account's ID, or `nil` when signed out. Readable from any isolation.
     ///
     /// `CloudSpineStore` chooses the library source from this rather than from the library
     /// cache, which iOS may evict, so a signed-in iPhone never falls back to the iCloud
     /// archive's newest library, which may belong to another account.
     nonisolated static var signedInAccountID: String? {
-        UserDefaults.standard.data(forKey: summaryKey)
+        summaryDefaults.data(forKey: summaryKey)
             .flatMap { try? JSONDecoder().decode(Summary.self, from: $0) }?
             .accountID
     }
 
-    /// Tests pass their own token service, user defaults, and library file.
+    /// Tests pass their own token store, user defaults, and library file.
     init(
-        tokens: any SecretStore = KeychainSecret(), client: HardcoverClient? = nil,
-        defaults: UserDefaults = .standard, libraryURL: URL = PhoneLibrary.url
+        tokens: any SecretStore = HardcoverAccount.loginStore, client: HardcoverClient? = nil,
+        defaults: UserDefaults = HardcoverAccount.summaryDefaults,
+        libraryURL: URL = PhoneLibrary.url
     ) {
         self.tokens = tokens
         self.defaults = defaults
@@ -410,8 +444,11 @@ struct PhoneLibrary: Codable, Equatable, Sendable {
     var series: [SeriesInfo]? = nil
 
     /// Named for its format: books gained `seriesMemberships`, so a copy saved before then is not
-    /// read, and the next sync downloads the library again.
-    static let url = URL.cachesDirectory.appending(path: "Bookworms/hardcover-library-5.json")
+    /// read, and the next sync downloads the library again. A launch with a login of its own
+    /// (`HardcoverAccount.usesScratchLogin`) keeps its copy in a folder of its own.
+    static let url = URL.cachesDirectory.appending(
+        path: HardcoverAccount.usesScratchLogin
+            ? "Bookworms/Scratch/hardcover-library-5.json" : "Bookworms/hardcover-library-5.json")
 
     /// Returns the cached library, or `nil` when signed out or before the first sync.
     static func load(from url: URL = Self.url) -> PhoneLibrary? {

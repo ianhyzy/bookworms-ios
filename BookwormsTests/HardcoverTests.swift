@@ -753,6 +753,36 @@ final class HardcoverTests: XCTestCase {
         XCTAssertNil(store.read())
     }
 
+    func testPreviewStubAndTestLaunchesKeepALoginOfTheirOwn() throws {
+        let suite = "gay.ian.Bookworms.iOS.tests.ScratchLaunch"
+        UserDefaults.standard.removePersistentDomain(forName: suite)
+        addTeardownBlock { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let arguments = try XCTUnwrap(UserDefaults(suiteName: suite))
+        func isScratch(_ environment: [String: String] = [:]) -> Bool {
+            HardcoverAccount.isScratchLaunch(defaults: arguments, environment: environment)
+        }
+        XCTAssertFalse(isScratch())
+        XCTAssertTrue(isScratch(["XCTestConfigurationFilePath": "/tmp/fictional.xctest"]))
+        arguments.set("preview", forKey: "BookwormsPreviewFolder")
+        XCTAssertTrue(isScratch())
+        arguments.removeObject(forKey: "BookwormsPreviewFolder")
+        #if DEBUG
+            arguments.set(true, forKey: "BookwormsStubSignIn")
+            XCTAssertTrue(isScratch())
+        #endif
+
+        // A test run is one, so the default login, summary, and library are its own.
+        XCTAssertTrue(HardcoverAccount.usesScratchLogin)
+        XCTAssertNotEqual(HardcoverAccount.loginStore.service, KeychainSecret().service)
+        XCTAssertNotEqual(
+            PhoneLibrary.url.deletingLastPathComponent(),
+            URL.cachesDirectory.appending(path: "Bookworms"))
+        let probe = "gay.ian.Bookworms.iOS.tests.scratchProbe"
+        HardcoverAccount.summaryDefaults.set(true, forKey: probe)
+        addTeardownBlock { HardcoverAccount.summaryDefaults.removeObject(forKey: probe) }
+        XCTAssertNil(UserDefaults.standard.object(forKey: probe))
+    }
+
     // MARK: - Fixtures
 
     private func authorization(interval: Int?, expiresIn: Int) -> DeviceAuthorization {
