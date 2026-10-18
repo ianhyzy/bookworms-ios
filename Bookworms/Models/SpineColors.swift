@@ -202,13 +202,18 @@ extension SpineDesignV1 {
     /// as `mac-foundation-models-v1` or `CloudContract.macGeneratorVersion`, which designed with
     /// Apple's on-device model; and `ModelTier.localToken` from any other generator, such as the
     /// Apple TV's looks (`CloudContract.appleTVGeneratorVersion`), which come from no model. So a
-    /// design keeps its tier when a new generator version ships.
+    /// design keeps its tier when a new generator version ships. The companion used no other
+    /// model, so a `ModelTier.localToken` on its generator, which builds that read
+    /// `mac-foundation-models-v1` as local defaults wrote into looks made from its designs, also
+    /// reads as `ModelTier.onDeviceToken`.
     var modelToken: String? {
+        let isCompanion = generatorVersion.hasPrefix("mac-foundation-models-")
         if let token = provenance?.split(separator: " ").first(where: { $0.hasPrefix("model:") }) {
-            return String(token)
+            return isCompanion && token == ModelTier.localToken
+                ? ModelTier.onDeviceToken : String(token)
         }
         if generatorVersion.hasPrefix("ios-pcc-") { return nil }
-        if generatorVersion.hasPrefix("mac-foundation-models-") { return ModelTier.onDeviceToken }
+        if isCompanion { return ModelTier.onDeviceToken }
         return ModelTier.localToken
     }
 

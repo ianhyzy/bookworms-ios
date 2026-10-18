@@ -341,6 +341,19 @@ final class SeriesLookTests: XCTestCase {
             XCTAssertFalse(mac.isUpgraded(at: .onDevice), origin)
             XCTAssertFalse(mac.isUpgraded(at: .local), origin)
         }
+        // Builds that read the companion's first generator as local defaults wrote `model:local`
+        // into the looks they made from its designs; those looks still read as on-device, and
+        // copies of them record the on-device token.
+        var misread = look().withOrigin("mac-foundation-models-v1")
+        misread.provenance = ModelTier.localToken
+        XCTAssertEqual(misread.tier, .onDevice)
+        XCTAssertFalse(misread.isUpgraded(at: .onDevice))
+        XCTAssertTrue(misread.isUpgraded(at: .privateCloudCompute))
+        XCTAssertEqual(misread.design(bookID: 9).tierTokens, [ModelTier.onDeviceToken])
+        var local = look()
+        local.provenance = ModelTier.localToken
+        XCTAssertEqual(local.tier, .local, "This app's local looks stay local")
+
         // A look seeded from this app's earlier Private Cloud Compute design upgrades from no
         // tier.
         let earlier = look().withOrigin("ios-pcc-v1")
