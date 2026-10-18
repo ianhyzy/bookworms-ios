@@ -446,8 +446,10 @@ final class HardcoverTests: XCTestCase {
             )
             .stored())
         let status = ReplyStatus(503)
+        let gate = ReplyGate()
         let client = HardcoverClient { request in
             if request.url?.path() == "/oauth2/token" {
+                await gate.wait()
                 return Self.respond(await status.value, "", to: request)
             }
             guard request.value(forHTTPHeaderField: "Authorization") == "Bearer fictional-old"
@@ -457,9 +459,18 @@ final class HardcoverTests: XCTestCase {
         let account = HardcoverAccount(
             tokens: tokens, client: client, defaults: defaults, libraryURL: library)
 
-        // Hardcover is down, so the token in use stays until it expires.
-        let user = try await account.withAccessToken { try await client.account(token: $0) }
+        // Hardcover is down, so the token in use stays until it expires, both for the request
+        // that renews the login and for one that waits for that renewal.
+        let renewing = Task {
+            try await account.withAccessToken { try await client.account(token: $0) }
+        }
+        while await gate.arrivals == 0 { await Task.yield() }
+        let waiting = Task { try await account.accessToken() }
+        await gate.open()
+        let user = try await renewing.value
         XCTAssertEqual(user.id, 4242)
+        let waited = try await waiting.value
+        XCTAssertEqual(waited, "fictional-old")
         XCTAssertFalse(account.needsReconnect)
 
         // A token endpoint that refuses the refresh grant can't renew the login.

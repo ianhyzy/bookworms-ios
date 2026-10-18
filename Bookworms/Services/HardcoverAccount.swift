@@ -209,21 +209,21 @@ final class HardcoverAccount {
     ///
     /// Throws `HardcoverError.invalidToken` when signed out or Hardcover rejected the refresh
     /// token, which also sets `needsReconnect`, and `HardcoverError.credentialUnreadable` while
-    /// the Keychain refuses the read. When the early renewal that this call starts fails
+    /// the Keychain refuses the read. When the renewal that this call starts or waits for fails
     /// another way, as without a network connection, returns the current token until it
     /// expires.
     func accessToken() async throws -> String {
-        if let renewal { return try await renewal.value.accessToken }
         let credential = try savedCredential()
-        guard credential.refreshToken != nil, let expiresAt = credential.expiresAt,
-            expiresAt.timeIntervalSinceNow < Self.renewalMargin
-        else { return credential.accessToken }
         do {
+            if let renewal { return try await renewal.value.accessToken }
+            guard credential.refreshToken != nil, let expiresAt = credential.expiresAt,
+                expiresAt.timeIntervalSinceNow < Self.renewalMargin
+            else { return credential.accessToken }
             return try await renew(credential).accessToken
         } catch {
-            guard expiresAt > .now, !needsReconnect, !(error is CancellationError) else {
-                throw error
-            }
+            guard let expiresAt = credential.expiresAt, expiresAt > .now, !needsReconnect,
+                !(error is CancellationError)
+            else { throw error }
             return credential.accessToken
         }
     }
