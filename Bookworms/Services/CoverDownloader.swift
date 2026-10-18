@@ -39,9 +39,11 @@ actor CoverDownloader {
     private static let maximumPixels = 100_000_000
 
     /// Creates a downloader. `allowsExpensiveNetwork` is `false` for background runs, so they
-    /// wait for Wi-Fi instead of spending cellular data.
-    init(allowsExpensiveNetwork: Bool = true) {
+    /// wait for Wi-Fi instead of spending cellular data. Tests pass `protocolClasses` to serve
+    /// covers without a network.
+    init(allowsExpensiveNetwork: Bool = true, protocolClasses: [AnyClass] = []) {
         let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = protocolClasses + (configuration.protocolClasses ?? [])
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpCookieStorage = nil
         configuration.timeoutIntervalForRequest = 30

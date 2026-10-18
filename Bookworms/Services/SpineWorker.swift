@@ -75,11 +75,13 @@ actor SpineWorker {
     private let continuation: AsyncStream<WorkerUpdate>.Continuation
     private let store: any SpineStore
     private let ledger: WorkLedger
-    private let analyzer = BookAnalyzer()
+    private let analyzer: BookAnalyzer
     // One session per network policy for the worker's lifetime: a URLSession lives until it is
     // invalidated, so a downloader per run would leak one.
-    private let covers = CoverDownloader()
+    private let covers: CoverDownloader
     private let backgroundCovers = CoverDownloader(allowsExpensiveNetwork: false)
+    /// The status that every model read returns instead of the device's, for tests.
+    private let pinnedStatus: ModelStatus?
     private var snapshot: WorkerSnapshot
     private var isRunning = false
     // Saved designs of series books, looked up at most once per pass, and designs the pass
@@ -135,13 +137,18 @@ actor SpineWorker {
     ]
 
     /// Creates a worker that starts from `lastRun`, the saved outcome of the previous run. Tests
-    /// pass their own `ledger`.
+    /// pass their own `ledger`, `analyzer`, and foreground `covers`, and pin `modelStatus`, which
+    /// every model read then returns, so a run's tier doesn't depend on the device.
     init(
         store: any SpineStore, lastRun: WorkerSnapshot = WorkerSnapshot(),
-        ledger: WorkLedger = WorkLedger()
+        ledger: WorkLedger = WorkLedger(), analyzer: BookAnalyzer = BookAnalyzer(),
+        covers: CoverDownloader = CoverDownloader(), modelStatus: ModelStatus? = nil
     ) {
         self.store = store
         self.ledger = ledger
+        self.analyzer = analyzer
+        self.covers = covers
+        pinnedStatus = modelStatus
         snapshot = lastRun
         (updates, continuation) = AsyncStream.makeStream()
     }
@@ -150,7 +157,7 @@ actor SpineWorker {
     /// showing its own tier, which it publishes after each book, and reads the best tier again
     /// when it ends.
     func refreshModelStatus() async {
-        if runModel == nil { snapshot.model = await analyzer.status() }
+        if runModel == nil { snapshot.model = await bestStatus() }
         snapshot.dropExpiredStop()
         publish()
     }
@@ -199,7 +206,7 @@ actor SpineWorker {
         runModel = nil
         // The best tier again, as the next run would pick it, such as below a backup model that
         // this run found rejected.
-        snapshot.model = await analyzer.status()
+        snapshot.model = await bestStatus()
         snapshot.isRunning = false
         snapshot.currentBook = nil
         snapshot.lastRunAt = Date()
@@ -697,17 +704,25 @@ actor SpineWorker {
     /// (`stopForModel(_:mode:)`).
     private func readModel() async -> ModelStatus {
         var status: ModelStatus
-        if let runModel {
+        if let pinnedStatus {
+            status = pinnedStatus
+        } else if let runModel {
             status = await analyzer.status(of: runModel.tier, designer: runModel.designer)
             status.pccUnavailableReason = runModel.pccUnavailableReason
             status.backupUnavailableReason = runModel.backupUnavailableReason
             status.onDeviceUnavailableReason = runModel.onDeviceUnavailableReason
         } else {
-            status = await analyzer.status()
+            status = await bestStatus()
         }
         runModel = status
         snapshot.model = status
         return status
+    }
+
+    /// The best tier's status (`BookAnalyzer.status(for:)`), or the pinned status.
+    private func bestStatus() async -> ModelStatus {
+        if let pinnedStatus { return pinnedStatus }
+        return await analyzer.status()
     }
 
     /// Stops the run when `status` says its model should get no more requests.
