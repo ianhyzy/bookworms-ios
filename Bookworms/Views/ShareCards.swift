@@ -17,6 +17,14 @@ struct FeaturedBookCard: View {
         let isSquare = aspect == .square
         let theme = input.theme
         let edge = theme.backdropDark.color
+        let lines = ShareStyle.details(book, isReading: input.template == .currentlyReading)
+        // A story's content reaches into its bottom strip (`ShareAspect.reach`). Each gap between
+        // the details' groups takes a quarter of that height and the gap under the hero takes the
+        // rest, so the details still read as one caption and the hero keeps the size it has
+        // within `ShareAspect.insets`.
+        let groupGap = aspect.reach / 4
+        let groupGaps = (showsMeter(book) ? 1 : 0) + (lines.isEmpty ? 0 : 1)
+        let heroGap = aspect.reach - groupGap * CGFloat(groupGaps)
         return ZStack {
             // A glow behind the book that fades to the dark field.
             RadialGradient(
@@ -40,13 +48,13 @@ struct FeaturedBookCard: View {
                 if isSquare {
                     HStack(spacing: 40) {
                         hero(book, look: look).frame(width: 470)
-                        details(book, alignment: .leading)
+                        details(book, lines: lines, alignment: .leading, spacing: 36)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 } else {
-                    VStack(spacing: 44 + extra(book)) {
+                    VStack(spacing: 44 + heroGap) {
                         hero(book, look: look)
-                        details(book, alignment: .center)
+                        details(book, lines: lines, alignment: .center, spacing: 36 + groupGap)
                     }
                 }
             }
@@ -75,23 +83,15 @@ struct FeaturedBookCard: View {
             ? book.progress != nil : input.showsRatings && (book.rating ?? 0) > 0
     }
 
-    /// The height each gap adds on a story, whose content reaches into the bottom strip
-    /// (`ShareAspect.reach`): an even share among the gaps above the title and above each of the
-    /// details' other groups, so the hero keeps the size it has within `ShareAspect.insets`.
-    private func extra(_ book: CloudBook) -> CGFloat {
-        let isReading = input.template == .currentlyReading
-        let hasLine = !ShareStyle.details(book, isReading: isReading).isEmpty
-        let gaps = 1 + (showsMeter(book) ? 1 : 0) + (hasLine ? 1 : 0)
-        return input.aspect.reach / CGFloat(gaps)
-    }
-
-    /// The title and author, the rating or progress, and the details line, such as "Finished
-    /// Nov 30, 2025 · 736 pages", with wider gaps between these groups than within them.
-    private func details(_ book: CloudBook, alignment: HorizontalAlignment) -> some View {
+    /// The title and author, the rating or progress, and the details line of `lines`, such as
+    /// "Finished Nov 30, 2025 · 736 pages", with `spacing` between these groups, wider than the
+    /// gaps within them.
+    private func details(
+        _ book: CloudBook, lines: [String], alignment: HorizontalAlignment, spacing: CGFloat
+    ) -> some View {
         let isSquare = input.aspect == .square
         let isReading = input.template == .currentlyReading
-        let details = ShareStyle.details(book, isReading: isReading)
-        return VStack(alignment: alignment, spacing: 36 + extra(book)) {
+        return VStack(alignment: alignment, spacing: spacing) {
             VStack(alignment: alignment, spacing: 14) {
                 if isReading {
                     ShareStyle.label("Currently reading").foregroundStyle(ShareStyle.gold)
@@ -114,8 +114,8 @@ struct FeaturedBookCard: View {
                     ShareStars(rating: rating, size: 44)
                 }
             }
-            if !details.isEmpty {
-                detailsLine(details)
+            if !lines.isEmpty {
+                detailsLine(lines)
                     .font(.system(size: 32))
                     .opacity(0.75)
             }
