@@ -166,9 +166,10 @@ final class DeskStage {
     }
 
     /// Shows or hides the dust drifting through the lamp's beam. Reduce Motion hides it, as
-    /// motion the reader did not start. `fine` motes, about 3 mm across, faint, and lit by the
-    /// lamp, suit a camera that films low among them, as the dominoes' Follow camera does,
-    /// where a mote of the desk's that drifts near the lens shows as a large glowing disc.
+    /// motion the reader did not start. `fine` motes, the same flecks about 1 to 2.5 mm long,
+    /// faint, and lit by the lamp, suit a camera that films low among them, as the dominoes'
+    /// Follow camera does, where a mote of the desk's that drifts near the lens shows as a
+    /// large glowing fleck.
     /// Motes already drifting keep their look until they fade.
     func setDust(_ enabled: Bool, fine: Bool = false) {
         showsDust = enabled
@@ -280,9 +281,11 @@ final class DeskStage {
     nonisolated static let longestMoteLife: Double = 3
 
     /// Slow motes in the beam around its axis, over the middle of the pool. About 140 drift at
-    /// a time, each fading in and out over 2 to `longestMoteLife` seconds. The emitter has no
-    /// warm-up, which a new emitter simulates in a single frame, stalling the render, so the
-    /// motes fill the beam over their first few seconds. `dress(_:fine:)` sets their look.
+    /// a time, each fading in and out over 2 to `longestMoteLife` seconds, born at any angle
+    /// and turning slowly, up to about 30 degrees a second either way, as specks of dust
+    /// tumble. The emitter has no warm-up, which a new emitter simulates in a single frame,
+    /// stalling the render, so the motes fill the beam over their first few seconds.
+    /// `dress(_:fine:)` sets their look.
     private static func dustMotes(radius: Float) -> ParticleEmitterComponent {
         var emitter = ParticleEmitterComponent()
         emitter.emitterShape = .box
@@ -301,14 +304,18 @@ final class DeskStage {
         motes.noiseAnimationSpeed = 0.1
         motes.acceleration = [0, -0.004, 0]
         motes.billboardMode = .billboard
+        motes.angleVariation = .pi
+        motes.angularSpeedVariation = 0.5
         emitter.mainEmitter = motes
         return emitter
     }
 
-    /// Gives `motes` the desk's look: 5 to 9 mm across, specks of the lamp's warm light that
-    /// brighten what lies behind them, as dust catching a beam does. `fine` motes are 2 to 4 mm
-    /// across, faint, and lit by the lamp, so they show only in its beam, and stay small and
-    /// faint enough not to show as discs when a camera passes close to them.
+    /// Gives `motes` the desk's look: irregular flecks (`flecks`) about 3 to 6 mm long and
+    /// half as wide or less, in cells 5 to 9 mm across, specks of the lamp's warm light that
+    /// brighten what lies behind them, as dust catching a beam does. `fine` motes are the same
+    /// flecks about 1 to 2.5 mm long, faint, and lit by the lamp, so they show only in its
+    /// beam, and stay small and faint enough not to show as discs when a camera passes close
+    /// to them.
     private static func dress(_ motes: inout ParticleEmitterComponent.ParticleEmitter, fine: Bool) {
         motes.size = fine ? 0.03 : 0.07
         motes.sizeVariation = fine ? 0.01 : 0.02
@@ -319,27 +326,72 @@ final class DeskStage {
                     : UIColor(red: 1, green: 0.8, blue: 0.52, alpha: 0.8)))
         motes.isLightingEnabled = fine
         motes.blendMode = fine ? .alpha : .additive
-        motes.image = fine ? nil : moteImage
+        motes.image = flecks
+        var cells = ParticleEmitterComponent.ParticleEmitter.ImageSequence()
+        cells.rowCount = fleckColumns
+        cells.columnCount = fleckColumns
+        // Each mote keeps one fleck, picked at random from the sheet's cells as it is born.
+        let middle = fleckColumns * fleckColumns / 2
+        cells.initialFrame = middle
+        cells.initialFrameVariation = middle
+        cells.frameRate = 0
+        motes.imageSequence = cells
     }
 
-    /// A mote's image: a bright core that fades out softly, so a mote reads as a speck of light.
-    private static let moteImage: TextureResource? = {
-        let size = CGSize(width: 32, height: 32)
+    /// The columns and rows of `flecks`' grid.
+    private static let fleckColumns = 3
+
+    /// The motes' images: a sheet of `fleckColumns` by `fleckColumns` cells, 32 pixels each,
+    /// with one dust fleck in each. A fleck is four or five overlapping soft blobs of different
+    /// sizes, strung along a slightly bent line and pushed a little to either side, so it is
+    /// lumpy and longer than it is wide, with soft edges: some are compact flakes, others
+    /// fibers that span most of their cell. A fixed seed draws the same flecks every launch.
+    private static let flecks: TextureResource? = {
+        let cell: CGFloat = 32
+        let side = cell * CGFloat(fleckColumns)
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
-        let image = UIGraphicsImageRenderer(size: size, format: format)
+        var random = BookAnalyzer.SeededGenerator(seed: 0xD057)
+        func jitter(_ range: CGFloat) -> CGFloat { .random(in: -range...range, using: &random) }
+        let image = UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format)
             .image { context in
-                let locations: [CGFloat] = [0, 0.1, 0.3, 1]
-                let colors = [1, 0.7, 0.15, 0].map { UIColor(white: 1, alpha: $0).cgColor }
+                let colors = [0.95, 0.6, 0].map { UIColor(white: 1, alpha: $0).cgColor }
                 guard
-                    let gradient = CGGradient(
+                    let blob = CGGradient(
                         colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors as CFArray,
-                        locations: locations)
+                        locations: [0, 0.45, 1])
                 else { return }
-                let middle = CGPoint(x: size.width / 2, y: size.height / 2)
-                context.cgContext.drawRadialGradient(
-                    gradient, startCenter: middle, startRadius: 0, endCenter: middle,
-                    endRadius: size.width / 2, options: [])
+                let graphics = context.cgContext
+                for index in 0..<(fleckColumns * fleckColumns) {
+                    let middle = CGPoint(
+                        x: (CGFloat(index % fleckColumns) + 0.5) * cell,
+                        y: (CGFloat(index / fleckColumns) + 0.5) * cell)
+                    let axis = jitter(.pi)
+                    let bend = jitter(0.5)
+                    // Half the distance between the end blobs' middles: compact flakes to
+                    // long fibers.
+                    let length = 4.25 + jitter(1.75)
+                    let count = 4 + index % 2
+                    // No blob reaches past 16 pixels from the cell's middle, so none spills
+                    // into a neighbor's cell.
+                    for part in 0..<count {
+                        // From -1 at one end of the fleck to 1 at the other.
+                        let along = CGFloat(part) / CGFloat(count - 1) * 2 - 1
+                        let turn = axis + bend * along
+                        let reach = length * along + jitter(1)
+                        let aside = jitter(2)
+                        graphics.saveGState()
+                        graphics.translateBy(
+                            x: middle.x + cos(turn) * reach - sin(turn) * aside,
+                            y: middle.y + sin(turn) * reach + cos(turn) * aside)
+                        graphics.rotate(by: turn + jitter(0.8))
+                        graphics.scaleBy(x: 5 + jitter(1.8), y: 3.6 + jitter(1))
+                        graphics.drawRadialGradient(
+                            blob, startCenter: .zero, startRadius: 0, endCenter: .zero,
+                            endRadius: 1, options: [])
+                        graphics.restoreGState()
+                    }
+                }
             }
         return image.cgImage.flatMap {
             try? TextureResource(image: $0, options: .init(semantic: .color))
