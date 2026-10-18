@@ -162,11 +162,14 @@ struct TopFiveCard: View {
                 colors: [theme.glow.color, .clear], center: UnitPoint(x: 0.5, y: 0.42),
                 startRadius: 0, endRadius: aspect.size.width * 0.75)
             // Titles keep their subtitles while the fan keeps its minimum height. Past that, the
-            // longest titles give theirs up one at a time, and only once every title has given
-            // its subtitle up does the fan shrink below its minimum. `ViewThatFits` measures the
-            // gaps at their least, so they never cost a title its subtitle.
+            // longest titles give theirs up one at a time. When the fan is short of its minimum
+            // even with every subtitle given up, the last layout keeps the gaps at their least and
+            // lets the fan shrink below its minimum. `ViewThatFits` measures the gaps at their
+            // least, so they never cost a title its subtitle.
             ViewThatFits(in: .vertical) {
-                ForEach(0...shortenable.count, id: \.self) { shortened in
+                ForEach(0...shortenable.count + 1, id: \.self) { layout in
+                    let isFallback = layout > shortenable.count
+                    let shortened = min(layout, shortenable.count)
                     VStack(spacing: 0) {
                         Text(heading)
                             .font(ShareStyle.serif(aspect == .story ? 84 : 68, .semibold))
@@ -175,14 +178,13 @@ struct TopFiveCard: View {
                             .minimumScaleFactor(0.6)
                             // Keeps its height, so widening gaps cannot shrink it.
                             .fixedSize(horizontal: false, vertical: true)
-                        gap(gaps.section)
+                        gap(gaps.section, widens: !isFallback)
                         fan(books)
-                            .frame(
-                                minHeight: shortened < shortenable.count ? minimumFanHeight : nil)
-                        gap(gaps.section)
+                            .frame(minHeight: isFallback ? nil : minimumFanHeight)
+                        gap(gaps.section, widens: !isFallback)
                         VStack(spacing: 0) {
                             ForEach(Array(books.enumerated()), id: \.element.id) { index, book in
-                                if index > 0 { gap(gaps.row) }
+                                if index > 0 { gap(gaps.row, widens: !isFallback) }
                                 row(
                                     rank: index + 1, book: book, showsAuthor: aspect != .square,
                                     keepsSubtitle: !shortenable.prefix(shortened).contains(index)
@@ -210,10 +212,10 @@ struct TopFiveCard: View {
     }
 
     /// Space that grows from `range`'s lower bound to its upper one before the fan, the most
-    /// flexible part of the card, takes any height.
-    private func gap(_ range: ClosedRange<CGFloat>) -> some View {
+    /// flexible part of the card, takes any height. Unless it `widens`, it keeps the lower bound.
+    private func gap(_ range: ClosedRange<CGFloat>, widens: Bool) -> some View {
         Spacer(minLength: range.lowerBound)
-            .frame(maxHeight: range.upperBound)
+            .frame(maxHeight: widens ? range.upperBound : range.lowerBound)
             .layoutPriority(1)
     }
 
