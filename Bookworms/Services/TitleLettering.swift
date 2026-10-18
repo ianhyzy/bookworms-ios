@@ -146,20 +146,20 @@ enum TitleLettering {
     }
 
     /// Whether a measurement could be the line's text set in some face: its letters span at
-    /// least three quarters of the OCR line's width, and it is as wide for its height as the
-    /// catalog's versions of the text (`composed`) allow, within 15 percent.
+    /// least three quarters of the OCR line's width, and it is at least 85 percent as wide for
+    /// its height as the narrowest of the catalog's versions of the text (`composed`).
     ///
     /// A mask that lost letters, such as one color of a two-color title or a gray byline that
     /// OCR read with the title, spans part of the line and measures far narrower than the text
     /// set in any face. Ranking it would pick the narrowest face for lettering that isn't narrow.
+    /// Lettering wider than every face stays plausible: widely set letters, such as an extended
+    /// sans, measure that way, and the widest faces suit them.
     static func isPlausible(
         _ measurement: Measurement, composed: [(font: FontAtlas.Font, profile: Mask.Profile)]
     ) -> Bool {
-        let aspects = composed.map(\.profile.aspect)
-        guard let narrowest = aspects.min(), let widest = aspects.max() else { return false }
-        let aspect = measurement.profile.aspect
-        return (measurement.inkSpan ?? 1) >= 0.75 && aspect >= narrowest * 0.85
-            && aspect <= widest * 1.15
+        guard let narrowest = composed.map(\.profile.aspect).min() else { return false }
+        return (measurement.inkSpan ?? 1) >= 0.75
+            && measurement.profile.aspect >= narrowest * 0.85
     }
 
     /// Ranks `families` by how closely the measured lettering matches the same text composed
