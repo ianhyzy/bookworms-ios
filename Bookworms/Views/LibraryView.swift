@@ -494,7 +494,8 @@ private struct ShelfCaption: View {
             }
             let reads = ShelfLabels.reads(book.readCount).map(ReadCountBadge.init)
             let stars = book.rating.flatMap { $0 > 0 ? RatingStars(rating: $0) : nil }
-            // Stacks the date over the stars when large text leaves no room for both.
+            // Stacks the date over the badge and stars when large text leaves no room for all,
+            // so the date keeps a line to itself.
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 10) {
                     finished
@@ -502,11 +503,11 @@ private struct ShelfCaption: View {
                     stars
                 }
                 VStack(spacing: 4) {
+                    finished
                     HStack(spacing: 8) {
-                        finished
                         reads
+                        stars
                     }
-                    stars
                 }
             }
             .font(.footnote)
