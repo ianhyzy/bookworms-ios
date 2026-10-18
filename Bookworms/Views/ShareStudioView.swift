@@ -1081,13 +1081,11 @@ private struct TopFivePinPicker: View {
     let library: [CloudBook]
     @AppStorage(TopFivePins.key) private var pins = TopFivePins()
     @State private var query = ""
-
-    private var books: [CloudBook] {
-        library.filter(TimeFrame.lifetime.contains).sorted(by: ShareTemplate.isRankedHigher)
-    }
+    /// The finished books, highest rated first, ranked when the library changes so a search
+    /// edit only filters them.
+    @State private var books: [CloudBook] = []
 
     var body: some View {
-        let books = self.books
         let shown =
             query.isEmpty
             ? books
@@ -1110,7 +1108,11 @@ private struct TopFivePinPicker: View {
         }
         .searchable(text: $query)
         .navigationTitle("Pin to Top Five")
-        .onAppear { pins.keep(only: Set(books.map(\.id))) }
+        .onChange(of: library, initial: true) { _, library in
+            books = library.filter(TimeFrame.lifetime.contains)
+                .sorted(by: ShareTemplate.isRankedHigher)
+            pins.keep(only: Set(books.map(\.id)))
+        }
     }
 
     private func row(_ book: CloudBook) -> some View {
