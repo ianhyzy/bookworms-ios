@@ -495,7 +495,8 @@ private struct ShelfCaption: View {
             let reads = ShelfLabels.reads(book.readCount).map(ReadCountBadge.init)
             let stars = book.rating.flatMap { $0 > 0 ? RatingStars(rating: $0) : nil }
             // Stacks the date over the badge and stars when large text leaves no room for all,
-            // so the date keeps a line to itself.
+            // so the date keeps a line to itself, and gives each its own line when the badge and
+            // stars don't fit side by side either.
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 10) {
                     finished
@@ -508,6 +509,11 @@ private struct ShelfCaption: View {
                         reads
                         stars
                     }
+                }
+                VStack(spacing: 4) {
+                    finished
+                    reads
+                    stars
                 }
             }
             .font(.footnote)
@@ -530,6 +536,9 @@ struct ReadCountBadge: View {
     var body: some View {
         Text(text)
             .font(.caption2.weight(.semibold))
+            // Brighter than the caption's secondary text, so it keeps above 4.5:1 contrast on
+            // the lighter capsule.
+            .foregroundStyle(ShelfPalette.paper.opacity(0.7))
             .padding(.horizontal, 7)
             .padding(.vertical, 2)
             .background(ShelfPalette.paper.opacity(0.12), in: .capsule)
