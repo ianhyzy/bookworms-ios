@@ -705,11 +705,11 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(styles(local), [.humanistSans], "Not the whole catalog")
         XCTAssertTrue(local.allSatisfy { $0.weight == 700 })
         XCTAssertEqual(styles(try candidates(cyrillic, genres: ["Horror"])), [.condensedSans])
-        // A model's families keep their order at regular weight.
+        // A model's families keep their order at the lightest title weight.
         let model = try candidates(cyrillic, local: false)
         XCTAssertEqual(
             Set(model.map(\.family)), Set(BookAnalyzer.families(for: nil, playful: false)))
-        XCTAssertTrue(model.allSatisfy { $0.weight == 400 })
+        XCTAssertTrue(model.allSatisfy { $0.weight == TitleLettering.minimumWeight })
         // A Latin title line ranks the families it was given.
         XCTAssertTrue(styles(try candidates("KINDRED")).count > 1)
     }
@@ -736,11 +736,16 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(styles(["Adventure", "Mystery", "Fantasy"]), [.condensedSans])
         XCTAssertEqual(styles(["fantasy", "Science Fiction"]), [.classicalCaps, .bookSerif])
 
-        // Without a recognized genre, the measurements rank every family but rounded faces,
-        // which need a model to judge the book playful.
+        // Without a recognized genre, the measurements rank the serif and sans families but
+        // rounded faces, which need a model to judge the book playful, and without a reading,
+        // no themed faces.
         let unranked = styles(["Adventure"])
-        XCTAssertFalse(unranked.contains(.rounded))
-        XCTAssertTrue(unranked.isSuperset(of: [.blackletter, .script, .bookSerif, .monospace]))
+        XCTAssertEqual(
+            unranked,
+            [
+                .bookSerif, .didone, .classicalCaps, .slab, .humanistSans, .geometricSans,
+                .condensedSans,
+            ])
         XCTAssertEqual(styles(nil), unranked)
         // With nothing measured either, the Apple TV's general-fiction face: a humanist sans.
         XCTAssertEqual(styles(nil, measured: false), [.humanistSans])
@@ -788,11 +793,26 @@ final class GenerationTests: XCTestCase {
             for: .init(handDrawn: false, serifs: false, treatment: "plain"), playful: false)
         XCTAssertFalse(serious.contains { SpineFamily(rawValue: $0)?.style == .rounded })
 
-        let script = BookAnalyzer.families(
-            for: .init(handDrawn: true, serifs: true, treatment: "plain"), playful: true)
-        XCTAssertTrue(script.contains("Caveat"))
+        // A playful book's hand-drawn title gets an upright hand-drawn or rounded face. Any
+        // other book's gets the typeset faces its serifs call for.
+        let handDrawn = BookAnalyzer.LetteringReading(
+            handDrawn: true, serifs: true, treatment: "plain")
+        let script = BookAnalyzer.families(for: handDrawn, playful: true)
+        XCTAssertTrue(script.contains("Patrick Hand"))
+        XCTAssertEqual(
+            Set(script.compactMap { SpineFamily(rawValue: $0)?.style }), [.script, .rounded])
+        XCTAssertEqual(
+            BookAnalyzer.families(for: handDrawn, playful: false),
+            BookAnalyzer.families(
+                for: .init(handDrawn: false, serifs: true, treatment: "plain"), playful: false))
+        XCTAssertFalse(
+            BookAnalyzer.families(for: nil, playful: false)
+                .contains { SpineFamily(rawValue: $0)?.style == .script })
         let everything = BookAnalyzer.families(for: nil, playful: true)
-        for slanted in ["Dancing Script", "Pacifico", "Great Vibes", "Lobster", "Bangers"] {
+        let unchosen =
+            ["Dancing Script", "Pacifico", "Great Vibes", "Lobster", "Bangers"]
+            + SpineFamily.neverGenerated.map(\.rawValue)
+        for slanted in unchosen {
             XCTAssertFalse(script.contains(slanted) || everything.contains(slanted), slanted)
         }
         XCTAssertFalse(BookAnalyzer.allowsFamily("Impact"))
@@ -976,6 +996,110 @@ final class GenerationTests: XCTestCase {
             let ranked = TitleLettering.rank(SpineFamily.allCases.map(\.rawValue), for: measurement)
             XCTAssertEqual(ranked.first?.family, family)
         }
+    }
+
+    func testGenresDecideWhetherABookIsPlayful() {
+        XCTAssertEqual(BookAnalyzer.genreTone(["Fantasy", "Humour", "Satire"]), true)
+        XCTAssertEqual(BookAnalyzer.genreTone(["Romance", "Romantic Comedy"]), true)
+        // A serious genre wins over humor beside it.
+        XCTAssertEqual(BookAnalyzer.genreTone(["Literary Fiction", "Classics", "Humor"]), false)
+        XCTAssertEqual(BookAnalyzer.genreTone(["History", "political science"]), false)
+        XCTAssertEqual(BookAnalyzer.genreTone(["Biography & Autobiography"]), false)
+        XCTAssertEqual(BookAnalyzer.genreTone(["Science", "Health"]), false)
+        XCTAssertEqual(BookAnalyzer.genreTone(["Science Fiction", "Politique"]), false)
+        // Children's books are playful whatever else their genres say.
+        XCTAssertEqual(BookAnalyzer.genreTone(["Juvenile Nonfiction", "Young Adult"]), true)
+        // Without a telling genre, the on-device model decides.
+        XCTAssertNil(BookAnalyzer.genreTone(["Science Fiction", "Space Opera"]))
+        XCTAssertNil(BookAnalyzer.genreTone(["Comics", "Dystopian", "Graphic Novels"]))
+        XCTAssertNil(BookAnalyzer.genreTone(nil))
+    }
+
+    func testRankingMatchesStrokeWeightAtSemiboldOrHeavier() throws {
+        XCTAssertEqual(TitleLettering.weight(regular: 0.1, bold: 0.2, cover: 0.05), 600)
+        XCTAssertEqual(TitleLettering.weight(regular: 0.1, bold: 0.2, cover: 0.165), 600)
+        XCTAssertEqual(TitleLettering.weight(regular: 0.1, bold: 0.2, cover: 0.19), 700)
+        XCTAssertEqual(TitleLettering.weight(regular: 0.1, bold: 0.1, cover: 0.3), 600)
+
+        let atlas = try XCTUnwrap(FontAtlas.shared)
+        let image = try XCTUnwrap(
+            CGContext(
+                data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?
+                .makeImage())
+        func measurement(_ profile: Mask.Profile) -> TitleLettering.Measurement {
+            TitleLettering.Measurement(
+                text: "KINDRED", crop: image, profile: profile,
+                ink: ColorValue(hex: "#FFFFFF")!, ground: ColorValue(hex: "#000000")!)
+        }
+        func composed(_ family: String, weight: Int = 400) throws -> TitleLettering.Measurement {
+            let font = try XCTUnwrap(
+                atlas.fonts.first { $0.family == family && $0.weight == weight })
+            return measurement(try XCTUnwrap(font.compose("KINDRED")?.profile()))
+        }
+        let families = SpineFamily.allCases.map(\.rawValue)
+        let oswald = TitleLettering.rank(families, for: try composed("Oswald"))
+        XCTAssertEqual(Set(oswald.map(\.family)).count, oswald.count, "One match per family")
+        XCTAssertTrue(oswald.allSatisfy { (600...700).contains($0.weight) })
+        // Bold lettering ranks a family at a heavier weight than its regular does.
+        let bold = try XCTUnwrap(
+            TitleLettering.rank(families, for: try composed("Oswald", weight: 700))
+                .first { $0.family == "Oswald" })
+        let regular = try XCTUnwrap(oswald.first { $0.family == "Oswald" })
+        XCTAssertGreaterThan(bold.weight, regular.weight)
+
+        // Seven letters drawn as 2-pixel outlines have hairline strokes; solid ones don't.
+        var pixels = [Float](repeating: 0, count: 230 * 40)
+        for letter in 0..<7 {
+            for y in 0..<40 {
+                for x in (letter * 32)..<(letter * 32 + 20)
+                where y < 2 || y >= 38 || x < letter * 32 + 2 || x >= letter * 32 + 18 {
+                    pixels[y * 230 + x] = 1
+                }
+            }
+        }
+        let outlined = measurement(
+            try XCTUnwrap(Mask(width: 230, height: 40, pixels: pixels).profile()))
+        XCTAssertTrue(TitleLettering.hasHairlineStrokes(outlined))
+        XCTAssertFalse(TitleLettering.hasHairlineStrokes(try composed("Oswald")))
+        // The model's outline answer stands only for such lettering.
+        let neon = BookAnalyzer.LetteringReading(
+            handDrawn: false, serifs: false, treatment: "outlined or multi-line neon")
+        XCTAssertEqual(BookAnalyzer.checked(neon, against: outlined), neon)
+        XCTAssertEqual(
+            BookAnalyzer.checked(neon, against: try composed("Oswald"))?.treatment, "plain")
+        XCTAssertNil(BookAnalyzer.checked(nil, against: outlined))
+    }
+
+    func testTitleMeasurementSkipsVerticalLinesAndRowsBelowTheLine() throws {
+        // Two 10 × 40 letters at rows 30 to 70 of a white cover, a dark picture touching their
+        // feet from row 70 down, and a tall vertical line of text at the right.
+        let context = try XCTUnwrap(
+            CGContext(
+                data: nil, width: 200, height: 100, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: 200, height: 100))
+        context.setFillColor(red: 0, green: 0, blue: 0, alpha: 1)
+        // Core Graphics counts rows from the bottom.
+        context.fill(CGRect(x: 20, y: 30, width: 10, height: 40))
+        context.fill(CGRect(x: 60, y: 30, width: 10, height: 40))
+        context.fill(CGRect(x: 0, y: 0, width: 140, height: 30))
+        context.fill(CGRect(x: 180, y: 5, width: 8, height: 90))
+        let image = try XCTUnwrap(context.makeImage())
+        // Vision's box for the letters stops 4 rows above their feet; the vertical line is taller.
+        let letters = TitleLettering.Line(
+            text: "II", box: CGRect(x: 0.08, y: 0.34, width: 0.3, height: 0.36))
+        let vertical = TitleLettering.Line(
+            text: "TITLE", box: CGRect(x: 0.89, y: 0.05, width: 0.05, height: 0.9))
+        let measurement = try XCTUnwrap(
+            TitleLettering.measure(image, lines: [letters, vertical], title: "Title"))
+        XCTAssertEqual(measurement.text, "II")
+        // The letters alone: (10 + 3 + 10) columns for about 38 rows. The picture's full-width
+        // rows would leave no gap to collapse and make the line about three times as wide.
+        XCTAssertEqual(measurement.profile.aspect, 0.6, accuracy: 0.08)
     }
 }
 

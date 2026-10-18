@@ -113,14 +113,15 @@ struct ModelStatus: Sendable {
 }
 
 /// Designs a spine from a cover with local OCR, the cover's title colors, at most one Private
-/// Cloud Compute or backup-model request plus an on-device mood request, and downloaded Google
-/// Fonts families.
+/// Cloud Compute or backup-model request plus, when the book's genres don't say whether it is
+/// playful, an on-device mood request, and downloaded Google Fonts families.
 ///
 /// The model answers three coarse questions about the title lettering, which even the on-device
 /// model answers reliably: whether it is hand-drawn, whether it has serifs, and any special
 /// treatment. `TitleLettering` then ranks the families those answers allow by measuring the
-/// lettering itself. The on-device model also judges, from the book's text, whether the book is
-/// playful enough for rounded faces.
+/// lettering itself. Whether the book is playful enough for handwriting and rounded faces comes
+/// from its genres or, when they don't say, from the on-device model reading the book's text
+/// (`isPlayful(_:)`).
 ///
 /// The run's model tier (`ModelTier`) answers. Private Cloud Compute's request counts against the
 /// user's daily quota, and the backup model's request is billed to the reader's API account.
@@ -358,7 +359,9 @@ actor BookAnalyzer {
             if status.tier == .local {
                 Self.localFamilies(genres: book.genres, measured: lettering != nil)
             } else {
-                Self.families(for: reading, playful: await Self.isPlayful(book))
+                Self.families(
+                    for: Self.checked(reading, against: lettering),
+                    playful: await Self.isPlayful(book))
             }
         let candidates = Self.candidates(
             families, lettering: lettering, book: book, local: status.tier == .local)
@@ -470,21 +473,38 @@ actor BookAnalyzer {
         "western wood type", "dripping or distressed", "typewriter",
     ]
 
-    /// The families a reading allows, or every allowed family without one. A special treatment
-    /// limits the choice to families that show it; "dripping or distressed" does not, because
-    /// textured cover art often draws that answer for plain lettering. Rounded faces read as
-    /// cheerful, so only a playful book may use them.
+    /// `reading` with an answer the measurements contradict taken back: "outlined or
+    /// multi-line neon" stands only for lettering with hairline strokes
+    /// (`TitleLettering.hasHairlineStrokes(_:atlas:)`). The on-device model gives that answer
+    /// for many solid titles on dark or busy covers.
+    static func checked(
+        _ reading: LetteringReading?, against lettering: TitleLettering.Measurement?
+    ) -> LetteringReading? {
+        guard var reading, reading.treatment == "outlined or multi-line neon", let lettering,
+            !TitleLettering.hasHairlineStrokes(lettering)
+        else { return reading }
+        reading.treatment = "plain"
+        return reading
+    }
+
+    /// The families a reading allows, never including `SpineFamily.neverGenerated`.
+    ///
+    /// A special treatment limits the choice to families that show it; "dripping or distressed"
+    /// does not, because textured cover art often draws that answer for plain lettering.
+    /// Handwriting and rounded faces read as cheerful, so only a playful book may use them: its
+    /// hand-drawn title gets an upright hand-drawn or rounded face, ranked by the lettering's
+    /// measurements. Any other book's hand-drawn title gets a typeset face that echoes its
+    /// serifs, width, and weight. Without a reading, the serif and sans families stay allowed;
+    /// themed display, gothic, and typewriter faces need a reading that names their treatment.
     static func families(for reading: LetteringReading?, playful: Bool) -> [String] {
         let all = SpineFamily.allCases
-        var chosen = all
+        let serif: Set<SpineFontStyle> = [.bookSerif, .didone, .classicalCaps, .slab]
+        let sans: Set<SpineFontStyle> = [.humanistSans, .geometricSans, .condensedSans, .rounded]
+        var chosen = all.filter { serif.union(sans).contains($0.style) }
         if let reading {
-            let serif: Set<SpineFontStyle> = [.bookSerif, .didone, .classicalCaps, .slab]
-            let sans: Set<SpineFontStyle> = [
-                .humanistSans, .geometricSans, .condensedSans, .rounded,
-            ]
             chosen =
-                if reading.handDrawn {
-                    all.filter { $0.style == .script }
+                if reading.handDrawn, playful {
+                    all.filter { [.script, .rounded].contains($0.style) }
                 } else {
                     switch reading.treatment {
                     case "outlined or multi-line neon": [.monoton, .bungee, .righteous, .limelight]
@@ -497,16 +517,18 @@ actor BookAnalyzer {
                     }
                 }
         }
-        if !playful { chosen.removeAll { $0.style == .rounded } }
-        return chosen.map(\.rawValue).filter(allowsFamily)
+        if !playful { chosen.removeAll { [.script, .rounded].contains($0.style) } }
+        return chosen.filter { !SpineFamily.neverGenerated.contains($0) }.map(\.rawValue)
+            .filter(allowsFamily)
     }
 
     /// The families a design without a model may use for a book with `genres`: those of its
     /// first recognized genre (`genreFamilies(_:)`). Without one, the title measurements rank
-    /// every allowed family except rounded faces, which need a model to judge the book playful,
-    /// or, when `measured` is false because no title line was measured or none of these
-    /// families could be ranked by it (`candidates(_:lettering:book:local:)`), the Apple TV's
-    /// general-fiction face, a humanist sans.
+    /// every family that `families(for:playful:)` offers a book that isn't playful, which leaves
+    /// out handwriting and rounded faces, or, when `measured` is false because no title line was
+    /// measured or none of these families could be ranked by it
+    /// (`candidates(_:lettering:book:local:)`), the Apple TV's general-fiction face, a humanist
+    /// sans.
     static func localFamilies(genres: [String]?, measured: Bool) -> [String] {
         if let families = genreFamilies(genres) {
             return families.map(\.rawValue).filter(allowsFamily)
@@ -519,9 +541,9 @@ actor BookAnalyzer {
     /// The families and weights a design tries, best match first: `families` ranked by the
     /// measured title line (`TitleLettering.rank(_:for:atlas:)`). Without a line that ranks them,
     /// such as none measured or one in a script the font atlas lacks, the families come in
-    /// `book`'s reproducible order at regular weight. For local defaults (`local`), they are
-    /// then the families for a book without a measured line (`localFamilies(genres:measured:)`)
-    /// at bold weight, as the Apple TV's genre faces are.
+    /// `book`'s reproducible order at `TitleLettering.minimumWeight`. For local defaults
+    /// (`local`), they are then the families for a book without a measured line
+    /// (`localFamilies(genres:measured:)`) at bold weight, as the Apple TV's genre faces are.
     static func candidates(
         _ families: [String], lettering: TitleLettering.Measurement?, book: CloudBook, local: Bool
     ) -> [TitleLettering.Match] {
@@ -530,7 +552,10 @@ actor BookAnalyzer {
         let unranked = local ? localFamilies(genres: book.genres, measured: false) : families
         var generator = SeededGenerator(seed: UInt64(bitPattern: Int64(book.id)))
         return unranked.shuffled(using: &generator)
-            .map { TitleLettering.Match(family: $0, weight: local ? 700 : 400) }
+            .map {
+                TitleLettering.Match(
+                    family: $0, weight: local ? 700 : TitleLettering.minimumWeight)
+            }
     }
 
     /// The catalog families for the first of `genres`, in Hardcover's ranked order, that names a
@@ -576,15 +601,42 @@ actor BookAnalyzer {
         return nil
     }
 
+    /// Whether `genres` mark a book playful (`true`) or serious (`false`), or `nil` when they
+    /// don't say. Lowercased substrings decide, in this order: a children's genre, such as
+    /// "Juvenile Fiction" or "Picture Books", is playful; nonfiction, memoir, biography,
+    /// history, politics, the social sciences, philosophy, essays, business, or literary
+    /// fiction is serious, even with a humor genre beside it; and humor, satire, or comedy is
+    /// playful. A "science" genre other than science fiction counts as nonfiction. Comics and
+    /// graphic novels say nothing either way, since many are as dark as any novel.
+    static func genreTone(_ genres: [String]?) -> Bool? {
+        let genres = (genres ?? []).map { $0.lowercased() }
+        func any(_ names: [String]) -> Bool {
+            genres.contains { genre in names.contains { genre.contains($0) } }
+        }
+        if any(["children", "juvenile", "picture book", "middle grade"]) { return true }
+        // Stems such as "politi" and "philosoph" also match genres in French and Spanish.
+        if any([
+            "nonfiction", "non-fiction", "memoir", "biograph", "history", "politi",
+            "social science", "sociology", "philosoph", "essay", "economics", "business",
+            "true crime", "journalism", "literary fiction",
+        ]) || genres.contains(where: { $0.contains("science") && !$0.contains("fiction") }) {
+            return false
+        }
+        if any(["humor", "humour", "satire", "comedy"]) { return true }
+        return nil
+    }
+
     static let moods = [
         "serious", "dark or suspenseful", "literary or classic", "playful or humorous",
         "for young children",
     ]
 
-    /// Asks the on-device model whether the book is playful, from its text alone. The answer
-    /// costs no Private Cloud Compute quota. Any failure, such as a guardrail rejecting the
-    /// description or an unavailable model, counts as not playful, the safer choice of type.
+    /// Whether the book is playful: its genres' answer (`genreTone(_:)`), else the on-device
+    /// model's, from the book's text alone. The model's answer costs no Private Cloud Compute
+    /// quota. Any failure, such as a guardrail rejecting the description or an unavailable
+    /// model, counts as not playful, the safer choice of type.
     private static func isPlayful(_ book: CloudBook) async -> Bool {
+        if let tone = genreTone(book.genres) { return tone }
         let model = SystemLanguageModel.default
         guard model.isAvailable else { return false }
         var lines = [

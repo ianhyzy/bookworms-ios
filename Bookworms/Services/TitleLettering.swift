@@ -8,9 +8,9 @@ import Foundation
 /// the ground is the cluster that touches the crop's border most. Every catalog family's version
 /// of the same text is composed from `SpineFontAtlas.lzfse`, small glyph images that
 /// `script/spine-font-atlas.swift` renders from the Google Fonts files, so ranking needs no font
-/// downloads. Families are compared on three measurements that small vision models judge
-/// poorly: letter shapes, letter width for their height with letter spacing removed, and how
-/// much stroke thickness varies.
+/// downloads. Families are compared on four measurements that small vision models judge
+/// poorly: letter shapes, letter width for their height with letter spacing removed, how much
+/// stroke thickness varies, and stroke weight.
 enum TitleLettering {
     /// An OCR line with its normalized Vision bounding box (origin at the bottom left).
     struct Line: Sendable {
@@ -35,10 +35,21 @@ enum TitleLettering {
         let weight: Int
     }
 
-    /// Measures the tallest OCR line that shares a word with `title`, or the tallest line when
-    /// none does. Returns `nil` when the cover has no readable line.
+    /// The lightest title weight a ranked family gets. Thin strokes read badly at spine size,
+    /// where `SpineView` sizes the title to the spine's thickness, so a design is never lighter
+    /// than semibold even when the cover's lettering is. Many families have no medium (500)
+    /// instance, and the nearest instance to 500 would be their regular.
+    static let minimumWeight = 600
+
+    /// Measures the tallest horizontal OCR line that shares a word with `title`, or the tallest
+    /// horizontal line when none does. Returns `nil` when the cover has no readable line.
+    ///
+    /// A line set vertically, whose box is taller than it is wide, is left out: its letters
+    /// stack, so the line's width says nothing about theirs.
     static func measure(_ image: CGImage, lines: [Line], title: String) -> Measurement? {
         let words = Set(wordsIn(title))
+        let aspect = CGFloat(image.width) / CGFloat(image.height)
+        let lines = lines.filter { $0.box.width * aspect > $0.box.height }
         let titled = lines.filter { !Set(wordsIn($0.text)).isDisjoint(with: words) }
         guard
             let line = (titled.isEmpty ? lines : titled).max(by: { $0.box.height < $1.box.height })
@@ -49,44 +60,70 @@ enum TitleLettering {
         var rect = CGRect(
             x: line.box.minX * width, y: (1 - line.box.maxY) * height,
             width: line.box.width * width, height: line.box.height * height)
+        let box = rect
         rect =
             rect.insetBy(dx: -rect.height * 0.12, dy: -rect.height * 0.12)
             .intersection(CGRect(x: 0, y: 0, width: width, height: height)).integral
-        guard let crop = image.cropping(to: rect), let split = split(crop),
-            let profile = split.mask.profile()
-        else { return nil }
+        guard let crop = image.cropping(to: rect), let split = split(crop) else { return nil }
+        // The padding keeps the colors' border clear of the letters, but a line or picture just
+        // above or below can touch the title's rows and join its band, which makes the
+        // lettering look taller and narrower than it is. Only the box's own rows, with a little
+        // slack for strokes Vision trims, are measured.
+        let scale = Double(split.mask.height) / Double(crop.height)
+        let slack = box.height * 0.06
+        let top = Int(((box.minY - rect.minY - slack) * scale).rounded(.down))
+        let bottom = Int(((box.maxY - rect.minY + slack) * scale).rounded(.up))
+        guard top < bottom, let profile = split.mask.keepingRows(top..<bottom).profile() else {
+            return nil
+        }
         return Measurement(
             text: line.text.trimmingCharacters(in: .whitespaces), crop: crop, profile: profile,
             ink: split.ink, ground: split.ground)
     }
 
-    /// Ranks `families` at regular and bold weight by how closely the measured lettering
-    /// matches the same text composed from each family's glyphs. Each measurement is z-scored
-    /// across the whole catalog, so a subset ranks the same way it would within the catalog.
-    /// Families without glyphs for the text are left out.
+    /// Ranks `families` by how closely the measured lettering matches the same text composed
+    /// from each family's regular and bold glyphs, one match per family. Each measurement is
+    /// z-scored across the whole catalog, so a subset ranks the same way it would within the
+    /// catalog. Families without glyphs for the text are left out.
+    ///
+    /// Stroke weight is matched against the lettering's own, but never against less than the
+    /// catalog's median regular weight for the text: a design is never lighter than
+    /// `minimumWeight`, so a thin title gets a face that is regular at its lightest. A family's
+    /// weight is then interpolated between its regular and bold glyphs
+    /// (`weight(regular:bold:cover:)`).
+    /// Monoton's parallel hairlines blur into solid strokes in the atlas's small glyphs, and an
+    /// outlined title measures as hairlines, so weight doesn't count against Monoton.
     static func rank(
         _ families: [String], for measurement: Measurement, atlas: FontAtlas? = .shared
     ) -> [Match] {
         guard let atlas else { return [] }
         let cover = measurement.profile
-        var rows: [(match: Match, values: [Double])] = []
-        for font in atlas.fonts {
-            guard let profile = font.compose(measurement.text)?.profile() else { continue }
-            rows.append(
-                (
-                    Match(family: font.family, weight: font.weight),
-                    [
-                        profile.shapeDifference(from: cover),
-                        abs(log(profile.aspect / cover.aspect)),
-                        abs(profile.strokeSpread - cover.strokeSpread),
-                    ]
-                ))
+        let composed = atlas.fonts.compactMap { font in
+            font.compose(measurement.text)?.profile().map { (font: font, profile: $0) }
         }
-        guard rows.count > 1 else { return rows.map(\.match) }
-        // Width carries most of the signal; shape and stroke contrast separate similar widths.
-        let weights = [0.5, 2, 0.5]
+        let stroke = max(cover.strokeWeight, regularStroke(of: composed))
+        var strokes: [String: [Int: Double]] = [:]
+        for (font, profile) in composed {
+            strokes[font.family, default: [:]][font.weight] = profile.strokeWeight
+        }
+        let rows = composed.map { font, profile in
+            (
+                family: font.family, weight: font.weight,
+                values: [
+                    profile.shapeDifference(from: cover),
+                    abs(log(profile.aspect / cover.aspect)),
+                    abs(profile.strokeSpread - cover.strokeSpread),
+                    font.family == SpineFamily.monoton.rawValue
+                        ? 0 : abs(log(profile.strokeWeight / stroke)),
+                ]
+            )
+        }
+        // Width carries most of the signal; stroke weight keeps a heavy title out of hairline
+        // faces of the same width, and shape and stroke contrast separate the rest. The weights
+        // scored best on the hand-labeled covers of the owner's library.
+        let weights = [0.25, 2, 0.25, 1]
         var scores = [Double](repeating: 0, count: rows.count)
-        for k in weights.indices {
+        for k in weights.indices where rows.count > 1 {
             let values = rows.map { $0.values[k] }
             let mean = values.reduce(0, +) / Double(values.count)
             let deviation =
@@ -97,13 +134,54 @@ enum TitleLettering {
             }
         }
         let allowed = Set(families)
-        return rows.indices.filter { allowed.contains(rows[$0].match.family) }
+        var seen = Set<String>()
+        return rows.indices.filter { allowed.contains(rows[$0].family) }
             .sorted { lhs, rhs in
                 if scores[lhs] != scores[rhs] { return scores[lhs] < scores[rhs] }
-                let (a, b) = (rows[lhs].match, rows[rhs].match)
+                let (a, b) = (rows[lhs], rows[rhs])
                 return a.family != b.family ? a.family < b.family : a.weight < b.weight
             }
-            .map { rows[$0].match }
+            .compactMap { index in
+                let row = rows[index]
+                guard seen.insert(row.family).inserted else { return nil }
+                let reach = strokes[row.family] ?? [:]
+                return Match(
+                    family: row.family,
+                    weight: weight(
+                        regular: reach[400] ?? reach[700] ?? stroke,
+                        bold: reach[700] ?? reach[400] ?? stroke, cover: stroke))
+            }
+    }
+
+    /// Whether the lettering's strokes are hairlines: under 60 percent of the catalog's median
+    /// regular stroke weight for the same text, as an outlined or inline title measures.
+    static func hasHairlineStrokes(
+        _ measurement: Measurement, atlas: FontAtlas? = .shared
+    ) -> Bool {
+        guard let atlas else { return false }
+        let composed = atlas.fonts.filter { $0.weight == 400 }
+            .compactMap { font in
+                font.compose(measurement.text)?.profile().map { (font: font, profile: $0) }
+            }
+        return measurement.profile.strokeWeight < regularStroke(of: composed) * 0.6
+    }
+
+    /// The median stroke weight of the regular (400) fonts in `composed`, or 0 without any.
+    private static func regularStroke(
+        of composed: [(font: FontAtlas.Font, profile: Mask.Profile)]
+    ) -> Double {
+        let strokes = composed.filter { $0.font.weight == 400 }.map(\.profile.strokeWeight).sorted()
+        return strokes.isEmpty ? 0 : strokes[strokes.count / 2]
+    }
+
+    /// The title weight, `minimumWeight` through 700 in steps of 100, whose stroke weight comes nearest
+    /// `cover`'s, interpolating between a family's `regular` (400) and `bold` (700) stroke
+    /// weights. A family whose bold is no heavier, such as a single-weight display face, gets
+    /// `minimumWeight`, which loads its only instance.
+    static func weight(regular: Double, bold: Double, cover: Double) -> Int {
+        guard bold > regular * 1.05 else { return minimumWeight }
+        let css = 400 + 300 * (cover - regular) / (bold - regular)
+        return min(700, max(minimumWeight, Int((css / 100).rounded()) * 100))
     }
 
     private static func wordsIn(_ text: String) -> [String] {
@@ -191,6 +269,12 @@ struct Mask: Sendable {
         var strokeSpread: Double
         /// The letters stretched to a fixed 320 × 48 grid, for shape comparison.
         var shape: [Float]
+        /// The median ink in a horizontal run over the line's height, measured on the 48-pixel
+        /// grid: about a vertical stem's width for its height, larger for heavier lettering.
+        /// The grid's box filter fills printing texture, such as halftone dots, that would
+        /// break a cover's strokes into short runs, and partial coverage counts, so the atlas's
+        /// small antialiased glyphs measure as finely as large covers.
+        var strokeWeight: Double
 
         /// The mean absolute difference between the two shape grids.
         func shapeDifference(from other: Profile) -> Double {
@@ -210,7 +294,18 @@ struct Mask: Sendable {
         return Profile(
             aspect: Double(natural.width) / Double(natural.height),
             strokeSpread: natural.strokeSpread,
-            shape: letters.resampled(width: 320, height: 48).pixels)
+            shape: letters.resampled(width: 320, height: 48).pixels,
+            strokeWeight: natural.strokeWeight)
+    }
+
+    /// The mask with every row outside `rows` cleared.
+    func keepingRows(_ rows: Range<Int>) -> Mask {
+        var out = [Float](repeating: 0, count: pixels.count)
+        for y in rows.clamped(to: 0..<height) {
+            let row = (y * width)..<((y + 1) * width)
+            out.replaceSubrange(row, with: pixels[row])
+        }
+        return Mask(width: width, height: height, pixels: out)
     }
 
     func band() -> Mask? {
@@ -307,6 +402,26 @@ struct Mask: Sendable {
             }
         }
         return Mask(width: targetWidth, height: targetHeight, pixels: out)
+    }
+
+    private var strokeWeight: Double {
+        var runs: [Double] = []
+        for y in 0..<height {
+            var run: Double = 0
+            for x in 0..<width {
+                let value = Double(pixels[y * width + x])
+                if value > 0.2 {
+                    run += value
+                } else if run > 0 {
+                    runs.append(run)
+                    run = 0
+                }
+            }
+            if run > 0 { runs.append(run) }
+        }
+        guard !runs.isEmpty else { return 1 / Double(max(1, height)) }
+        runs.sort()
+        return max(0.5, runs[runs.count / 2]) / Double(height)
     }
 
     private var strokeSpread: Double {

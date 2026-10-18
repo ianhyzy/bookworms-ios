@@ -132,6 +132,24 @@ enum SpineFamily: String, CaseIterable {
     case ibmPlexMono = "IBM Plex Mono"
     case robotoMono = "Roboto Mono"
 
+    /// Families that new designs never use, though saved designs may still name them.
+    ///
+    /// - Faces whose letters lean without declaring a slant, which breaks the rule that spine
+    ///   lettering stays upright. The lean is the median angle of the upright strokes in
+    ///   "lIHbhkinmrpBDEFKLPR": Caveat measures 19 degrees, Permanent Marker 18, and Kalam 13,
+    ///   while upright faces measure under 1. Shadows Into Light's letters tilt unevenly.
+    ///   `BookAnalyzer.allowsFamily` blocks the other leaning script and display faces outright.
+    /// - Hairline ultra-narrow faces, whose capitals are under half as wide as they are tall:
+    ///   Six Caps' stems are 7.5 percent of its capitals' height and Amatic SC's at most 7, so
+    ///   at spine size their titles read as scratches. League Gothic, at 15 percent, takes their
+    ///   place for narrow lettering.
+    /// - Cinzel Decorative, whose swashes the title measurements cannot tell from Cinzel's plain
+    ///   capitals.
+    static let neverGenerated: Set<SpineFamily> = [
+        .caveat, .kalam, .permanentMarker, .shadowsIntoLight, .sixCaps, .amaticSc,
+        .cinzelDecorative,
+    ]
+
     /// The letterform style group the family belongs to.
     var style: SpineFontStyle {
         switch self {
