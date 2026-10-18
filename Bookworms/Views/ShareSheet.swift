@@ -18,7 +18,7 @@ struct SharedFiles: Identifiable {
     /// Text to send with the files, such as a comparison's invitation or an image's Hardcover
     /// links, which apps that take text, such as Messages, include.
     var text: String?
-    /// The files followed by `text`, as the share sheet takes them.
+    /// The files followed by `text`, as the iPhone's share sheet takes them.
     var items: [Any] { urls + (text.map { [$0] } ?? []) }
 
     /// Writes `images`, each with the credit (`UIImage.withShareCredit()`), as PNG files named
@@ -116,6 +116,10 @@ extension View {
 #if os(macOS)
     /// Shows the sharing service picker below the toolbar's share button whenever `files` is
     /// set.
+    ///
+    /// The picker lists only the services that can take every item it holds, and services such
+    /// as **Add to Photos** cannot take text. So it holds the files alone, and each service that
+    /// can also take `SharedFiles.text` sends the text with them.
     private struct ShareSheetPresenter: NSViewRepresentable {
         @Binding var files: SharedFiles?
         let onComplete: @MainActor (ShareOutcome) -> Void
@@ -129,11 +133,35 @@ extension View {
         {
             /// The files the picker last opened with, so an update opens it once for them.
             var presented: SharedFiles.ID?
+            /// The text that services able to take it send with the files.
+            var text: String?
             var finish: (ShareOutcome) -> Void = { _ in }
 
+            /// A service that sends the text stands in for the one the picker proposed and has
+            /// no delegate: the service it performs reports how the share ended.
             nonisolated func sharingServicePicker(
                 _ picker: NSSharingServicePicker, delegateFor service: NSSharingService
-            ) -> (any NSSharingServiceDelegate)? { self }
+            ) -> (any NSSharingServiceDelegate)? { service is TextSharingService ? nil : self }
+
+            /// The services proposed for the files, each that can also take `text` replaced by a
+            /// stand-in with its title and image that sends the files and the text.
+            nonisolated func sharingServicePicker(
+                _ picker: NSSharingServicePicker, sharingServicesForItems items: [Any],
+                proposedSharingServices proposedServices: [NSSharingService]
+            ) -> [NSSharingService] {
+                guard let text = MainActor.assumeIsolated({ text }) else { return proposedServices }
+                let all = items + [text]
+                return proposedServices.map { service in
+                    guard service.canPerform(withItems: all) else { return service }
+                    return TextSharingService(
+                        title: service.title, image: service.image,
+                        alternateImage: service.alternateImage
+                    ) { [weak self] in
+                        service.delegate = self
+                        service.perform(withItems: all)
+                    }
+                }
+            }
 
             nonisolated func sharingServicePicker(
                 _ picker: NSSharingServicePicker, didChoose service: NSSharingService?
@@ -160,6 +188,9 @@ extension View {
             }
         }
 
+        /// A proposed service's stand-in that sends `SharedFiles.text` with the files.
+        private final class TextSharingService: NSSharingService {}
+
         func makeCoordinator() -> Coordinator { Coordinator() }
 
         func makeNSView(context: Context) -> NSView { NSView() }
@@ -175,7 +206,8 @@ extension View {
                 binding.wrappedValue = nil
                 onComplete(outcome)
             }
-            let picker = NSSharingServicePicker(items: files.items)
+            context.coordinator.text = files.text
+            let picker = NSSharingServicePicker(items: files.urls)
             picker.delegate = context.coordinator
             // The share buttons sit at the toolbar's trailing end, above this view's top
             // trailing corner, so the picker drops down from there.
