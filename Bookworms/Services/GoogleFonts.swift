@@ -29,8 +29,10 @@ struct DownloadedFont: Sendable {
 ///
 /// The catalog is refetched when the cached copy is more than seven days old. Font files never
 /// expire, but the system may evict Caches; a design keeps its family and weight, so the font is
-/// downloaded again on next use. Requests send no credentials or cookies. Views create fonts from
-/// the file's descriptors and do not register them with Core Text.
+/// downloaded again on next use. A change to the file rule (`SpineFamily.fileName(for:in:)`)
+/// moves the cache to new keys, so every font downloads again. Requests send no credentials or
+/// cookies. Views create fonts from the file's descriptors and do not register them with Core
+/// Text.
 actor GoogleFonts {
     /// Google Fonts rate limited or failed a request, with the `Retry-After` date when given.
     ///
@@ -66,7 +68,9 @@ actor GoogleFonts {
     /// or fails the request. Network failures throw `URLError`.
     func download(family: String, weight: Int) async throws -> DownloadedFont {
         guard try await catalog()[family] == true else { throw CompanionError.invalidDesign }
-        let directory = root.appending(path: CloudContract.digest("\(family):\(weight)"))
+        // The key names the file rule (`SpineFamily.fileName(for:in:)`), so a file that an
+        // earlier rule chose, such as League Gothic's condensed width, downloads again.
+        let directory = root.appending(path: CloudContract.digest("files-v2:\(family):\(weight)"))
         let file = directory.appending(path: "font.ttf")
         if !FileManager.default.fileExists(atPath: file.path) {
             try await fetchFile(family: family, weight: weight, into: directory, file: file)
@@ -184,10 +188,7 @@ actor GoogleFonts {
             list.map { ($0.family, $0.isOpenSource != false) }, uniquingKeysWith: { $0 && $1 })
     }
 
-    /// Downloads one font file and its license.
-    ///
-    /// Prefers the static file named for `weight`, then the variable font, then the static file
-    /// whose named weight is nearest `weight`.
+    /// Downloads one font file and its license, the file `SpineFamily.fileName(for:in:)` chooses.
     private func fetchFile(
         family: String, weight: Int, into directory: URL, file: URL
     ) async throws {
@@ -219,37 +220,11 @@ actor GoogleFonts {
             license.contents.contains("SIL OPEN FONT LICENSE")
                 || license.contents.contains("Apache License")
         else { throw CompanionError.invalidDesign }
-        let names = [
-            100: "Thin", 200: "ExtraLight", 300: "Light", 400: "Regular", 500: "Medium",
-            600: "SemiBold", 700: "Bold", 800: "ExtraBold", 900: "Black",
-        ]
-        let weightsByName = Dictionary(uniqueKeysWithValues: names.map { ($1, $0) })
         let candidates = manifest.fileRefs.filter {
             $0.filename.hasSuffix(".ttf") && !$0.filename.contains("Italic")
         }
-        // Static files carry their weight as a suffix, such as "Lato-Light.ttf". An equally near
-        // pair resolves to the heavier file above 500 and to the lighter one otherwise.
-        let nearestStatic =
-            candidates
-            .compactMap { reference -> (reference: Download.Manifest.Reference, weight: Int)? in
-                let stem = reference.filename.dropLast(".ttf".count)
-                guard let suffix = stem.split(separator: "-").last,
-                    let fileWeight = weightsByName[String(suffix)]
-                else { return nil }
-                return (reference, fileWeight)
-            }
-            .min { lhs, rhs in
-                let left = abs(lhs.weight - weight)
-                let right = abs(rhs.weight - weight)
-                if left != right { return left < right }
-                return weight > 500 ? lhs.weight > rhs.weight : lhs.weight < rhs.weight
-            }
-        let variable = candidates.first {
-            $0.filename.contains("[") || $0.filename.contains("VariableFont")
-        }
-        let exact = nearestStatic?.weight == weight ? nearestStatic?.reference : nil
-        guard
-            let source = exact ?? variable ?? nearestStatic?.reference ?? candidates.first,
+        let chosen = SpineFamily.fileName(for: weight, in: candidates.map(\.filename))
+        guard let source = candidates.first(where: { $0.filename == chosen }),
             source.url.scheme == "https", source.url.host == "fonts.gstatic.com"
         else { throw CompanionError.invalidDesign }
         let fontData = try await fetch(source.url)
