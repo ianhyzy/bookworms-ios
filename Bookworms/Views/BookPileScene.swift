@@ -146,15 +146,20 @@ extension PileCamera {
 
 /// The part of the table the books stay on, with an invisible wall along each edge.
 ///
-/// It is a trapezoid, symmetric about x = 0, that the default camera sees between the
-/// navigation bar and the tab bar. Perspective makes its far edge, at the top of the screen,
-/// wider than its near edge.
+/// It is a trapezoid, symmetric about x = `centerX`, that the default camera sees between the
+/// bars that cover the view's edges: the navigation bar and the tab bar, and on the Mac the
+/// sidebar beside the view. Perspective makes its far edge, at the top of the screen, wider
+/// than its near edge.
 struct PileTray: Equatable {
     var farZ: Float
     var nearZ: Float
     var farHalfWidth: Float
     var nearHalfWidth: Float
+    /// Where the tray's middle lies across the table. A sidebar over one side of the view moves
+    /// it toward the other.
+    var centerX: Float = 0
 
+    /// Half the tray's width at `z`, measured from `centerX`.
     func halfWidth(at z: Float) -> Float {
         farHalfWidth + (nearHalfWidth - farHalfWidth) * (z - farZ) / (nearZ - farZ)
     }
@@ -162,8 +167,8 @@ struct PileTray: Equatable {
     /// The corners on the table, clockwise from the far left as seen from above.
     var corners: [SIMD3<Float>] {
         [
-            [-farHalfWidth, 0, farZ], [farHalfWidth, 0, farZ], [nearHalfWidth, 0, nearZ],
-            [-nearHalfWidth, 0, nearZ],
+            [centerX - farHalfWidth, 0, farZ], [centerX + farHalfWidth, 0, farZ],
+            [centerX + nearHalfWidth, 0, nearZ], [centerX - nearHalfWidth, 0, nearZ],
         ]
     }
 
@@ -171,14 +176,15 @@ struct PileTray: Equatable {
     func clamp(_ point: SIMD3<Float>, margin: Float) -> SIMD3<Float> {
         let z = min(max(point.z, farZ + margin), nearZ - margin)
         let half = max(0, halfWidth(at: z) - margin)
-        return [min(max(point.x, -half), half), point.y, z]
+        return [min(max(point.x, centerX - half), centerX + half), point.y, z]
     }
 }
 
 extension PileTray {
     /// Fits the tray to what `camera` sees between `safeTop` and `safeBottom`, given as
-    /// normalized device y coordinates, in a view of width-to-height `aspect`. The camera must
-    /// look at the table's center without turning, as the default camera and a zoomed one do.
+    /// normalized device y coordinates, and between `safeLeading` and `safeTrailing` in x, in a
+    /// view of width-to-height `aspect`. The camera must look at the table's center without
+    /// turning, as the default camera and a zoomed one do.
     ///
     /// The far and side walls stand where the view's edges meet a pile `pileHeight` high, by
     /// default the tallest pile (`tallestPile`), so a pile up to that high stays on screen.
@@ -186,23 +192,36 @@ extension PileTray {
     /// `pileHeight` toward the top or sides of the screen. A pile against the near wall rises
     /// toward the middle of the screen, so that wall stands where the bottom edge meets the
     /// table.
+    ///
+    /// A view's side edge meets the table along a line that slants away from the camera's axis,
+    /// so a sidebar over one side leaves a wedge that widens toward the far edge. The tray, which
+    /// stays symmetric about its middle, fits the wedge exactly at its near edge and stays
+    /// inside it beyond.
     init?(
-        aspect: Float, safeTop: Float, safeBottom: Float, pileHeight: Float = tallestPile,
+        aspect: Float, safeTop: Float, safeBottom: Float, safeLeading: Float = -1,
+        safeTrailing: Float = 1, pileHeight: Float = tallestPile,
         camera: PileCamera = PileCamera()
     ) {
         let top = camera.ray(ndc: [1, safeTop], aspect: aspect)
         let bottom = camera.ray(ndc: [1, safeBottom], aspect: aspect)
-        guard let far = PileCamera.intersect(top, height: pileHeight),
+        guard safeLeading < safeTrailing, let far = PileCamera.intersect(top, height: pileHeight),
             let nearSide = PileCamera.intersect(bottom, height: pileHeight),
             let near = PileCamera.intersect(bottom, height: 0)
         else { return nil }
+        // The edges at x = ±1, where a point's x on the table scales with its x on screen.
         let sides = PileTray(
             farZ: far.z, nearZ: nearSide.z, farHalfWidth: far.x, nearHalfWidth: nearSide.x)
         let margin: Float = 0.4
+        let farZ = far.z + margin
+        let nearZ = near.z - margin
+        let farEdge = sides.halfWidth(at: farZ)
+        let nearEdge = sides.halfWidth(at: nearZ)
+        let center = (safeLeading + safeTrailing) / 2 * nearEdge
         self.init(
-            farZ: far.z + margin, nearZ: near.z - margin,
-            farHalfWidth: sides.halfWidth(at: far.z + margin) - margin,
-            nearHalfWidth: sides.halfWidth(at: near.z - margin) - margin)
+            farZ: farZ, nearZ: nearZ,
+            farHalfWidth: min(center - safeLeading * farEdge, safeTrailing * farEdge - center)
+                - margin,
+            nearHalfWidth: (safeTrailing - safeLeading) / 2 * nearEdge - margin, centerX: center)
     }
 
     /// Fits the tray between the bars that cover `viewport`'s edges, as `camera` sees it.
@@ -211,12 +230,16 @@ extension PileTray {
         viewport: PileViewport, pileHeight: Float = tallestPile, camera: PileCamera = PileCamera()
     ) {
         let height = Float(viewport.size.height)
-        guard viewport.size.width > 0, Float(viewport.insets.top + viewport.insets.bottom) < height
+        let width = Float(viewport.size.width)
+        let insets = viewport.insets
+        guard width > 0, Float(insets.top + insets.bottom) < height,
+            Float(insets.leading + insets.trailing) < width
         else { return nil }
         self.init(
-            aspect: Float(viewport.size.width) / height,
-            safeTop: 1 - 2 * Float(viewport.insets.top) / height,
-            safeBottom: -1 + 2 * Float(viewport.insets.bottom) / height, pileHeight: pileHeight,
+            aspect: width / height, safeTop: 1 - 2 * Float(insets.top) / height,
+            safeBottom: -1 + 2 * Float(insets.bottom) / height,
+            safeLeading: -1 + 2 * Float(insets.leading) / width,
+            safeTrailing: 1 - 2 * Float(insets.trailing) / width, pileHeight: pileHeight,
             camera: camera)
     }
 
@@ -256,7 +279,8 @@ extension PileTray {
         let middle = (farZ + nearZ) / 2
         return PileTray(
             farZ: middle + (farZ - middle) * factor, nearZ: middle + (nearZ - middle) * factor,
-            farHalfWidth: farHalfWidth * factor, nearHalfWidth: nearHalfWidth * factor)
+            farHalfWidth: farHalfWidth * factor, nearHalfWidth: nearHalfWidth * factor,
+            centerX: centerX)
     }
 
     /// The tray grown about its middle, if needed, until its depth and its narrower near edge
@@ -343,7 +367,8 @@ enum PileLayout {
         let half = PileCamera.fieldOfView / 2
         let slope = PileCamera.pitch - half
         let farthest = tray.corners.map { simd_length(SIMD2($0.x, $0.z)) }.max() ?? 0
-        let reach = simd_length(SIMD2(tray.farHalfWidth, max(-tray.farZ, tray.nearZ)))
+        let reach = simd_length(
+            SIMD2(abs(tray.centerX) + tray.farHalfWidth, max(-tray.farZ, tray.nearZ)))
         return [PileCamera.zoomRange.lowerBound, PileCamera.zoomRange.upperBound]
             .map { zoom in
                 let distance = PileCamera.distance / zoom
@@ -413,7 +438,7 @@ enum PileLayout {
                     (tray.farZ + tray.nearZ) / 2
                     + max(0, tray.nearZ - tray.farZ - 2 * reach) * (depth - 0.5)
                 let across = (Float(column) + 0.2 + 0.6 * random(3)) / Float(columns) * 2 - 1
-                let x = across * max(0, tray.halfWidth(at: z) - reach)
+                let x = tray.centerX + across * max(0, tray.halfWidth(at: z) - reach)
                 let y = base + Float((row % 3) * 2 + column) * 2.2 + random(4) * 0.4
                 let axis = random(5) * 2 * .pi
                 let tumble = simd_quatf(
@@ -487,7 +512,8 @@ enum PileLayout {
             let half = tray.halfWidth(at: z + rowDepth / 2)
             let columns = max(1, Int(2 * half / 3))
             for column in 0..<columns {
-                stacks.append([((Float(column) + 0.5) / Float(columns) * 2 - 1) * half, z])
+                stacks.append(
+                    [tray.centerX + ((Float(column) + 0.5) / Float(columns) * 2 - 1) * half, z])
             }
         }
         let perStack = max(1, (books.count + stacks.count - 1) / stacks.count)
@@ -877,7 +903,7 @@ final class BookPileScene {
     /// puts walls along its edges.
     private func build(_ tray: PileTray) {
         let middle = (tray.farZ + tray.nearZ) / 2
-        let pool: SIMD3<Float> = [0, 0, middle]
+        let pool: SIMD3<Float> = [tray.centerX, 0, middle]
         let radius =
             simd_length(SIMD2(max(tray.farHalfWidth, tray.nearHalfWidth), tray.nearZ - middle))
             * 1.05
@@ -929,7 +955,7 @@ final class BookPileScene {
             .generateBox(
                 width: 2 * max(tray.farHalfWidth, tray.nearHalfWidth) + 8, height: 2,
                 depth: tray.nearZ - tray.farZ + 8),
-            at: [0, ceiling + 1, (tray.farZ + tray.nearZ) / 2])
+            at: [tray.centerX, ceiling + 1, (tray.farZ + tray.nearZ) / 2])
         return walls
     }
 
@@ -1448,10 +1474,12 @@ final class BookPileScene {
         let target = move.focus + (move.start.target - move.focus) * move.start.zoom / view.zoom
         let reach = max(0, 1 - home.zoom / view.zoom)
         let middle = home.target
+        let left = tray.centerX - tray.farHalfWidth
+        let right = tray.centerX + tray.farHalfWidth
         view.target = [
             min(
-                max(target.x, middle.x + (-tray.farHalfWidth - middle.x) * reach),
-                middle.x + (tray.farHalfWidth - middle.x) * reach),
+                max(target.x, middle.x + (left - middle.x) * reach),
+                middle.x + (right - middle.x) * reach),
             0,
             min(
                 max(target.z, middle.z + (tray.farZ - middle.z) * reach),
@@ -1574,12 +1602,14 @@ final class BookPileScene {
         var walls = room
         if !shelf.children.isEmpty {
             let bounds = shelf.visualBounds(relativeTo: root)
-            let side = max(abs(bounds.min.x), abs(bounds.max.x)) + PileLayout.reach
+            let side =
+                max(abs(bounds.min.x - room.centerX), abs(bounds.max.x - room.centerX))
+                + PileLayout.reach
             walls = PileTray(
                 farZ: min(room.farZ, bounds.min.z - PileLayout.reach),
                 nearZ: max(room.nearZ, bounds.max.z + PileLayout.reach),
                 farHalfWidth: max(room.farHalfWidth, side),
-                nearHalfWidth: max(room.nearHalfWidth, side))
+                nearHalfWidth: max(room.nearHalfWidth, side), centerX: room.centerX)
         }
         build(walls)
         look(through: camera)
