@@ -150,6 +150,54 @@ enum SpineFamily: String, CaseIterable {
         .almendraDisplay, .cinzelDecorative,
     ]
 
+    /// Returns the font file to download for `weight` from a family's upright `.ttf` file
+    /// names: the static file of that weight, else the variable file, else the static file of
+    /// the nearest weight, else the first file. `GoogleFonts` downloads this file, and
+    /// `script/spine-font-atlas.swift` renders the atlas from the files it chooses at 400 and
+    /// 700, so ranking measures the faces that spines draw.
+    ///
+    /// A static file names its weight as a suffix, such as "Lato-Light.ttf". Of two equally near
+    /// static files, a weight above 500 takes the heavier and any other the lighter. Some
+    /// families ship width variants or optical sizes beside their regular files, named before
+    /// the weight, such as "NotoSans_ExtraCondensed-Bold.ttf" or "Merriweather_120pt-Bold.ttf".
+    /// Of the files of one weight, the regular width comes first, then the optical size nearest
+    /// 24 points, the size of a spine's title, then the lowest name.
+    static func fileName(for weight: Int, in names: [String]) -> String? {
+        let weights = [
+            "Thin": 100, "ExtraLight": 200, "Light": 300, "Regular": 400, "Medium": 500,
+            "SemiBold": 600, "Bold": 700, "ExtraBold": 800, "Black": 900,
+        ]
+        let widths = ["Condensed", "Expanded", "Narrow", "Wide", "Compressed"]
+        func isWidthVariant(_ name: String) -> Bool { widths.contains { name.contains($0) } }
+        func opticalDistance(_ name: String) -> Int {
+            let size = name.split { $0 == "_" || $0 == "-" }.lazy
+                .compactMap { $0.hasSuffix("pt") ? Int($0.dropLast(2)) : nil }.first
+            return size.map { abs($0 - 24) } ?? 0
+        }
+        let ordered = names.sorted { lhs, rhs in
+            if isWidthVariant(lhs) != isWidthVariant(rhs) { return !isWidthVariant(lhs) }
+            let (left, right) = (opticalDistance(lhs), opticalDistance(rhs))
+            return left != right ? left < right : lhs < rhs
+        }
+        let nearestStatic =
+            ordered
+            .compactMap { name -> (name: String, weight: Int)? in
+                guard let style = name.dropLast(".ttf".count).split(separator: "-").last,
+                    let fileWeight = weights[String(style)]
+                else { return nil }
+                return (name, fileWeight)
+            }
+            .min { lhs, rhs in
+                let left = abs(lhs.weight - weight)
+                let right = abs(rhs.weight - weight)
+                if left != right { return left < right }
+                return weight > 500 ? lhs.weight > rhs.weight : lhs.weight < rhs.weight
+            }
+        if let nearestStatic, nearestStatic.weight == weight { return nearestStatic.name }
+        let variable = ordered.first { $0.contains("[") || $0.contains("VariableFont") }
+        return variable ?? nearestStatic?.name ?? ordered.first
+    }
+
     /// The letterform style group the family belongs to.
     var style: SpineFontStyle {
         switch self {
