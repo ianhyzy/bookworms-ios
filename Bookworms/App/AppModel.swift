@@ -338,9 +338,11 @@ final class AppModel {
 
     /// Reloads when the last load that returned a result is more than five minutes old or a
     /// saved design named a book the library lacks. Called when the app becomes active and when
-    /// a generation run ends. First writes any cache update that `apply(_:)` deferred, so a run's
-    /// designs reach the cache when it ends.
+    /// a generation run ends. First reads the Hardcover login again if the Keychain refused the
+    /// last read (`HardcoverAccount.retryUnreadLogin()`), then writes any cache update that
+    /// `apply(_:)` deferred, so a run's designs reach the cache when it ends.
     func reloadIfStale() async {
+        account.retryUnreadLogin()
         if persistTask != nil { persist() }
         guard needsReload || lastReload.map({ -$0.timeIntervalSinceNow > 300 }) ?? true else {
             return
@@ -448,9 +450,7 @@ final class AppModel {
             if CoverPickerDebug.stubsExpiredLogin { throw HardcoverError.invalidToken }
             if CoverPickerDebug.stubsCovers { return CoverPickerDebug.covers(for: book) }
         #endif
-        guard account.isSignedIn, let token = KeychainSecret().read() else {
-            throw HardcoverError.invalidToken
-        }
+        guard let token = account.accessToken() else { throw HardcoverError.invalidToken }
         return try await HardcoverClient().editionCovers(bookID: book.id, token: token)
     }
 

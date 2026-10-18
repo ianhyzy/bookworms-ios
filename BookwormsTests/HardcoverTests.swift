@@ -210,6 +210,80 @@ final class HardcoverTests: XCTestCase {
             FileManager.default.fileExists(atPath: library.path()), "A leftover library is deleted")
     }
 
+    @MainActor
+    func testMissingLoginSignsOutAndDeletesTheSummaryAndLibrary() throws {
+        // A backup restores the summary without the device-only login.
+        let (_, defaults, library) = try signedInStores()
+        try PhoneLibrary(accountID: "4242", username: nil, syncedAt: .now, books: [])
+            .save(to: library)
+        let account = HardcoverAccount(
+            tokens: FakeSecretStore(nil), defaults: defaults, libraryURL: library)
+        XCTAssertFalse(account.isSignedIn)
+        XCTAssertNil(account.summary)
+        XCTAssertNil(defaults.data(forKey: HardcoverAccount.summaryKey))
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: library.path()), "A leftover library is deleted")
+    }
+
+    @MainActor
+    func testUnreadableLoginStaysSavedUntilAReadSucceeds() async throws {
+        let (_, defaults, library) = try signedInStores()
+        try Self.cache(
+            PhoneLibrary(
+                accountID: "4242", username: "fictional_reader", syncedAt: Self.hoursAgo(30),
+                books: []),
+            at: library, defaults: defaults)
+        // Before the first unlock after a restart, the Keychain refuses every read.
+        let tokens = FakeSecretStore("fictional-token", isReadable: false)
+        let requests = RequestCount()
+        let account = HardcoverAccount(
+            tokens: tokens,
+            client: HardcoverClient { request in
+                await requests.add()
+                return try await Self.libraryTransport(request)
+            },
+            defaults: defaults, libraryURL: library)
+        XCTAssertTrue(account.isSignedIn, "The summary marks the sign-in until a read succeeds")
+        XCTAssertEqual(tokens.deletes, 0)
+        XCTAssertNotNil(defaults.data(forKey: HardcoverAccount.summaryKey))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: library.path()))
+
+        await account.sync()
+        XCTAssertEqual(account.syncError, HardcoverError.credentialUnreadable.errorDescription)
+        XCTAssertFalse(account.needsReconnect)
+        XCTAssertEqual(tokens.secret, "fictional-token")
+        let refused = await requests.count
+        XCTAssertEqual(refused, 0)
+
+        // After the unlock, the next sync reads the login and downloads the library.
+        tokens.isReadable = true
+        await account.sync()
+        XCTAssertNil(account.syncError)
+        XCTAssertEqual(PhoneLibrary.load(from: library)?.books.map(\.id), [101, 303, 202])
+        XCTAssertEqual(tokens.deletes, 0)
+    }
+
+    @MainActor
+    func testUnreadableLoginWithoutASummaryDeletesNothingUntilARead() throws {
+        // Before the first unlock, user defaults can read as empty too.
+        let (_, defaults, library) = try signedInStores()
+        defaults.removeObject(forKey: HardcoverAccount.summaryKey)
+        try PhoneLibrary(accountID: "4242", username: nil, syncedAt: .now, books: [])
+            .save(to: library)
+        let tokens = FakeSecretStore("fictional-token", isReadable: false)
+        let account = HardcoverAccount(tokens: tokens, defaults: defaults, libraryURL: library)
+        XCTAssertFalse(account.isSignedIn)
+        XCTAssertEqual(tokens.deletes, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: library.path()))
+
+        // Once a read succeeds, the login without a summary is a leftover.
+        tokens.isReadable = true
+        account.retryUnreadLogin()
+        XCTAssertFalse(account.isSignedIn)
+        XCTAssertNil(tokens.secret)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: library.path()))
+    }
+
     // MARK: - Library
 
     func testLibraryNormalizesFixturePage() async throws {
@@ -834,6 +908,37 @@ final class HardcoverTests: XCTestCase {
             "image":{"url":"http://covers.example.com/book-102.jpg","width":400,"height":600}}}
         ]}]}}
         """
+}
+
+/// A login store whose reads can fail, as the Keychain's do before the first unlock after a
+/// restart.
+private final class FakeSecretStore: SecretStore {
+    var secret: String?
+    var isReadable: Bool
+    private(set) var saves: [String] = []
+    private(set) var deletes = 0
+
+    init(_ secret: String?, isReadable: Bool = true) {
+        self.secret = secret
+        self.isReadable = isReadable
+    }
+
+    func load() throws -> String? {
+        guard isReadable else {
+            throw KeychainSecret.Unreadable(status: errSecInteractionNotAllowed)
+        }
+        return secret
+    }
+
+    func save(_ secret: String) throws {
+        saves.append(secret)
+        self.secret = secret
+    }
+
+    func delete() {
+        deletes += 1
+        secret = nil
+    }
 }
 
 /// Counts a transport's requests.

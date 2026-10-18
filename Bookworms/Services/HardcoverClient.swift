@@ -14,6 +14,8 @@ enum HardcoverError: LocalizedError, Equatable {
     case deviceFlowDenied
     case deviceFlowExpired
     case credentialNotSaved
+    /// The Keychain refused to read the saved login, which stays saved.
+    case credentialUnreadable
 
     var errorDescription: String? {
         switch self {
@@ -33,6 +35,8 @@ enum HardcoverError: LocalizedError, Equatable {
         case .deviceFlowExpired: "The code expired before it was approved. Get a new code."
         case .credentialNotSaved:
             "Bookworms could not save your Hardcover login on this \(ThisDevice.name)."
+        case .credentialUnreadable:
+            "Bookworms could not read your Hardcover login from this \(ThisDevice.name)'s keychain. Try again in a moment."
         }
     }
 }

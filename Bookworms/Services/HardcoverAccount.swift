@@ -44,7 +44,7 @@ final class HardcoverAccount {
     /// downloads the library from Hardcover. **Sync now** downloads it at any time.
     static let providerInterval: TimeInterval = 24 * 60 * 60
 
-    private(set) var isSignedIn: Bool
+    private(set) var isSignedIn = false
     private(set) var summary: Summary?
     private(set) var signIn: SignIn?
     private(set) var isSyncing = false
@@ -63,7 +63,10 @@ final class HardcoverAccount {
     /// tests. A failed upload is dropped; other devices then download the library themselves.
     @ObservationIgnored private(set) var publishTask: Task<Void, Never>?
 
-    @ObservationIgnored private let tokens: KeychainSecret
+    @ObservationIgnored private let tokens: any SecretStore
+    /// Whether the Keychain refused the last read of the login, so the login and summary stay
+    /// until a read succeeds (`retryUnreadLogin()`).
+    @ObservationIgnored private var loginIsUnread = false
     @ObservationIgnored private let client: HardcoverClient
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let libraryURL: URL
@@ -87,7 +90,7 @@ final class HardcoverAccount {
 
     /// Tests pass their own token service, user defaults, and library file.
     init(
-        tokens: KeychainSecret = KeychainSecret(), client: HardcoverClient? = nil,
+        tokens: any SecretStore = KeychainSecret(), client: HardcoverClient? = nil,
         defaults: UserDefaults = .standard, libraryURL: URL = PhoneLibrary.url
     ) {
         self.tokens = tokens
@@ -100,22 +103,69 @@ final class HardcoverAccount {
         #else
             self.client = client ?? HardcoverClient()
         #endif
+        restoreLogin()
+    }
+
+    /// Restores the saved login and its account summary.
+    ///
+    /// The Keychain keeps a login after the app is deleted, and a backup restores the summary
+    /// and library without the device-only login. Either half alone counts as signed out and is
+    /// deleted, so the sheet and `signedInAccountID` agree. When the Keychain refuses the read,
+    /// as before the first unlock after a restart, nothing is deleted: the summary alone marks
+    /// the sign-in until a read succeeds (`retryUnreadLogin()`).
+    private func restoreLogin() {
         let saved = defaults.data(forKey: Self.summaryKey)
             .flatMap { try? JSONDecoder().decode(Summary.self, from: $0) }
-        // The Keychain keeps a login after the app is deleted, and a backup restores the summary
-        // and library without the device-only login. Either half alone counts as signed out, so
-        // the sheet and `signedInAccountID` agree.
-        isSignedIn = tokens.read() != nil && saved != nil
         summary = saved
-        if !isSignedIn {
-            tokens.delete()
-            forgetLibrary()
+        do {
+            let hasLogin = try tokens.load() != nil
+            loginIsUnread = false
+            isSignedIn = hasLogin && saved != nil
+            if !isSignedIn {
+                tokens.delete()
+                forgetLibrary()
+            }
+        } catch {
+            loginIsUnread = true
+            isSignedIn = saved != nil
         }
     }
 
-    /// The saved access token, read from the Keychain, or `nil` when signed out. Callers read
-    /// it for an explicit request and do not keep it.
-    func accessToken() -> String? { isSignedIn ? tokens.read() : nil }
+    /// Reads the saved login again when the Keychain refused the last read, and reports a
+    /// changed sign-in as a library change.
+    ///
+    /// The app calls this when it becomes active, and each sync and request does too, so the
+    /// Keychain is read again only at those times and never for a view update.
+    func retryUnreadLogin() {
+        guard loginIsUnread else { return }
+        let before = (isSignedIn, summary)
+        restoreLogin()
+        if before != (isSignedIn, summary) { libraryChanged() }
+    }
+
+    /// Returns the saved access token for an explicit request. Callers use it for that request
+    /// and do not keep it.
+    ///
+    /// Throws `HardcoverError.invalidToken` when signed out, and
+    /// `HardcoverError.credentialUnreadable` while the Keychain refuses the read; the login then
+    /// stays saved.
+    private func savedToken() throws -> String {
+        retryUnreadLogin()
+        guard isSignedIn else { throw HardcoverError.invalidToken }
+        let token: String?
+        do {
+            token = try tokens.load()
+        } catch {
+            loginIsUnread = true
+            throw HardcoverError.credentialUnreadable
+        }
+        guard let token else { throw HardcoverError.invalidToken }
+        return token
+    }
+
+    /// The saved access token, read from the Keychain, or `nil` when signed out or the Keychain
+    /// refuses the read. Callers read it for an explicit request and do not keep it.
+    func accessToken() -> String? { try? savedToken() }
 
     /// Requests a code, waits for the reader to approve it on Hardcover, and saves the login.
     ///
@@ -154,6 +204,7 @@ final class HardcoverAccount {
                         accountID: accountID, username: user.username,
                         syncedAt: isSameAccount ? summary?.syncedAt : nil))
                 isSignedIn = true
+                loginIsUnread = false
                 needsReconnect = false
                 syncError = nil
                 signIn = nil
@@ -186,9 +237,15 @@ final class HardcoverAccount {
     /// `readsArchive` is `false`, as when the caller has just read the archive and the cache
     /// holds the account's newest copy.
     private func sync(readsArchive: Bool) async {
-        guard isSignedIn, !isSyncing, let accountID = summary?.accountID,
-            let token = tokens.read()
-        else { return }
+        guard !isSyncing else { return }
+        let token: String
+        do {
+            token = try savedToken()
+        } catch {
+            if isSignedIn { syncError = Self.message(for: error) }
+            return
+        }
+        guard let accountID = summary?.accountID else { return }
         isSyncing = true
         syncError = nil
         let revision = libraryRevision
@@ -253,6 +310,7 @@ final class HardcoverAccount {
     /// sign-in, sign-out, or sync that changes the library during the iCloud read starts the
     /// check again for the current account.
     func syncIfStale() async {
+        retryUnreadLogin()
         guard isSignedIn, let accountID = summary?.accountID else { return }
         var newest =
             FileManager.default.fileExists(atPath: libraryURL.path()) ? summary?.syncedAt : nil
@@ -308,6 +366,7 @@ final class HardcoverAccount {
         isSyncing = false
         tokens.delete()
         isSignedIn = false
+        loginIsUnread = false
         needsReconnect = false
         syncError = nil
         forgetLibrary()
@@ -389,14 +448,30 @@ extension PhoneLibrary {
     }
 }
 
-/// Keeps one secret, such as the Hardcover access token or an AI provider's API key, in this
-/// device's Keychain.
+/// Keeps one secret string. `KeychainSecret` keeps it in this device's Keychain; tests use
+/// stores of their own.
+protocol SecretStore {
+    /// Returns the secret, or `nil` when none is saved. Throws when the store refuses the read;
+    /// the secret may still exist.
+    func load() throws -> String?
+    func save(_ secret: String) throws
+    func delete()
+}
+
+/// Keeps one secret, such as the Hardcover login or an AI provider's API key, in this device's
+/// Keychain.
 ///
 /// The item is readable after the first unlock, never synchronizable, and does not move to
 /// another device through a backup. Tests pass their own service name.
-struct KeychainSecret: Sendable {
+struct KeychainSecret: SecretStore, Sendable {
     /// The Keychain refused to save the secret.
     struct NotSaved: Error {}
+    /// The Keychain refused to read the secret, as it does before the first unlock after a
+    /// restart (`errSecInteractionNotAllowed`) or after the reader declines a Mac's prompt. The
+    /// item may still exist.
+    struct Unreadable: Error {
+        let status: OSStatus
+    }
 
     var service = "gay.ian.Bookworms.iOS.hardcover"
     var account = "access-token"
@@ -410,14 +485,19 @@ struct KeychainSecret: Sendable {
         ]
     }
 
-    func read() -> String? {
+    /// Returns the secret, or `nil` when none is saved or the Keychain refuses the read.
+    func read() -> String? { try? load() }
+
+    func load() throws -> String? {
         var request = query
         request[kSecReturnData as String] = true
         request[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
-        guard SecItemCopyMatching(request as CFDictionary, &result) == errSecSuccess,
-            let data = result as? Data
-        else { return nil }
+        let status = SecItemCopyMatching(request as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = result as? Data else {
+            throw Unreadable(status: status)
+        }
         return String(data: data, encoding: .utf8)
     }
 
