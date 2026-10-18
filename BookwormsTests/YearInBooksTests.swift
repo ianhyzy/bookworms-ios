@@ -55,6 +55,12 @@ final class YearInBooksTests: XCTestCase {
         // A lifetime counts the book once, by its newest read.
         let lifetime = YearInBooks(frame: .lifetime, library: library)
         XCTAssertEqual(lifetime.books.map(\.finished), ["2025-06-01", "2026-02-01"])
+        // Its chart starts at the first read, as the card's period does.
+        var early = reread
+        early.finishedDates = ["2026-02-01", "2023-03-05"]
+        let chart = YearInBooks(frame: .lifetime, library: [early]).columns
+        XCTAssertEqual(chart.map(\.span), [.year(2023), .year(2024), .year(2025), .year(2026)])
+        XCTAssertEqual(chart.map(\.books.count), [0, 0, 0, 1])
 
         // Share cards in 2025 show the book by its read there.
         let finished = ShareTemplate.justFinished.books(from: library, in: .year(2025), bookID: 1)

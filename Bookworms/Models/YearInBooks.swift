@@ -33,8 +33,8 @@ struct YearInBooks: Equatable {
     /// Every book finished in the frame, earliest first.
     let books: [CloudBook]
     /// The chart's columns, earliest first: the twelve months of a year, a month's weeks (days
-    /// 1–7, 8–14, and so on, the last one shorter), or every year from the first finish to the
-    /// last. Past `maximumYearSpan` years, as a mistyped date can make it, a lifetime charts only
+    /// 1–7, 8–14, and so on, the last one shorter), or every year from the first finish, a
+    /// reread's earliest included, to the last. Past `maximumYearSpan` years, as a mistyped date can make it, a lifetime charts only
     /// the years with books.
     let columns: [Column]
     /// The column with the most books, when it has at least two; the earliest wins a tie.
@@ -141,7 +141,11 @@ struct YearInBooks: Equatable {
                         books: books.filter { range.contains(part($0, 8, 2)) })
                 }
         case .lifetime:
-            let years = Set(books.map { part($0, 0, 4) })
+            // A reread sits in its newest finish's year, but its first finish's year still bounds
+            // the chart, as it does `ShareInput.period`.
+            let years = Set(
+                books.map { part($0, 0, 4) }
+                    + books.compactMap { $0.firstFinish.flatMap { Int($0.prefix(4)) } })
             guard let first = years.min(), let last = years.max() else { return [] }
             return (last - first < maximumYearSpan ? Array(first...last) : years.sorted())
                 .map { year in
