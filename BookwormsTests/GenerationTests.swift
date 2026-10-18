@@ -299,6 +299,11 @@ final class GenerationTests: XCTestCase {
             "static/LeagueGothic-Regular.ttf",
         ]
         XCTAssertEqual(pick(400, league), "static/LeagueGothic-Regular.ttf")
+        // A width variant of the exact weight gives way to a regular-width file.
+        let mixed = ["Family[wght].ttf", "static/Family_Condensed-Bold.ttf"]
+        XCTAssertEqual(pick(700, mixed), "Family[wght].ttf")
+        let staticsOnly = ["static/Family-Regular.ttf", "static/Family_Condensed-SemiBold.ttf"]
+        XCTAssertEqual(pick(600, staticsOnly), "static/Family-Regular.ttf")
         // Optical sizes: the cut nearest a 24-point title, at the regular width.
         let merriweather = [
             "Merriweather-VariableFont_opsz,wdth,wght.ttf",

@@ -154,7 +154,8 @@ enum SpineFamily: String, CaseIterable {
 
     /// Returns the font file to download for `weight` from a family's upright `.ttf` file
     /// names: the static file of that weight, else the variable file, else the static file of
-    /// the nearest weight, else the first file. `GoogleFonts` downloads this file, and
+    /// the nearest weight, at the regular width, and only for a family with no regular-width
+    /// file, in the same order among its width variants; else the first file. `GoogleFonts` downloads this file, and
     /// `script/spine-font-atlas.swift` renders the atlas from the files it chooses at 400 and
     /// 700, so ranking measures the faces that spines draw.
     ///
@@ -162,8 +163,8 @@ enum SpineFamily: String, CaseIterable {
     /// static files, a weight above 500 takes the heavier and any other the lighter. Some
     /// families ship width variants or optical sizes beside their regular files, named before
     /// the weight, such as "NotoSans_ExtraCondensed-Bold.ttf" or "Merriweather_120pt-Bold.ttf".
-    /// Of the files of one weight, the regular width comes first, then the optical size nearest
-    /// 24 points, the size of a spine's title, then the lowest name.
+    /// Of the files of one weight and width, the optical size nearest 24 points, the size of a
+    /// spine's title, comes first, then the lowest name.
     static func fileName(for weight: Int, in names: [String]) -> String? {
         let weights = [
             "Thin": 100, "ExtraLight": 200, "Light": 300, "Regular": 400, "Medium": 500,
@@ -181,23 +182,34 @@ enum SpineFamily: String, CaseIterable {
             let (left, right) = (opticalDistance(lhs), opticalDistance(rhs))
             return left != right ? left < right : lhs < rhs
         }
-        let nearestStatic =
-            ordered
-            .compactMap { name -> (name: String, weight: Int)? in
-                guard let style = name.dropLast(".ttf".count).split(separator: "-").last,
-                    let fileWeight = weights[String(style)]
-                else { return nil }
-                return (name, fileWeight)
+        let statics = ordered.compactMap { name -> (name: String, weight: Int)? in
+            guard let style = name.dropLast(".ttf".count).split(separator: "-").last,
+                let fileWeight = weights[String(style)]
+            else { return nil }
+            return (name, fileWeight)
+        }
+        func isVariable(_ name: String) -> Bool {
+            name.contains("[") || name.contains("VariableFont")
+        }
+        // Regular-width files first, so a width variant of the exact weight never wins over a
+        // regular-width variable or nearer file.
+        for regularWidth in [true, false] {
+            let nearest = statics.filter { isWidthVariant($0.name) != regularWidth }
+                .min { lhs, rhs in
+                    let left = abs(lhs.weight - weight)
+                    let right = abs(rhs.weight - weight)
+                    if left != right { return left < right }
+                    return weight > 500 ? lhs.weight > rhs.weight : lhs.weight < rhs.weight
+                }
+            if let nearest, nearest.weight == weight { return nearest.name }
+            if let variable = ordered.first(where: {
+                isVariable($0) && isWidthVariant($0) != regularWidth
+            }) {
+                return variable
             }
-            .min { lhs, rhs in
-                let left = abs(lhs.weight - weight)
-                let right = abs(rhs.weight - weight)
-                if left != right { return left < right }
-                return weight > 500 ? lhs.weight > rhs.weight : lhs.weight < rhs.weight
-            }
-        if let nearestStatic, nearestStatic.weight == weight { return nearestStatic.name }
-        let variable = ordered.first { $0.contains("[") || $0.contains("VariableFont") }
-        return variable ?? nearestStatic?.name ?? ordered.first
+            if let nearest { return nearest.name }
+        }
+        return ordered.first
     }
 
     /// The letterform style group the family belongs to.
