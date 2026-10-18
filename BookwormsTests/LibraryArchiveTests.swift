@@ -65,6 +65,20 @@ final class LibraryArchiveTests: XCTestCase {
         XCTAssertEqual(
             reencoded.sources.first { $0.accountID == "42" }?.books.first?.finishedDates,
             ["2026-02-01", "2019-07-04"])
+        // An Apple TV build without the list drops it when it re-encodes the archive, and this
+        // app then knows only the newest read.
+        var olderTV = archive
+        for source in olderTV.sources.indices {
+            for book in olderTV.sources[source].books.indices {
+                olderTV.sources[source].books[book].finishedDates = nil
+            }
+        }
+        let olderTVCopy = try JSONDecoder()
+            .decode(CloudLibraryArchive.self, from: try JSONEncoder().encode(olderTV))
+        let stripped = olderTVCopy.sources.first { $0.accountID == "42" }?.books.first
+        XCTAssertEqual(stripped?.finished, "2026-02-01")
+        XCTAssertNil(stripped?.finishedDates)
+        XCTAssertEqual(stripped?.readCount, 1)
         XCTAssertEqual(
             ported.sources.first { $0.accountID == "42" }?.series?.first?.name, "The Stored Series")
         var withSeries = snapshot(accountID: "42", syncedAt: synced.addingTimeInterval(120))
