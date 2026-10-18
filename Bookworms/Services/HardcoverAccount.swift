@@ -267,9 +267,14 @@ final class HardcoverAccount {
         var archiveWasRead = false
         if let cloud, checksCloud {
             let revision = libraryRevision
-            var copy: CloudSourceSnapshot?
+            var adopted: PhoneLibrary?
             do {
-                copy = try await cloud.archivedLibrary(accountID: accountID)
+                if let copy = try await cloud.archivedLibrary(accountID: accountID),
+                    copy.syncedAt > newest ?? .distantPast
+                {
+                    adopted = await Self.adopting(
+                        copy, username: summary?.username, cachedAt: libraryURL)
+                }
                 archiveWasRead = true
             } catch {}
             guard !isSyncing else { return }
@@ -277,23 +282,26 @@ final class HardcoverAccount {
             // Only a read that finished for the current library counts, so a failed read, or one
             // a sign-in overtook, doesn't delay the next check by `cloudCheckInterval`.
             if archiveWasRead { lastCloudCheck = .now }
-            if let copy, copy.syncedAt > newest ?? .distantPast {
-                let library = PhoneLibrary(
-                    copy, username: summary?.username,
-                    keepingReadsOf: PhoneLibrary.load(from: libraryURL))
-                if (try? library.save(to: libraryURL)) != nil {
-                    save(
-                        Summary(
-                            accountID: accountID, username: library.username,
-                            syncedAt: library.syncedAt))
-                    newest = library.syncedAt
-                    libraryChanged()
-                }
+            if let library = adopted, (try? library.save(to: libraryURL)) != nil {
+                save(
+                    Summary(
+                        accountID: accountID, username: library.username,
+                        syncedAt: library.syncedAt))
+                newest = library.syncedAt
+                libraryChanged()
             }
         }
         guard !needsReconnect, newest.map({ isOlder($0, than: Self.providerInterval) }) ?? true
         else { return }
         await sync(readsArchive: !archiveWasRead)
+    }
+
+    /// The cache's copy of `copy` (`PhoneLibrary.init(_:username:keepingReadsOf:)`), built off
+    /// the main actor because it decodes the library cached at `url`.
+    @concurrent nonisolated private static func adopting(
+        _ copy: CloudSourceSnapshot, username: String?, cachedAt url: URL
+    ) async -> PhoneLibrary {
+        PhoneLibrary(copy, username: username, keepingReadsOf: PhoneLibrary.load(from: url))
     }
 
     private func isOlder(_ date: Date, than interval: TimeInterval) -> Bool {
