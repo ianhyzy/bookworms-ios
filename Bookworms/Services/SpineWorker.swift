@@ -371,9 +371,11 @@ actor SpineWorker {
     }
 
     /// Returns the design to save for `book`, or the saved design to keep when iCloud already
-    /// has this work at the run's tier or better, or a design whose colors the reader chose (see
+    /// has a design from the run's tier or better, or a design whose colors the reader chose (see
     /// `SpineDesignV1.action(workItemHash:coverHash:readerChoseCover:runTier:drawsSeriesLook:upgradesSeriesLook:)`),
-    /// with the hash of the cover it comes from. `forced` always makes a new design.
+    /// with the hash of the cover it comes from. A kept design whose book's metadata or cover
+    /// image changed is saved again under the new hashes when its face letters the book's title
+    /// and author, and otherwise left as it is. `forced` always makes a new design.
     ///
     /// The saved design is checked before the cover downloads with `covers`. A saved design that
     /// stays under its own cover hash is kept without a download, so a recheck of a current
@@ -388,7 +390,7 @@ actor SpineWorker {
     ///
     /// The book whose design upgrades its group's look (`SeriesLookV1.upgradeSource(among:)`)
     /// is designed as if the group had no look, so a weaker tier's look gets a design from the
-    /// run's tier. When that book's own saved design is kept, it upgrades the look with no
+    /// run's tier. When that book's own saved design stays, it upgrades the look with no
     /// request. A book draws its group's look only when the look's face letters its title and
     /// author, as the app draws it; otherwise its own design follows the tier rule.
     private func design(
@@ -419,34 +421,45 @@ actor SpineWorker {
                     readerChoseCover: readerChoseCover, runTier: runTier,
                     drawsSeriesLook: drawsSeriesLook, upgradesSeriesLook: upgradesLook)
             }
-            // The glyph check waits until the book's design would otherwise be redesigned, so
-            // kept designs cost no font download.
-            let ownAction = action(drawsSeriesLook: false)
-            if ownAction == .redesign, let look, action(drawsSeriesLook: true) == .keep,
-                try await analyzer.letters(book, with: look.design(bookID: look.sourceBookID))
+            // The glyph checks wait until they decide, so kept designs cost no font download.
+            var result = action(drawsSeriesLook: false)
+            if result == .redesign, let look {
+                let drawn = action(drawsSeriesLook: true)
+                if drawn != .redesign,
+                    try await analyzer.letters(book, with: look.design(bookID: look.sourceBookID))
+                {
+                    result = drawn
+                }
+            }
+            // A design moves to a new title or author only when its face letters them. Otherwise
+            // it stays under its old hashes, which the iPhone and Mac still draw on its book and
+            // the Apple TV ignores.
+            if case .save(let moved) = result, moved.workItemHash != saved.workItemHash,
+                !(try await analyzer.letters(book, with: saved.withAllowedFont))
             {
                 return .keep
             }
-            return ownAction
+            return result
         }
-        func kept(_ saved: SpineDesignV1) async -> Outcome {
-            if upgradesLook, saved.generatedColors == nil {
-                await saveLook(from: saved, for: book, replacing: false)
+        func kept(_ design: SpineDesignV1) async -> SpineDesignV1 {
+            if upgradesLook, design.generatedColors == nil {
+                await saveLook(from: design, for: book, replacing: false)
             }
-            return .keep(saved)
+            return design
         }
         if let saved, book.chosenCoverURL == nil, !readerChoseCover,
             await ledger.lastCheckMatches(
                 recordName: Self.recordName(context.accountID, book), coverHash: saved.coverHash),
             try await savedAction(coverHash: saved.coverHash) == .keep
         {
-            return (await kept(saved), saved.coverHash)
+            return (.keep(await kept(saved)), saved.coverHash)
         }
         let cover = try await covers.fetch(book.coverCandidates)
         if !forced {
             switch (try await savedAction(coverHash: cover.hash), saved) {
-            case (.keep, let saved?): return (await kept(saved), cover.hash)
-            case (.save(let design), _): return (.save(design, isNew: false), cover.hash)
+            case (.keep, let saved?): return (.keep(await kept(saved)), cover.hash)
+            case (.save(let design), _):
+                return (.save(await kept(design), isNew: false), cover.hash)
             default: break
             }
             // Books in one look group share a design so their spines match on the shelf. A book
@@ -459,10 +472,16 @@ actor SpineWorker {
                 } else {
                     try await storedSeriesDesign(for: book, context: context)
                 }
+            // A copy replaces a saved design only as a new design would: from a better tier, or
+            // from a cover the reader chose. Otherwise the run's tier designs the book.
             if let source,
                 let reused = try await analyzer.seriesDesign(
                     from: source, book: book, accountID: context.accountID,
-                    workItemHash: workHash, coverHash: cover.hash)
+                    workItemHash: workHash, coverHash: cover.hash),
+                saved.map({
+                    readerChoseCover && $0.coverHash != cover.hash
+                        || $0.isOutranked(by: reused.tier, awaitingFont: reused.awaitsFont)
+                }) ?? true
             {
                 return (.save(reused, isNew: false), cover.hash)
             }
@@ -625,7 +644,7 @@ actor SpineWorker {
 
     /// Returns the saved design of `book`'s source in a look group without a saved look, by the
     /// rule the app draws with (`SeriesDesigns.sources(of:lends:canLetter:)`), when that source
-    /// is another book with a usable saved design from this generator, made for that book as it
+    /// is another book with a usable saved design, from any generator, made for that book as it
     /// is now (`SeriesDesigns.isCurrent(_:for:)`).
     ///
     /// A source ranks before the books that draw with it and is always designed from its own
@@ -647,9 +666,8 @@ actor SpineWorker {
                 accountID: context.accountID, bookID: mate.id)
         }
         let designs = earlier.reduce(into: [Int: SpineDesignV1]()) { designs, mate in
-            if let design = bookDesigns[mate.id],
-                design.generatorVersion == CloudContract.generatorVersion,
-                SeriesDesigns.isUsableSource(design), SeriesDesigns.isCurrent(design, for: mate)
+            if let design = bookDesigns[mate.id], SeriesDesigns.isUsableSource(design),
+                SeriesDesigns.isCurrent(design, for: mate)
             {
                 designs[mate.id] = design
             }

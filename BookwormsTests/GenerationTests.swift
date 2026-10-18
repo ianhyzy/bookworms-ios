@@ -451,6 +451,65 @@ final class GenerationTests: XCTestCase {
         XCTAssertFalse(rechecked)
     }
 
+    /// A run keeps an earlier generator's Private Cloud Compute design, which no tier outranks,
+    /// after the book's title changes to one its face can't letter: the design stays under its
+    /// old hashes, with no cover download or model request, and the ledger doesn't queue the
+    /// book again. The cover's host is one that `CoverURLPolicy` refuses, so a download attempt
+    /// would fail the book.
+    func testRunsKeepADesignWhoseFaceCannotLetterTheNewTitle() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appending(path: "bookworms-renamed-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let archive = """
+            {"version":1,"sources":[{"source":"hardcover","accountID":"42","syncedAt":800000000,
+              "books":[{"id":7,"title":"東京物語","author":"Mara Quill",
+                "coverURL":"https://covers.localhost/7.jpg"}]}]}
+            """
+        try Data(archive.utf8).write(to: folder.appending(path: "library-v1.json"))
+        func book(_ title: String) -> CloudBook {
+            CloudBook(
+                id: 7, title: title, author: "Mara Quill",
+                coverURL: URL(string: "https://covers.localhost/7.jpg"), detailCoverURL: nil)
+        }
+        let recordName = CloudContract.designRecordName(accountID: "42", bookID: 7)
+        // Georgia has no glyphs for the new title.
+        let design = SpineDesignV1(
+            version: 1, accountID: "42", bookID: 7,
+            workItemHash: CloudContract.workItemHash(accountID: "42", book: book("Tokyo Story")),
+            coverHash: String(repeating: "c", count: 64), generatorVersion: "ios-pcc-v1",
+            generatedAt: now, backgroundHex: "#101010", foregroundHex: "#F4EEE2",
+            accentHex: "#7A1F1F", typeface: "serif", weight: 700, uppercase: false,
+            fontPostScriptName: "Georgia-Bold")
+        let designs = folder.appending(path: "spine-designs-v1.json")
+        try JSONEncoder().encode([recordName: design]).write(to: designs)
+
+        let ledger = WorkLedger(url: folder.appending(path: "ledger.json"))
+        let worker = SpineWorker(store: LocalSpineStore(folder: folder), ledger: ledger)
+        await worker.reconcile(mode: .foreground)
+        var finished: WorkerSnapshot?
+        for await update in worker.updates {
+            if case .saved = update { XCTFail("The run saved a design") }
+            if case .status(let status) = update, !status.isRunning {
+                finished = status
+                break
+            }
+        }
+        let status = try XCTUnwrap(finished)
+        XCTAssertEqual(status.phase, "Finished")
+        XCTAssertEqual(status.completed, 1)
+        XCTAssertEqual(status.failed, 0, "The run downloaded no cover")
+        let stored = try JSONDecoder()
+            .decode(
+                [String: SpineDesignV1].self, from: Data(contentsOf: designs))
+        XCTAssertEqual(stored[recordName], design)
+        let requeued = await ledger.needsCheck(
+            recordName: recordName,
+            workItemHash: CloudContract.workItemHash(accountID: "42", book: book("東京物語")),
+            runTier: .privateCloudCompute)
+        XCTAssertFalse(requeued)
+    }
+
     /// Only a design of the cover hash that this device's last check ended with skips the cover
     /// download, so a design that another device made from a cover the reader chose there, and
     /// later removed, is checked against the default cover.

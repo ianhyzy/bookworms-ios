@@ -15,7 +15,7 @@ struct SpineColors: Hashable, Sendable {
 enum SavedDesignAction: Equatable {
     /// Leaves the saved design in place.
     case keep
-    /// Saves this copy of the saved design, which keeps the reader's colors under the book's new
+    /// Saves this copy of the saved design, which keeps its colors and type under the book's new
     /// work-item and cover hashes, so readers that check the work-item hash, such as the Apple
     /// TV, still accept it.
     case save(SpineDesignV1)
@@ -101,16 +101,15 @@ extension SpineDesignV1 {
             && generatorVersion == other.generatorVersion && generatedAt == other.generatedAt
     }
 
-    /// Whether saving `design` leaves this saved design in place: both are the same work from
-    /// the same generator, and `design` doesn't outrank this one
-    /// (`isOutranked(by:awaitingFont:)`) or this one carries the reader's colors. So the first
-    /// device to save a work at a tier keeps it, and a better tier's design, or one whose font
-    /// downloaded, replaces a weaker one's. With `replacing`, for a redesign the reader asked
-    /// for, only a saved design that is no older stays.
+    /// Whether saving `design` leaves this saved design in place: both are the same work, from
+    /// any generators, and `design` doesn't outrank this one (`isOutranked(by:awaitingFont:)`)
+    /// or this one carries the reader's colors. So the first device to save a work at a tier
+    /// keeps it, and a better tier's design, or one whose font downloaded, replaces a weaker
+    /// one's. With `replacing`, for a redesign the reader asked for, only a saved design that is
+    /// no older stays.
     func outlasts(_ design: SpineDesignV1, replacing: Bool) -> Bool {
         guard accountID == design.accountID, bookID == design.bookID,
-            workItemHash == design.workItemHash, coverHash == design.coverHash,
-            generatorVersion == design.generatorVersion
+            workItemHash == design.workItemHash, coverHash == design.coverHash
         else { return false }
         return replacing
             ? generatedAt >= design.generatedAt
@@ -125,15 +124,18 @@ extension SpineDesignV1 {
     /// look group's `SeriesLookV1` instead of this design. `upgradesSeriesLook` tells whether the
     /// book's design is to replace its group's weaker look (`SeriesLookV1.upgradeSource(among:)`).
     ///
-    /// The reader's colors outlast generator, tier, metadata, and cover-image changes: only a
-    /// cover the reader chose, with new image bytes, redesigns a recolored spine. Otherwise a
-    /// recolored design whose hashes changed is saved again under the new hashes, with its colors
-    /// and `generatedAt`. A design with the generator's colors is kept while both hashes match and
-    /// it comes from this generator at `runTier` or a better tier, without a font to await at
-    /// `runTier` (`isOutranked(by:awaitingFont:)`), or the book draws a series look. A run
-    /// redesigns a weaker tier's design, so a better model replaces a weaker one's choices once
-    /// it is available. A look can come from another generator, such as the Apple TV's, and
-    /// redesigning a book that draws it changes nothing on the shelf. A series copy
+    /// A run replaces a design only with a better tier's (`isOutranked(by:awaitingFont:)`), or
+    /// with a design of a cover the reader chose, with new image bytes. A design with the
+    /// generator's colors stays when it comes from `runTier` or a better tier, whatever
+    /// generator version made it, and so does a design the reader recolored, at any tier, or the
+    /// design of a book that draws a series look, since redesigning that book changes nothing on
+    /// the shelf. A design that stays is kept while both hashes match; otherwise, after a
+    /// metadata or cover-image change, it is saved again under the new hashes with its colors,
+    /// font, generator, and `generatedAt`, because the Apple TV ignores a design whose work-item
+    /// hash doesn't match the book. So a new generator version, a recheck, or a run at the same
+    /// or a weaker tier never replaces a model's choices. A design that awaits its font ranks
+    /// below its tier, so a run at its tier designs the book again, and that design replaces it
+    /// once the font downloads (`outlasts(_:replacing:)`). A series copy
     /// (`isSeriesReuse`) never upgrades a look, so it is redesigned instead: it reproduces a
     /// look or another book's design, perhaps the very look it would replace, and a copy without
     /// a model token reads as Private Cloud Compute whatever made its source.
@@ -142,19 +144,15 @@ extension SpineDesignV1 {
         drawsSeriesLook: Bool = false, upgradesSeriesLook: Bool = false
     ) -> SavedDesignAction {
         let newCover = self.coverHash != coverHash
-        let isCurrent = !newCover && self.workItemHash == workItemHash
-        if generatedColors != nil, let colors, !(readerChoseCover && newCover) {
-            guard !isCurrent else { return .keep }
-            return .save(
-                rebuilt(
-                    workItemHash: workItemHash, coverHash: coverHash, colors: colors,
-                    provenance: provenance))
-        }
-        let isKept =
-            (generatorVersion == CloudContract.generatorVersion && !isOutranked(by: runTier)
-                && !(upgradesSeriesLook && isSeriesReuse))
-            || drawsSeriesLook
-        return isCurrent && isKept ? .keep : .redesign
+        let stays =
+            generatedColors != nil || drawsSeriesLook
+            || (!isOutranked(by: runTier) && !(upgradesSeriesLook && isSeriesReuse))
+        guard stays, !(readerChoseCover && newCover), let colors else { return .redesign }
+        guard newCover || self.workItemHash != workItemHash else { return .keep }
+        return .save(
+            rebuilt(
+                workItemHash: workItemHash, coverHash: coverHash, colors: colors,
+                provenance: provenance))
     }
 
     /// The `provenance` token that names the model that made this design, such as

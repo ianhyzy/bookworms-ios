@@ -417,6 +417,33 @@ final class SeriesLookTests: XCTestCase {
         XCTAssertEqual(saved[local.key], edited)
     }
 
+    /// A look from an earlier generator version keeps its tier, so only a better tier's design
+    /// replaces it.
+    func testOnlyABetterTierUpgradesAnEarlierGeneratorsLook() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appending(path: "bookworms-looks-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = LocalSpineStore(folder: folder)
+        let companion = look().withOrigin("mac-foundation-models-v1")
+        try await store.save(companion)
+        func upgrade(_ provenance: String?) -> SeriesLookV1 {
+            SeriesLookV1(
+                design: design(7, provenance: provenance, family: "Lora"), key: companion.key,
+                createdAt: companion.createdAt)
+        }
+        let onDevice = try await store.upgradeLook(upgrade(ModelTier.onDeviceToken))
+        XCTAssertEqual(onDevice, companion, "The same tier keeps the saved look")
+        let backup = try await store.upgradeLook(upgrade("model:openai/gpt-6-luna"))
+        XCTAssertEqual(backup.tier, .backup)
+        XCTAssertEqual(backup.createdAt, companion.createdAt)
+
+        let earlier = look().withOrigin("ios-pcc-v1")
+        try await store.save(earlier)
+        let kept = try await store.upgradeLook(upgrade("model:openai/gpt-6-luna"))
+        XCTAssertEqual(kept, earlier, "No tier upgrades a Private Cloud Compute look")
+    }
+
     @MainActor
     func testLookWithoutAFamilyDrawsAnInstalledFace() async {
         let fonts = SpineFonts()
