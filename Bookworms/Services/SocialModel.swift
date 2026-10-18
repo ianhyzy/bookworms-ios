@@ -419,7 +419,8 @@ final class SocialModel {
     /// Their ratings derive from the shown library's rated books, so each comparison has books
     /// in common: Robin mostly agrees, Sam mostly disagrees, Marisol has a long name and a
     /// middling match, and Jun shares too few books for a score. Each also rates a few
-    /// fictional books the owner doesn't have, for Book Swap. None has a profile photo.
+    /// fictional books the owner doesn't have, and gives 5 stars to the first book the owner
+    /// shelved without starting, for Book Swap. None has a profile photo.
     enum SocialSamples {
         static var isEnabled: Bool { UserDefaults.standard.bool(forKey: "BookwormsShareFriends") }
 
@@ -427,6 +428,12 @@ final class SocialModel {
 
         static func snapshot(mine: [CloudBook]) -> SocialSnapshot {
             let rated = mine.filter { ($0.rating ?? 0) >= 0.5 }
+            let listed = mine.filter(\.isUnstarted).prefix(1)
+                .map { book in
+                    var book = book
+                    book.rating = 5
+                    return book
+                }
             let readers: [(ReaderProfile, Int, (Double, Int) -> Double)] = [
                 (
                     ReaderProfile(id: -2, username: "robinvale", name: "Robin Vale"), 18,
@@ -456,7 +463,7 @@ final class SocialModel {
                         return book
                     }
                 snapshot.libraries[reader.id] = ReaderLibrary(
-                    books: shared + extras(offset: index), syncedAt: .now)
+                    books: shared + listed + extras(offset: index), syncedAt: .now)
             }
             return snapshot
         }

@@ -127,16 +127,20 @@ struct TasteMatch: Equatable, Sendable {
     /// The owner's books rated `lovedRating` or more that the other reader never shelved,
     /// highest rated first.
     let forThem: [CloudBook]
-    /// The other reader's books rated `lovedRating` or more that the owner never shelved,
-    /// highest rated first, with the other reader's rating.
+    /// The other reader's books rated `lovedRating` or more that the owner never shelved or
+    /// shelved without starting (`CloudBook.isUnstarted`), highest rated first, with the other
+    /// reader's rating.
     let forMe: [CloudBook]
+    /// The IDs of the `forMe` books that the owner shelved without starting, such as on Want to
+    /// Read, which Book Swap labels as already on the owner's list.
+    let onMyList: Set<Int>
     private let theirRatings: [Int: Double]
 
     /// Compares the owner's library `mine` with another reader's library `theirs`. Ratings
     /// outside 0.5 to 5 stars count as unrated.
     init(mine: [CloudBook], theirs: [CloudBook]) {
         let theirBooks = Dictionary(theirs.map { ($0.id, $0) }) { first, _ in first }
-        let myIDs = Set(mine.map(\.id))
+        let myBooks = Dictionary(mine.map { ($0.id, $0) }) { first, _ in first }
         var seen = Set<Int>()
         shared = mine.compactMap { book in
             guard let mine = Self.valid(book.rating), seen.insert(book.id).inserted,
@@ -164,7 +168,8 @@ struct TasteMatch: Equatable, Sendable {
                 }
                 .prefix(Self.limit))
         forThem = Self.picks(mine.filter { theirBooks[$0.id] == nil })
-        forMe = Self.picks(theirs.filter { !myIDs.contains($0.id) })
+        forMe = Self.picks(theirs.filter { myBooks[$0.id]?.isUnstarted ?? true })
+        onMyList = Set(forMe.map(\.id).filter { myBooks[$0] != nil })
     }
 
     /// The score of `shared`, or `nil` with fewer than `minimumShared` books.
@@ -236,6 +241,18 @@ struct TasteMatch: Equatable, Sendable {
 extension Comparable {
     fileprivate func clamped(to range: ClosedRange<Self>) -> Self {
         min(max(self, range.lowerBound), range.upperBound)
+    }
+}
+
+extension CloudBook {
+    /// Whether the reader shelved the book without starting it: it is not read, not a current
+    /// read, and has no finish date or rating, as on Want to Read.
+    ///
+    /// The book keeps no Hardcover status, so an unrated, unfinished book on Paused, Did Not
+    /// Finish, or Ignored counts too.
+    // ponytail: no status_id on CloudBook; test for Want to Read (status 1) once books keep it.
+    var isUnstarted: Bool {
+        isRead != true && isReading != true && finished == nil && (rating ?? 0) <= 0
     }
 }
 

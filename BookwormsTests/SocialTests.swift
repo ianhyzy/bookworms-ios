@@ -113,17 +113,25 @@ final class SocialTests: XCTestCase {
         ]
         let theirs = [
             Self.book(6, rating: nil), Self.book(10, rating: 5), Self.book(11, rating: 4),
-            Self.book(12, rating: 3), Self.book(20, rating: 5),
+            Self.book(12, rating: 3), Self.book(20, rating: 5), Self.book(21, rating: 4.5),
         ]
-        let match = TasteMatch(mine: mine, theirs: theirs)
+        var listed = Self.book(21, rating: nil, finished: nil)
+        let match = TasteMatch(mine: mine + [listed], theirs: theirs)
         XCTAssertEqual(
             match.forThem.map(\.id), [1, 2, 4],
             "Highest rated first, then the latest finish; 6 is on their shelf; three at most")
         XCTAssertEqual(
-            match.forMe.map(\.id), [10, 11], "20 is on my shelf, even without my rating")
+            match.forMe.map(\.id), [10, 21, 11],
+            "20 is finished on my shelf, even without my rating; 21 is only on my list")
+        XCTAssertEqual(match.onMyList, [21])
         XCTAssertEqual(
             ShareTemplate.bookSwap.books(from: mine, in: .lifetime, match: match).map(\.id),
-            [1, 2, 4, 10, 11])
+            [1, 2, 4, 10, 21, 11])
+
+        listed.isReading = true
+        XCTAssertEqual(
+            TasteMatch(mine: mine + [listed], theirs: theirs).forMe.map(\.id), [10, 11],
+            "A current read is not on my list")
     }
 
     // MARK: - Usernames and invitations
