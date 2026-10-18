@@ -529,6 +529,68 @@ final class ShelfLogicTests: XCTestCase {
             content - viewport, max(track.offsets[4], track.offsets[7]), accuracy: 0.001)
     }
 
+    @MainActor func testStacksKeepTheirCountAndAPulledBookInView() {
+        // The stacks' areas in the Mac's default window and a taller one, in wider windows, one
+        // with space to spare beside its books, and the smallest window, with their stack counts.
+        let areas: [(CGSize, Int)] = [
+            (CGSize(width: 1_036, height: 628), 2), (CGSize(width: 1_036, height: 900), 2),
+            (CGSize(width: 1_000, height: 640), 2), (CGSize(width: 1_200, height: 700), 2),
+            (CGSize(width: 1_460, height: 700), 3), (CGSize(width: 1_500, height: 800), 3),
+            (CGSize(width: 2_400, height: 1_300), 5), (CGSize(width: 615, height: 380), 1),
+        ]
+        for (area, count) in areas {
+            for style in [StackStyle.flat, .threeD] {
+                // The iPhone's one stack spans the screen.
+                let phone = StackArrangement.layout(
+                    in: area, books: 40, style: style, keepsRoom: false)
+                XCTAssertEqual(phone.room, 0)
+                XCTAssertEqual(phone.arrangement.width, area.width / CGFloat(phone.columns))
+                // The Mac's stacks keep room for a pulled book at their outer ends.
+                let (columns, stacks, room) = StackArrangement.layout(
+                    in: area, books: 40, style: style, keepsRoom: true)
+                // The width alone sets the count, in both styles and at any height.
+                XCTAssertEqual(columns, count, "\(area) \(style)")
+                XCTAssertEqual(phone.columns, count, "\(area) \(style)")
+                XCTAssertEqual(
+                    room * 2 + CGFloat(columns) * stacks.width, area.width, accuracy: 0.001)
+                // The longest book with the narrowest and the widest cover, lying as far out as
+                // a book lies and turned to face out, at the outer end of the first stack and
+                // the last, drawn as the stack draws it at the end of its slide out of its place.
+                let length = stacks.scale * CGFloat(BookShape.longest)
+                let aspects = [Book3DView.aspects.lowerBound, Book3DView.aspects.upperBound]
+                let camera = style == .threeD ? StackCamera.distance(viewing: area) : nil
+                let shift = stacks.width * StackArrangement.maximumShift
+                let middles = [
+                    room + stacks.width / 2 - shift, area.width - room - stacks.width / 2 + shift,
+                ]
+                let twists = [style.maximumTwist, -style.maximumTwist]
+                var clearances: [CGFloat] = []
+                for (middle, twist) in zip(middles, twists) {
+                    for aspect in aspects {
+                        let rest = PullOutPath.Rest(
+                            pitch: twist, distance: camera.map { Double($0 / length + aspect / 2) })
+                        let (_, drawn, _) = StackedBook.fit(
+                            spine: CGSize(width: length, height: length / 5), aspect: aspect,
+                            rest: rest)
+                        let slide = PullOutPath.slide(
+                            at: 1, length: length, thickness: length / 5, extent: drawn.height,
+                            rest: rest)
+                        // It comes out toward the side it faces.
+                        XCTAssertEqual(slide.offset.width < 0, twist > 0)
+                        let half = drawn.width * slide.scale / 2
+                        let left = middle - half + slide.offset.width
+                        let right = middle + half + slide.offset.width
+                        clearances += [left, area.width - right]
+                    }
+                }
+                let clear = clearances.min() ?? 0
+                XCTAssertGreaterThanOrEqual(clear, 0, "\(area) \(style)")
+                // The stacks narrow no more than the book needs.
+                if room > 0 { XCTAssertLessThan(clear, 0.5, "\(area) \(style)") }
+            }
+        }
+    }
+
     func testShelfTrackLaysOutTheShelvedSpines() {
         let books = (1...40).map { book($0, "Book \($0)", pages: 60 + $0 * 33) }
         let widths = books.map { $0.shelfSpineSize(scale: 150).width }
@@ -836,8 +898,8 @@ final class ShelfLogicTests: XCTestCase {
         // the slide moves it.
         let out = path.pose(at: PullOutPath.pullEnd)
         XCTAssertEqual(out.roll, -.pi / 2, accuracy: 0.0001)
-        // A flat book, which the book above covers, instead moves down the screen until it is
-        // just clear of the book above.
+        // A flat book, seen straight on, instead moves down the screen as it grows, so its top
+        // edge ends on its place's top edge, clear of the book above.
         let flat = PullOutPath(
             home: home, upright: false, stage: path.stage, pose: .resting, aspect: 2 / 3,
             thicknessRatio: 0.1, rest: PullOutPath.Rest(pitch: 0.05, slidesInStack: true))

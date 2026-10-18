@@ -163,6 +163,11 @@ struct LibraryView: View {
             // Larger sizes overflow the caption's fixed height; the book's details
             // show the same record at any size.
             .dynamicTypeSize(...DynamicTypeSize.accessibility3)
+            #if os(macOS)
+                // The window's standard margin below the caption, where the iPhone's footer
+                // sits.
+                .padding(.bottom, 20)
+            #endif
     }
 
     private func centerPulledBook() {
