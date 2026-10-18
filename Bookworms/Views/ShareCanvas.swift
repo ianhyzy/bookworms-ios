@@ -82,15 +82,16 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
     /// first choice. Just Finished also draws a chosen book from outside the frame, so a book
     /// shared from its details always shows. Year in Books draws the books finished in `frame`,
     /// oldest first. Pile draws them newest first, as the shelf lists them, so the newest books
-    /// land on top. Top Five draws up to five of them, highest rated first, then most recently
-    /// finished. Hot Takes draws up to three whose rating
+    /// land on top. Top Five draws up to five of them: the `pinned` ones among them, in pin
+    /// order (`TopFivePins`), then the highest rated, then the most recently finished. Hot Takes
+    /// draws up to three whose rating
     /// differs most from Hardcover's average in `direction`, or with a `match`, from the other
     /// reader's rating (`TasteMatch.hotTakes(in:direction:)`). Taste Match draws the match's
     /// agreements and fights when it has a score, and Book Swap its picks for each reader;
     /// without a `match`, they draw nothing.
     func books(
         from library: [CloudBook], in frame: TimeFrame, bookID: Int? = nil,
-        direction: HotTakeDirection = .lovedMore, match: TasteMatch? = nil
+        direction: HotTakeDirection = .lovedMore, match: TasteMatch? = nil, pinned: [Int] = []
     ) -> [CloudBook] {
         switch self {
         case .hotTakes where match != nil:
@@ -114,7 +115,8 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         case .pile:
             return finished.reversed()
         case .topFive:
-            return Array(finished.sorted(by: Self.isRankedHigher).prefix(5))
+            return Array(
+                Self.pinnedFirst(pinned, finished.sorted(by: Self.isRankedHigher)).prefix(5))
         case .hotTakes:
             let sign: Double = direction == .lovedMore ? 1 : -1
             return
@@ -126,6 +128,13 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         default:
             return finished
         }
+    }
+
+    /// The books of `books` whose IDs are in `pinned`, in that order, then the rest in their own
+    /// order.
+    static func pinnedFirst(_ pinned: [Int], _ books: [CloudBook]) -> [CloudBook] {
+        pinned.compactMap { id in books.first { $0.id == id } }
+            + books.filter { !pinned.contains($0.id) }
     }
 
     /// Orders by rating, unrated last, then by the most recent finish.

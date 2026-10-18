@@ -3,8 +3,8 @@ import SwiftUI
 /// A book's details: a 3D model to turn with a drag and its title, over three tabs that switch
 /// only the content below them: **Details** (the book's description and facts on a grid of
 /// cards), **Journal** (the reader's reading dates, progress, format, and review, on the same
-/// cards), and **Style** (**Change cover**, then the spine's design: its series, colors, and
-/// **Redesign spine**).
+/// cards, and for a finished book **Pin to Top Five**), and **Style** (**Change cover**, then the
+/// spine's design: its series, colors, and **Redesign spine**).
 ///
 /// A book that shares its series' spine design changes the series under **Style**: the series
 /// look's or source's colors, and the cover and design of the source book
@@ -187,6 +187,8 @@ struct BookDetailView: View {
                 .foregroundStyle(cardNote)
                 .multilineTextAlignment(.center)
             }
+            // Top Five draws finished books only.
+            if book.finishedDate != nil { TopFivePinButton(bookID: book.id) }
         }
     }
 
@@ -1215,6 +1217,33 @@ private struct SeriesRows: View {
 /// while one runs. A run that ends after `requestedAt` while it is still set, because no new
 /// design arrived, leaves a note with the run's error, for example after a quota stop or when
 /// the cover did not load.
+/// Pins the book to lead Top Five share images, or unpins it (`TopFivePins`). While five other
+/// books are pinned, it is disabled and says where to unpin one.
+private struct TopFivePinButton: View {
+    let bookID: Int
+    @AppStorage(TopFivePins.key) private var pins = TopFivePins()
+
+    var body: some View {
+        let isPinned = pins.contains(bookID)
+        VStack(spacing: 8) {
+            Button(
+                isPinned ? "Unpin from Top Five" : "Pin to Top Five",
+                systemImage: isPinned ? "pin.slash" : "pin"
+            ) {
+                pins.toggle(bookID)
+            }
+            .buttonStyle(.bordered)
+            .disabled(!isPinned && pins.isFull)
+            if !isPinned && pins.isFull {
+                Text("Five books are pinned. Unpin one under Share > Top Five to pin this one.")
+                    .font(.footnote)
+                    .foregroundStyle(cardNote)
+                    .multilineTextAlignment(.center)
+            }
+        }
+    }
+}
+
 private struct RedesignButton: View {
     let book: CloudBook
     /// Whether the redesign changes the book's whole series.

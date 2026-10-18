@@ -331,6 +331,24 @@ final class ShareRenderTests: XCTestCase {
 
         let top = ShareTemplate.topFive.books(from: Self.books, in: .year(2025))
         XCTAssertEqual(top.map(\.id), [4, 8, 7, 2, 1])
+        XCTAssertEqual(
+            ShareTemplate.topFive.books(from: Self.books, in: .year(2025), pinned: [9, 99, 11, 1])
+                .map(\.id), [9, 1, 4, 8, 7],
+            "Pins in the frame lead in pin order; 99 isn't in the library and 11 is from 2024")
+    }
+
+    func testTopFivePinsKeepFiveInPinOrder() {
+        var pins = TopFivePins(rawValue: "3,x,3,1,2,4,5,6")
+        XCTAssertEqual(pins.ids, [3, 1, 2, 4, 5], "Valid, distinct, and at most five")
+        XCTAssertTrue(pins.isFull)
+        pins.toggle(6)
+        XCTAssertEqual(pins.ids, [3, 1, 2, 4, 5], "A full set pins nothing more")
+        pins.toggle(1)
+        pins.toggle(6)
+        XCTAssertEqual(pins.rawValue, "3,2,4,5,6")
+        pins.keep(only: [2, 6, 7])
+        XCTAssertEqual(pins.ids, [2, 6])
+        XCTAssertEqual(TopFivePins(rawValue: "").ids, [])
     }
 
     func testSingleBookTemplatesChooseWithinTheirChoices() {
