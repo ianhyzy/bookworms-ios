@@ -132,6 +132,86 @@ enum SpineFamily: String, CaseIterable {
     case ibmPlexMono = "IBM Plex Mono"
     case robotoMono = "Roboto Mono"
 
+    /// Families that new designs never use, though saved designs may still name them.
+    ///
+    /// - Faces whose letters lean without declaring a slant, which breaks the rule that spine
+    ///   lettering stays upright. The lean is the median angle of the upright strokes in
+    ///   "lIHbhkinmrpBDEFKLPR": Caveat measures 19 degrees, Permanent Marker 18, and Kalam 13,
+    ///   while upright faces measure under 1. Shadows Into Light's letters tilt unevenly.
+    ///   `BookAnalyzer.allowsFamily` blocks these and the other leaning script and display faces
+    ///   outright, so a saved design in one draws in Patrick Hand
+    ///   (`SpineFamily.slantedReplacements`).
+    /// - Hairline faces, whose stems are under 8 percent of their capitals' height, so at spine
+    ///   size their titles read as scratches: the ultra-narrow Six Caps (7.5 percent) and
+    ///   Amatic SC (at most 7), and the outlined Monoton (4.5) and Almendra Display (2.5).
+    ///   League Gothic, at 15 percent, takes the narrow faces' place for narrow lettering.
+    /// - Cinzel Decorative, whose swashes the title measurements cannot tell from Cinzel's plain
+    ///   capitals.
+    static let neverGenerated: Set<SpineFamily> = [
+        .caveat, .kalam, .permanentMarker, .shadowsIntoLight, .sixCaps, .amaticSc, .monoton,
+        .almendraDisplay, .cinzelDecorative,
+    ]
+
+    /// Returns the font file to download for `weight` from a family's upright `.ttf` file
+    /// names: the static file of that weight, else the variable file, else the static file of
+    /// the nearest weight, at the regular width, and only for a family with no regular-width
+    /// file, in the same order among its width variants; else the first file. `GoogleFonts` downloads this file, and
+    /// `script/spine-font-atlas.swift` renders the atlas from the files it chooses at 400 and
+    /// 700, so ranking measures the faces that spines draw.
+    ///
+    /// A static file names its weight as a suffix, such as "Lato-Light.ttf". Of two equally near
+    /// static files, a weight above 500 takes the heavier and any other the lighter. Some
+    /// families ship width variants or optical sizes beside their regular files, named before
+    /// the weight, such as "NotoSans_ExtraCondensed-Bold.ttf" or "Merriweather_120pt-Bold.ttf".
+    /// Of the files of one weight and width, the optical size nearest 24 points, the size of a
+    /// spine's title, comes first, then the lowest name.
+    static func fileName(for weight: Int, in names: [String]) -> String? {
+        let weights = [
+            "Thin": 100, "ExtraLight": 200, "Light": 300, "Regular": 400, "Medium": 500,
+            "SemiBold": 600, "Bold": 700, "ExtraBold": 800, "Black": 900,
+        ]
+        let widths = ["Condensed", "Expanded", "Narrow", "Wide", "Compressed"]
+        func isWidthVariant(_ name: String) -> Bool { widths.contains { name.contains($0) } }
+        func opticalDistance(_ name: String) -> Int {
+            let size = name.split { $0 == "_" || $0 == "-" }.lazy
+                .compactMap { $0.hasSuffix("pt") ? Int($0.dropLast(2)) : nil }.first
+            return size.map { abs($0 - 24) } ?? 0
+        }
+        let ordered = names.sorted { lhs, rhs in
+            if isWidthVariant(lhs) != isWidthVariant(rhs) { return !isWidthVariant(lhs) }
+            let (left, right) = (opticalDistance(lhs), opticalDistance(rhs))
+            return left != right ? left < right : lhs < rhs
+        }
+        let statics = ordered.compactMap { name -> (name: String, weight: Int)? in
+            guard let style = name.dropLast(".ttf".count).split(separator: "-").last,
+                let fileWeight = weights[String(style)]
+            else { return nil }
+            return (name, fileWeight)
+        }
+        func isVariable(_ name: String) -> Bool {
+            name.contains("[") || name.contains("VariableFont")
+        }
+        // Regular-width files first, so a width variant of the exact weight never wins over a
+        // regular-width variable or nearer file.
+        for regularWidth in [true, false] {
+            let nearest = statics.filter { isWidthVariant($0.name) != regularWidth }
+                .min { lhs, rhs in
+                    let left = abs(lhs.weight - weight)
+                    let right = abs(rhs.weight - weight)
+                    if left != right { return left < right }
+                    return weight > 500 ? lhs.weight > rhs.weight : lhs.weight < rhs.weight
+                }
+            if let nearest, nearest.weight == weight { return nearest.name }
+            if let variable = ordered.first(where: {
+                isVariable($0) && isWidthVariant($0) != regularWidth
+            }) {
+                return variable
+            }
+            if let nearest { return nearest.name }
+        }
+        return ordered.first
+    }
+
     /// The letterform style group the family belongs to.
     var style: SpineFontStyle {
         switch self {

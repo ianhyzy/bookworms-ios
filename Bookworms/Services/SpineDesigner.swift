@@ -52,9 +52,13 @@ struct SpineDesigner: Hashable, Sendable {
         }
 
         /// The Keychain item that holds this provider's API key.
-        var key: KeychainSecret {
-            KeychainSecret(service: "gay.ian.Bookworms.ai-provider", account: rawValue)
-        }
+        var key: KeychainSecret { KeychainSecret(service: Self.keyService, account: rawValue) }
+
+        /// Unit tests keep keys of their own, so a Mac test run, whose host app shares the
+        /// reader's Keychain items, never reads or prompts for the reader's keys.
+        private static let keyService =
+            ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
+            ? "gay.ian.Bookworms.ai-provider" : "gay.ian.Bookworms.ai-provider.tests"
     }
 
     /// No backup model.
