@@ -111,6 +111,49 @@ final class CompanionContractTests: XCTestCase {
         XCTAssertFalse(backingOff)
     }
 
+    /// A book checked under an earlier generator version waits for its weekly recheck at the
+    /// same tier, since that run would only keep its design, and is rechecked at once only for a
+    /// better tier.
+    func testLedgerDoesNotRequeueKeptBooksForANewGenerator() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appending(path: "bookworms-ledger-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let saved = """
+            {"cloudUserRecordName":"user","entries":{"record":{"workItemHash":"work",\
+            "coverHash":"cover","generatorVersion":"ios-pcc-v1","tier":1,\
+            "checkedAt":\(now.timeIntervalSinceReferenceDate)}}}
+            """
+        try Data(saved.utf8).write(to: url)
+        let ledger = WorkLedger(url: url)
+        try await ledger.useCloudUser("user")
+        func needsCheck(at tier: ModelTier, after interval: TimeInterval = 60) async -> Bool {
+            await ledger.needsCheck(
+                recordName: "record", workItemHash: "work", runTier: tier,
+                now: now.addingTimeInterval(interval))
+        }
+        let sameTier = await needsCheck(at: .onDevice)
+        let lowerTier = await needsCheck(at: .local)
+        let betterTier = await needsCheck(at: .privateCloudCompute)
+        let weekly = await needsCheck(at: .onDevice, after: WorkLedger.recheckInterval)
+        XCTAssertFalse(sameTier, "A new generator version alone queues no book")
+        XCTAssertFalse(lowerTier)
+        XCTAssertTrue(betterTier)
+        XCTAssertTrue(weekly)
+
+        // A check that kept a design records it under the current generator, and a run at the
+        // check's tier doesn't queue the book again.
+        try await ledger.recordSuccess(
+            recordName: "record", workItemHash: "work", coverHash: "cover", tier: .onDevice,
+            now: now)
+        let afterKeep = await needsCheck(at: .onDevice)
+        XCTAssertFalse(afterKeep)
+        let written = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(
+            written.contains(#""generatorVersion":"\#(CloudContract.generatorVersion)""#),
+            "Earlier builds need the field to read the entry")
+    }
+
     func testWorkSourceFollowsWorklistAccountAndSyncDate() throws {
         let synced = Date(timeIntervalSince1970: 2_000)
         let one = CloudBook(

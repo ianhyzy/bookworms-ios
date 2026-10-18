@@ -3,16 +3,18 @@ import Foundation
 /// Remembers which books were checked or failed, so a run spends iCloud reads, cover downloads,
 /// and model requests only on books that need them.
 ///
-/// A book is rechecked when it has no entry, its work-item hash, chosen cover, or the generator
-/// changed, its last check ran at a model tier below the run's, or its last check is seven days
-/// old, or one day old when it saved a design that awaits its font
-/// (`SpineDesignV1.awaitsFont`). A recheck reads the book's saved design first and downloads the
-/// cover only when the run would not keep that design, the reader chose the cover, or the
-/// design's cover hash differs from the one this device last checked (`SpineWorker`). So a
-/// weekly recheck of a current design downloads no default cover, and a design deleted from
-/// iCloud is still made again within a week. A failed book waits 24 hours unless its work-item
-/// hash or chosen cover changed. A library sync alone does not trigger a recheck: it would read
-/// every book's design from iCloud, and download every chosen cover, after each sync.
+/// A book is rechecked when it has no entry, its work-item hash or chosen cover changed, its last
+/// check ran at a model tier below the run's, or its last check is seven days old, or one day old
+/// when it saved a design that awaits its font (`SpineDesignV1.awaitsFont`). A new generator
+/// version alone queues no book, because a run keeps a design from its tier or a better one
+/// whatever generator made it (`SpineDesignV1.action`). A recheck reads the book's saved design
+/// first and downloads the cover only when the run would not keep that design, the reader chose
+/// the cover, or the design's cover hash differs from the one this device last checked
+/// (`SpineWorker`). So a weekly recheck of a current design downloads no default cover and sends
+/// no model request, and a design deleted from iCloud is still made again within a week. A
+/// failed book waits 24 hours unless its work-item hash or chosen cover changed. A library sync
+/// alone does not trigger a recheck: it would read every book's design from iCloud, and download
+/// every chosen cover, after each sync.
 actor WorkLedger {
     private struct LedgerState: Codable {
         var cloudUserRecordName: String?
@@ -23,6 +25,8 @@ actor WorkLedger {
         let workItemHash: String
         /// The cover's hash after a successful check; `nil` after a failure.
         let coverHash: String?
+        /// The generator version at the check. Rechecks ignore it, but earlier builds can't read
+        /// an entry without it, and would then check every book again.
         let generatorVersion: String
         /// The reader's chosen cover (`CloudBook.chosenCoverURL`); `nil` for the default cover,
         /// so entries written before cover choices existed still match.
@@ -75,8 +79,7 @@ actor WorkLedger {
         runTier: ModelTier = .local, now: Date = Date()
     ) -> Bool {
         guard let entry = entries[recordName], entry.workItemHash == workItemHash,
-            entry.chosenCover == chosenCover,
-            entry.generatorVersion == CloudContract.generatorVersion
+            entry.chosenCover == chosenCover
         else { return true }
         if let failedAt = entry.failedAt {
             return now.timeIntervalSince(failedAt) >= Self.failureBackoff
