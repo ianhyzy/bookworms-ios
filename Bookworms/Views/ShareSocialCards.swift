@@ -149,8 +149,7 @@ struct TasteMatchCard: View {
 }
 
 /// Each reader's favorites that the other hasn't shelved (`TasteMatch.forThem` and `forMe`):
-/// up to three covers for each, with the recommending reader's stars. The owner's picks that are
-/// already on their list (`TasteMatch.onMyList`) say so under the title.
+/// up to three covers for each, with the recommending reader's stars.
 ///
 /// A side without picks says so in a line instead, and the other side's covers start larger.
 /// The covers grow into leftover height, and what they leave spreads evenly between the
@@ -199,9 +198,7 @@ struct BookSwapCard: View {
                 Spacer(minLength: gap)
                 side(
                     "My next reads, from \(other)", books: match.forMe, isMuted: true,
-                    empty: "I've read all of \(other)'s favorites.",
-                    notes: Dictionary(
-                        uniqueKeysWithValues: match.onMyList.map { ($0, "Already on my list") })
+                    empty: "I've read all of \(other)'s favorites."
                 )
                 .layoutPriority(1)
                 Spacer(minLength: gap)
@@ -212,12 +209,10 @@ struct BookSwapCard: View {
         }
     }
 
-    /// One reader's picks under a label, with the recommender's stars and any `notes`, or
-    /// `empty` without any.
-    private func side(
-        _ label: String, books: [CloudBook], isMuted: Bool, empty: String,
-        notes: [Int: String] = [:]
-    ) -> some View {
+    /// One reader's picks under a label, with the recommender's stars, or `empty` without any.
+    private func side(_ label: String, books: [CloudBook], isMuted: Bool, empty: String)
+        -> some View
+    {
         VStack(alignment: .leading, spacing: 16) {
             ShareStyle.label(label)
                 .foregroundStyle(ShareStyle.gold)
@@ -231,7 +226,7 @@ struct BookSwapCard: View {
                 ShareCoverRow(
                     input: input, books: books, height: metrics.cover,
                     titleLines: input.aspect == .square ? 1 : 2,
-                    stars: (size: metrics.stars, isMuted: isMuted), notes: notes)
+                    stars: (size: metrics.stars, isMuted: isMuted))
             }
         }
     }
@@ -306,7 +301,7 @@ struct ShareAvatar: View {
 }
 
 /// Up to three covers in a row, standing on one line, each with its title below and,
-/// optionally, the book's rating in stars and a short note under the title.
+/// optionally, the book's rating in stars.
 ///
 /// The covers' row is at least `height` tall and grows by up to 40 percent into height the card
 /// has to spare; the covers fill it as far as their column's width allows.
@@ -316,9 +311,6 @@ struct ShareCoverRow: View {
     let height: CGFloat
     let titleLines: Int
     var stars: (size: CGFloat, isMuted: Bool)?
-    /// Notes by book ID, such as "Already on my list". With any note, every column keeps a line
-    /// for one, so the covers stay level.
-    var notes: [Int: String] = [:]
 
     var body: some View {
         // A turned 3D book draws up to about 10 percent taller than its height.
@@ -354,13 +346,6 @@ struct ShareCoverRow: View {
                     // Every title takes the height of `titleLines` lines, as `ShareFittingText`
                     // estimates a line, so the covers above share one height and one line.
                     .frame(minHeight: CGFloat(titleLines) * titleSize * 1.2, alignment: .top)
-                    if !notes.isEmpty {
-                        Text(notes[book.id] ?? " ")
-                            .font(.system(size: 24, weight: .semibold))
-                            .foregroundStyle(ShareStyle.gold)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                    }
                 }
                 .frame(maxWidth: .infinity)
             }
