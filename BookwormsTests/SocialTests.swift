@@ -150,6 +150,20 @@ final class SocialTests: XCTestCase {
         XCTAssertEqual(
             HardcoverInvite.shareText("robin_vale"),
             "Compare takes with me on Hardcover: https://hardcover.app/@robin_vale")
+        XCTAssertEqual(
+            HardcoverInvite.readingText(
+                books: [Self.book(7, rating: 4), Self.book(-1, rating: 5)], username: "robin_vale"),
+            """
+            Fictional Book 7: https://hardcover.app/id/books/7
+            My reading on Hardcover: https://hardcover.app/@robin_vale
+            """, "An ID Hardcover can't have gets no link")
+        XCTAssertNil(
+            HardcoverInvite.readingText(
+                books: (1...6).map { Self.book($0, rating: 4) }, username: nil),
+            "Six books are too many to list, and there is no profile")
+        XCTAssertNil(
+            HardcoverInvite.readingText(books: [], username: "a b"),
+            "An invalid username gets no link")
         let profile = ReaderProfile(id: 1, username: "robin_vale", name: "Robin Vale")
         XCTAssertEqual(profile.shortName, "Robin")
         XCTAssertEqual(ReaderProfile(id: 2, username: "jun", name: " ").displayName, "@jun")

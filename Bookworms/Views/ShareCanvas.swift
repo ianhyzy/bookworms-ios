@@ -339,28 +339,50 @@ struct ShareCanvas: View {
 /// The quiet credit that every exported share image and video carries at its bottom edge, in
 /// the bottom margin that every card keeps free of content, which on a story is the bottom 150
 /// pixels (`ShareAspect.reach`). Previews in the app leave it out.
+///
+/// With a `username`, the credit starts with the sharer's Hardcover profile link, such as
+/// "hardcover.app/@sam", in brighter, slightly larger type on the same line.
 struct ShareCredit: View {
     /// The strip at the bottom of an export that the credit and its shadow take, in pixels,
-    /// which an in-app preview of a video leaves out.
+    /// which an in-app preview of a video leaves out. Videos carry no profile link, which
+    /// would make the strip a few pixels taller.
     nonisolated static let height: CGFloat = 40
 
+    /// The sharer's Hardcover username, or `nil` for the credit alone.
+    var username: String?
+
     var body: some View {
-        Text("Created with Bookworms for \(ThisDevice.name)")
-            .font(.system(size: 22, weight: .medium))
-            .foregroundStyle(ShareStyle.cream.color.opacity(0.5))
-            .shadow(color: .black.opacity(0.35), radius: 3)
-            .padding(.bottom, 10)
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            if let username {
+                Text(HardcoverInvite.link(username))
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundStyle(ShareStyle.cream.color.opacity(0.85))
+                Text("·")
+            }
+            Text("Created with Bookworms for \(ThisDevice.name)")
+        }
+        .font(.system(size: 22, weight: .medium))
+        .foregroundStyle(ShareStyle.cream.color.opacity(0.5))
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+        .shadow(color: .black.opacity(0.35), radius: 3)
+        .padding(.horizontal, 64)
+        .padding(.bottom, 10)
     }
 }
 
 extension UIImage {
     /// This image with `ShareCredit` at its bottom edge, at the same size and scale, or `nil`
     /// when it cannot be drawn. Every share image gets its credit here on its way out of the
-    /// app, so a preview of the image alone matches the export everywhere else.
+    /// app, so a preview of the image alone matches the export everywhere else. A `username`
+    /// adds the sharer's profile link to the credit.
     @MainActor
-    func withShareCredit() -> UIImage? {
+    func withShareCredit(username: String? = nil) -> UIImage? {
         let renderer = ImageRenderer(
-            content: Image(uiImage: self).overlay(alignment: .bottom) { ShareCredit() })
+            content: Image(uiImage: self)
+                .overlay(alignment: .bottom) {
+                    ShareCredit(username: username)
+                })
         renderer.scale = scale
         renderer.isOpaque = true
         return renderer.uiImage

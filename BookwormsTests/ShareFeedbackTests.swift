@@ -30,16 +30,23 @@ final class ShareFeedbackTests: XCTestCase {
     }
 
     /// The preview image has no credit; the shared PNG is the same image with the credit in its
-    /// bottom few pixels.
+    /// bottom few pixels, with or without the sharer's profile link.
     @MainActor
     func testSharedImageAddsTheCreditAtTheBottomEdgeOnly() async throws {
+        try await checkCredit(username: nil)
+        try await checkCredit(username: "fictional_reader")
+    }
+
+    @MainActor
+    private func checkCredit(username: String?) async throws {
         let book = CloudBook(
             id: 1, title: "Fictional Book", author: "An Author", coverURL: nil,
             detailCoverURL: nil, finished: "2025-03-15", rating: 4)
         let input = ShareInput(
             template: .justFinished, aspect: .story, books: [book], frame: .year(2025))
         let preview = try XCTUnwrap(input.render())
-        let files = try await SharedFiles.images([ShareImage(image: preview, name: "A/B")])
+        let files = try await SharedFiles.images(
+            [ShareImage(image: preview, name: "A/B")], username: username)
         let url = try XCTUnwrap(files.urls.first)
         XCTAssertEqual(files.urls.count, 1)
         XCTAssertEqual(url.lastPathComponent, "A-B.png")
@@ -62,8 +69,8 @@ final class ShareFeedbackTests: XCTestCase {
             if row < creditTop, difference > 2 { changedAbove += 1 }
             if row >= creditTop, difference > 30 { changedInCredit += 1 }
         }
-        XCTAssertEqual(changedAbove, 0)
-        XCTAssertGreaterThan(changedInCredit, 1000)
+        XCTAssertEqual(changedAbove, 0, username ?? "no username")
+        XCTAssertGreaterThan(changedInCredit, 1000, username ?? "no username")
     }
 
     /// `image` drawn into an sRGB RGBA context, so that two images compare byte for byte.

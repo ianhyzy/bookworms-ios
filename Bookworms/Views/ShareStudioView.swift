@@ -137,6 +137,12 @@ struct ShareStudioView: View {
             pinned: pins)
     }
 
+    /// The username the credit letters as a profile link: the sharer's, on **My reading**
+    /// images only, since a comparison letters it in its invitation.
+    private var creditUsername: String? {
+        renderedRequest?.readerID == nil ? model.social.owner?.username : nil
+    }
+
     /// The image the current options and library call for.
     private var request: RenderRequest {
         let frame = shownFrame
@@ -381,17 +387,22 @@ struct ShareStudioView: View {
         }
     }
 
-    /// Opens the share sheet with the image. Only the shared file carries the credit.
+    /// Opens the share sheet with the image. Only the shared file carries the credit, which on
+    /// a **My reading** image starts with the sharer's profile link.
+    ///
+    /// A comparison's text invites its viewers to compare on Hardcover. A **My reading** image's
+    /// text links its books and the sharer's profile (`HardcoverInvite.readingText`).
     private func share() async {
         guard let image else { return }
         isPreparing = true
         defer { isPreparing = false }
         do {
-            var shared = try await SharedFiles.images([image])
-            // A comparison invites its viewers to compare on Hardcover.
-            if renderedRequest?.readerID != nil, let owner = model.social.owner {
-                shared.text = HardcoverInvite.shareText(owner.username)
-            }
+            let username = model.social.owner?.username
+            var shared = try await SharedFiles.images([image], username: creditUsername)
+            shared.text =
+                renderedRequest?.readerID != nil
+                ? username.map(HardcoverInvite.shareText)
+                : HardcoverInvite.readingText(books: image.books, username: username)
             files = shared
         } catch {
             model.toasts.show(.failure("Couldn't prepare the image"))
@@ -429,7 +440,8 @@ struct ShareStudioView: View {
                     try? await Task.sleep(for: .milliseconds(200))
                     settled = renderedRequest == request ? settled + 1 : 0
                 }
-                ShareDebug.write(image, name: "-" + entry.replacing(":", with: "_"))
+                ShareDebug.write(
+                    image, name: "-" + entry.replacing(":", with: "_"), username: creditUsername)
             }
         }
     #endif
@@ -893,11 +905,11 @@ struct ShareStudioView: View {
         var name = template.title
         if template.usesTimeFrame && !template.isSingleBook { name += " " + input.period }
         if let reader = input.social?.reader { name += " with \(reader.shortName)" }
-        image = rendered.map { ShareImage(image: $0, name: name) }
+        image = rendered.map { ShareImage(image: $0, name: name, books: books) }
         failed = !request.isEmpty && rendered == nil
         renderedRequest = request
         #if DEBUG
-            ShareDebug.write(image)
+            ShareDebug.write(image, username: creditUsername)
             // `-BookwormsShareFullSize YES` shows each image full size, as holding the preview
             // does.
             if UserDefaults.standard.bool(forKey: "BookwormsShareFullSize"), let image {
@@ -1008,6 +1020,8 @@ struct FullSizeShareImage: View {
 struct ShareImage: Transferable {
     let image: UIImage
     let name: String
+    /// The books the image draws, which its share text can link.
+    var books: [CloudBook] = []
 
     static var transferRepresentation: some TransferRepresentation {
         DataRepresentation(exportedContentType: .png) { item in
@@ -1143,9 +1157,12 @@ private struct TopFivePinPicker: View {
     /// `-BookwormsShareBatch` renders a list of option sets in one launch
     /// (`ShareStudioView.renderBatch()`).
     enum ShareDebug {
-        /// Writes `image` as `share-debug<name>.png`, with the credit, as sharing exports it, in
-        /// a launch with `-BookwormsShareTemplate` or `-BookwormsShareBatch`.
-        @MainActor static func write(_ image: ShareImage?, name: String = "") {
+        /// Writes `image` as `share-debug<name>.png`, with the credit and `username`'s profile
+        /// link, as sharing exports it, in a launch with `-BookwormsShareTemplate` or
+        /// `-BookwormsShareBatch`.
+        @MainActor static func write(
+            _ image: ShareImage?, name: String = "", username: String? = nil
+        ) {
             let defaults = UserDefaults.standard
             guard let image,
                 defaults.string(forKey: "BookwormsShareTemplate") != nil
@@ -1154,7 +1171,8 @@ private struct TopFivePinPicker: View {
             let url = URL.cachesDirectory.appending(path: "Bookworms/share-debug\(name).png")
             try? FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? image.image.withShareCredit()?.pngData()?.write(to: url, options: .atomic)
+            try? image.image.withShareCredit(username: username)?.pngData()?
+                .write(to: url, options: .atomic)
         }
 
         @MainActor private static var switchesTabs = false

@@ -15,22 +15,25 @@ import os
 struct SharedFiles: Identifiable {
     let id = UUID()
     let urls: [URL]
-    /// Text to send with the files, such as a comparison's invitation, which apps that take
-    /// text, such as Messages, include.
+    /// Text to send with the files, such as a comparison's invitation or an image's Hardcover
+    /// links, which apps that take text, such as Messages, include.
     var text: String?
     /// The files followed by `text`, as the share sheet takes them.
     var items: [Any] { urls + (text.map { [$0] } ?? []) }
 
-    /// Writes `images`, each with the credit (`UIImage.withShareCredit()`), as PNG files named
-    /// after them, in order. Each call first deletes the files of the previous one, so at most
-    /// one share's files stay in the temporary folder.
+    /// Writes `images`, each with the credit (`UIImage.withShareCredit(username:)`), as PNG
+    /// files named after them, in order. A `username` adds the sharer's profile link to each
+    /// credit. Each call first deletes the files of the previous one, so at most one share's
+    /// files stay in the temporary folder.
     ///
     /// - Throws: `CocoaError(.fileWriteUnknown)` when an image cannot be drawn or encoded, and
     ///   any error from writing the files.
     @MainActor
-    static func images(_ images: [ShareImage]) async throws -> SharedFiles {
+    static func images(_ images: [ShareImage], username: String? = nil) async throws
+        -> SharedFiles
+    {
         let credited = try images.map { image in
-            guard let credited = image.image.withShareCredit() else {
+            guard let credited = image.image.withShareCredit(username: username) else {
                 throw CocoaError(.fileWriteUnknown)
             }
             return (image: credited, name: image.name)

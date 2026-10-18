@@ -153,12 +153,15 @@ struct PileSnapshotSheet: View {
         .frame(maxHeight: .infinity)
     }
 
-    /// Opens the share sheet with the image and its credit, which the preview leaves out.
+    /// Opens the share sheet with the image and its credit, which the preview leaves out, and
+    /// with the sharer's profile link on the credit and in the text when the app knows it.
     private func share(_ image: ShareImage) async {
         isPreparing = true
         defer { isPreparing = false }
         do {
-            files = try await SharedFiles.images([image])
+            let username = model.social.owner?.username
+            files = try await SharedFiles.images([image], username: username)
+            files?.text = HardcoverInvite.readingText(books: image.books, username: username)
         } catch {
             model.toasts.show(.failure("Couldn't prepare the image"))
         }
@@ -183,7 +186,7 @@ struct PileSnapshotSheet: View {
                 model: model)
             // A render cancelled after its last check still returns; a newer one is on its way.
             try Task.checkCancellation()
-            image = ShareImage(image: drawn, name: "Desk \(title)")
+            image = ShareImage(image: drawn, name: "Desk \(title)", books: books)
             failed = false
             #if DEBUG
                 PileSnapshotDebug.write(drawn)
