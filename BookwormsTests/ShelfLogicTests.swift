@@ -82,6 +82,26 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(LibraryTime.years(in: books), [2026, 2024, 2019])
     }
 
+    func testRereadsShowInEverySpanByTheirReadThere() throws {
+        var reread = finished(1, "2026-09-01")
+        reread.finishedDates = ["2026-09-01", "2024-11-03", "2024-02-10", "2019-05-05"]
+        let books = [reread, finished(2, "2024-06-01")]
+        XCTAssertEqual(LibraryTime.years(in: books), [2026, 2024, 2019])
+        let shown = LibraryTime.year(2024).books(in: books, now: evening, timeZone: losAngeles)
+        // The newest read in 2024 orders and labels the book there.
+        XCTAssertEqual(shown.map(\.id), [1, 2])
+        XCTAssertEqual(shown.first?.finished, "2024-11-03")
+        XCTAssertEqual(shown.first?.readCount, 4)
+        XCTAssertEqual(ids(.year(2019), books), [1])
+        XCTAssertEqual(ids(.last12Months, books), [1])
+        XCTAssertEqual(ids(.allTime, books), [1, 2])
+        XCTAssertEqual(ShelfLabels.reads(reread.readCount), "Read 4 times")
+        XCTAssertNil(ShelfLabels.reads(books[1].readCount))
+        XCTAssertEqual(
+            DetailCard.journal(of: reread),
+            [.finished(try XCTUnwrap(reread.finishedDate), reads: 4)])
+    }
+
     func testLibraryTimeSavesAndRestoresEveryChoice() {
         for time in LibraryTime.spans + [.year(2019)] {
             XCTAssertEqual(LibraryTime(rawValue: time.rawValue), time)
@@ -162,7 +182,7 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(
             DetailCard.journal(of: listened),
             [
-                .finished(try XCTUnwrap(listened.finishedDate)),
+                .finished(try XCTUnwrap(listened.finishedDate), reads: 1),
                 .format("Audiobook", length: "12 hr, 5 min"),
                 .review("Loved it."),
             ])
