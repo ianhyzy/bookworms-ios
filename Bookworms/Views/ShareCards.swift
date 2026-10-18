@@ -166,7 +166,7 @@ struct TopFiveCard: View {
             // its subtitle up does the fan shrink below its minimum.
             ViewThatFits(in: .vertical) {
                 ForEach(0...shortenable.count, id: \.self) { shortened in
-                    VStack(spacing: aspect == .story ? 48 : 32) {
+                    VStack(spacing: gaps.section) {
                         Text(heading)
                             .font(ShareStyle.serif(aspect == .story ? 84 : 68, .semibold))
                             .foregroundStyle(ShareStyle.cream.color)
@@ -175,7 +175,7 @@ struct TopFiveCard: View {
                         fan(books)
                             .frame(
                                 minHeight: shortened < shortenable.count ? minimumFanHeight : nil)
-                        VStack(spacing: aspect == .story ? 22 : 14) {
+                        VStack(spacing: gaps.row) {
                             ForEach(Array(books.enumerated()), id: \.element.id) { index, book in
                                 row(
                                     rank: index + 1, book: book, showsAuthor: aspect != .square,
@@ -186,8 +186,18 @@ struct TopFiveCard: View {
                     }
                 }
             }
-            .padding(aspect.insets)
+            .padding(aspect.reachingInsets)
         }
+    }
+
+    /// The gaps around the fan and between the ranked rows, in pixels.
+    ///
+    /// A story's content reaches into its bottom strip (`ShareAspect.reach`), and the two gaps
+    /// around the fan and the one between each pair of rows share that height evenly, so the fan
+    /// and the titles keep the sizes they have within `ShareAspect.insets`.
+    private var gaps: (section: CGFloat, row: CGFloat) {
+        let extra = input.aspect.reach / CGFloat(input.books.count + 1)
+        return input.aspect == .story ? (48 + extra, 22 + extra) : (32, 14)
     }
 
     /// The least height the fan keeps while titles show their subtitles, below which its covers
