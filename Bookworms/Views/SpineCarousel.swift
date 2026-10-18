@@ -66,7 +66,8 @@ struct SpineCarousel: View {
     let books: [CloudBook]
     let mode: ShelfMode
     @Binding var centeredID: Int?
-    /// The zoom transition's source namespace; each spine is a source keyed by its book ID.
+    /// The iPhone's zoom transition's source namespace; each spine there is a source keyed by
+    /// its book ID. The Mac pushes details without a zoom.
     let namespace: Namespace.ID
     let pullOut: ShelfPullOut
     /// How far the status bar reaches down over the carousel's top, which Shelf keeps its books
