@@ -267,8 +267,9 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertEqual(action(onDevice.recolored(reader), runTier: .privateCloudCompute), .keep)
         XCTAssertEqual(action(local, runTier: .privateCloudCompute, drawsSeriesLook: true), .keep)
 
-        // The book that upgrades its group's look keeps only its own design: a copy, even one
-        // without a model token that reads as Private Cloud Compute, is redesigned.
+        // The book that upgrades its group's look redesigns a copy without a model token, which
+        // reads as Private Cloud Compute whatever made its source. A copy with a model token
+        // follows the tier rule, so one from the run's tier stays and upgrades the look.
         func upgrading(_ design: SpineDesignV1, runTier: ModelTier) -> SavedDesignAction {
             design.action(
                 workItemHash: work, coverHash: cover, readerChoseCover: false, runTier: runTier,
@@ -277,7 +278,12 @@ final class SpineColorsTests: XCTestCase {
         let copy = design("series-reuse:12")
         XCTAssertEqual(action(copy, runTier: .privateCloudCompute), .keep)
         XCTAssertEqual(upgrading(copy, runTier: .onDevice), .redesign)
-        XCTAssertEqual(upgrading(design("series-reuse:4 model:local"), runTier: .local), .redesign)
+        XCTAssertTrue(copy.isUntrackedCopy)
+        XCTAssertEqual(upgrading(design("series-reuse:4 model:local"), runTier: .local), .keep)
+        let onDeviceCopy = design("series-reuse:4 model:apple/on-device")
+        XCTAssertFalse(onDeviceCopy.isUntrackedCopy)
+        XCTAssertEqual(upgrading(onDeviceCopy, runTier: .onDevice), .keep)
+        XCTAssertEqual(upgrading(onDeviceCopy, runTier: .privateCloudCompute), .redesign)
         XCTAssertEqual(upgrading(pcc, runTier: .privateCloudCompute), .keep)
         XCTAssertEqual(upgrading(copy.recolored(reader), runTier: .onDevice), .keep)
     }

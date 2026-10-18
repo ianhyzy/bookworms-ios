@@ -457,12 +457,14 @@ actor SpineWorker {
         }
         let cover = try await covers.fetch(book.coverCandidates)
         let fromChosenCover = cover.url == book.chosenCoverURL
-        // A saved design from another cover than the reader's choice gives way at any tier.
+        // A saved design from another cover than the reader's choice gives way at any tier, and
+        // so does an untracked copy on the book that upgrades its group's look, whose tier is
+        // unknown.
         let replacing =
             saved.map {
                 $0.comesFromAnotherCover(
                     than: cover.hash, readerChoseCover: readerChoseCover,
-                    fromChosenCover: fromChosenCover)
+                    fromChosenCover: fromChosenCover) || upgradesLook && $0.isUntrackedCopy
             } ?? false
         if !forced {
             switch (

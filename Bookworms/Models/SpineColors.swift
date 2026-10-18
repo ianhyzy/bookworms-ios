@@ -145,10 +145,10 @@ extension SpineDesignV1 {
     /// generator version, a recheck, or a run at the same or a weaker tier never replaces a
     /// model's choices. A design that awaits its font ranks below its tier, so a run at its tier
     /// designs the book again, and that design replaces it once the font downloads
-    /// (`outlasts(_:replacing:)`). A series copy (`isSeriesReuse`) never upgrades a look, so it
-    /// is redesigned instead: it reproduces a look or another book's design, perhaps the very
-    /// look it would replace, and a copy without a model token reads as Private Cloud Compute
-    /// whatever made its source.
+    /// (`outlasts(_:replacing:)`). A series copy without a model token (`isUntrackedCopy`) never
+    /// upgrades a look, so it is redesigned instead: it reads as Private Cloud Compute whatever
+    /// made its source, which may be the very look it would replace. A copy with a model token
+    /// follows the tier rule, and one that stays upgrades the look.
     func action(
         workItemHash: String, coverHash: String, readerChoseCover: Bool,
         fromChosenCover: Bool = false, runTier: ModelTier, drawsSeriesLook: Bool = false,
@@ -156,7 +156,7 @@ extension SpineDesignV1 {
     ) -> SavedDesignAction {
         let stays =
             generatedColors != nil || drawsSeriesLook
-            || (!isOutranked(by: runTier) && !(upgradesSeriesLook && isSeriesReuse))
+            || (!isOutranked(by: runTier) && !(upgradesSeriesLook && isUntrackedCopy))
         guard stays,
             !comesFromAnotherCover(
                 than: coverHash, readerChoseCover: readerChoseCover,
@@ -184,6 +184,14 @@ extension SpineDesignV1 {
     ) -> Bool {
         self.coverHash != coverHash
             && (readerChoseCover || fromChosenCover && generatedColors == nil)
+    }
+
+    /// Whether the design is a series copy (`isSeriesReuse`) without a model token, as copies
+    /// made before copies recorded their source's tier are, so its generator alone decides its
+    /// tier (`modelToken`), whatever model made its source.
+    var isUntrackedCopy: Bool {
+        isSeriesReuse
+            && provenance?.split(separator: " ").contains { $0.hasPrefix("model:") } != true
     }
 
     /// The `provenance` token that names the model that made this design, such as
