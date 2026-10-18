@@ -295,7 +295,8 @@ final class AppModel {
     /// refresh. Preview mode and a rejected login skip it.
     func syncSocial(force: Bool = false) async {
         guard !isPreview, account.isSignedIn, !account.needsReconnect,
-            let accountID = account.summary?.accountID, let token = account.accessToken()
+            let accountID = account.summary?.accountID,
+            let token = try? await account.accessToken()
         else { return }
         if force {
             await social.sync(token: token, accountID: accountID)
@@ -307,17 +308,13 @@ final class AppModel {
     /// Finds a public Hardcover reader by username and adds them to the readers to compare
     /// with (`SocialModel.lookUp(_:token:)`). Needs this iPhone's Hardcover sign-in.
     func lookUpReader(_ username: String) async throws -> ReaderProfile {
-        guard !isPreview, let token = account.accessToken() else {
-            throw HardcoverError.invalidToken
-        }
-        return try await social.lookUp(username, token: token)
+        guard !isPreview else { throw HardcoverError.invalidToken }
+        return try await account.withAccessToken { try await social.lookUp(username, token: $0) }
     }
 
     /// Downloads a chosen reader's library when the last refresh left it out.
     func downloadReader(_ id: Int) async {
-        guard !isPreview, let token = account.accessToken() else {
-            return
-        }
+        guard !isPreview, let token = try? await account.accessToken() else { return }
         await social.downloadIfMissing(id, token: token)
     }
 
@@ -338,9 +335,16 @@ final class AppModel {
 
     /// Reloads when the last load that returned a result is more than five minutes old or a
     /// saved design named a book the library lacks. Called when the app becomes active and when
-    /// a generation run ends. First writes any cache update that `apply(_:)` deferred, so a run's
-    /// designs reach the cache when it ends.
+    /// a generation run ends. On an iPhone, first reads the Hardcover login again if the
+    /// Keychain refused the last read (`HardcoverAccount.retryUnreadLogin()`). Then writes any
+    /// cache update that `apply(_:)` deferred, so a run's designs reach the cache when it ends.
     func reloadIfStale() async {
+        // On a Mac, a read can show a keychain prompt, which takes the app out of the
+        // foreground, so a read on each activation could ask again as soon as the reader
+        // declines. There, **Sync now** and the next launch read the login again.
+        #if !os(macOS)
+            account.retryUnreadLogin()
+        #endif
         if persistTask != nil { persist() }
         guard needsReload || lastReload.map({ -$0.timeIntervalSinceNow > 300 }) ?? true else {
             return
@@ -448,10 +452,9 @@ final class AppModel {
             if CoverPickerDebug.stubsExpiredLogin { throw HardcoverError.invalidToken }
             if CoverPickerDebug.stubsCovers { return CoverPickerDebug.covers(for: book) }
         #endif
-        guard account.isSignedIn, let token = KeychainSecret().read() else {
-            throw HardcoverError.invalidToken
+        return try await account.withAccessToken {
+            try await HardcoverClient().editionCovers(bookID: book.id, token: $0)
         }
-        return try await HardcoverClient().editionCovers(bookID: book.id, token: token)
     }
 
     /// Saves `cover` as `book`'s cover for the shown account, or deletes the choice when `cover`
