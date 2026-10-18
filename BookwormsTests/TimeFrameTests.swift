@@ -51,6 +51,11 @@ final class TimeFrameTests: XCTestCase {
         XCTAssertEqual(reread.readCount, 3)
         XCTAssertEqual(book(2, "2025-01-01").readCount, 1)
         XCTAssertEqual(book(3, nil).readCount, 0)
+        // An empty list counts as absent, so `finished` still places the book.
+        var empty = book(4, "2025-03-01")
+        empty.finishedDates = []
+        XCTAssertTrue(TimeFrame.year(2025).contains(empty))
+        XCTAssertEqual(empty.readCount, 1)
     }
 
     func testTitles() {

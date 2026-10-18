@@ -269,7 +269,7 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
     var finished: String? = nil
     /// Every finished read's date, newest first, in the format of `finished`. Archives and
     /// caches saved before rereads were fetched leave it out, and then `finished` is the only
-    /// read known.
+    /// read known; an empty list means the same.
     var finishedDates: [String]? = nil
     /// The reader's rating, 0...5 in half steps.
     var rating: Double? = nil
@@ -320,8 +320,12 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
     /// The finish date, parsed from `finished` at noon UTC so it lands on the same calendar day.
     var finishedDate: Date? { Self.day(finished) }
 
-    /// Every finish date as stored, newest first: `finishedDates`, else `finished` alone.
-    var finishes: [String] { finishedDates ?? finished.map { [$0] } ?? [] }
+    /// Every finish date as stored, newest first: `finishedDates`, else `finished` alone. An
+    /// empty `finishedDates` counts as absent, so a book with `finished` always has a finish.
+    var finishes: [String] {
+        if let finishedDates, !finishedDates.isEmpty { return finishedDates }
+        return finished.map { [$0] } ?? []
+    }
 
     /// How many times the reader finished the book.
     var readCount: Int { finishes.count }
