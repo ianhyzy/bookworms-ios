@@ -1182,6 +1182,18 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(
             BookAnalyzer.checked(neon, against: try composed("Oswald"))?.treatment, "plain")
         XCTAssertNil(BookAnalyzer.checked(nil, against: outlined))
+        // A serious book gets no themed face, whatever its lettering.
+        XCTAssertEqual(
+            BookAnalyzer.checked(neon, against: outlined, genres: ["History", "Classics"])?
+                .treatment, "plain")
+        let gothic = BookAnalyzer.LetteringReading(
+            handDrawn: false, serifs: true, treatment: "gothic broken strokes")
+        XCTAssertEqual(
+            BookAnalyzer.checked(gothic, against: nil, genres: ["political science"])?.treatment,
+            "plain")
+        XCTAssertEqual(
+            BookAnalyzer.checked(gothic, against: nil, genres: ["Fantasy"])?.treatment,
+            "gothic broken strokes")
     }
 
     func testTitleMeasurementSkipsVerticalLinesAndRowsBelowTheLine() throws {

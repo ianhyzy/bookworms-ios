@@ -360,7 +360,7 @@ actor BookAnalyzer {
                 Self.localFamilies(genres: book.genres, measured: lettering != nil)
             } else {
                 Self.families(
-                    for: Self.checked(reading, against: lettering),
+                    for: Self.checked(reading, against: lettering, genres: book.genres),
                     playful: await Self.isPlayful(book))
             }
         let candidates = Self.candidates(
@@ -507,17 +507,22 @@ actor BookAnalyzer {
         "western wood type", "dripping or distressed", "typewriter",
     ]
 
-    /// `reading` with an answer the measurements contradict taken back: "outlined or
-    /// multi-line neon" stands only for lettering with hairline strokes
-    /// (`TitleLettering.hasHairlineStrokes(_:atlas:)`). The on-device model gives that answer
-    /// for many solid titles on dark or busy covers.
+    /// `reading` with the answers taken back that the measurements or the book contradict.
+    ///
+    /// "Outlined or multi-line neon" stands only for lettering with hairline strokes
+    /// (`TitleLettering.hasHairlineStrokes(_:atlas:)`); the on-device model gives that answer for
+    /// many solid titles on dark or busy covers. A book whose `genres` mark it serious
+    /// (`genreTone(_:)`) keeps no special treatment, so it gets a typeset face that echoes the
+    /// lettering's serifs: themed display faces read as playful, as handwriting does.
     static func checked(
-        _ reading: LetteringReading?, against lettering: TitleLettering.Measurement?
+        _ reading: LetteringReading?, against lettering: TitleLettering.Measurement?,
+        genres: [String]? = nil
     ) -> LetteringReading? {
-        guard var reading, reading.treatment == "outlined or multi-line neon", let lettering,
-            !TitleLettering.hasHairlineStrokes(lettering)
-        else { return reading }
-        reading.treatment = "plain"
+        guard var reading else { return nil }
+        let unconfirmed =
+            reading.treatment == "outlined or multi-line neon"
+            && lettering.map { !TitleLettering.hasHairlineStrokes($0) } == true
+        if unconfirmed || genreTone(genres) == false { reading.treatment = "plain" }
         return reading
     }
 
