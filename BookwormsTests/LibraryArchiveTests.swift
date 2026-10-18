@@ -59,6 +59,12 @@ final class LibraryArchiveTests: XCTestCase {
         let ported = try JSONDecoder().decode(CloudLibraryArchive.self, from: spliced)
         XCTAssertEqual(
             ported.sources.first { $0.accountID == "42" }?.books.first?.readCount, 2)
+        // The reads survive the Apple TV's re-encoding too.
+        let reencoded = try JSONDecoder()
+            .decode(CloudLibraryArchive.self, from: try JSONEncoder().encode(archive))
+        XCTAssertEqual(
+            reencoded.sources.first { $0.accountID == "42" }?.books.first?.finishedDates,
+            ["2026-02-01", "2019-07-04"])
         XCTAssertEqual(
             ported.sources.first { $0.accountID == "42" }?.series?.first?.name, "The Stored Series")
         var withSeries = snapshot(accountID: "42", syncedAt: synced.addingTimeInterval(120))
