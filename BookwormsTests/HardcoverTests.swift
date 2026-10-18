@@ -232,6 +232,8 @@ final class HardcoverTests: XCTestCase {
             XCTAssertTrue(body.contains("description"))
             XCTAssertTrue(body.contains("ratings_distribution"))
             XCTAssertFalse(body.contains("review_raw"))
+            // Every finished read, in the same request.
+            XCTAssertTrue(body.contains("order_by: [{finished_at: desc}, {id: desc}]) {"))
             return Self.respond(200, Self.libraryPage, to: request)
         }
         let library = try await client.library(token: "fictional-token")
@@ -255,7 +257,7 @@ final class HardcoverTests: XCTestCase {
                             compilation: false, size: 12),
                     ],
                     pages: 336,
-                    finished: "2025-03-01",
+                    finished: "2025-03-01", finishedDates: ["2025-03-01", "2022-06-10"],
                     rating: 4.5, isRead: true, communityRating: 4.12, ratingsCount: 250,
                     ratingDistribution: [
                         RatingBucket(rating: 4, count: 120), RatingBucket(rating: 5, count: 130),
@@ -770,8 +772,8 @@ final class HardcoverTests: XCTestCase {
 
     private static let me = #"{"data":{"me":[{"id":4242,"username":"fictional_reader"}]}}"#
 
-    /// One fictional page: a finished book with an HTML review, a current read, a book on Want to
-    /// Read, and an older row for the first book that normalization drops.
+    /// One fictional page: a book read twice with an HTML review, a current read, a book on Want
+    /// to Read, and an older row for the first book that normalization drops.
     private static let libraryPage = """
         {"data":{"user_books":[
           {"status_id":3,"last_read_date":"2025-03-02","rating":4.5,
@@ -797,7 +799,8 @@ final class HardcoverTests: XCTestCase {
            "edition":null,
            "user_book_reads":[{"finished_at":"2025-03-01","edition":{"pages":336,"audio_seconds":null,
              "image":{"url":"https://covers.example.com/reader-101.jpg","width":800,"height":1200},
-             "reading_format":{"format":"Ebook"},"language":null}}],
+             "reading_format":{"format":"Ebook"},"language":null}},
+             {"finished_at":"2022-06-10","edition":null}],
            "current_read":[]},
           {"status_id":2,"last_read_date":null,"rating":null,"review":null,
            "book":{"id":202,"title":"Salt and Static","pages":400,"release_year":2024,

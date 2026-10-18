@@ -579,7 +579,7 @@ actor HardcoverClient {
             }
             edition { pages audio_seconds image { url width height } reading_format { format } language { code2 } }
             user_book_reads(where: {finished_at: {_is_null: false}},
-              order_by: [{finished_at: desc}, {id: desc}], limit: 1) {
+              order_by: [{finished_at: desc}, {id: desc}]) {
               finished_at edition { pages audio_seconds image { url width height } reading_format { format } language { code2 } }
             }
             current_read: user_book_reads(where: {finished_at: {_is_null: true}},
@@ -679,7 +679,8 @@ actor HardcoverClient {
     }
 
     /// Converts rows to books the way the Apple TV app does, keeping one row per book: the most
-    /// recently finished. `previous` holds the account's books from its last sync, by ID, whose
+    /// recently finished. A book keeps every finished read's date in `finishedDates`, and its
+    /// newest read's edition. `previous` holds the account's books from its last sync, by ID, whose
     /// covers stay fixed unless an upgrade applies
     /// (`coverURLs(edition:book:otherEditions:editionIsInLanguage:previous:)`).
     private static func normalize(_ rows: [LibraryPage.Row], previous: [Int: CloudBook] = [:])
@@ -689,6 +690,7 @@ actor HardcoverClient {
         for row in rows {
             let source = row.book
             let read = row.finishedReads?.first
+            let finishes = (row.finishedReads ?? []).compactMap(\.finishedAt)
             let edition = read?.edition ?? row.edition
             let author = (source.cachedContributors ?? [])
                 .filter { $0.contribution == nil || $0.contribution == "Author" }
@@ -732,10 +734,11 @@ actor HardcoverClient {
                 seriesName: seriesName?.isEmpty == false ? seriesName : nil,
                 seriesMemberships: memberships,
                 pages: edition?.pages ?? source.pages,
-                finished: read?.finishedAt ?? row.lastReadDate,
+                finished: finishes.first ?? row.lastReadDate,
+                finishedDates: finishes.isEmpty ? nil : finishes,
                 rating: row.rating, isReading: isReading ? true : nil,
                 // As the Apple TV marks read books: on the Read shelf, or finished at some point.
-                isRead: (row.statusID == readStatus || read?.finishedAt != nil
+                isRead: (row.statusID == readStatus || !finishes.isEmpty
                     || row.lastReadDate != nil) ? true : nil,
                 progress: isReading
                     ? progress(
