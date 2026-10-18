@@ -137,12 +137,6 @@ struct ShareStudioView: View {
             pinned: pins)
     }
 
-    /// The username the credit letters as a profile link: the sharer's, on **My reading**
-    /// images only, since a comparison letters it in its invitation.
-    private var creditUsername: String? {
-        renderedRequest?.readerID == nil ? model.social.owner?.username : nil
-    }
-
     /// The image the current options and library call for.
     private var request: RenderRequest {
         let frame = shownFrame
@@ -162,6 +156,8 @@ struct ShareStudioView: View {
             template: template, aspect: aspect, frame: frame, bookID: bookID,
             coverStyle: coverStyle, direction: direction, showsRatings: showsRatings, seed: seed,
             pins: pins, syncedAt: model.library?.syncedAt, readerID: reader?.id,
+            // A comparison letters the username in its invitation instead.
+            username: mode == .mine ? model.social.owner?.username : nil,
             socialRevision: mode == .friends ? model.social.revision : 0,
             hasScore: template == .tasteMatch && reader?.match?.score != nil,
             covers: books.map(\.coverCandidates.first), designs: designs, loadedFaces: loadedFaces)
@@ -387,8 +383,7 @@ struct ShareStudioView: View {
         }
     }
 
-    /// Opens the share sheet with the image. Only the shared file carries the credit, which on
-    /// a **My reading** image starts with the sharer's profile link.
+    /// Opens the share sheet with the image. Only the shared file carries the credit.
     ///
     /// A comparison's text invites its viewers to compare on Hardcover. A **My reading** image's
     /// text links its books and the sharer's profile (`HardcoverInvite.readingText`).
@@ -398,7 +393,7 @@ struct ShareStudioView: View {
         defer { isPreparing = false }
         do {
             let username = model.social.owner?.username
-            var shared = try await SharedFiles.images([image], username: creditUsername)
+            var shared = try await SharedFiles.images([image])
             shared.text =
                 renderedRequest?.readerID != nil
                 ? username.map(HardcoverInvite.shareText)
@@ -440,8 +435,7 @@ struct ShareStudioView: View {
                     try? await Task.sleep(for: .milliseconds(200))
                     settled = renderedRequest == request ? settled + 1 : 0
                 }
-                ShareDebug.write(
-                    image, name: "-" + entry.replacing(":", with: "_"), username: creditUsername)
+                ShareDebug.write(image, name: "-" + entry.replacing(":", with: "_"))
             }
         }
     #endif
@@ -864,7 +858,7 @@ struct ShareStudioView: View {
         var input = ShareInput(
             template: template, aspect: request.aspect, books: books, frame: request.frame,
             coverStyle: request.coverStyle, direction: request.direction,
-            showsRatings: request.showsRatings, seed: request.seed)
+            showsRatings: request.showsRatings, seed: request.seed, username: request.username)
         if let reader, let match = reader.match, let owner = model.social.owner {
             input.social = ShareSocial(owner: owner, reader: reader.profile, match: match)
             input.social?.avatars = await loadAvatars([owner, reader.profile])
@@ -877,7 +871,7 @@ struct ShareStudioView: View {
             do {
                 let pile = try await PileSnapshotRenderer.render(
                     books: books, title: input.period, aspect: request.aspect,
-                    seed: request.seed, model: model)
+                    seed: request.seed, username: request.username, model: model)
                 // A render cancelled after its last check still returns; a newer one is coming.
                 try Task.checkCancellation()
                 rendered = pile
@@ -909,7 +903,7 @@ struct ShareStudioView: View {
         failed = !request.isEmpty && rendered == nil
         renderedRequest = request
         #if DEBUG
-            ShareDebug.write(image, username: creditUsername)
+            ShareDebug.write(image)
             // `-BookwormsShareFullSize YES` shows each image full size, as holding the preview
             // does.
             if UserDefaults.standard.bool(forKey: "BookwormsShareFullSize"), let image {
@@ -959,6 +953,8 @@ private struct RenderRequest: Equatable {
     var syncedAt: Date?
     /// The reader a comparison draws with, or `nil` outside **With friends**.
     var readerID: Int?
+    /// The username a **My reading** image letters as a profile link (`ShareInput.username`).
+    var username: String?
     /// `SocialModel.revision` for a comparison, so new ratings redraw it.
     var socialRevision: Int
     /// Whether a Taste Match has a score, which it draws even without books to show.
@@ -1157,12 +1153,9 @@ private struct TopFivePinPicker: View {
     /// `-BookwormsShareBatch` renders a list of option sets in one launch
     /// (`ShareStudioView.renderBatch()`).
     enum ShareDebug {
-        /// Writes `image` as `share-debug<name>.png`, with the credit and `username`'s profile
-        /// link, as sharing exports it, in a launch with `-BookwormsShareTemplate` or
-        /// `-BookwormsShareBatch`.
-        @MainActor static func write(
-            _ image: ShareImage?, name: String = "", username: String? = nil
-        ) {
+        /// Writes `image` as `share-debug<name>.png`, with the credit, as sharing exports it, in
+        /// a launch with `-BookwormsShareTemplate` or `-BookwormsShareBatch`.
+        @MainActor static func write(_ image: ShareImage?, name: String = "") {
             let defaults = UserDefaults.standard
             guard let image,
                 defaults.string(forKey: "BookwormsShareTemplate") != nil
@@ -1171,8 +1164,7 @@ private struct TopFivePinPicker: View {
             let url = URL.cachesDirectory.appending(path: "Bookworms/share-debug\(name).png")
             try? FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? image.image.withShareCredit(username: username)?.pngData()?
-                .write(to: url, options: .atomic)
+            try? image.image.withShareCredit()?.pngData()?.write(to: url, options: .atomic)
         }
 
         @MainActor private static var switchesTabs = false

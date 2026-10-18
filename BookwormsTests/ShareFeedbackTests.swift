@@ -30,23 +30,16 @@ final class ShareFeedbackTests: XCTestCase {
     }
 
     /// The preview image has no credit; the shared PNG is the same image with the credit in its
-    /// bottom few pixels, with or without the sharer's profile link.
+    /// bottom few pixels.
     @MainActor
     func testSharedImageAddsTheCreditAtTheBottomEdgeOnly() async throws {
-        try await checkCredit(username: nil)
-        try await checkCredit(username: "fictional_reader")
-    }
-
-    @MainActor
-    private func checkCredit(username: String?) async throws {
         let book = CloudBook(
             id: 1, title: "Fictional Book", author: "An Author", coverURL: nil,
             detailCoverURL: nil, finished: "2025-03-15", rating: 4)
         let input = ShareInput(
             template: .justFinished, aspect: .story, books: [book], frame: .year(2025))
         let preview = try XCTUnwrap(input.render())
-        let files = try await SharedFiles.images(
-            [ShareImage(image: preview, name: "A/B")], username: username)
+        let files = try await SharedFiles.images([ShareImage(image: preview, name: "A/B")])
         let url = try XCTUnwrap(files.urls.first)
         XCTAssertEqual(files.urls.count, 1)
         XCTAssertEqual(url.lastPathComponent, "A-B.png")
@@ -56,21 +49,63 @@ final class ShareFeedbackTests: XCTestCase {
         XCTAssertEqual(exported.width, 1080)
         XCTAssertEqual(exported.height, 1920)
         // The credit's text ends about 10 pixels above the edge and stands about 30 tall.
-        let creditTop = exported.height - 48
-        var changedAbove = 0
-        var changedInCredit = 0
-        for index in stride(from: 0, to: original.bytes.count, by: 4) {
-            let difference = (0..<3)
-                .map {
-                    abs(Int(original.bytes[index + $0]) - Int(exported.bytes[index + $0]))
-                }
-                .max()!
-            let row = index / 4 / exported.width
-            if row < creditTop, difference > 2 { changedAbove += 1 }
-            if row >= creditTop, difference > 30 { changedInCredit += 1 }
+        let changes = Self.changedRows(original, exported, in: (1920 - 48)..<1920)
+        XCTAssertEqual(changes.outside, 0)
+        XCTAssertGreaterThan(changes.inside, 1000)
+    }
+
+    /// A **My reading** image letters the profile link in its bottom margin and nowhere else: on
+    /// a Story above the bottom 150 pixels, which the platforms' reply bar may cover, and on
+    /// Portrait above the credit's strip. The longest username fits the width.
+    @MainActor
+    func testProfileLinkSitsInTheBottomMarginAboveTheReplyBar() throws {
+        let book = CloudBook(
+            id: 1, title: "Fictional Book", author: "An Author", coverURL: nil,
+            detailCoverURL: nil, finished: "2025-03-15", rating: 4, review: "A fictional review.")
+        let bands: [(ShareAspect, Range<Int>)] = [(.story, 1690..<1770), (.portrait, 1262..<1310)]
+        for (aspect, band) in bands {
+            // Review stays within `ShareAspect.insets`, so the link alone changes the image.
+            var input = ShareInput(
+                template: .review, aspect: aspect, books: [book], frame: .year(2025))
+            let plain = try Self.pixels(XCTUnwrap(input.render()?.cgImage))
+            input.username = "fictional_reader"
+            let linked = try Self.pixels(XCTUnwrap(input.render()?.cgImage))
+            let changes = Self.changedRows(plain, linked, in: band)
+            XCTAssertEqual(changes.outside, 0, aspect.title)
+            XCTAssertGreaterThan(changes.inside, 1000, aspect.title)
         }
-        XCTAssertEqual(changedAbove, 0, username ?? "no username")
-        XCTAssertGreaterThan(changedInCredit, 1000, username ?? "no username")
+
+        // Cards that reach into a story's bottom strip leave the link its room.
+        var input = ShareInput(template: .topFive, aspect: .story, books: [book])
+        XCTAssertEqual(input.reachingInsets.bottom, 150)
+        input.username = "fictional_reader"
+        XCTAssertEqual(input.reachingInsets.bottom, 150 + ShareProfileLink.storyHeight)
+
+        let longest = HardcoverInvite.link(String(repeating: "W", count: 40))
+        let font = UIFont.systemFont(ofSize: ShareProfileLink.fontSize, weight: .semibold)
+        let width = (longest as NSString).size(withAttributes: [.font: font]).width
+        XCTAssertLessThanOrEqual(width * ShareProfileLink.minimumScale, 1080 - 2 * 64)
+    }
+
+    /// How many pixels differ between `before` and `after`: by more than 30 inside the rows
+    /// `rows`, where text draws, and by more than 2 outside them.
+    private static func changedRows(
+        _ before: (bytes: [UInt8], width: Int, height: Int),
+        _ after: (bytes: [UInt8], width: Int, height: Int), in rows: Range<Int>
+    ) -> (inside: Int, outside: Int) {
+        var inside = 0
+        var outside = 0
+        for index in stride(from: 0, to: before.bytes.count, by: 4) {
+            let difference = (0..<3)
+                .map { abs(Int(before.bytes[index + $0]) - Int(after.bytes[index + $0])) }
+                .max()!
+            if rows.contains(index / 4 / before.width) {
+                if difference > 30 { inside += 1 }
+            } else if difference > 2 {
+                outside += 1
+            }
+        }
+        return (inside, outside)
     }
 
     /// `image` drawn into an sRGB RGBA context, so that two images compare byte for byte.

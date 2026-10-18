@@ -240,18 +240,12 @@ enum ShareAspect: String, CaseIterable, Identifiable {
 
     /// How far a story card's content may reach below `insets` into the bottom strip, in pixels:
     /// to y 1770, which leaves the bottom 150 pixels to the platforms' reply bar and the credit.
+    /// A card that letters a profile link reaches less (`ShareInput.reach`).
     ///
-    /// A card that pads with `reachingInsets` widens its gaps by exactly this height in all, so
-    /// its covers and text keep the sizes that `insets` gives them. Portrait and Square reach no
-    /// further than `insets`.
+    /// A card that pads with `ShareInput.reachingInsets` widens its gaps by exactly its reach in
+    /// all, so its covers and text keep the sizes that `insets` gives them. Portrait and Square
+    /// reach no further than `insets`.
     var reach: CGFloat { self == .story ? 100 : 0 }
-
-    /// `insets` with `reach` taken off the bottom margin.
-    var reachingInsets: EdgeInsets {
-        var insets = insets
-        insets.bottom -= reach
-        return insets
-    }
 }
 
 /// Everything a share card draws, resolved before rendering.
@@ -276,6 +270,22 @@ struct ShareInput {
     var social: ShareSocial?
     /// Varies tilts, offsets, and lengths.
     var seed: UInt64 = 0
+    /// The sharer's Hardcover username, which a **My reading** image letters as a profile link
+    /// in its bottom margin (`ShareProfileLink`), or `nil` for none.
+    var username: String?
+
+    /// How far the card's content may reach into a story's bottom strip (`ShareAspect.reach`),
+    /// less the room that the profile link takes there.
+    var reach: CGFloat {
+        username == nil ? aspect.reach : max(0, aspect.reach - ShareProfileLink.storyHeight)
+    }
+
+    /// `aspect.insets` with `reach` taken off the bottom margin.
+    var reachingInsets: EdgeInsets {
+        var insets = aspect.insets
+        insets.bottom -= reach
+        return insets
+    }
 
     func look(for book: CloudBook) -> SpineLook {
         looks[book.id] ?? SpineLook(book: book, design: nil, face: nil)
@@ -328,6 +338,11 @@ struct ShareCanvas: View {
             }
         }
         .frame(width: input.aspect.size.width, height: input.aspect.size.height)
+        .overlay(alignment: .bottom) {
+            if let username = input.username {
+                ShareProfileLink(username: username, aspect: input.aspect)
+            }
+        }
         .clipped()
         // Exports keep one appearance whatever the system setting.
         .environment(\.colorScheme, .dark)
@@ -339,50 +354,59 @@ struct ShareCanvas: View {
 /// The quiet credit that every exported share image and video carries at its bottom edge, in
 /// the bottom margin that every card keeps free of content, which on a story is the bottom 150
 /// pixels (`ShareAspect.reach`). Previews in the app leave it out.
-///
-/// With a `username`, the credit starts with the sharer's Hardcover profile link, such as
-/// "hardcover.app/@sam", in brighter, slightly larger type on the same line.
 struct ShareCredit: View {
     /// The strip at the bottom of an export that the credit and its shadow take, in pixels,
-    /// which an in-app preview of a video leaves out. Videos carry no profile link, which
-    /// would make the strip a few pixels taller.
+    /// which an in-app preview of a video leaves out.
     nonisolated static let height: CGFloat = 40
 
-    /// The sharer's Hardcover username, or `nil` for the credit alone.
-    var username: String?
+    var body: some View {
+        Text("Created with Bookworms for \(ThisDevice.name)")
+            .font(.system(size: 22, weight: .medium))
+            .foregroundStyle(ShareStyle.cream.color.opacity(0.5))
+            .shadow(color: .black.opacity(0.35), radius: 3)
+            .padding(.bottom, 10)
+    }
+}
+
+/// The sharer's Hardcover profile link, such as "hardcover.app/@sam", that **My reading** and
+/// **Share desk** images letter in their bottom margin, a little brighter and larger than the
+/// credit.
+///
+/// On a story, the link sits above the bottom 150 pixels, which the platforms' reply bar may
+/// cover, in the `storyHeight` that cards reaching into the bottom strip leave it
+/// (`ShareInput.reach`). On Portrait and Square, it sits just above the credit's strip.
+struct ShareProfileLink: View {
+    /// The room the link takes above a story's bottom 150 pixels, in pixels.
+    nonisolated static let storyHeight: CGFloat = 80
+    static let fontSize: CGFloat = 26
+    /// How far a long link shrinks to fit the width. The longest username, 40 wide letters,
+    /// fits at about 80 percent.
+    static let minimumScale: CGFloat = 0.7
+
+    let username: String
+    let aspect: ShareAspect
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            if let username {
-                Text(HardcoverInvite.link(username))
-                    .font(.system(size: 26, weight: .semibold))
-                    .foregroundStyle(ShareStyle.cream.color.opacity(0.85))
-                Text("·")
-            }
-            Text("Created with Bookworms for \(ThisDevice.name)")
-        }
-        .font(.system(size: 22, weight: .medium))
-        .foregroundStyle(ShareStyle.cream.color.opacity(0.5))
-        .lineLimit(1)
-        .minimumScaleFactor(0.8)
-        .shadow(color: .black.opacity(0.35), radius: 3)
-        .padding(.horizontal, 64)
-        .padding(.bottom, 10)
+        Text(HardcoverInvite.link(username))
+            .font(.system(size: Self.fontSize, weight: .semibold))
+            .foregroundStyle(ShareStyle.cream.color.opacity(0.85))
+            .lineLimit(1)
+            .minimumScaleFactor(Self.minimumScale)
+            .shadow(color: .black.opacity(0.35), radius: 3)
+            .padding(.horizontal, aspect.insets.leading)
+            // On a story, 8 pixels above the bottom 150.
+            .padding(.bottom, aspect == .story ? 150 + 8 : ShareCredit.height + 4)
     }
 }
 
 extension UIImage {
     /// This image with `ShareCredit` at its bottom edge, at the same size and scale, or `nil`
     /// when it cannot be drawn. Every share image gets its credit here on its way out of the
-    /// app, so a preview of the image alone matches the export everywhere else. A `username`
-    /// adds the sharer's profile link to the credit.
+    /// app, so a preview of the image alone matches the export everywhere else.
     @MainActor
-    func withShareCredit(username: String? = nil) -> UIImage? {
+    func withShareCredit() -> UIImage? {
         let renderer = ImageRenderer(
-            content: Image(uiImage: self)
-                .overlay(alignment: .bottom) {
-                    ShareCredit(username: username)
-                })
+            content: Image(uiImage: self).overlay(alignment: .bottom) { ShareCredit() })
         renderer.scale = scale
         renderer.isOpaque = true
         return renderer.uiImage

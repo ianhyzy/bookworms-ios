@@ -38,7 +38,8 @@ enum PileSnapshotRenderer {
     static var isRendering: Bool { activity.isRendering }
 
     /// Renders `books` spread front cover up across the table under the heading `title`, at the
-    /// pixel size of `aspect`.
+    /// pixel size of `aspect`, with `username`'s profile link in the bottom margin
+    /// (`ShareProfileLink`) when there is one.
     ///
     /// Past `maximumBooks`, only the first books show, and the heading still counts every book.
     /// The books lie as `PileSpread` lays them out, so that at least four fifths of each front
@@ -56,7 +57,8 @@ enum PileSnapshotRenderer {
     /// - Throws: `CancellationError` when the task is cancelled, and `PileSnapshotError` when
     ///   Metal fails or the rendered frame is one flat color.
     static func render(
-        books: [CloudBook], title: String, aspect: ShareAspect, seed: UInt64, model: AppModel
+        books: [CloudBook], title: String, aspect: ShareAspect, seed: UInt64,
+        username: String? = nil, model: AppModel
     ) async throws -> UIImage {
         try await claim()
         defer { release() }
@@ -65,7 +67,8 @@ enum PileSnapshotRenderer {
         let pile = try await renderPile(shown, layout: layout, seed: seed, model: model)
         let renderer = ImageRenderer(
             content: PileSnapshotCard(
-                pile: pile, title: title, count: books.count, layout: layout, showsCredit: false))
+                pile: pile, title: title, count: books.count, layout: layout, showsCredit: false,
+                username: username))
         renderer.scale = 1
         renderer.isOpaque = true
         guard let image = renderer.uiImage else { throw PileSnapshotError.drawingFailed }
@@ -372,6 +375,9 @@ struct PileSnapshotCard: View {
     /// Whether the card draws `ShareCredit`. A still image leaves it out so its preview shows
     /// none, and sharing adds it (`UIImage.withShareCredit()`).
     var showsCredit = true
+    /// The sharer's Hardcover username, which a still image letters as a profile link
+    /// (`ShareProfileLink`). Videos leave it out.
+    var username: String?
 
     /// The darker end of `ShelfPalette.wall`.
     private static let walnut = Color(red: 0.11, green: 0.078, blue: 0.055)
@@ -421,6 +427,11 @@ struct PileSnapshotCard: View {
             }
             .overlay(alignment: .bottom) {
                 if showsCredit { ShareCredit() }
+            }
+            .overlay(alignment: .bottom) {
+                if let username {
+                    ShareProfileLink(username: username, aspect: layout.aspect)
+                }
             }
             .environment(\.colorScheme, .dark)
     }
