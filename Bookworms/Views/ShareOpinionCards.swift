@@ -49,7 +49,7 @@ struct ReviewCard: View {
                 }
             }
             .foregroundStyle(ShareStyle.cream.color)
-            .padding(aspect.reachingInsets)
+            .padding(aspect.insets)
         }
     }
 
@@ -59,10 +59,7 @@ struct ReviewCard: View {
         let aspect = input.aspect
         let look = input.look(for: book)
         let theme = input.theme
-        // A story's content reaches into its bottom strip (`ShareAspect.reach`), and the gap
-        // takes all of that height, so the cover and the text keep the sizes that
-        // `ShareAspect.insets` gives them.
-        return VStack(alignment: .leading, spacing: (aspect == .story ? 64 : 40) + aspect.reach) {
+        return VStack(alignment: .leading, spacing: aspect == .story ? 64 : 40) {
             HStack(spacing: 44) {
                 ShareCover(
                     book: book, look: look, cover: input.covers[book.id],
