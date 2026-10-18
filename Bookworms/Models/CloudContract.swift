@@ -336,7 +336,8 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
 
     /// The book as of its newest finish that `isIncluded` accepts, with `finished` set to that
     /// finish, or `nil` when it accepts none. A time frame shows a reread by its read within the
-    /// frame, so its order and labels use that read.
+    /// frame, so its order and labels use that read. The copy is for display only: its
+    /// `finished` may no longer equal `finishedDates.first`, so never save or upload it.
     func asFinished(where isIncluded: (Date) -> Bool) -> CloudBook? {
         guard let finish = finishes.filter({ Self.day($0).map(isIncluded) == true }).max() else {
             return nil
