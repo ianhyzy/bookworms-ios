@@ -78,6 +78,7 @@ struct SpineCarousel: View {
 
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("BookwormsStackStyle") private var style = StackStyle.flat
 
     /// Shelved books nearly touch, so their spines read as separate books.
@@ -137,10 +138,12 @@ struct SpineCarousel: View {
     /// (`CenterTracking`).
     ///
     /// On the Mac, the stacks keep room at their outer ends (`StackArrangement.layout`), so a
-    /// book pulled from the stack beside the sidebar or the window's edge stays in view.
+    /// book pulled from the stack beside the sidebar or the window's edge stays in view. With
+    /// Reduce Motion, a tap opens the details without pulling a book, so the stacks keep none.
     private func stack(in size: CGSize) -> some View {
         let (columns, arrangement, room) = StackArrangement.layout(
-            in: size, books: books.count, style: style)
+            in: size, books: books.count, style: style,
+            keepsRoom: StackArrangement.keepsPullRoom && !reduceMotion)
         // Where each run starts; the first `books.count % columns` runs take one more book.
         let bound = { ($0 * books.count + columns - 1) / columns }
         let runs = (0..<columns).map { Array(books[bound($0)..<bound($0 + 1)]) }
