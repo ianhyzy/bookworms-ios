@@ -184,10 +184,7 @@ actor GoogleFonts {
             list.map { ($0.family, $0.isOpenSource != false) }, uniquingKeysWith: { $0 && $1 })
     }
 
-    /// Downloads one font file and its license.
-    ///
-    /// Prefers the static file named for `weight`, then the variable font, then the static file
-    /// whose named weight is nearest `weight`.
+    /// Downloads one font file and its license, the file `fileName(for:in:)` chooses.
     private func fetchFile(
         family: String, weight: Int, into directory: URL, file: URL
     ) async throws {
@@ -219,37 +216,11 @@ actor GoogleFonts {
             license.contents.contains("SIL OPEN FONT LICENSE")
                 || license.contents.contains("Apache License")
         else { throw CompanionError.invalidDesign }
-        let names = [
-            100: "Thin", 200: "ExtraLight", 300: "Light", 400: "Regular", 500: "Medium",
-            600: "SemiBold", 700: "Bold", 800: "ExtraBold", 900: "Black",
-        ]
-        let weightsByName = Dictionary(uniqueKeysWithValues: names.map { ($1, $0) })
         let candidates = manifest.fileRefs.filter {
             $0.filename.hasSuffix(".ttf") && !$0.filename.contains("Italic")
         }
-        // Static files carry their weight as a suffix, such as "Lato-Light.ttf". An equally near
-        // pair resolves to the heavier file above 500 and to the lighter one otherwise.
-        let nearestStatic =
-            candidates
-            .compactMap { reference -> (reference: Download.Manifest.Reference, weight: Int)? in
-                let stem = reference.filename.dropLast(".ttf".count)
-                guard let suffix = stem.split(separator: "-").last,
-                    let fileWeight = weightsByName[String(suffix)]
-                else { return nil }
-                return (reference, fileWeight)
-            }
-            .min { lhs, rhs in
-                let left = abs(lhs.weight - weight)
-                let right = abs(rhs.weight - weight)
-                if left != right { return left < right }
-                return weight > 500 ? lhs.weight > rhs.weight : lhs.weight < rhs.weight
-            }
-        let variable = candidates.first {
-            $0.filename.contains("[") || $0.filename.contains("VariableFont")
-        }
-        let exact = nearestStatic?.weight == weight ? nearestStatic?.reference : nil
-        guard
-            let source = exact ?? variable ?? nearestStatic?.reference ?? candidates.first,
+        let chosen = Self.fileName(for: weight, in: candidates.map(\.filename))
+        guard let source = candidates.first(where: { $0.filename == chosen }),
             source.url.scheme == "https", source.url.host == "fonts.gstatic.com"
         else { throw CompanionError.invalidDesign }
         let fontData = try await fetch(source.url)
@@ -258,6 +229,44 @@ actor GoogleFonts {
             to: directory.appending(path: "LICENSE.txt"), atomically: true, encoding: .utf8)
         // Write the font last: its presence marks the cache entry complete.
         try fontData.write(to: file, options: .atomic)
+    }
+
+    /// Returns the font file to download for `weight` from a family's upright `.ttf` file
+    /// names: the static file of that weight, else the variable file, else the static file of
+    /// the nearest weight, else the first file.
+    ///
+    /// A static file names its weight as a suffix, such as "Lato-Light.ttf". Of two equally near
+    /// static files, a weight above 500 takes the heavier and any other the lighter. Some
+    /// families ship width variants beside their regular files, named before the weight, such
+    /// as "NotoSans_ExtraCondensed-Bold.ttf"; `TitleLettering` ranks the regular width, so a
+    /// width variant is chosen only when the family has no other file of that weight.
+    static func fileName(for weight: Int, in names: [String]) -> String? {
+        let weights = [
+            "Thin": 100, "ExtraLight": 200, "Light": 300, "Regular": 400, "Medium": 500,
+            "SemiBold": 600, "Bold": 700, "ExtraBold": 800, "Black": 900,
+        ]
+        let widths = ["Condensed", "Expanded", "Narrow", "Wide", "Compressed"]
+        func isWidthVariant(_ name: String) -> Bool { widths.contains { name.contains($0) } }
+        let ordered = names.sorted { lhs, rhs in
+            isWidthVariant(lhs) != isWidthVariant(rhs) ? !isWidthVariant(lhs) : lhs < rhs
+        }
+        let nearestStatic =
+            ordered
+            .compactMap { name -> (name: String, weight: Int)? in
+                guard let style = name.dropLast(".ttf".count).split(separator: "-").last,
+                    let fileWeight = weights[String(style)]
+                else { return nil }
+                return (name, fileWeight)
+            }
+            .min { lhs, rhs in
+                let left = abs(lhs.weight - weight)
+                let right = abs(rhs.weight - weight)
+                if left != right { return left < right }
+                return weight > 500 ? lhs.weight > rhs.weight : lhs.weight < rhs.weight
+            }
+        if let nearestStatic, nearestStatic.weight == weight { return nearestStatic.name }
+        let variable = ordered.first { $0.contains("[") || $0.contains("VariableFont") }
+        return variable ?? nearestStatic?.name ?? ordered.first
     }
 
     private func fetch(_ url: URL) async throws -> Data {

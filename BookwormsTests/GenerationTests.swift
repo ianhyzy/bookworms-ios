@@ -275,6 +275,25 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(try outage(429, retryAfter: "Fri, 31 Dec 2100 23:59:59 GMT"), cap)
     }
 
+    func testFontFilesPreferTheWeightThenTheRegularWidth() {
+        let noto = [
+            "NotoSans[wdth,wght].ttf", "static/NotoSans_Condensed-Bold.ttf",
+            "static/NotoSans_ExtraCondensed-Bold.ttf", "static/NotoSans-Bold.ttf",
+            "static/NotoSans-Regular.ttf",
+        ]
+        XCTAssertEqual(GoogleFonts.fileName(for: 700, in: noto), "static/NotoSans-Bold.ttf")
+        XCTAssertEqual(GoogleFonts.fileName(for: 500, in: noto), "NotoSans[wdth,wght].ttf")
+        let lato = ["Lato-Light.ttf", "Lato-Regular.ttf", "Lato-Bold.ttf"]
+        XCTAssertEqual(GoogleFonts.fileName(for: 500, in: lato), "Lato-Regular.ttf")
+        XCTAssertEqual(GoogleFonts.fileName(for: 600, in: lato), "Lato-Bold.ttf")
+        // A family whose own name is narrow has only such files.
+        let archivo = ["static/ArchivoNarrow-Regular.ttf", "static/ArchivoNarrow-Bold.ttf"]
+        XCTAssertEqual(GoogleFonts.fileName(for: 700, in: archivo), "static/ArchivoNarrow-Bold.ttf")
+        let condensed = ["static/LeagueGothic_Condensed-Regular.ttf"]
+        XCTAssertEqual(GoogleFonts.fileName(for: 500, in: condensed), condensed[0])
+        XCTAssertNil(GoogleFonts.fileName(for: 400, in: []))
+    }
+
     func testSavedRunOutcomeSurvivesRelaunchUntilItsRetryDatePasses() throws {
         var snapshot = WorkerSnapshot()
         snapshot.isRunning = true
