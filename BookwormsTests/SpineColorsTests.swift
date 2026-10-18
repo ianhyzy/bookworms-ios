@@ -156,7 +156,7 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertEqual(fromChosen(edited, cover: otherCover), .keep)
 
         // A book that draws its series' look keeps a weaker tier's design, since a redesign
-        // would not change its spine, and moves it to new hashes.
+        // would not change its spine, and moves it to a new work-item hash.
         let foreign = design(generator: CloudContract.macGeneratorVersion)
         XCTAssertEqual(
             foreign.action(
@@ -203,8 +203,8 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertEqual(
             action(design(provenance: "model:openai/gpt-6-luna"), runTier: .backup), .keep)
 
-        // A same-tier run keeps a design whose book's metadata or cover image changed, saving it
-        // under the new hashes with its generator, date, colors, font, and tokens.
+        // A same-tier run keeps a design whose book's metadata changed, saving it under the new
+        // work-item hash with its cover hash, generator, date, colors, font, and tokens.
         guard case .save(let moved) = action(companion, runTier: .onDevice, work: otherWork)
         else { return XCTFail("The design should move to the new work-item hash") }
         XCTAssertEqual(moved.workItemHash, otherWork)

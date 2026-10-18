@@ -458,9 +458,9 @@ final class GenerationTests: XCTestCase {
 
     /// A run keeps an earlier generator's Private Cloud Compute design, which no tier outranks,
     /// after the book's title changes to one its face can't letter: the design stays under its
-    /// old hashes, with no cover download or model request, and the ledger doesn't queue the
-    /// book again. The cover's host is one that `CoverURLPolicy` refuses, so a download attempt
-    /// would fail the book.
+    /// old work-item hash, with no cover download or model request, and the ledger doesn't queue
+    /// the book again. The cover's host is one that `CoverURLPolicy` refuses, so a download
+    /// attempt would fail the book.
     func testRunsKeepADesignWhoseFaceCannotLetterTheNewTitle() async throws {
         let folder = FileManager.default.temporaryDirectory
             .appending(path: "bookworms-renamed-\(UUID().uuidString)")

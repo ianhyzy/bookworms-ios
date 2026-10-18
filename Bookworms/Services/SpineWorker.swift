@@ -440,8 +440,8 @@ actor SpineWorker {
                 }
             }
             // A design moves to a new title or author only when its face letters them. Otherwise
-            // it stays under its old hashes, which the iPhone and Mac still draw on its book and
-            // the Apple TV ignores.
+            // it stays under its old work-item hash, which the iPhone and Mac still draw on its
+            // book and the Apple TV ignores.
             if case .save(let moved) = result, moved.workItemHash != saved.workItemHash,
                 !(try await analyzer.letters(book, with: saved.withAllowedFont))
             {
