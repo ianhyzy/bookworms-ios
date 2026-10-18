@@ -638,18 +638,18 @@ actor BookAnalyzer {
     }
 
     /// Whether `genres` mark a book playful (`true`) or serious (`false`), or `nil` when they
-    /// don't say. Lowercased substrings decide, in this order: a children's genre, such as
-    /// "Juvenile Fiction" or "Picture Books", is playful; nonfiction, memoir, biography,
+    /// don't say. Lowercased substrings decide, in this order: nonfiction, memoir, biography,
     /// history, politics, the social sciences, philosophy, essays, business, or literary
-    /// fiction is serious, even with a humor genre beside it; and humor, satire, or comedy is
-    /// playful. A "science" genre other than science fiction counts as nonfiction. Comics and
+    /// fiction is serious; then a children's genre, such as "Juvenile Fiction" or "Picture
+    /// Books", or humor, satire, or comedy is playful. A "science" genre other than science
+    /// fiction counts as nonfiction. Hardcover's genres are reader tags, so one stray tag, such
+    /// as "Juvenile Fiction" on a political novel, can't make a serious book playful. Comics and
     /// graphic novels say nothing either way, since many are as dark as any novel.
     static func genreTone(_ genres: [String]?) -> Bool? {
         let genres = (genres ?? []).map { $0.lowercased() }
         func any(_ names: [String]) -> Bool {
             genres.contains { genre in names.contains { genre.contains($0) } }
         }
-        if any(["children", "juvenile", "picture book", "middle grade"]) { return true }
         // Stems such as "politi" and "philosoph" also match genres in French and Spanish.
         if any([
             "nonfiction", "non-fiction", "memoir", "biograph", "history", "politi",
@@ -658,7 +658,12 @@ actor BookAnalyzer {
         ]) || genres.contains(where: { $0.contains("science") && !$0.contains("fiction") }) {
             return false
         }
-        if any(["humor", "humour", "satire", "comedy"]) { return true }
+        if any([
+            "children", "juvenile", "picture book", "middle grade", "humor", "humour", "satire",
+            "comedy",
+        ]) {
+            return true
+        }
         return nil
     }
 

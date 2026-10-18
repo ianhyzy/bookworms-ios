@@ -1038,8 +1038,16 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(BookAnalyzer.genreTone(["Biography & Autobiography"]), false)
         XCTAssertEqual(BookAnalyzer.genreTone(["Science", "Health"]), false)
         XCTAssertEqual(BookAnalyzer.genreTone(["Science Fiction", "Politique"]), false)
-        // Children's books are playful whatever else their genres say.
-        XCTAssertEqual(BookAnalyzer.genreTone(["Juvenile Nonfiction", "Young Adult"]), true)
+        // Children's books are playful unless a serious genre says otherwise: reader tags such
+        // as "Juvenile Fiction" also land on serious books.
+        XCTAssertEqual(BookAnalyzer.genreTone(["Middle Grade", "Fantasy", "Animals"]), true)
+        XCTAssertEqual(BookAnalyzer.genreTone(["Picture Books"]), true)
+        XCTAssertEqual(BookAnalyzer.genreTone(["Juvenile Nonfiction", "Young Adult"]), false)
+        let dispossessed = [
+            "Science Fiction", "Fantasy", "Anarchism", "Classique", "Politique", "Philosophie",
+            "Juvenile Fiction", "Literary",
+        ]
+        XCTAssertEqual(BookAnalyzer.genreTone(dispossessed), false)
         // Without a telling genre, the on-device model decides.
         XCTAssertNil(BookAnalyzer.genreTone(["Science Fiction", "Space Opera"]))
         XCTAssertNil(BookAnalyzer.genreTone(["Comics", "Dystopian", "Graphic Novels"]))
