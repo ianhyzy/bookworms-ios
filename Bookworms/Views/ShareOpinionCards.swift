@@ -122,7 +122,7 @@ struct HotTakesCard: View {
                     ShareInviteLine(username: social.owner.username)
                 }
                 .foregroundStyle(ShareStyle.cream.color)
-                .padding(input.aspect.reachingInsets)
+                .padding(input.aspect.insets)
             } else {
                 takes
                     .foregroundStyle(ShareStyle.cream.color)
@@ -180,8 +180,13 @@ struct HotTakesCard: View {
     /// The gaps under the heading and between the rows share it evenly, or for a single take,
     /// the four gaps under the heading, under the cover, and above the difference and the
     /// ratings.
+    ///
+    /// Compared with another reader, the card stays within `ShareAspect.insets` and adds
+    /// nothing, so its invitation and profile link sit where Taste Match and Book Swap put theirs.
     private var extra: CGFloat {
-        input.aspect.reach / CGFloat(input.books.count == 1 ? 4 : max(1, input.books.count))
+        guard input.social == nil else { return 0 }
+        return input.aspect.reach
+            / CGFloat(input.books.count == 1 ? 4 : max(1, input.books.count))
     }
 
     /// The tallest a take's row grows, so two takes do not turn into posters.
