@@ -449,16 +449,50 @@ actor BookAnalyzer {
     }
 
     /// Cloth from the ground behind the cover's title and ink from its lettering, or, without a
-    /// measurable title, the most common cover color with black or white ink. `design` then
-    /// moves them in lightness only as far as contrast needs.
+    /// measurable title, from the most common cover color, kept to the house style.
+    ///
+    /// Cloth and accent keep their hue at no more chroma than dyed cloth or paper shows
+    /// (`muted(_:)`), so nothing is neon. Dark ink goes only on light cloth, never on a
+    /// mid-tone or saturated one. The title's own ink stays when it is a deliberate color with
+    /// the right polarity that already reads on the cloth; any other ink is near-black or
+    /// near-white with a trace of its hue. `design` then moves them in lightness only as far as
+    /// contrast needs, darkening mid-tone cloth under light ink.
     static func choice(
         _ lettering: TitleLettering.Measurement?, palette: [ColorValue], weight: Int
     ) -> DesignChoice {
-        let background = lettering?.ground ?? palette[0]
+        let ground = lettering?.ground ?? palette[0]
+        let background = muted(ground)
+        let darkInk = SpineContrast.lab(background).l >= 0.72
+        let hue = lettering.map { muted($0.ink) } ?? background
+        let titleInk = SpineContrast.lab(hue)
+        let ink: ColorValue
+        if lettering != nil, hypot(titleInk.a, titleInk.b) >= 0.08,
+            (titleInk.l < 0.5) == darkInk,
+            SpineContrast.resolve(foreground: hue, background: background, minimumLc: 75)
+                == (hue, background)
+        {
+            ink = hue
+        } else {
+            // A trace of the ink's hue keeps black and white from looking printed on.
+            let scale = min(1, 0.02 / max(hypot(titleInk.a, titleInk.b), 1e-9))
+            ink = SpineContrast.color(
+                SpineContrast.Lab(
+                    l: darkInk ? 0.2 : 0.96, a: titleInk.a * scale, b: titleInk.b * scale))
+        }
         return DesignChoice(
-            background: background,
-            ink: lettering?.ink ?? CoverPalette.readableForeground(for: background),
-            accent: palette.first { $0 != background } ?? background, weight: weight)
+            background: background, ink: ink,
+            accent: muted(palette.first { $0 != ground } ?? ground), weight: weight)
+    }
+
+    /// `color` with its OKLCH chroma capped as on dyed bookcloth: up to 0.12 at mid and dark
+    /// lightness, falling to 0.05 at a paper-light 0.9, so bright colors become pastels.
+    static func muted(_ color: ColorValue) -> ColorValue {
+        let lab = SpineContrast.lab(color)
+        let chroma = hypot(lab.a, lab.b)
+        let limit = 0.12 - max(0, lab.l - 0.7) * 0.35
+        guard chroma > limit else { return color }
+        let scale = limit / chroma
+        return SpineContrast.color(SpineContrast.Lab(l: lab.l, a: lab.a * scale, b: lab.b * scale))
     }
 
     /// The model's answers about the title lettering.

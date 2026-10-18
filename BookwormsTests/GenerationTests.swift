@@ -1015,6 +1015,57 @@ final class GenerationTests: XCTestCase {
         XCTAssertNil(BookAnalyzer.genreTone(nil))
     }
 
+    func testCoverColorsKeepToTheHouseStyle() throws {
+        let atlas = try XCTUnwrap(FontAtlas.shared)
+        let font = try XCTUnwrap(atlas.fonts.first { $0.family == "Oswald" && $0.weight == 400 })
+        let image = try XCTUnwrap(
+            CGContext(
+                data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?
+                .makeImage())
+        func choice(ink: String, ground: String) throws -> BookAnalyzer.DesignChoice {
+            let measurement = TitleLettering.Measurement(
+                text: "KINDRED", crop: image,
+                profile: try XCTUnwrap(font.compose("KINDRED")?.profile()),
+                ink: try XCTUnwrap(ColorValue(hex: ink)),
+                ground: try XCTUnwrap(ColorValue(hex: ground)))
+            return BookAnalyzer.choice(
+                measurement, palette: [try XCTUnwrap(ColorValue(hex: ground))], weight: 500)
+        }
+        func lab(_ color: ColorValue) -> (l: Double, chroma: Double) {
+            let lab = SpineContrast.lab(color)
+            return (lab.l, hypot(lab.a, lab.b))
+        }
+
+        // A neon ground becomes a pastel cloth, which takes dark ink.
+        let neon = try choice(ink: "#101010", ground: "#40FFC0")
+        XCTAssertLessThanOrEqual(lab(neon.background).chroma, 0.06)
+        XCTAssertLessThan(lab(neon.ink).l, 0.3)
+        // Dark lettering on a mid-tone red cover gets light ink on red cloth.
+        let red = try choice(ink: "#101010", ground: "#CD2828")
+        XCTAssertGreaterThan(lab(red.ink).l, 0.9)
+        XCTAssertLessThanOrEqual(lab(red.background).chroma, 0.121)
+        XCTAssertGreaterThan(lab(red.background).chroma, 0.1, "The cloth stays red")
+        // A deliberate deep red title on cream keeps its color; a faint tint becomes near-black.
+        let deliberate = try choice(ink: "#8B1E1E", ground: "#F4EFE4")
+        XCTAssertGreaterThan(lab(deliberate.ink).chroma, 0.08)
+        let faint = try choice(ink: "#4A4540", ground: "#F4EFE4")
+        XCTAssertLessThanOrEqual(lab(faint.ink).chroma, 0.021)
+        XCTAssertLessThan(lab(faint.ink).l, 0.25)
+        // The resolved designs still pass the shared contrast rule.
+        let book = CloudBook(
+            id: 9, title: "Kindred", author: "An Author", coverURL: nil, detailCoverURL: nil)
+        let hash = String(repeating: "a", count: 64)
+        for choice in [neon, red, deliberate, faint] {
+            XCTAssertNoThrow(
+                try BookAnalyzer.design(
+                    choice: choice, style: .condensedSans, font: nil, uppercase: true,
+                    palette: [choice.background], book: book, accountID: "42",
+                    workItemHash: hash, coverHash: hash))
+        }
+    }
+
     func testRankingMatchesStrokeWeightAtSemiboldOrHeavier() throws {
         XCTAssertEqual(TitleLettering.weight(regular: 0.1, bold: 0.2, cover: 0.05), 600)
         XCTAssertEqual(TitleLettering.weight(regular: 0.1, bold: 0.2, cover: 0.165), 600)
