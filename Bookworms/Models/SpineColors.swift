@@ -159,20 +159,20 @@ extension SpineDesignV1 {
 
     /// The `provenance` token that names the model that made this design, such as
     /// "model:apple/on-device". Without one, the generator decides: `nil`, for Private Cloud
-    /// Compute, from this generator (`CloudContract.generatorVersion`), whose Private Cloud
-    /// Compute designs record none; `ModelTier.onDeviceToken` from the retired Mac companion
-    /// (`CloudContract.macGeneratorVersion`), which designed with Apple's on-device model; and
-    /// `ModelTier.localToken` from any other generator, such as the Apple TV's looks
-    /// (`CloudContract.appleTVGeneratorVersion`), which come from no model.
+    /// Compute, from any version of this app's generator, such as `ios-pcc-v1` or
+    /// `CloudContract.generatorVersion`, whose Private Cloud Compute designs record none;
+    /// `ModelTier.onDeviceToken` from any version of the retired Mac companion's generator, such
+    /// as `mac-foundation-models-v1` or `CloudContract.macGeneratorVersion`, which designed with
+    /// Apple's on-device model; and `ModelTier.localToken` from any other generator, such as the
+    /// Apple TV's looks (`CloudContract.appleTVGeneratorVersion`), which come from no model. So a
+    /// design keeps its tier when a new generator version ships.
     var modelToken: String? {
         if let token = provenance?.split(separator: " ").first(where: { $0.hasPrefix("model:") }) {
             return String(token)
         }
-        switch generatorVersion {
-        case CloudContract.generatorVersion: return nil
-        case CloudContract.macGeneratorVersion: return ModelTier.onDeviceToken
-        default: return ModelTier.localToken
-        }
+        if generatorVersion.hasPrefix("ios-pcc-") { return nil }
+        if generatorVersion.hasPrefix("mac-foundation-models-") { return ModelTier.onDeviceToken }
+        return ModelTier.localToken
     }
 
     /// The model tier that made this design, from its `modelToken`.

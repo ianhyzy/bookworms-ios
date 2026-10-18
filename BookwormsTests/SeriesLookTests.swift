@@ -330,12 +330,23 @@ final class SeriesLookTests: XCTestCase {
     }
 
     func testLooksReadOtherGeneratorsAndKeepTheReadersColors() throws {
-        // A look seeded from the retired Mac companion's on-device design upgrades.
-        let mac = look().withOrigin(CloudContract.macGeneratorVersion)
-        XCTAssertNil(mac.provenance)
-        XCTAssertEqual(mac.tier, .onDevice)
-        XCTAssertTrue(mac.isUpgraded(at: .privateCloudCompute))
-        XCTAssertFalse(mac.isUpgraded(at: .onDevice))
+        // A look seeded from the retired Mac companion's on-device design, in either version,
+        // upgrades only from a better tier.
+        for origin in [CloudContract.macGeneratorVersion, "mac-foundation-models-v1"] {
+            let mac = look().withOrigin(origin)
+            XCTAssertNil(mac.provenance)
+            XCTAssertEqual(mac.tier, .onDevice, origin)
+            XCTAssertTrue(mac.isUpgraded(at: .privateCloudCompute), origin)
+            XCTAssertTrue(mac.isUpgraded(at: .backup), origin)
+            XCTAssertFalse(mac.isUpgraded(at: .onDevice), origin)
+            XCTAssertFalse(mac.isUpgraded(at: .local), origin)
+        }
+        // A look seeded from this app's earlier Private Cloud Compute design upgrades from no
+        // tier.
+        let earlier = look().withOrigin("ios-pcc-v1")
+        XCTAssertEqual(earlier.tier, .privateCloudCompute)
+        XCTAssertFalse(earlier.isUpgraded(at: .privateCloudCompute))
+        XCTAssertFalse(earlier.isUpgraded(at: .onDevice))
 
         // A look with a recolored design's tokens lends only its model token, so a copy takes
         // the look's own colors, and no upgrade replaces them.

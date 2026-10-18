@@ -260,11 +260,14 @@ final class SpineColorsTests: XCTestCase {
         let television = design(generator: CloudContract.appleTVGeneratorVersion)
         XCTAssertEqual(television.modelToken, "model:local")
         XCTAssertEqual(television.tier, .local)
-        // Without a token, other generators read by what made their designs.
+        // Without a token, other generators read by what made their designs, in every version.
         let mac = design(generator: CloudContract.macGeneratorVersion)
         XCTAssertEqual(mac.modelToken, ModelTier.onDeviceToken)
         XCTAssertEqual(mac.tier, .onDevice)
-        XCTAssertEqual(design(generator: "ios-pcc-v1").tier, .local)
+        XCTAssertEqual(design(generator: "mac-foundation-models-v1").tier, .onDevice)
+        XCTAssertEqual(design(generator: "ios-pcc-v1").tier, .privateCloudCompute)
+        XCTAssertNil(design(generator: "ios-pcc-v1").modelToken)
+        XCTAssertEqual(design(generator: "tv-v1").tier, .local)
         XCTAssertEqual(
             design(generator: "ios-pcc-v1", provenance: "model:openai/gpt-6-luna").tier, .backup,
             "A model token decides")
