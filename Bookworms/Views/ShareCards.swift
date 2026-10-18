@@ -303,7 +303,7 @@ struct TopFiveCard: View {
         }
     }
 
-    /// A ranked book: its rank, title, author, and stars.
+    /// A ranked book: its rank and title in cream, author, and stars.
     private func row(
         rank: Int, book: CloudBook, showsAuthor: Bool, keepsSubtitle: Bool
     ) -> some View {
@@ -311,7 +311,6 @@ struct TopFiveCard: View {
         HStack(alignment: .firstTextBaseline, spacing: 20) {
             Text(String(rank))
                 .font(ShareStyle.serif(46, .bold))
-                .foregroundStyle(ShareStyle.gold)
                 .frame(width: 44)
             VStack(alignment: .leading, spacing: 0) {
                 title(book, keepsSubtitle: keepsSubtitle)

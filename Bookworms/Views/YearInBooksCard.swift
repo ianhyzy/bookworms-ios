@@ -223,7 +223,6 @@ struct YearInBooksCard: View {
                     VStack(spacing: 8) {
                         Text(showsCounts && !column.books.isEmpty ? String(column.books.count) : "")
                             .font(.system(size: 30, weight: .semibold))
-                            .foregroundStyle(ShareStyle.gold)
                             .fixedSize()
                             .frame(height: Self.line)
                         VStack(spacing: 0) {
