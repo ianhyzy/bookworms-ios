@@ -256,24 +256,30 @@ final class HardcoverAccount {
     /// Spends `credential`'s refresh token, saves the new login, and returns it.
     ///
     /// Every caller while the renewal runs awaits the same one (`renewal`). A sign-out or new
-    /// sign-in cancels it, and a cancelled renewal saves nothing. A rejected refresh token sets
-    /// `needsReconnect` and keeps the saved login, and a network or server failure keeps it for
-    /// the next request. If the rotated login can't be saved, this request still gets its
-    /// token, but the next renewal sends the spent refresh token and Hardcover asks for a
-    /// reconnect.
+    /// sign-in cancels it; a cancelled renewal saves nothing and throws `CancellationError`. A
+    /// rejected refresh token sets `needsReconnect` and keeps the saved login, and a network or
+    /// server failure keeps it for the next request. When the rotated login can't be saved,
+    /// this throws `HardcoverError.credentialNotSaved` and sets `needsReconnect`, and while it
+    /// is set, no renewal sends the saved refresh token, which Hardcover has already spent.
     private func renew(_ credential: HardcoverCredential) async throws -> HardcoverCredential {
-        guard let refreshToken = credential.refreshToken else {
+        guard !needsReconnect, let refreshToken = credential.refreshToken else {
             throw HardcoverError.invalidToken
         }
         let task = Task { [client] in
             do {
                 let renewed = try await client.renew(refreshToken: refreshToken)
                 try Task.checkCancellation()
-                try? tokens.save(renewed.stored())
+                do {
+                    try tokens.save(renewed.stored())
+                } catch {
+                    needsReconnect = true
+                    throw HardcoverError.credentialNotSaved
+                }
                 return renewed
-            } catch HardcoverError.invalidToken where !Task.isCancelled {
-                needsReconnect = true
-                throw HardcoverError.invalidToken
+            } catch {
+                if Task.isCancelled { throw CancellationError() }
+                if error as? HardcoverError == .invalidToken { needsReconnect = true }
+                throw error
             }
         }
         renewal = task

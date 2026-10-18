@@ -468,6 +468,66 @@ final class HardcoverTests: XCTestCase {
         XCTAssertEqual(tokens.saves, [])
     }
 
+    @MainActor
+    func testUnsavedRenewalAsksToReconnectAndNeverSpendsTheTokenAgain() async throws {
+        let (_, defaults, library) = try signedInStores()
+        let tokens = FakeSecretStore(
+            try HardcoverCredential(
+                accessToken: "fictional-old", refreshToken: "fictional-refresh-1",
+                expiresAt: .now.addingTimeInterval(-60)
+            )
+            .stored())
+        tokens.failsSaves = true
+        let renewals = RequestCount()
+        let account = HardcoverAccount(
+            tokens: tokens,
+            client: HardcoverClient { request in
+                await renewals.add()
+                return Self.respond(200, Self.renewedLogin, to: request)
+            },
+            defaults: defaults, libraryURL: library)
+
+        let unsaved = await thrownError { try await account.accessToken() }
+        XCTAssertEqual(unsaved as? HardcoverError, .credentialNotSaved)
+        XCTAssertTrue(account.needsReconnect)
+        // The saved refresh token is spent, and sending it again would revoke the new login.
+        let spent = await thrownError { try await account.accessToken() }
+        XCTAssertEqual(spent as? HardcoverError, .invalidToken)
+        let count = await renewals.count
+        XCTAssertEqual(count, 1)
+    }
+
+    @MainActor
+    func testSignOutDuringARenewalSavesNothing() async throws {
+        let (_, defaults, library) = try signedInStores()
+        let tokens = FakeSecretStore(
+            try HardcoverCredential(
+                accessToken: "fictional-old", refreshToken: "fictional-refresh-1",
+                expiresAt: .now.addingTimeInterval(600)
+            )
+            .stored())
+        let gate = ReplyGate()
+        let account = HardcoverAccount(
+            tokens: tokens,
+            client: HardcoverClient { request in
+                await gate.wait()
+                return Self.respond(200, Self.renewedLogin, to: request)
+            },
+            defaults: defaults, libraryURL: library)
+
+        let request = Task { try await account.accessToken() }
+        while await gate.arrivals == 0 { await Task.yield() }
+        account.signOut()
+        await gate.open()
+        // The cancelled renewal returns neither the new token nor the old one, which still works.
+        let stopped = await thrownError { try await request.value }
+        XCTAssertTrue(stopped is CancellationError)
+        XCTAssertEqual(tokens.saves, [])
+        XCTAssertNil(tokens.secret)
+        XCTAssertFalse(account.isSignedIn)
+        XCTAssertFalse(account.needsReconnect)
+    }
+
     // MARK: - Library
 
     func testLibraryNormalizesFixturePage() async throws {
@@ -1134,6 +1194,7 @@ final class HardcoverTests: XCTestCase {
 private final class FakeSecretStore: SecretStore {
     var secret: String?
     var isReadable: Bool
+    var failsSaves = false
     private(set) var loads = 0
     private(set) var saves: [String] = []
     private(set) var deletes = 0
@@ -1152,6 +1213,7 @@ private final class FakeSecretStore: SecretStore {
     }
 
     func save(_ secret: String) throws {
+        if failsSaves { throw KeychainSecret.NotSaved() }
         saves.append(secret)
         self.secret = secret
     }
@@ -1187,6 +1249,25 @@ private actor ReplyStatus {
     init(_ value: Int) { self.value = value }
 
     func set(_ value: Int) { self.value = value }
+}
+
+/// Holds a transport's replies until the test opens it.
+private actor ReplyGate {
+    private(set) var arrivals = 0
+    private var isOpen = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        arrivals += 1
+        guard !isOpen else { return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        for waiter in waiting { waiter.resume() }
+        waiting = []
+    }
 }
 
 /// Replays poll results and records the waits between them.
