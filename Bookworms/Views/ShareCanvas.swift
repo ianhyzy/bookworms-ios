@@ -218,14 +218,30 @@ enum ShareAspect: String, CaseIterable, Identifiable {
         }
     }
 
-    /// The margins around a card's content. On a story, they keep text out of the area that the
-    /// platforms' top and bottom bars cover (y 250 to 1670).
+    /// The margins around a card's content. On a story, they keep content out of the 250-pixel
+    /// strips that the platforms' top and bottom bars cover, so it sits between y 250 and 1670,
+    /// except where a card reaches into the bottom strip (`reach`).
     var insets: EdgeInsets {
         switch self {
         case .story: EdgeInsets(top: 250, leading: 64, bottom: 250, trailing: 64)
         case .portrait: EdgeInsets(top: 88, leading: 64, bottom: 88, trailing: 64)
         case .square: EdgeInsets(top: 64, leading: 64, bottom: 88, trailing: 64)
         }
+    }
+
+    /// How far a story card's content may reach below `insets` into the bottom strip, in pixels:
+    /// to y 1770, which leaves the bottom 150 pixels to the platforms' reply bar and the credit.
+    ///
+    /// A card that pads with `reachingInsets` widens its gaps by exactly this height in all, so
+    /// its covers and text keep the sizes that `insets` gives them. Portrait and Square reach no
+    /// further than `insets`.
+    var reach: CGFloat { self == .story ? 100 : 0 }
+
+    /// `insets` with `reach` taken off the bottom margin.
+    var reachingInsets: EdgeInsets {
+        var insets = insets
+        insets.bottom -= reach
+        return insets
     }
 }
 
@@ -312,7 +328,8 @@ struct ShareCanvas: View {
 }
 
 /// The quiet credit that every exported share image and video carries at its bottom edge, in
-/// the bottom margin that every card keeps free of content. Previews in the app leave it out.
+/// the bottom margin that every card keeps free of content, which on a story is the bottom 150
+/// pixels (`ShareAspect.reach`). Previews in the app leave it out.
 struct ShareCredit: View {
     /// The strip at the bottom of an export that the credit and its shadow take, in pixels,
     /// which an in-app preview of a video leaves out.

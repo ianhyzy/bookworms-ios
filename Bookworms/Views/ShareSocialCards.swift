@@ -77,12 +77,12 @@ struct TasteMatchCard: View {
         }
     }
 
-    /// The score in large gold numerals beside its name and the number of books it compares.
+    /// The score in large cream numerals beside its name and the number of books it compares.
     private func scoreRow(_ score: Int, match: TasteMatch) -> some View {
         HStack(alignment: .center, spacing: 32) {
             Text("\(score)%")
                 .font(ShareStyle.serif(metrics.score, .bold))
-                .foregroundStyle(ShareStyle.gold)
+                .foregroundStyle(ShareStyle.cream.color)
                 .fixedSize()
                 .accessibilityLabel("\(score) percent match")
             VStack(alignment: .leading, spacing: 8) {

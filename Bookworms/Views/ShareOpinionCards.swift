@@ -126,7 +126,7 @@ struct HotTakesCard: View {
             } else {
                 takes
                     .foregroundStyle(ShareStyle.cream.color)
-                    .padding(input.aspect.insets)
+                    .padding(input.aspect.reachingInsets)
             }
         }
     }
@@ -135,7 +135,7 @@ struct HotTakesCard: View {
         let aspect = input.aspect
         let isHero = input.books.count == 1
         let theme = input.theme
-        let spacing: CGFloat = aspect == .square ? 24 : 36
+        let spacing = (aspect == .square ? 24 : 36) + extra
         return VStack(alignment: isHero && aspect != .square ? .center : .leading, spacing: spacing)
         {
             VStack(alignment: isHero && aspect != .square ? .center : .leading, spacing: 8) {
@@ -173,6 +173,20 @@ struct HotTakesCard: View {
                 }
             }
         }
+    }
+
+    /// The height each gap adds on a story, whose content reaches into the bottom strip
+    /// (`ShareAspect.reach`), so the covers keep the sizes they have within `ShareAspect.insets`.
+    /// The gaps under the heading and between the rows share it evenly, or for a single take,
+    /// the four gaps under the heading, under the cover, and above the difference and the
+    /// ratings.
+    ///
+    /// Compared with another reader, the card stays within `ShareAspect.insets` and adds
+    /// nothing, so its invitation and profile link sit where Taste Match and Book Swap put theirs.
+    private var extra: CGFloat {
+        guard input.social == nil else { return 0 }
+        return input.aspect.reach
+            / CGFloat(input.books.count == 1 ? 4 : max(1, input.books.count))
     }
 
     /// The tallest a take's row grows, so two takes do not turn into posters.
@@ -226,17 +240,20 @@ struct HotTakesCard: View {
             .shadow(color: .black.opacity(0.5), radius: 32, y: 24)
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
-        let details = VStack(alignment: isSquare ? .leading : .center, spacing: 12) {
-            ShareFittingText(
-                forms: ShareStyle.titles(book), size: isSquare ? 52 : 60, minimumScale: 0.6,
-                lines: 2, book: book
-            ) {
-                ShareStyle.serif($0, .semibold)
+        let alignment: HorizontalAlignment = isSquare ? .leading : .center
+        let details = VStack(alignment: alignment, spacing: 12 + extra) {
+            VStack(alignment: alignment, spacing: 12) {
+                ShareFittingText(
+                    forms: ShareStyle.titles(book), size: isSquare ? 52 : 60, minimumScale: 0.6,
+                    lines: 2, book: book
+                ) {
+                    ShareStyle.serif($0, .semibold)
+                }
+                Text(SpineView.shortAuthor(book.author))
+                    .font(ShareStyle.serif(36))
+                    .opacity(0.8)
+                    .lineLimit(1)
             }
-            Text(SpineView.shortAuthor(book.author))
-                .font(ShareStyle.serif(36))
-                .opacity(0.8)
-                .lineLimit(1)
             gap(book, size: 88)
             ratings(book)
         }
@@ -250,7 +267,7 @@ struct HotTakesCard: View {
                 details.frame(maxWidth: .infinity, alignment: .leading)
             }
         } else {
-            VStack(spacing: 40) {
+            VStack(spacing: 40 + extra) {
                 cover
                 details
             }
@@ -294,7 +311,7 @@ struct HotTakesCard: View {
         .background(panel, in: .rect(cornerRadius: 28))
     }
 
-    /// The gap in stars between the reader's rating and the rival rating, in gold.
+    /// The gap in stars between the reader's rating and the rival rating, in cream.
     private func gap(_ book: CloudBook, size: CGFloat) -> some View {
         let gap: Double? =
             if input.social == nil {
@@ -307,7 +324,7 @@ struct HotTakesCard: View {
         let text = Self.signed(gap ?? 0)
         return Text(text)
             .font(ShareStyle.serif(size, .bold))
-            .foregroundStyle(ShareStyle.gold)
+            .foregroundStyle(ShareStyle.cream.color)
             .fixedSize()
             .accessibilityLabel("\(text) stars")
     }

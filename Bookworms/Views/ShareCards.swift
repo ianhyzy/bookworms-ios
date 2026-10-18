@@ -17,6 +17,14 @@ struct FeaturedBookCard: View {
         let isSquare = aspect == .square
         let theme = input.theme
         let edge = theme.backdropDark.color
+        let lines = ShareStyle.details(book, isReading: input.template == .currentlyReading)
+        // A story's content reaches into its bottom strip (`ShareAspect.reach`). Each gap between
+        // the details' groups takes a quarter of that height and the gap under the hero takes the
+        // rest, so the details still read as one caption and the hero keeps the size it has
+        // within `ShareAspect.insets`.
+        let groupGap = aspect.reach / 4
+        let groupGaps = (showsMeter(book) ? 1 : 0) + (lines.isEmpty ? 0 : 1)
+        let heroGap = aspect.reach - groupGap * CGFloat(groupGaps)
         return ZStack {
             // A glow behind the book that fades to the dark field.
             RadialGradient(
@@ -40,17 +48,17 @@ struct FeaturedBookCard: View {
                 if isSquare {
                     HStack(spacing: 40) {
                         hero(book, look: look).frame(width: 470)
-                        details(book, alignment: .leading)
+                        details(book, lines: lines, alignment: .leading, spacing: 36)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 } else {
-                    VStack(spacing: 44) {
+                    VStack(spacing: 44 + heroGap) {
                         hero(book, look: look)
-                        details(book, alignment: .center)
+                        details(book, lines: lines, alignment: .center, spacing: 36 + groupGap)
                     }
                 }
             }
-            .padding(aspect.insets)
+            .padding(aspect.reachingInsets)
         }
     }
 
@@ -69,13 +77,21 @@ struct FeaturedBookCard: View {
         }
     }
 
-    /// The title and author, the rating or progress, and the details line, such as "Finished
-    /// Nov 30, 2025 · 736 pages", with wider gaps between these groups than within them.
-    private func details(_ book: CloudBook, alignment: HorizontalAlignment) -> some View {
+    /// Whether the details show a progress bar or stars between the title and the details line.
+    private func showsMeter(_ book: CloudBook) -> Bool {
+        input.template == .currentlyReading
+            ? book.progress != nil : input.showsRatings && (book.rating ?? 0) > 0
+    }
+
+    /// The title and author, the rating or progress, and the details line of `lines`, such as
+    /// "Finished Nov 30, 2025 · 736 pages", with `spacing` between these groups, wider than the
+    /// gaps within them.
+    private func details(
+        _ book: CloudBook, lines: [String], alignment: HorizontalAlignment, spacing: CGFloat
+    ) -> some View {
         let isSquare = input.aspect == .square
         let isReading = input.template == .currentlyReading
-        let details = ShareStyle.details(book, isReading: isReading)
-        return VStack(alignment: alignment, spacing: 36) {
+        return VStack(alignment: alignment, spacing: spacing) {
             VStack(alignment: alignment, spacing: 14) {
                 if isReading {
                     ShareStyle.label("Currently reading").foregroundStyle(ShareStyle.gold)
@@ -91,15 +107,15 @@ struct FeaturedBookCard: View {
                     .lineLimit(2)
                     .minimumScaleFactor(0.75)
             }
-            if isReading {
-                if let progress = book.progress {
+            if showsMeter(book) {
+                if isReading, let progress = book.progress {
                     progressBar(progress, width: isSquare ? 250 : 440)
+                } else if let rating = book.rating {
+                    ShareStars(rating: rating, size: 44)
                 }
-            } else if input.showsRatings, let rating = book.rating, rating > 0 {
-                ShareStars(rating: rating, size: 44)
             }
-            if !details.isEmpty {
-                detailsLine(details)
+            if !lines.isEmpty {
+                detailsLine(lines)
                     .font(.system(size: 32))
                     .opacity(0.75)
             }
@@ -122,7 +138,7 @@ struct FeaturedBookCard: View {
         }
     }
 
-    /// A gold bar filled to `progress` (0...1), with the percentage beside it.
+    /// A gold bar filled to `progress` (0...1), with the percentage in cream beside it.
     private func progressBar(_ progress: Double, width: CGFloat) -> some View {
         let value = min(1, max(0, progress))
         return HStack(spacing: 20) {
@@ -134,7 +150,7 @@ struct FeaturedBookCard: View {
                 .frame(width: width, height: 18)
             Text(value.formatted(.percent.precision(.fractionLength(0))))
                 .font(ShareStyle.serif(48, .semibold))
-                .foregroundStyle(ShareStyle.gold)
+                .foregroundStyle(ShareStyle.cream.color)
                 .fixedSize()
         }
         .accessibilityElement(children: .combine)
@@ -166,7 +182,7 @@ struct TopFiveCard: View {
             // its subtitle up does the fan shrink below its minimum.
             ViewThatFits(in: .vertical) {
                 ForEach(0...shortenable.count, id: \.self) { shortened in
-                    VStack(spacing: aspect == .story ? 48 : 32) {
+                    VStack(spacing: gaps.section) {
                         Text(heading)
                             .font(ShareStyle.serif(aspect == .story ? 84 : 68, .semibold))
                             .foregroundStyle(ShareStyle.cream.color)
@@ -175,7 +191,7 @@ struct TopFiveCard: View {
                         fan(books)
                             .frame(
                                 minHeight: shortened < shortenable.count ? minimumFanHeight : nil)
-                        VStack(spacing: aspect == .story ? 22 : 14) {
+                        VStack(spacing: gaps.row) {
                             ForEach(Array(books.enumerated()), id: \.element.id) { index, book in
                                 row(
                                     rank: index + 1, book: book, showsAuthor: aspect != .square,
@@ -186,8 +202,18 @@ struct TopFiveCard: View {
                     }
                 }
             }
-            .padding(aspect.insets)
+            .padding(aspect.reachingInsets)
         }
+    }
+
+    /// The gaps around the fan and between the ranked rows, in pixels.
+    ///
+    /// A story's content reaches into its bottom strip (`ShareAspect.reach`), and the two gaps
+    /// around the fan and the one between each pair of rows share that height evenly, so the fan
+    /// and the titles keep the sizes they have within `ShareAspect.insets`.
+    private var gaps: (section: CGFloat, row: CGFloat) {
+        let extra = input.aspect.reach / CGFloat(input.books.count + 1)
+        return input.aspect == .story ? (48 + extra, 22 + extra) : (32, 14)
     }
 
     /// The least height the fan keeps while titles show their subtitles, below which its covers
@@ -303,7 +329,7 @@ struct TopFiveCard: View {
         }
     }
 
-    /// A ranked book: its rank, title, author, and stars.
+    /// A ranked book: its rank, title, and author in cream, and its stars.
     private func row(
         rank: Int, book: CloudBook, showsAuthor: Bool, keepsSubtitle: Bool
     ) -> some View {
@@ -311,7 +337,6 @@ struct TopFiveCard: View {
         HStack(alignment: .firstTextBaseline, spacing: 20) {
             Text(String(rank))
                 .font(ShareStyle.serif(46, .bold))
-                .foregroundStyle(ShareStyle.gold)
                 .frame(width: 44)
             VStack(alignment: .leading, spacing: 0) {
                 title(book, keepsSubtitle: keepsSubtitle)
