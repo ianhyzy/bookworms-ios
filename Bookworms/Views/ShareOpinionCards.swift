@@ -311,7 +311,7 @@ struct HotTakesCard: View {
         .background(panel, in: .rect(cornerRadius: 28))
     }
 
-    /// The gap in stars between the reader's rating and the rival rating, in gold.
+    /// The gap in stars between the reader's rating and the rival rating, in cream.
     private func gap(_ book: CloudBook, size: CGFloat) -> some View {
         let gap: Double? =
             if input.social == nil {
@@ -324,7 +324,7 @@ struct HotTakesCard: View {
         let text = Self.signed(gap ?? 0)
         return Text(text)
             .font(ShareStyle.serif(size, .bold))
-            .foregroundStyle(ShareStyle.gold)
+            .foregroundStyle(ShareStyle.cream.color)
             .fixedSize()
             .accessibilityLabel("\(text) stars")
     }

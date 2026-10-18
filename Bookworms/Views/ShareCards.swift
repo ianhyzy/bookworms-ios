@@ -138,7 +138,7 @@ struct FeaturedBookCard: View {
         }
     }
 
-    /// A gold bar filled to `progress` (0...1), with the percentage beside it.
+    /// A gold bar filled to `progress` (0...1), with the percentage in cream beside it.
     private func progressBar(_ progress: Double, width: CGFloat) -> some View {
         let value = min(1, max(0, progress))
         return HStack(spacing: 20) {
@@ -150,7 +150,7 @@ struct FeaturedBookCard: View {
                 .frame(width: width, height: 18)
             Text(value.formatted(.percent.precision(.fractionLength(0))))
                 .font(ShareStyle.serif(48, .semibold))
-                .foregroundStyle(ShareStyle.gold)
+                .foregroundStyle(ShareStyle.cream.color)
                 .fixedSize()
         }
         .accessibilityElement(children: .combine)
