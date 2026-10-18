@@ -49,7 +49,7 @@ struct ReviewCard: View {
                 }
             }
             .foregroundStyle(ShareStyle.cream.color)
-            .padding(aspect.insets)
+            .padding(aspect.reachingInsets)
         }
     }
 
@@ -59,7 +59,10 @@ struct ReviewCard: View {
         let aspect = input.aspect
         let look = input.look(for: book)
         let theme = input.theme
-        return VStack(alignment: .leading, spacing: aspect == .story ? 64 : 40) {
+        // A story's content reaches into its bottom strip (`ShareAspect.reach`), and the gap
+        // takes all of that height, so the cover and the text keep the sizes that
+        // `ShareAspect.insets` gives them.
+        return VStack(alignment: .leading, spacing: (aspect == .story ? 64 : 40) + aspect.reach) {
             HStack(spacing: 44) {
                 ShareCover(
                     book: book, look: look, cover: input.covers[book.id],
@@ -122,11 +125,11 @@ struct HotTakesCard: View {
                     ShareInviteLine(username: social.owner.username)
                 }
                 .foregroundStyle(ShareStyle.cream.color)
-                .padding(input.aspect.insets)
+                .padding(input.aspect.reachingInsets)
             } else {
                 takes
                     .foregroundStyle(ShareStyle.cream.color)
-                    .padding(input.aspect.insets)
+                    .padding(input.aspect.reachingInsets)
             }
         }
     }
@@ -135,7 +138,7 @@ struct HotTakesCard: View {
         let aspect = input.aspect
         let isHero = input.books.count == 1
         let theme = input.theme
-        let spacing: CGFloat = aspect == .square ? 24 : 36
+        let spacing = (aspect == .square ? 24 : 36) + extra
         return VStack(alignment: isHero && aspect != .square ? .center : .leading, spacing: spacing)
         {
             VStack(alignment: isHero && aspect != .square ? .center : .leading, spacing: 8) {
@@ -173,6 +176,15 @@ struct HotTakesCard: View {
                 }
             }
         }
+    }
+
+    /// The height each gap adds on a story, whose content reaches into the bottom strip
+    /// (`ShareAspect.reach`), so the covers keep the sizes they have within `ShareAspect.insets`.
+    /// The gaps under the heading and between the rows share it evenly, or for a single take,
+    /// the four gaps under the heading, under the cover, and above the difference and the
+    /// ratings.
+    private var extra: CGFloat {
+        input.aspect.reach / CGFloat(input.books.count == 1 ? 4 : max(1, input.books.count))
     }
 
     /// The tallest a take's row grows, so two takes do not turn into posters.
@@ -226,17 +238,20 @@ struct HotTakesCard: View {
             .shadow(color: .black.opacity(0.5), radius: 32, y: 24)
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
-        let details = VStack(alignment: isSquare ? .leading : .center, spacing: 12) {
-            ShareFittingText(
-                forms: ShareStyle.titles(book), size: isSquare ? 52 : 60, minimumScale: 0.6,
-                lines: 2, book: book
-            ) {
-                ShareStyle.serif($0, .semibold)
+        let alignment: HorizontalAlignment = isSquare ? .leading : .center
+        let details = VStack(alignment: alignment, spacing: 12 + extra) {
+            VStack(alignment: alignment, spacing: 12) {
+                ShareFittingText(
+                    forms: ShareStyle.titles(book), size: isSquare ? 52 : 60, minimumScale: 0.6,
+                    lines: 2, book: book
+                ) {
+                    ShareStyle.serif($0, .semibold)
+                }
+                Text(SpineView.shortAuthor(book.author))
+                    .font(ShareStyle.serif(36))
+                    .opacity(0.8)
+                    .lineLimit(1)
             }
-            Text(SpineView.shortAuthor(book.author))
-                .font(ShareStyle.serif(36))
-                .opacity(0.8)
-                .lineLimit(1)
             gap(book, size: 88)
             ratings(book)
         }
@@ -250,7 +265,7 @@ struct HotTakesCard: View {
                 details.frame(maxWidth: .infinity, alignment: .leading)
             }
         } else {
-            VStack(spacing: 40) {
+            VStack(spacing: 40 + extra) {
                 cover
                 details
             }
