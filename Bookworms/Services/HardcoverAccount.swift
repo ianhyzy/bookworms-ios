@@ -5,8 +5,10 @@ import Security
 /// This device's own Hardcover sign-in: the device-code flow, the saved login, and the library
 /// it syncs.
 ///
-/// The access token stays in this device's Keychain. The library goes to the `PhoneLibrary`
-/// cache, which `CloudSpineStore` reads to show and design the account's books. The saved
+/// The login stays in this device's Keychain, and requests renew it with its refresh token
+/// before the access token expires and after Hardcover rejects it (`withAccessToken(_:)`). The
+/// library goes to the `PhoneLibrary` cache, which `CloudSpineStore` reads to show and design
+/// the account's books. The saved
 /// `Summary` marks the sign-in for the store (`signedInAccountID`). After a sign-in, sync,
 /// adoption, or sign-out changes that cache, `libraryRevision` increases and `onLibraryChange`
 /// runs.
@@ -43,6 +45,9 @@ final class HardcoverAccount {
     /// How old the newest copy, on this device or in iCloud, gets before `syncIfStale()`
     /// downloads the library from Hardcover. **Sync now** downloads it at any time.
     static let providerInterval: TimeInterval = 24 * 60 * 60
+    /// How soon before the access token expires a request renews the login, so a long download
+    /// or comparison finishes with a valid token.
+    static let renewalMargin: TimeInterval = 60 * 60
 
     private(set) var isSignedIn = false
     private(set) var summary: Summary?
@@ -67,6 +72,9 @@ final class HardcoverAccount {
     /// Whether the Keychain refused the last read of the login, so the login and summary stay
     /// until a read succeeds (`retryUnreadLogin()`).
     @ObservationIgnored private var loginIsUnread = false
+    /// The renewal in progress. Every request that needs a new access token meanwhile awaits it,
+    /// so only one request spends the refresh token.
+    @ObservationIgnored private var renewal: Task<HardcoverCredential, any Error>?
     @ObservationIgnored private let client: HardcoverClient
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let libraryURL: URL
@@ -177,29 +185,91 @@ final class HardcoverAccount {
         if before != (isSignedIn, summary) { libraryChanged() }
     }
 
-    /// Returns the saved access token for an explicit request. Callers use it for that request
-    /// and do not keep it.
+    /// Returns the saved login for an explicit request. Callers use it for that request and do
+    /// not keep it.
     ///
     /// Throws `HardcoverError.invalidToken` when signed out, and
     /// `HardcoverError.credentialUnreadable` while the Keychain refuses the read; the login then
     /// stays saved.
-    private func savedToken() throws -> String {
+    private func savedCredential() throws -> HardcoverCredential {
         retryUnreadLogin()
         guard isSignedIn else { throw HardcoverError.invalidToken }
-        let token: String?
+        let stored: String?
         do {
-            token = try tokens.load()
+            stored = try tokens.load()
         } catch {
             loginIsUnread = true
             throw HardcoverError.credentialUnreadable
         }
-        guard let token else { throw HardcoverError.invalidToken }
-        return token
+        guard let stored else { throw HardcoverError.invalidToken }
+        return HardcoverCredential(stored: stored)
     }
 
-    /// The saved access token, read from the Keychain, or `nil` when signed out or the Keychain
-    /// refuses the read. Callers read it for an explicit request and do not keep it.
-    func accessToken() -> String? { try? savedToken() }
+    /// Returns an access token for an explicit request, renewing the login first when the token
+    /// expires within `renewalMargin`. Callers use it for that request and do not keep it.
+    ///
+    /// Throws `HardcoverError.invalidToken` when signed out or Hardcover rejected the refresh
+    /// token, which also sets `needsReconnect`, and `HardcoverError.credentialUnreadable` while
+    /// the Keychain refuses the read.
+    func accessToken() async throws -> String {
+        if let renewal { return try await renewal.value.accessToken }
+        let credential = try savedCredential()
+        guard credential.refreshToken != nil, let expiresAt = credential.expiresAt,
+            expiresAt.timeIntervalSinceNow < Self.renewalMargin
+        else { return credential.accessToken }
+        return try await renew(credential).accessToken
+    }
+
+    /// Runs `request` with an access token (`accessToken()`). When Hardcover rejects the token,
+    /// renews the login, unless another request already did, and runs `request` once more with
+    /// the new token.
+    func withAccessToken<Value>(
+        _ request: @MainActor (String) async throws -> Value
+    ) async throws -> Value {
+        let token = try await accessToken()
+        do {
+            return try await request(token)
+        } catch HardcoverError.invalidToken {
+            return try await request(renewedToken(replacing: token))
+        }
+    }
+
+    /// Returns an access token to replace `rejected`: the saved one when another request
+    /// already renewed the login, or a renewed one.
+    private func renewedToken(replacing rejected: String) async throws -> String {
+        if let renewal { return try await renewal.value.accessToken }
+        let credential = try savedCredential()
+        guard credential.accessToken == rejected else { return credential.accessToken }
+        return try await renew(credential).accessToken
+    }
+
+    /// Spends `credential`'s refresh token, saves the new login, and returns it.
+    ///
+    /// Every caller while the renewal runs awaits the same one (`renewal`). A sign-out or new
+    /// sign-in cancels it, and a cancelled renewal saves nothing. A rejected refresh token sets
+    /// `needsReconnect` and keeps the saved login, and a network or server failure keeps it for
+    /// the next request. If the rotated login can't be saved, this request still gets its
+    /// token, but the next renewal sends the spent refresh token and Hardcover asks for a
+    /// reconnect.
+    private func renew(_ credential: HardcoverCredential) async throws -> HardcoverCredential {
+        guard let refreshToken = credential.refreshToken else {
+            throw HardcoverError.invalidToken
+        }
+        let task = Task { [client] in
+            do {
+                let renewed = try await client.renew(refreshToken: refreshToken)
+                try Task.checkCancellation()
+                try? tokens.save(renewed.stored())
+                return renewed
+            } catch HardcoverError.invalidToken where !Task.isCancelled {
+                needsReconnect = true
+                throw HardcoverError.invalidToken
+            }
+        }
+        renewal = task
+        defer { if renewal == task { renewal = nil } }
+        return try await task.value
+    }
 
     /// Requests a code, waits for the reader to approve it on Hardcover, and saves the login.
     ///
@@ -222,14 +292,20 @@ final class HardcoverAccount {
                 let authorization = try await client.requestDeviceAuthorization()
                 try Task.checkCancellation()
                 signIn = .waiting(code: authorization.userCode, url: authorization.pageURL)
-                let token = try await HardcoverClient.awaitApproval(of: authorization) {
+                let credential = try await HardcoverClient.awaitApproval(of: authorization) {
                     try await client.pollToken(deviceCode: authorization.deviceCode)
                 }
                 try Task.checkCancellation()
                 signIn = .connecting
-                let user = try await client.account(token: token)
+                let user = try await client.account(token: credential.accessToken)
                 try Task.checkCancellation()
-                do { try tokens.save(token) } catch { throw HardcoverError.credentialNotSaved }
+                do {
+                    try tokens.save(credential.stored())
+                } catch {
+                    throw HardcoverError.credentialNotSaved
+                }
+                // A renewal of the replaced login must not overwrite this one.
+                cancelRenewal()
                 let accountID = String(user.id)
                 let isSameAccount = summary?.accountID == accountID
                 if !isSameAccount { PhoneLibrary.delete(at: libraryURL) }
@@ -271,15 +347,8 @@ final class HardcoverAccount {
     /// `readsArchive` is `false`, as when the caller has just read the archive and the cache
     /// holds the account's newest copy.
     private func sync(readsArchive: Bool) async {
-        guard !isSyncing else { return }
-        let token: String
-        do {
-            token = try savedToken()
-        } catch {
-            if isSignedIn { syncError = Self.message(for: error) }
-            return
-        }
-        guard let accountID = summary?.accountID else { return }
+        retryUnreadLogin()
+        guard isSignedIn, !isSyncing, let accountID = summary?.accountID else { return }
         isSyncing = true
         syncError = nil
         let revision = libraryRevision
@@ -299,7 +368,10 @@ final class HardcoverAccount {
                     publishes = cached?.accountID == accountID
                 }
             }
-            let library = try await client.library(token: token, previous: previous)
+            let newest = previous
+            let library = try await withAccessToken {
+                try await client.library(token: $0, previous: newest)
+            }
             return (library: library, publishes: publishes)
         }
         syncTask = task
@@ -398,6 +470,7 @@ final class HardcoverAccount {
         syncTask?.cancel()
         syncTask = nil
         isSyncing = false
+        cancelRenewal()
         tokens.delete()
         isSignedIn = false
         loginIsUnread = false
@@ -405,6 +478,11 @@ final class HardcoverAccount {
         syncError = nil
         forgetLibrary()
         libraryChanged()
+    }
+
+    private func cancelRenewal() {
+        renewal?.cancel()
+        renewal = nil
     }
 
     private func forgetLibrary() {

@@ -13,12 +13,13 @@ final class HardcoverTests: XCTestCase {
         let script = PollScript([
             .success(.pending), .failure(URLError(.networkConnectionLost)),
             .failure(HardcoverError.http(503)), .failure(HardcoverError.http(429)),
-            .success(.slowDown), .success(.pending), .success(.success(token: "fictional-token")),
+            .success(.slowDown), .success(.pending),
+            .success(.success(HardcoverCredential(accessToken: "fictional-token"))),
         ])
-        let token = try await HardcoverClient.awaitApproval(
+        let credential = try await HardcoverClient.awaitApproval(
             of: authorization(interval: 5, expiresIn: 900), poll: { try await script.next() },
             sleep: { await script.sleep($0) })
-        XCTAssertEqual(token, "fictional-token")
+        XCTAssertEqual(credential.accessToken, "fictional-token")
         let sleeps = await script.sleeps
         // Network and server failures keep polling; HTTP 429 and `slow_down` each add 5 seconds
         // to every later wait.
@@ -69,7 +70,11 @@ final class HardcoverTests: XCTestCase {
                 "device_code=expired": (400, #"{"error":"expired_token"}"#),
                 "device_code=denied": (400, #"{"error":"access_denied"}"#),
                 "device_code=approved": (
-                    200, #"{"access_token":" fictional-token ","token_type":"Bearer"}"#
+                    200,
+                    #"{"access_token":" fictional-token ","refresh_token":"fictional-refresh","expires_in":604800,"token_type":"Bearer"}"#
+                ),
+                "device_code=bare": (
+                    200, #"{"access_token":"fictional-token","token_type":"Bearer"}"#
                 ),
                 "device_code=unknown": (400, #"{"error":"invalid_grant"}"#),
                 "device_code=down": (503, ""),
@@ -87,10 +92,20 @@ final class HardcoverTests: XCTestCase {
         let slow = try await client.pollToken(deviceCode: "slow")
         let expired = try await client.pollToken(deviceCode: "expired")
         let denied = try await client.pollToken(deviceCode: "denied")
-        let approved = try await client.pollToken(deviceCode: "approved")
+        let bare = try await client.pollToken(deviceCode: "bare")
         XCTAssertEqual(
-            [pending, slow, expired, denied, approved],
-            [.pending, .slowDown, .expired, .accessDenied, .success(token: "fictional-token")])
+            [pending, slow, expired, denied, bare],
+            [
+                .pending, .slowDown, .expired, .accessDenied,
+                .success(HardcoverCredential(accessToken: "fictional-token")),
+            ])
+        // The login keeps the refresh token and counts the access token's week from the reply.
+        guard case .success(let approved) = try await client.pollToken(deviceCode: "approved")
+        else { return XCTFail("Expected a login") }
+        XCTAssertEqual(approved.accessToken, "fictional-token")
+        XCTAssertEqual(approved.refreshToken, "fictional-refresh")
+        XCTAssertEqual(
+            try XCTUnwrap(approved.expiresAt).timeIntervalSinceNow, 604_800, accuracy: 60)
         for (code, expected) in [
             ("unknown", HardcoverError.invalidAuthorizationCode), ("down", .http(503)),
         ] {
@@ -282,6 +297,130 @@ final class HardcoverTests: XCTestCase {
         XCTAssertFalse(account.isSignedIn)
         XCTAssertNil(tokens.secret)
         XCTAssertFalse(FileManager.default.fileExists(atPath: library.path()))
+    }
+
+    // MARK: - Login renewal
+
+    @MainActor
+    func testExpiringLoginRenewsOnceForConcurrentRequestsAndSavesTheRotatedLogin() async throws {
+        let (_, defaults, library) = try signedInStores()
+        let tokens = FakeSecretStore(
+            try HardcoverCredential(
+                accessToken: "fictional-old", refreshToken: "fictional-refresh-1",
+                expiresAt: .now.addingTimeInterval(600)
+            )
+            .stored())
+        let renewals = RequestCount()
+        let account = HardcoverAccount(
+            tokens: tokens,
+            client: HardcoverClient { request in
+                guard request.url?.absoluteString == "https://hardcover.app/oauth2/token" else {
+                    XCTFail("Only the renewal is requested")
+                    return Self.respond(500, "", to: request)
+                }
+                await renewals.add()
+                let body = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
+                XCTAssertTrue(body.contains("grant_type=refresh_token"))
+                XCTAssertTrue(body.contains("refresh_token=fictional-refresh-1"))
+                XCTAssertTrue(body.contains("client_id=ca996be3-0df1-4cbf-819a-e17644fbcf38"))
+                return Self.respond(200, Self.renewedLogin, to: request)
+            },
+            defaults: defaults, libraryURL: library)
+
+        // The token expires within the renewal margin, so each request waits for one renewal.
+        async let first = account.accessToken()
+        async let second = account.accessToken()
+        async let third = account.accessToken()
+        let issued = try await [first, second, third]
+        XCTAssertEqual(issued, ["fictional-new", "fictional-new", "fictional-new"])
+        let count = await renewals.count
+        XCTAssertEqual(count, 1, "Only one request spends the refresh token")
+        let saved = HardcoverCredential(stored: try XCTUnwrap(tokens.secret))
+        XCTAssertEqual(saved.accessToken, "fictional-new")
+        XCTAssertEqual(saved.refreshToken, "fictional-refresh-2")
+        XCTAssertEqual(
+            try XCTUnwrap(saved.expiresAt).timeIntervalSinceNow, 604_800, accuracy: 60)
+
+        // The renewed token lasts a week, so the next request renews nothing.
+        let next = try await account.accessToken()
+        XCTAssertEqual(next, "fictional-new")
+        let after = await renewals.count
+        XCTAssertEqual(after, 1)
+    }
+
+    @MainActor
+    func testRejectedTokenRenewsOnceAndRetriesEachRequest() async throws {
+        let (_, defaults, library) = try signedInStores()
+        // Hardcover rejects the token before its saved expiry, as after a reset on its side.
+        let tokens = FakeSecretStore(
+            try HardcoverCredential(
+                accessToken: "fictional-old", refreshToken: "fictional-refresh-1",
+                expiresAt: .now.addingTimeInterval(86_400)
+            )
+            .stored())
+        let renewals = RequestCount()
+        let client = HardcoverClient { request in
+            if request.url?.path() == "/oauth2/token" {
+                await renewals.add()
+                return Self.respond(200, Self.renewedLogin, to: request)
+            }
+            guard request.value(forHTTPHeaderField: "Authorization") == "Bearer fictional-new"
+            else { return Self.respond(401, "", to: request) }
+            return try await Self.libraryTransport(request)
+        }
+        let account = HardcoverAccount(
+            tokens: tokens, client: client, defaults: defaults, libraryURL: library)
+
+        async let synced: Void = account.sync()
+        async let user = account.withAccessToken { try await client.account(token: $0) }
+        let (_, reader) = try await (synced, user)
+        XCTAssertEqual(reader.id, 4242)
+        XCTAssertNil(account.syncError)
+        XCTAssertFalse(account.needsReconnect)
+        XCTAssertEqual(PhoneLibrary.load(from: library)?.books.map(\.id), [101, 303, 202])
+        let count = await renewals.count
+        XCTAssertEqual(count, 1, "Requests rejected together share one renewal")
+        XCTAssertEqual(
+            HardcoverCredential(stored: try XCTUnwrap(tokens.secret)).refreshToken,
+            "fictional-refresh-2")
+    }
+
+    @MainActor
+    func testRevokedRefreshTokenAsksToReconnectAndKeepsTheLogin() async throws {
+        let (_, defaults, library) = try signedInStores()
+        let login = try HardcoverCredential(
+            accessToken: "fictional-old", refreshToken: "fictional-spent",
+            expiresAt: .now.addingTimeInterval(-60)
+        )
+        .stored()
+        let tokens = FakeSecretStore(login)
+        func account(renewalStatus: Int, body: String) -> HardcoverAccount {
+            HardcoverAccount(
+                tokens: tokens,
+                client: HardcoverClient { request in
+                    guard request.url?.path() == "/oauth2/token" else {
+                        XCTFail("An expired token is never sent")
+                        return Self.respond(401, "", to: request)
+                    }
+                    return Self.respond(renewalStatus, body, to: request)
+                },
+                defaults: defaults, libraryURL: library)
+        }
+
+        // A server failure keeps the login for the next try.
+        let unavailable = account(renewalStatus: 503, body: "")
+        await unavailable.sync()
+        XCTAssertEqual(unavailable.syncError, HardcoverError.http(503).errorDescription)
+        XCTAssertFalse(unavailable.needsReconnect)
+
+        // A spent, expired, or revoked refresh token needs a new sign-in.
+        let revoked = account(renewalStatus: 400, body: #"{"error":"invalid_grant"}"#)
+        await revoked.sync()
+        XCTAssertTrue(revoked.needsReconnect)
+        XCTAssertTrue(revoked.isSignedIn, "The login stays until a reconnect or sign-out")
+        XCTAssertEqual(revoked.syncError, HardcoverError.invalidToken.errorDescription)
+        XCTAssertEqual(tokens.secret, login)
+        XCTAssertEqual(tokens.saves, [])
     }
 
     // MARK: - Library
@@ -661,9 +800,7 @@ final class HardcoverTests: XCTestCase {
                         #"{"device_code":"approved","user_code":"TEST-0001","verification_uri":"https://hardcover.app/link","expires_in":600,"interval":1}"#,
                         to: request)
                 case "/oauth2/token":
-                    return Self.respond(
-                        200, #"{"access_token":"fictional-token","token_type":"Bearer"}"#,
-                        to: request)
+                    return Self.respond(200, Self.renewedLogin, to: request)
                 default:
                     return Self.respond(200, Self.me, to: request)
                 }
@@ -679,6 +816,9 @@ final class HardcoverTests: XCTestCase {
         }
         XCTAssertNil(account.signIn)
         XCTAssertEqual(account.summary?.syncedAt, kept.syncedAt)
+        let saved = HardcoverCredential(stored: try XCTUnwrap(tokens.read()))
+        XCTAssertEqual(saved.accessToken, "fictional-new")
+        XCTAssertEqual(saved.refreshToken, "fictional-refresh-2", "The login keeps refreshing")
 
         await account.syncIfStale()
         XCTAssertEqual(PhoneLibrary.load(from: library)?.syncedAt, kept.syncedAt)
@@ -873,6 +1013,10 @@ final class HardcoverTests: XCTestCase {
     }
 
     private static let me = #"{"data":{"me":[{"id":4242,"username":"fictional_reader"}]}}"#
+
+    /// A token reply with a new access token, a rotated refresh token, and a week's lifetime.
+    private static let renewedLogin =
+        #"{"access_token":"fictional-new","refresh_token":"fictional-refresh-2","expires_in":604800,"token_type":"Bearer"}"#
 
     /// One fictional page: a finished book with an HTML review, a current read, a book on Want to
     /// Read, and an older row for the first book that normalization drops.
