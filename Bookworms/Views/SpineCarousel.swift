@@ -83,8 +83,6 @@ struct SpineCarousel: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
     @AppStorage("BookwormsStackStyle") private var style = StackStyle.flat
-    /// Each flat stack's last centered book, for stacks that do not hold `centeredID`.
-    @State private var columnCenters: [Int: Int] = [:]
 
     /// Shelved books nearly touch, so their spines read as separate books.
     private static let shelfSpacing: CGFloat = 1
@@ -138,48 +136,21 @@ struct SpineCarousel: View {
 
     /// Stack, in as many side-by-side stacks as the width holds at full scale, such as in a wide
     /// Mac window. Each column holds the next run of books in order, the runs differing by at
-    /// most one book. 3D stacks rest on one line and scroll together, as stacks of books on a
-    /// shelf would, and the caption names the centered book of one stack (`CenterTracking`).
-    /// Flat stacks each scroll on their own, and the caption names the book centered in the
-    /// stack scrolled last.
-    @ViewBuilder private func stack(in size: CGSize) -> some View {
+    /// most one book. The stacks rest on one line and scroll together, in both styles, as stacks
+    /// of books on a shelf would, and the caption names the centered book of one stack
+    /// (`CenterTracking`).
+    private func stack(in size: CGSize) -> some View {
         let columns = StackArrangement.columns(in: size.width, books: books.count)
         // Where each run starts; the first `books.count % columns` runs take one more book.
         let bound = { ($0 * books.count + columns - 1) / columns }
         let runs = (0..<columns).map { Array(books[bound($0)..<bound($0 + 1)]) }
         let arrangement = StackArrangement(width: size.width / CGFloat(columns))
-        if columns == 1 || style == .threeD {
-            stackScroll(
-                arrangement.track(of: runs), arrangement: arrangement, in: size,
-                centeredID: $centeredID)
-        } else {
-            HStack(spacing: 0) {
-                ForEach(runs.indices, id: \.self) { column in
-                    stackScroll(
-                        arrangement.track(of: [runs[column]]), arrangement: arrangement,
-                        in: CGSize(width: arrangement.width, height: size.height),
-                        centeredID: columnBinding(column, ids: runs[column].map(\.id)))
-                }
-            }
-        }
-    }
-
-    /// `centeredID` when the column holds it, and otherwise the column's own last centered book,
-    /// so scrolling one flat stack never moves the others.
-    private func columnBinding(_ column: Int, ids: [Int]) -> Binding<Int?> {
-        Binding {
-            if let id = centeredID, ids.contains(id) { return id }
-            return columnCenters[column]
-        } set: { id in
-            columnCenters[column] = id
-            centeredID = id
-        }
+        return stackScroll(arrangement.track(of: runs), arrangement: arrangement, in: size)
     }
 
     /// A scroll view `size` big of `track`'s stacks, side by side, each `arrangement.width` wide.
     private func stackScroll(
-        _ track: SpineTrack, arrangement: StackArrangement, in size: CGSize,
-        centeredID: Binding<Int?>
+        _ track: SpineTrack, arrangement: StackArrangement, in size: CGSize
     ) -> some View {
         // A lazy stack builds only the pages within its scroll view's bounds. A spine overhangs
         // its page by up to half its thickness, and toward the ends of a 3D stack, a book's top
@@ -265,7 +236,7 @@ struct SpineCarousel: View {
         }
         .modifier(
             CenterTracking(
-                track: track, axis: .vertical, viewport: size.height, centeredID: centeredID)
+                track: track, axis: .vertical, viewport: size.height, centeredID: $centeredID)
         )
         // Fades the stack as one image, so a fading 3D book never shows the book under it through
         // its spine.
