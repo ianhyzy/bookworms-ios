@@ -44,13 +44,13 @@ struct FeaturedBookCard: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 } else {
-                    VStack(spacing: 44) {
+                    VStack(spacing: 44 + extra(book)) {
                         hero(book, look: look)
                         details(book, alignment: .center)
                     }
                 }
             }
-            .padding(aspect.insets)
+            .padding(aspect.reachingInsets)
         }
     }
 
@@ -69,13 +69,29 @@ struct FeaturedBookCard: View {
         }
     }
 
+    /// Whether the details show a progress bar or stars between the title and the details line.
+    private func showsMeter(_ book: CloudBook) -> Bool {
+        input.template == .currentlyReading
+            ? book.progress != nil : input.showsRatings && (book.rating ?? 0) > 0
+    }
+
+    /// The height each gap adds on a story, whose content reaches into the bottom strip
+    /// (`ShareAspect.reach`): an even share among the gaps above the title and above each of the
+    /// details' other groups, so the hero keeps the size it has within `ShareAspect.insets`.
+    private func extra(_ book: CloudBook) -> CGFloat {
+        let isReading = input.template == .currentlyReading
+        let hasLine = !ShareStyle.details(book, isReading: isReading).isEmpty
+        let gaps = 1 + (showsMeter(book) ? 1 : 0) + (hasLine ? 1 : 0)
+        return input.aspect.reach / CGFloat(gaps)
+    }
+
     /// The title and author, the rating or progress, and the details line, such as "Finished
     /// Nov 30, 2025 · 736 pages", with wider gaps between these groups than within them.
     private func details(_ book: CloudBook, alignment: HorizontalAlignment) -> some View {
         let isSquare = input.aspect == .square
         let isReading = input.template == .currentlyReading
         let details = ShareStyle.details(book, isReading: isReading)
-        return VStack(alignment: alignment, spacing: 36) {
+        return VStack(alignment: alignment, spacing: 36 + extra(book)) {
             VStack(alignment: alignment, spacing: 14) {
                 if isReading {
                     ShareStyle.label("Currently reading").foregroundStyle(ShareStyle.gold)
@@ -91,12 +107,12 @@ struct FeaturedBookCard: View {
                     .lineLimit(2)
                     .minimumScaleFactor(0.75)
             }
-            if isReading {
-                if let progress = book.progress {
+            if showsMeter(book) {
+                if isReading, let progress = book.progress {
                     progressBar(progress, width: isSquare ? 250 : 440)
+                } else if let rating = book.rating {
+                    ShareStars(rating: rating, size: 44)
                 }
-            } else if input.showsRatings, let rating = book.rating, rating > 0 {
-                ShareStars(rating: rating, size: 44)
             }
             if !details.isEmpty {
                 detailsLine(details)
