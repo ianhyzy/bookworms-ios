@@ -4,8 +4,9 @@ import Synchronization
 
 /// Reading statistics for a time frame, computed with the Apple TV Year in Review's rules.
 ///
-/// The library keeps each book's most recent read, so a reread counts once, in the frame of its
-/// latest finish. Books without a valid finish date are left out.
+/// A reread counts once in each frame it was finished in, by its newest finish there
+/// (`TimeFrame.books(in:)`), so its column and order follow that read. Books without a valid
+/// finish date are left out.
 struct YearInBooks: Equatable {
     /// A name and how many books it applies to, such as a genre or format.
     struct Tally: Equatable {
@@ -65,7 +66,7 @@ struct YearInBooks: Equatable {
     /// Computes the statistics for the books in `library` finished in `frame`.
     init(frame: TimeFrame, library: [CloudBook]) {
         self.frame = frame
-        let books = library.filter(frame.contains)
+        let books = frame.books(in: library)
             .sorted { ($0.finished ?? "", $0.id) < ($1.finished ?? "", $1.id) }
         self.books = books
 

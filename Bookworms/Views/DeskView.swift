@@ -152,8 +152,10 @@ struct DeskView: View {
     private func shownBooks(frame: TimeFrame?) -> [CloudBook] {
         // The read books, as in Library, and current reads, which **All books** marks with
         // ribbons. Want to Read and other unread shelves stay off.
-        var books = sort.sorted(model.books.filter { $0.hasBeenRead || $0.isReading == true })
-        if let frame { books = books.filter(frame.contains) }
+        var books = model.books.filter { $0.hasBeenRead || $0.isReading == true }
+        // A reread shows by its finish in the frame, which can change its place.
+        if let frame { books = frame.books(in: books) }
+        books = sort.sorted(books)
         #if DEBUG
             // `-BookwormsShareSamples <n>` also marks current reads here, for the pile's ribbons.
             books = ShareDebug.samples(books)

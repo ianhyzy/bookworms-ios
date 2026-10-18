@@ -38,6 +38,32 @@ final class YearInBooksTests: XCTestCase {
         XCTAssertNil(single.busiest, "A column of one book isn't busy")
     }
 
+    func testRereadsCountInEachYearByTheirReadThere() {
+        var reread = book(1, finished: "2026-02-01", pages: 300)
+        reread.finishedDates = ["2026-02-01", "2025-09-20", "2025-03-05"]
+        let library = [reread, book(2, finished: "2025-06-01", pages: 100)]
+
+        let year = YearInBooks(frame: .year(2025), library: library)
+        XCTAssertEqual(year.books.map(\.id), [2, 1], "The newest read in 2025 orders the book")
+        XCTAssertEqual(year.books.last?.finished, "2025-09-20")
+        XCTAssertEqual(year.columns[8].books.map(\.id), [1])
+        XCTAssertEqual(year.pages, 400)
+        XCTAssertEqual(YearInBooks(frame: .year(2026), library: library).books.map(\.id), [1])
+        XCTAssertEqual(
+            YearInBooks(frame: .month(year: 2025, month: 3), library: library).books.map(\.id),
+            [1])
+        // A lifetime counts the book once, by its newest read.
+        let lifetime = YearInBooks(frame: .lifetime, library: library)
+        XCTAssertEqual(lifetime.books.map(\.finished), ["2025-06-01", "2026-02-01"])
+
+        // Share cards in 2025 show the book by its read there.
+        let finished = ShareTemplate.justFinished.books(from: library, in: .year(2025), bookID: 1)
+        XCTAssertEqual(finished.map(\.finished), ["2025-09-20"])
+        XCTAssertEqual(
+            ShareTemplate.topFive.books(from: library, in: .year(2025)).map(\.id).sorted(),
+            [1, 2])
+    }
+
     func testMonthsChartWeeksOfTheirDays() {
         let august = YearInBooks(
             frame: .month(year: 2025, month: 8),
