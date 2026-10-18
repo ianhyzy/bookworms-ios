@@ -7,9 +7,10 @@ extension SpineFamily {
     /// ships it as a system font, so every Bookworms app uses the same replacement.
     static let impactReplacement = SpineFamily.bebasNeue
 
-    /// Upright stand-ins, keyed by lowercased name without spaces, for catalog families that
-    /// slant by design without declaring it: the allowed decorative or hand-drawn family nearest
-    /// in weight and role.
+    /// Stand-ins, keyed by lowercased name without spaces, for catalog families that slant by
+    /// design without declaring it: the allowed decorative or hand-drawn family nearest in weight
+    /// and role. Kalam, Caveat, and Permanent Marker declare no slant, but their letters lean
+    /// too, so new designs never use them (`SpineFamily.neverGenerated`).
     static let slantedReplacements: [String: SpineFamily] = [
         "bangers": .bungee, "shrikhand": .changaOne, "dancingscript": .kalam,
         "pacifico": .permanentMarker, "satisfy": .caveat, "greatvibes": .caveat,
@@ -25,7 +26,7 @@ extension SpineFamily {
     /// | Impact, in any spelling | Bebas Neue (`impactReplacement`) |
     /// | Bangers | Bungee |
     /// | Shrikhand | Changa One |
-    /// | Dancing Script, Pacifico, or another slanted script | An upright hand-drawn family |
+    /// | Dancing Script, Pacifico, or another slanted script | Kalam, Caveat, or Permanent Marker |
     /// | An italic, oblique, or slanted variant, such as "Lora Italic" | Its upright family, Lora |
     /// | Anything else blocked | `nil` |
     ///

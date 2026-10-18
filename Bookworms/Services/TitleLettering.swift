@@ -261,8 +261,8 @@ enum TitleLettering {
         return strokes.isEmpty ? 0 : strokes[strokes.count / 2]
     }
 
-    /// The title weight, `minimumWeight` through 700 in steps of 100, whose stroke weight comes nearest
-    /// `cover`'s, interpolating between a family's `regular` (400) and `bold` (700) stroke
+    /// The title weight, `minimumWeight` through 700 in steps of 100, whose stroke weight comes
+    /// nearest `cover`'s, interpolating between a family's `regular` (400) and `bold` (700) stroke
     /// weights. A family whose bold is no heavier, such as a single-weight display face, gets
     /// `minimumWeight`, which loads its only instance.
     static func weight(regular: Double, bold: Double, cover: Double) -> Int {
