@@ -4,8 +4,9 @@
 //
 // Downloads each catalog family from Google Fonts into a cache folder and renders every
 // character of `characters` alone at regular (400) and bold (700) weight, in a 32-pixel line
-// frame from descender to ascender. Bold falls back to the nearest static weight the family
-// has. Run it after changing `SpineFamily`:
+// frame from descender to ascender. Each weight comes from the file the app downloads for it
+// (`SpineFamily.fileName(for:in:)`), so bold falls back to the nearest static weight the family
+// has. Run it after changing `SpineFamily` or that file rule:
 //
 //   script/spine-font-atlas.sh
 
@@ -20,7 +21,9 @@ let height = 32
 struct SpineFontAtlasTool {
     static func main() async throws {
         let output = URL(fileURLWithPath: CommandLine.arguments[1])
-        let cache = URL.cachesDirectory.appending(path: "spine-font-atlas")
+        // Versioned with `SpineFamily.fileName(for:in:)`: earlier caches kept only a family's
+        // variable files, so the file rule could not find its static cuts there.
+        let cache = URL.cachesDirectory.appending(path: "spine-font-atlas-v2")
         var data = Data("BWA1".utf8)
         data.append(uint16: height)
         data.append(uint16: characters.utf8.count)
@@ -117,9 +120,8 @@ struct SpineFontAtlasTool {
                 let name = $0["filename"] as? String ?? ""
                 return name.hasSuffix(".ttf") && !name.contains("Italic")
             }
-        let variable = references.filter { ($0["filename"] as? String ?? "").contains("[") }
         var names: [String] = []
-        for reference in variable.isEmpty ? references : variable {
+        for reference in references {
             guard let name = reference["filename"] as? String,
                 let url = URL(string: reference["url"] as? String ?? "")
             else { continue }
@@ -137,20 +139,14 @@ struct SpineFontAtlasTool {
                 as? [CTFontDescriptor])?
                 .first
         }
-        if let variable = files.first(where: { $0.contains("[") }), let d = descriptor(variable) {
-            let instance =
-                variable.contains("wght")
-                ? CTFontDescriptorCreateCopyWithVariation(
-                    d, 0x7767_6874 as CFNumber, CGFloat(weight))
-                : d
-            return CTFontCreateWithFontDescriptor(instance, size, nil)
-        }
-        let names = [400: ["Regular"], 700: ["Bold", "SemiBold", "ExtraBold", "Black"]]
-        let preferred = (names[weight] ?? []) + ["Regular"]
-        let file =
-            preferred.lazy.compactMap { name in files.first { $0.hasSuffix("-\(name).ttf") } }
-            .first ?? files.first
-        return file.flatMap(descriptor).map { CTFontCreateWithFontDescriptor($0, size, nil) }
+        guard let file = SpineFamily.fileName(for: weight, in: files), let d = descriptor(file)
+        else { return nil }
+        // A variable file stands in only when no static file has the weight.
+        let instance =
+            (file.contains("[") || file.contains("VariableFont")) && file.contains("wght")
+            ? CTFontDescriptorCreateCopyWithVariation(d, 0x7767_6874 as CFNumber, CGFloat(weight))
+            : d
+        return CTFontCreateWithFontDescriptor(instance, size, nil)
     }
 }
 

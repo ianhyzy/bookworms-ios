@@ -113,14 +113,15 @@ struct ModelStatus: Sendable {
 }
 
 /// Designs a spine from a cover with local OCR, the cover's title colors, at most one Private
-/// Cloud Compute or backup-model request plus an on-device mood request, and downloaded Google
-/// Fonts families.
+/// Cloud Compute or backup-model request plus, when the book's genres don't say whether it is
+/// playful, an on-device mood request, and downloaded Google Fonts families.
 ///
 /// The model answers three coarse questions about the title lettering, which even the on-device
 /// model answers reliably: whether it is hand-drawn, whether it has serifs, and any special
 /// treatment. `TitleLettering` then ranks the families those answers allow by measuring the
-/// lettering itself. The on-device model also judges, from the book's text, whether the book is
-/// playful enough for rounded faces.
+/// lettering itself. Whether the book is playful enough for handwriting and rounded faces comes
+/// from its genres or, when they don't say, from the on-device model reading the book's text
+/// (`isPlayful(_:)`).
 ///
 /// The run's model tier (`ModelTier`) answers. Private Cloud Compute's request counts against the
 /// user's daily quota, and the backup model's request is billed to the reader's API account.
@@ -358,7 +359,9 @@ actor BookAnalyzer {
             if status.tier == .local {
                 Self.localFamilies(genres: book.genres, measured: lettering != nil)
             } else {
-                Self.families(for: reading, playful: await Self.isPlayful(book))
+                Self.families(
+                    for: Self.checked(reading, against: lettering, genres: book.genres),
+                    playful: await Self.isPlayful(book))
             }
         let candidates = Self.candidates(
             families, lettering: lettering, book: book, local: status.tier == .local)
@@ -446,16 +449,50 @@ actor BookAnalyzer {
     }
 
     /// Cloth from the ground behind the cover's title and ink from its lettering, or, without a
-    /// measurable title, the most common cover color with black or white ink. `design` then
-    /// moves them in lightness only as far as contrast needs.
+    /// measurable title, from the most common cover color, kept to the house style.
+    ///
+    /// Cloth and accent keep their hue at no more chroma than dyed cloth or paper shows
+    /// (`muted(_:)`), so nothing is neon. Dark ink goes only on light cloth, never on a
+    /// mid-tone or saturated one. The title's own ink stays when it is a deliberate color with
+    /// the right polarity that already reads on the cloth; any other ink is near-black or
+    /// near-white with a trace of its hue. `design` then moves them in lightness only as far as
+    /// contrast needs, darkening mid-tone cloth under light ink.
     static func choice(
         _ lettering: TitleLettering.Measurement?, palette: [ColorValue], weight: Int
     ) -> DesignChoice {
-        let background = lettering?.ground ?? palette[0]
+        let ground = lettering?.ground ?? palette[0]
+        let background = muted(ground)
+        let darkInk = SpineContrast.lab(background).l >= 0.72
+        let hue = lettering.map { muted($0.ink) } ?? background
+        let titleInk = SpineContrast.lab(hue)
+        let ink: ColorValue
+        if lettering != nil, hypot(titleInk.a, titleInk.b) >= 0.08,
+            (titleInk.l < 0.5) == darkInk,
+            SpineContrast.resolve(foreground: hue, background: background, minimumLc: 75)
+                == (hue, background)
+        {
+            ink = hue
+        } else {
+            // A trace of the ink's hue keeps black and white from looking printed on.
+            let scale = min(1, 0.02 / max(hypot(titleInk.a, titleInk.b), 1e-9))
+            ink = SpineContrast.color(
+                SpineContrast.Lab(
+                    l: darkInk ? 0.2 : 0.96, a: titleInk.a * scale, b: titleInk.b * scale))
+        }
         return DesignChoice(
-            background: background,
-            ink: lettering?.ink ?? CoverPalette.readableForeground(for: background),
-            accent: palette.first { $0 != background } ?? background, weight: weight)
+            background: background, ink: ink,
+            accent: muted(palette.first { $0 != ground } ?? ground), weight: weight)
+    }
+
+    /// `color` with its OKLCH chroma capped as on dyed bookcloth: up to 0.12 at mid and dark
+    /// lightness, falling to 0.05 at a paper-light 0.9, so bright colors become pastels.
+    static func muted(_ color: ColorValue) -> ColorValue {
+        let lab = SpineContrast.lab(color)
+        let chroma = hypot(lab.a, lab.b)
+        let limit = 0.12 - max(0, lab.l - 0.7) * 0.35
+        guard chroma > limit else { return color }
+        let scale = limit / chroma
+        return SpineContrast.color(SpineContrast.Lab(l: lab.l, a: lab.a * scale, b: lab.b * scale))
     }
 
     /// The model's answers about the title lettering.
@@ -470,24 +507,46 @@ actor BookAnalyzer {
         "western wood type", "dripping or distressed", "typewriter",
     ]
 
-    /// The families a reading allows, or every allowed family without one. A special treatment
-    /// limits the choice to families that show it; "dripping or distressed" does not, because
-    /// textured cover art often draws that answer for plain lettering. Rounded faces read as
-    /// cheerful, so only a playful book may use them.
+    /// `reading` with the answers taken back that the measurements or the book contradict.
+    ///
+    /// "Outlined or multi-line neon" stands only for lettering with hairline strokes
+    /// (`TitleLettering.hasHairlineStrokes(_:atlas:)`); the on-device model gives that answer for
+    /// many solid titles on dark or busy covers. A book whose `genres` mark it serious
+    /// (`genreTone(_:)`) keeps no special treatment, so it gets a typeset face that echoes the
+    /// lettering's serifs: themed display faces read as playful, as handwriting does.
+    static func checked(
+        _ reading: LetteringReading?, against lettering: TitleLettering.Measurement?,
+        genres: [String]? = nil
+    ) -> LetteringReading? {
+        guard var reading else { return nil }
+        let unconfirmed =
+            reading.treatment == "outlined or multi-line neon"
+            && lettering.map { !TitleLettering.hasHairlineStrokes($0) } == true
+        if unconfirmed || genreTone(genres) == false { reading.treatment = "plain" }
+        return reading
+    }
+
+    /// The families a reading allows, never including `SpineFamily.neverGenerated`.
+    ///
+    /// A special treatment limits the choice to families that show it; "dripping or distressed"
+    /// does not, because textured cover art often draws that answer for plain lettering.
+    /// Handwriting and rounded faces read as cheerful, so only a playful book may use them: its
+    /// hand-drawn title gets an upright hand-drawn or rounded face, ranked by the lettering's
+    /// measurements. Any other book's hand-drawn title gets a typeset face that echoes its
+    /// serifs, width, and weight. Without a reading, the serif and sans families stay allowed;
+    /// themed display, gothic, and typewriter faces need a reading that names their treatment.
     static func families(for reading: LetteringReading?, playful: Bool) -> [String] {
         let all = SpineFamily.allCases
-        var chosen = all
+        let serif: Set<SpineFontStyle> = [.bookSerif, .didone, .classicalCaps, .slab]
+        let sans: Set<SpineFontStyle> = [.humanistSans, .geometricSans, .condensedSans, .rounded]
+        var chosen = all.filter { serif.union(sans).contains($0.style) }
         if let reading {
-            let serif: Set<SpineFontStyle> = [.bookSerif, .didone, .classicalCaps, .slab]
-            let sans: Set<SpineFontStyle> = [
-                .humanistSans, .geometricSans, .condensedSans, .rounded,
-            ]
             chosen =
-                if reading.handDrawn {
-                    all.filter { $0.style == .script }
+                if reading.handDrawn, playful {
+                    all.filter { [.script, .rounded].contains($0.style) }
                 } else {
                     switch reading.treatment {
-                    case "outlined or multi-line neon": [.monoton, .bungee, .righteous, .limelight]
+                    case "outlined or multi-line neon": [.bungee, .righteous, .limelight]
                     case "pixel or sci-fi tech":
                         [.orbitron, .michroma, .audiowide, .chakraPetch, .pressStart2p, .russoOne]
                     case "gothic broken strokes": all.filter { $0.style == .blackletter }
@@ -497,19 +556,23 @@ actor BookAnalyzer {
                     }
                 }
         }
-        if !playful { chosen.removeAll { $0.style == .rounded } }
-        return chosen.map(\.rawValue).filter(allowsFamily)
+        if !playful { chosen.removeAll { [.script, .rounded].contains($0.style) } }
+        return chosen.filter { !SpineFamily.neverGenerated.contains($0) }.map(\.rawValue)
+            .filter(allowsFamily)
     }
 
     /// The families a design without a model may use for a book with `genres`: those of its
-    /// first recognized genre (`genreFamilies(_:)`). Without one, the title measurements rank
-    /// every allowed family except rounded faces, which need a model to judge the book playful,
-    /// or, when `measured` is false because no title line was measured or none of these
-    /// families could be ranked by it (`candidates(_:lettering:book:local:)`), the Apple TV's
-    /// general-fiction face, a humanist sans.
+    /// first recognized genre (`genreFamilies(_:)`), never including `SpineFamily.neverGenerated`.
+    /// Without one, the title measurements rank
+    /// every family that `families(for:playful:)` offers a book that isn't playful, which leaves
+    /// out handwriting and rounded faces, or, when `measured` is false because no title line was
+    /// measured or none of these families could be ranked by it
+    /// (`candidates(_:lettering:book:local:)`), the Apple TV's general-fiction face, a humanist
+    /// sans.
     static func localFamilies(genres: [String]?, measured: Bool) -> [String] {
         if let families = genreFamilies(genres) {
-            return families.map(\.rawValue).filter(allowsFamily)
+            return families.filter { !SpineFamily.neverGenerated.contains($0) }.map(\.rawValue)
+                .filter(allowsFamily)
         }
         return measured
             ? families(for: nil, playful: false)
@@ -519,9 +582,9 @@ actor BookAnalyzer {
     /// The families and weights a design tries, best match first: `families` ranked by the
     /// measured title line (`TitleLettering.rank(_:for:atlas:)`). Without a line that ranks them,
     /// such as none measured or one in a script the font atlas lacks, the families come in
-    /// `book`'s reproducible order at regular weight. For local defaults (`local`), they are
-    /// then the families for a book without a measured line (`localFamilies(genres:measured:)`)
-    /// at bold weight, as the Apple TV's genre faces are.
+    /// `book`'s reproducible order at `TitleLettering.minimumWeight`. For local defaults
+    /// (`local`), they are then the families for a book without a measured line
+    /// (`localFamilies(genres:measured:)`) at bold weight, as the Apple TV's genre faces are.
     static func candidates(
         _ families: [String], lettering: TitleLettering.Measurement?, book: CloudBook, local: Bool
     ) -> [TitleLettering.Match] {
@@ -530,7 +593,10 @@ actor BookAnalyzer {
         let unranked = local ? localFamilies(genres: book.genres, measured: false) : families
         var generator = SeededGenerator(seed: UInt64(bitPattern: Int64(book.id)))
         return unranked.shuffled(using: &generator)
-            .map { TitleLettering.Match(family: $0, weight: local ? 700 : 400) }
+            .map {
+                TitleLettering.Match(
+                    family: $0, weight: local ? 700 : TitleLettering.minimumWeight)
+            }
     }
 
     /// The catalog families for the first of `genres`, in Hardcover's ranked order, that names a
@@ -576,15 +642,47 @@ actor BookAnalyzer {
         return nil
     }
 
+    /// Whether `genres` mark a book playful (`true`) or serious (`false`), or `nil` when they
+    /// don't say. Lowercased substrings decide, in this order: nonfiction, memoir, biography,
+    /// history, politics, the social sciences, philosophy, essays, business, or literary
+    /// fiction is serious; then a children's genre, such as "Juvenile Fiction" or "Picture
+    /// Books", or humor, satire, or comedy is playful. A "science" genre other than science
+    /// fiction counts as nonfiction. Hardcover's genres are reader tags, so one stray tag, such
+    /// as "Juvenile Fiction" on a political novel, can't make a serious book playful. Comics and
+    /// graphic novels say nothing either way, since many are as dark as any novel.
+    static func genreTone(_ genres: [String]?) -> Bool? {
+        let genres = (genres ?? []).map { $0.lowercased() }
+        func any(_ names: [String]) -> Bool {
+            genres.contains { genre in names.contains { genre.contains($0) } }
+        }
+        // Stems such as "politi" and "philosoph" also match genres in French and Spanish.
+        if any([
+            "nonfiction", "non-fiction", "memoir", "biograph", "history", "politi",
+            "social science", "sociology", "philosoph", "essay", "economics", "business",
+            "true crime", "journalism", "literary fiction",
+        ]) || genres.contains(where: { $0.contains("science") && !$0.contains("fiction") }) {
+            return false
+        }
+        if any([
+            "children", "juvenile", "picture book", "middle grade", "humor", "humour", "satire",
+            "comedy",
+        ]) {
+            return true
+        }
+        return nil
+    }
+
     static let moods = [
         "serious", "dark or suspenseful", "literary or classic", "playful or humorous",
         "for young children",
     ]
 
-    /// Asks the on-device model whether the book is playful, from its text alone. The answer
-    /// costs no Private Cloud Compute quota. Any failure, such as a guardrail rejecting the
-    /// description or an unavailable model, counts as not playful, the safer choice of type.
+    /// Whether the book is playful: its genres' answer (`genreTone(_:)`), else the on-device
+    /// model's, from the book's text alone. The model's answer costs no Private Cloud Compute
+    /// quota. Any failure, such as a guardrail rejecting the description or an unavailable
+    /// model, counts as not playful, the safer choice of type.
     private static func isPlayful(_ book: CloudBook) async -> Bool {
+        if let tone = genreTone(book.genres) { return tone }
         let model = SystemLanguageModel.default
         guard model.isAvailable else { return false }
         var lines = [
@@ -631,7 +729,7 @@ actor BookAnalyzer {
         let blocked = [
             "impact", "italic", "oblique", "slanted", "bangers", "shrikhand", "dancingscript",
             "pacifico", "satisfy", "greatvibes", "lobster", "courgette", "homemadeapple",
-            "rocksalt",
+            "rocksalt", "kalam", "caveat", "permanentmarker", "shadowsintolight",
         ]
         let postScriptStyle = name.split(separator: "-").dropFirst().last
         return !blocked.contains { lowered.contains($0) }
@@ -828,7 +926,12 @@ actor BookAnalyzer {
             .compactMap { observation in
                 observation.topCandidates(1).first
                     .map {
-                        TitleLettering.Line(text: $0.string, box: observation.boundingBox)
+                        TitleLettering.Line(
+                            text: $0.string, box: observation.boundingBox,
+                            corners: [
+                                observation.bottomLeft, observation.bottomRight,
+                                observation.topRight, observation.topLeft,
+                            ])
                     }
             }
     }

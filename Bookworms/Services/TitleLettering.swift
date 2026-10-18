@@ -8,14 +8,17 @@ import Foundation
 /// the ground is the cluster that touches the crop's border most. Every catalog family's version
 /// of the same text is composed from `SpineFontAtlas.lzfse`, small glyph images that
 /// `script/spine-font-atlas.swift` renders from the Google Fonts files, so ranking needs no font
-/// downloads. Families are compared on three measurements that small vision models judge
-/// poorly: letter shapes, letter width for their height with letter spacing removed, and how
-/// much stroke thickness varies.
+/// downloads. Families are compared on four measurements that small vision models judge
+/// poorly: letter shapes, letter width for their height with letter spacing removed, how much
+/// stroke thickness varies, and stroke weight.
 enum TitleLettering {
     /// An OCR line with its normalized Vision bounding box (origin at the bottom left).
     struct Line: Sendable {
         let text: String
         let box: CGRect
+        /// Vision's corners of the line's quadrilateral, normalized like `box`: bottom left,
+        /// bottom right, top right, then top left. Without them the line counts as level.
+        var corners: [CGPoint]? = nil
     }
 
     /// The measured title line.
@@ -27,6 +30,10 @@ enum TitleLettering {
         let profile: Mask.Profile
         let ink: ColorValue
         let ground: ColorValue
+        /// The share of the OCR line's width that the measured letters span, or `nil` when not
+        /// measured. Well under 1 means the ink mask lost letters that OCR read, such as the
+        /// second color of a two-color title or a gray byline (`isPlausible(_:composed:)`).
+        var inkSpan: Double? = nil
     }
 
     /// A family and weight, best match first.
@@ -35,58 +42,166 @@ enum TitleLettering {
         let weight: Int
     }
 
+    /// The lightest title weight a ranked family gets. Thin strokes read badly at spine size,
+    /// where `SpineView` sizes the title to the spine's thickness, so a design is never lighter
+    /// than semibold even when the cover's lettering is. Many families have no medium (500)
+    /// instance, and the nearest instance to 500 would be their regular.
+    static let minimumWeight = 600
+
     /// Measures the tallest OCR line that shares a word with `title`, or the tallest line when
     /// none does. Returns `nil` when the cover has no readable line.
+    ///
+    /// A line set vertically, whose box is taller than it is wide, is left out: its letters
+    /// stack, so the line's width says nothing about theirs. So is a line turned more than 45
+    /// degrees. A tilted line is measured level: its ink mask turns about the line's center by
+    /// the angle of Vision's quadrilateral, because the upright box of a tilted line is taller
+    /// than its letters and would measure them too narrow.
     static func measure(_ image: CGImage, lines: [Line], title: String) -> Measurement? {
-        let words = Set(wordsIn(title))
-        let titled = lines.filter { !Set(wordsIn($0.text)).isDisjoint(with: words) }
-        guard
-            let line = (titled.isEmpty ? lines : titled).max(by: { $0.box.height < $1.box.height })
-        else { return nil }
         let width = CGFloat(image.width)
         let height = CGFloat(image.height)
+        let framed = lines.map { (line: $0, frame: Frame($0, width: width, height: height)) }
+            .filter { $0.frame.length > $0.frame.thickness && abs($0.frame.angle) <= .pi / 4 }
+        let words = Set(wordsIn(title))
+        let titled = framed.filter { !Set(wordsIn($0.line.text)).isDisjoint(with: words) }
+        guard
+            let (line, frame) = (titled.isEmpty ? framed : titled)
+                .max(by: { $0.frame.thickness < $1.frame.thickness })
+        else { return nil }
         // Vision's box is normalized with a bottom-left origin; CGImage cropping is top-left.
         var rect = CGRect(
             x: line.box.minX * width, y: (1 - line.box.maxY) * height,
             width: line.box.width * width, height: line.box.height * height)
+        let box = rect
         rect =
             rect.insetBy(dx: -rect.height * 0.12, dy: -rect.height * 0.12)
             .intersection(CGRect(x: 0, y: 0, width: width, height: height)).integral
-        guard let crop = image.cropping(to: rect), let split = split(crop),
-            let profile = split.mask.profile()
-        else { return nil }
+        guard let crop = image.cropping(to: rect), let split = split(crop) else { return nil }
+        // The padding keeps the colors' border clear of the letters, but a line or picture just
+        // above or below can touch the title's rows and join its band, which makes the
+        // lettering look taller and narrower than it is. Only the line's own rows, with a little
+        // slack for strokes Vision trims, are measured.
+        var mask = split.mask
+        let scale = Double(split.mask.height) / Double(crop.height)
+        let rows: Range<Int>
+        let lineWidth: Double
+        if frame.angle == 0 {
+            lineWidth = box.width * scale
+            let slack = box.height * 0.06
+            let top = Int(((box.minY - rect.minY - slack) * scale).rounded(.down))
+            let bottom = Int(((box.maxY - rect.minY + slack) * scale).rounded(.up))
+            guard top < bottom else { return nil }
+            rows = top..<bottom
+        } else {
+            mask = mask.leveled(
+                angle: frame.angle,
+                center: CGPoint(
+                    x: (frame.center.x - rect.minX) * scale,
+                    y: (frame.center.y - rect.minY) * scale),
+                length: frame.length * scale, thickness: frame.thickness * scale)
+            lineWidth = frame.length * scale
+            let slack = frame.thickness * scale * 0.06
+            let middle = Double(mask.height) / 2
+            let half = frame.thickness * scale / 2 + slack
+            rows = Int((middle - half).rounded(.down))..<Int((middle + half).rounded(.up))
+        }
+        let kept = mask.keepingRows(rows)
+        guard let profile = kept.profile() else { return nil }
         return Measurement(
             text: line.text.trimmingCharacters(in: .whitespaces), crop: crop, profile: profile,
-            ink: split.ink, ground: split.ground)
+            ink: split.ink, ground: split.ground,
+            inkSpan: kept.band()?.trimmed().map { Double($0.width) / max(1, lineWidth) })
     }
 
-    /// Ranks `families` at regular and bold weight by how closely the measured lettering
-    /// matches the same text composed from each family's glyphs. Each measurement is z-scored
-    /// across the whole catalog, so a subset ranks the same way it would within the catalog.
-    /// Families without glyphs for the text are left out.
+    /// An OCR line's position in image pixels with a top-left origin: its center, the angle of
+    /// its baseline in radians (negative for a line that rises to the right), and its length
+    /// and thickness along and across the baseline.
+    ///
+    /// A line without corners, or one tilted less than a degree, counts as level, with its
+    /// box's center and size.
+    private struct Frame {
+        var center: CGPoint
+        var angle: Double
+        var length: Double
+        var thickness: Double
+
+        init(_ line: Line, width: CGFloat, height: CGFloat) {
+            center = CGPoint(x: line.box.midX * width, y: (1 - line.box.midY) * height)
+            angle = 0
+            length = line.box.width * width
+            thickness = line.box.height * height
+            guard let corners = line.corners, corners.count == 4 else { return }
+            let points = corners.map { CGPoint(x: $0.x * width, y: (1 - $0.y) * height) }
+            let (bottomLeft, bottomRight, topRight, topLeft) =
+                (points[0], points[1], points[2], points[3])
+            let tilt = atan2(bottomRight.y - bottomLeft.y, bottomRight.x - bottomLeft.x)
+            guard abs(tilt) >= .pi / 180 else { return }
+            center = CGPoint(
+                x: points.map(\.x).reduce(0, +) / 4, y: points.map(\.y).reduce(0, +) / 4)
+            angle = tilt
+            length = hypot(bottomRight.x - bottomLeft.x, bottomRight.y - bottomLeft.y)
+            thickness =
+                (hypot(topLeft.x - bottomLeft.x, topLeft.y - bottomLeft.y)
+                    + hypot(topRight.x - bottomRight.x, topRight.y - bottomRight.y)) / 2
+        }
+    }
+
+    /// Whether a measurement could be the line's text set in some face: its letters span at
+    /// least three quarters of the OCR line's width, and it is at least 85 percent as wide for
+    /// its height as the narrowest of the catalog's versions of the text (`composed`).
+    ///
+    /// A mask that lost letters, such as one color of a two-color title or a gray byline that
+    /// OCR read with the title, spans part of the line and measures far narrower than the text
+    /// set in any face. Ranking it would pick the narrowest face for lettering that isn't narrow.
+    /// Lettering wider than every face stays plausible: widely set letters, such as an extended
+    /// sans, measure that way, and the widest faces suit them.
+    static func isPlausible(
+        _ measurement: Measurement, composed: [(font: FontAtlas.Font, profile: Mask.Profile)]
+    ) -> Bool {
+        guard let narrowest = composed.map(\.profile.aspect).min() else { return false }
+        return (measurement.inkSpan ?? 1) >= 0.75
+            && measurement.profile.aspect >= narrowest * 0.85
+    }
+
+    /// Ranks `families` by how closely the measured lettering matches the same text composed
+    /// from each family's regular and bold glyphs, one match per family. Each measurement is
+    /// z-scored across the whole catalog, so a subset ranks the same way it would within the
+    /// catalog. Families without glyphs for the text are left out.
+    ///
+    /// Stroke weight is matched against the lettering's own, but never against less than the
+    /// catalog's median regular weight for the text: a design is never lighter than
+    /// `minimumWeight`, so a thin title gets a face that is regular at its lightest. A family's
+    /// weight is then interpolated between its regular and bold glyphs
+    /// (`weight(regular:bold:cover:)`). A measurement that no face could produce
+    /// (`isPlausible(_:composed:)`) ranks nothing.
     static func rank(
         _ families: [String], for measurement: Measurement, atlas: FontAtlas? = .shared
     ) -> [Match] {
         guard let atlas else { return [] }
         let cover = measurement.profile
-        var rows: [(match: Match, values: [Double])] = []
-        for font in atlas.fonts {
-            guard let profile = font.compose(measurement.text)?.profile() else { continue }
-            rows.append(
-                (
-                    Match(family: font.family, weight: font.weight),
-                    [
-                        profile.shapeDifference(from: cover),
-                        abs(log(profile.aspect / cover.aspect)),
-                        abs(profile.strokeSpread - cover.strokeSpread),
-                    ]
-                ))
+        let composed = composedProfiles(of: measurement.text, atlas: atlas)
+        guard isPlausible(measurement, composed: composed) else { return [] }
+        let stroke = max(cover.strokeWeight, regularStroke(of: composed))
+        var strokes: [String: [Int: Double]] = [:]
+        for (font, profile) in composed {
+            strokes[font.family, default: [:]][font.weight] = profile.strokeWeight
         }
-        guard rows.count > 1 else { return rows.map(\.match) }
-        // Width carries most of the signal; shape and stroke contrast separate similar widths.
-        let weights = [0.5, 2, 0.5]
+        let rows = composed.map { font, profile in
+            (
+                family: font.family, weight: font.weight,
+                values: [
+                    profile.shapeDifference(from: cover),
+                    abs(log(profile.aspect / cover.aspect)),
+                    abs(profile.strokeSpread - cover.strokeSpread),
+                    abs(log(profile.strokeWeight / stroke)),
+                ]
+            )
+        }
+        // Width carries most of the signal; stroke weight keeps a heavy title out of hairline
+        // faces of the same width, and shape and stroke contrast separate the rest. The weights
+        // scored best on the hand-labeled covers of the owner's library.
+        let weights = [0.25, 2, 0.25, 1]
         var scores = [Double](repeating: 0, count: rows.count)
-        for k in weights.indices {
+        for k in weights.indices where rows.count > 1 {
             let values = rows.map { $0.values[k] }
             let mean = values.reduce(0, +) / Double(values.count)
             let deviation =
@@ -97,13 +212,63 @@ enum TitleLettering {
             }
         }
         let allowed = Set(families)
-        return rows.indices.filter { allowed.contains(rows[$0].match.family) }
+        var seen = Set<String>()
+        return rows.indices.filter { allowed.contains(rows[$0].family) }
             .sorted { lhs, rhs in
                 if scores[lhs] != scores[rhs] { return scores[lhs] < scores[rhs] }
-                let (a, b) = (rows[lhs].match, rows[rhs].match)
+                let (a, b) = (rows[lhs], rows[rhs])
                 return a.family != b.family ? a.family < b.family : a.weight < b.weight
             }
-            .map { rows[$0].match }
+            .compactMap { index in
+                let row = rows[index]
+                guard seen.insert(row.family).inserted else { return nil }
+                let reach = strokes[row.family] ?? [:]
+                return Match(
+                    family: row.family,
+                    weight: weight(
+                        regular: reach[400] ?? reach[700] ?? stroke,
+                        bold: reach[700] ?? reach[400] ?? stroke, cover: stroke))
+            }
+    }
+
+    /// Whether the lettering's strokes are hairlines: under 60 percent of the catalog's median
+    /// regular stroke weight for the same text, as an outlined or inline title measures. A
+    /// measurement that no face could produce (`isPlausible(_:composed:)`) doesn't count,
+    /// because a mask that lost letters or caught a texture measures as hairlines too.
+    static func hasHairlineStrokes(
+        _ measurement: Measurement, atlas: FontAtlas? = .shared
+    ) -> Bool {
+        guard let atlas else { return false }
+        let composed = composedProfiles(of: measurement.text, atlas: atlas)
+        return isPlausible(measurement, composed: composed)
+            && measurement.profile.strokeWeight < regularStroke(of: composed) * 0.6
+    }
+
+    /// Every atlas font's version of `text` that has glyphs for it.
+    private static func composedProfiles(
+        of text: String, atlas: FontAtlas
+    ) -> [(font: FontAtlas.Font, profile: Mask.Profile)] {
+        atlas.fonts.compactMap { font in
+            font.compose(text)?.profile().map { (font: font, profile: $0) }
+        }
+    }
+
+    /// The median stroke weight of the regular (400) fonts in `composed`, or 0 without any.
+    private static func regularStroke(
+        of composed: [(font: FontAtlas.Font, profile: Mask.Profile)]
+    ) -> Double {
+        let strokes = composed.filter { $0.font.weight == 400 }.map(\.profile.strokeWeight).sorted()
+        return strokes.isEmpty ? 0 : strokes[strokes.count / 2]
+    }
+
+    /// The title weight, `minimumWeight` through 700 in steps of 100, whose stroke weight comes
+    /// nearest `cover`'s, interpolating between a family's `regular` (400) and `bold` (700) stroke
+    /// weights. A family whose bold is no heavier, such as a single-weight display face, gets
+    /// `minimumWeight`, which loads its only instance.
+    static func weight(regular: Double, bold: Double, cover: Double) -> Int {
+        guard bold > regular * 1.05 else { return minimumWeight }
+        let css = 400 + 300 * (cover - regular) / (bold - regular)
+        return min(700, max(minimumWeight, Int((css / 100).rounded()) * 100))
     }
 
     private static func wordsIn(_ text: String) -> [String] {
@@ -191,6 +356,12 @@ struct Mask: Sendable {
         var strokeSpread: Double
         /// The letters stretched to a fixed 320 × 48 grid, for shape comparison.
         var shape: [Float]
+        /// The median ink in a horizontal run over the line's height, measured on the 48-pixel
+        /// grid: about a vertical stem's width for its height, larger for heavier lettering.
+        /// The grid's box filter fills printing texture, such as halftone dots, that would
+        /// break a cover's strokes into short runs, and partial coverage counts, so the atlas's
+        /// small antialiased glyphs measure as finely as large covers.
+        var strokeWeight: Double
 
         /// The mean absolute difference between the two shape grids.
         func shapeDifference(from other: Profile) -> Double {
@@ -210,7 +381,42 @@ struct Mask: Sendable {
         return Profile(
             aspect: Double(natural.width) / Double(natural.height),
             strokeSpread: natural.strokeSpread,
-            shape: letters.resampled(width: 320, height: 48).pixels)
+            shape: letters.resampled(width: 320, height: 48).pixels,
+            strokeWeight: natural.strokeWeight)
+    }
+
+    /// The part of the mask around a line at `angle` radians (top-left origin), turned level:
+    /// a mask `length` wide and `thickness` tall plus 12 percent of the thickness on each side,
+    /// whose center is the line's `center`. Pixels from outside the mask are blank.
+    func leveled(angle: Double, center: CGPoint, length: Double, thickness: Double) -> Mask {
+        let pad = thickness * 0.12
+        let outWidth = max(1, Int((length + pad * 2).rounded()))
+        let outHeight = max(1, Int((thickness + pad * 2).rounded()))
+        let (cosine, sine) = (cos(angle), sin(angle))
+        var out = [Float](repeating: 0, count: outWidth * outHeight)
+        for y in 0..<outHeight {
+            for x in 0..<outWidth {
+                let dx = Double(x) - Double(outWidth) / 2
+                let dy = Double(y) - Double(outHeight) / 2
+                let sourceX = Int((center.x + cosine * dx - sine * dy).rounded(.down))
+                let sourceY = Int((center.y + sine * dx + cosine * dy).rounded(.down))
+                guard (0..<width).contains(sourceX), (0..<height).contains(sourceY) else {
+                    continue
+                }
+                out[y * outWidth + x] = pixels[sourceY * width + sourceX]
+            }
+        }
+        return Mask(width: outWidth, height: outHeight, pixels: out)
+    }
+
+    /// The mask with every row outside `rows` cleared.
+    func keepingRows(_ rows: Range<Int>) -> Mask {
+        var out = [Float](repeating: 0, count: pixels.count)
+        for y in rows.clamped(to: 0..<height) {
+            let row = (y * width)..<((y + 1) * width)
+            out.replaceSubrange(row, with: pixels[row])
+        }
+        return Mask(width: width, height: height, pixels: out)
     }
 
     func band() -> Mask? {
@@ -307,6 +513,26 @@ struct Mask: Sendable {
             }
         }
         return Mask(width: targetWidth, height: targetHeight, pixels: out)
+    }
+
+    private var strokeWeight: Double {
+        var runs: [Double] = []
+        for y in 0..<height {
+            var run: Double = 0
+            for x in 0..<width {
+                let value = Double(pixels[y * width + x])
+                if value > 0.2 {
+                    run += value
+                } else if run > 0 {
+                    runs.append(run)
+                    run = 0
+                }
+            }
+            if run > 0 { runs.append(run) }
+        }
+        guard !runs.isEmpty else { return 1 / Double(max(1, height)) }
+        runs.sort()
+        return max(0.5, runs[runs.count / 2]) / Double(height)
     }
 
     private var strokeSpread: Double {
