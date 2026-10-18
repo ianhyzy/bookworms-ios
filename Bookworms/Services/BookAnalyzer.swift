@@ -557,7 +557,8 @@ actor BookAnalyzer {
     }
 
     /// The families a design without a model may use for a book with `genres`: those of its
-    /// first recognized genre (`genreFamilies(_:)`). Without one, the title measurements rank
+    /// first recognized genre (`genreFamilies(_:)`), never including `SpineFamily.neverGenerated`.
+    /// Without one, the title measurements rank
     /// every family that `families(for:playful:)` offers a book that isn't playful, which leaves
     /// out handwriting and rounded faces, or, when `measured` is false because no title line was
     /// measured or none of these families could be ranked by it
@@ -565,7 +566,8 @@ actor BookAnalyzer {
     /// sans.
     static func localFamilies(genres: [String]?, measured: Bool) -> [String] {
         if let families = genreFamilies(genres) {
-            return families.map(\.rawValue).filter(allowsFamily)
+            return families.filter { !SpineFamily.neverGenerated.contains($0) }.map(\.rawValue)
+                .filter(allowsFamily)
         }
         return measured
             ? families(for: nil, playful: false)

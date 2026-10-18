@@ -779,6 +779,18 @@ final class GenerationTests: XCTestCase {
             }
         }
         XCTAssertNil(BookAnalyzer.genreFamilies(["Adventure", "Nonfiction"]))
+        // Genre rows name whole style groups, which include faces new designs never use.
+        let rows = [
+            "Fantasy", "LitRPG", "Thriller", "Horror", "Mystery", "Romance", "History",
+            "Young Adult", "Humor", "Poetry",
+        ]
+        for genre in rows {
+            for measured in [true, false] {
+                let families = Set(BookAnalyzer.localFamilies(genres: [genre], measured: measured))
+                XCTAssertTrue(
+                    families.isDisjoint(with: SpineFamily.neverGenerated.map(\.rawValue)), genre)
+            }
+        }
     }
 
     func testLetteringAnswersNarrowTheFamiliesAndNeverOfferSlantedFaces() {
