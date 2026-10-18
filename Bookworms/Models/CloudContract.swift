@@ -6,12 +6,14 @@ enum CloudContract {
     static let worklistRecordName = "spine-worklist-v1"
     static let worklistSubscriptionID = "spine-worklist-v1-changes"
     static let libraryRecordName = "library-v1"
-    /// Identifies designs from this app's current generator. Designs with another version, such
-    /// as the Mac companion's `macGeneratorVersion` or this app's earlier `ios-pcc-v1`, show
-    /// until a run regenerates them; colors the reader chose are kept.
+    /// Identifies designs from this app's current generator. Changing it replaces no saved
+    /// design: a run keeps a design from its own model tier or a better one whatever generator
+    /// made it, such as this app's earlier `ios-pcc-v1` or the Mac companion's
+    /// `macGeneratorVersion` (`SpineDesignV1.tier`, `SpineDesignV1.action`).
     static let generatorVersion = "ios-pcc-v2"
-    /// The generator of the retired Bookworms Spines Mac companion, which designed with Apple's
-    /// on-device model and recorded no model token.
+    /// The last generator of the retired Bookworms Spines Mac companion, which, like its earlier
+    /// `mac-foundation-models-v1`, designed with Apple's on-device model and recorded no model
+    /// token.
     static let macGeneratorVersion = "mac-foundation-models-v2"
     /// The `SeriesLookV1.origin` of the Apple TV's own looks, which it makes without a model from
     /// a cover's colors and the book's genres.

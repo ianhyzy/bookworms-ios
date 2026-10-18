@@ -75,11 +75,13 @@ actor SpineWorker {
     private let continuation: AsyncStream<WorkerUpdate>.Continuation
     private let store: any SpineStore
     private let ledger: WorkLedger
-    private let analyzer = BookAnalyzer()
+    private let analyzer: BookAnalyzer
     // One session per network policy for the worker's lifetime: a URLSession lives until it is
     // invalidated, so a downloader per run would leak one.
-    private let covers = CoverDownloader()
+    private let covers: CoverDownloader
     private let backgroundCovers = CoverDownloader(allowsExpensiveNetwork: false)
+    /// The status that every model read returns instead of the device's, for tests.
+    private let pinnedStatus: ModelStatus?
     private var snapshot: WorkerSnapshot
     private var isRunning = false
     // Saved designs of series books, looked up at most once per pass, and designs the pass
@@ -135,13 +137,18 @@ actor SpineWorker {
     ]
 
     /// Creates a worker that starts from `lastRun`, the saved outcome of the previous run. Tests
-    /// pass their own `ledger`.
+    /// pass their own `ledger`, `analyzer`, and foreground `covers`, and pin `modelStatus`, which
+    /// every model read then returns, so a run's tier doesn't depend on the device.
     init(
         store: any SpineStore, lastRun: WorkerSnapshot = WorkerSnapshot(),
-        ledger: WorkLedger = WorkLedger()
+        ledger: WorkLedger = WorkLedger(), analyzer: BookAnalyzer = BookAnalyzer(),
+        covers: CoverDownloader = CoverDownloader(), modelStatus: ModelStatus? = nil
     ) {
         self.store = store
         self.ledger = ledger
+        self.analyzer = analyzer
+        self.covers = covers
+        pinnedStatus = modelStatus
         snapshot = lastRun
         (updates, continuation) = AsyncStream.makeStream()
     }
@@ -150,7 +157,7 @@ actor SpineWorker {
     /// showing its own tier, which it publishes after each book, and reads the best tier again
     /// when it ends.
     func refreshModelStatus() async {
-        if runModel == nil { snapshot.model = await analyzer.status() }
+        if runModel == nil { snapshot.model = await bestStatus() }
         snapshot.dropExpiredStop()
         publish()
     }
@@ -199,7 +206,7 @@ actor SpineWorker {
         runModel = nil
         // The best tier again, as the next run would pick it, such as below a backup model that
         // this run found rejected.
-        snapshot.model = await analyzer.status()
+        snapshot.model = await bestStatus()
         snapshot.isRunning = false
         snapshot.currentBook = nil
         snapshot.lastRunAt = Date()
@@ -281,14 +288,14 @@ actor SpineWorker {
                 publish()
                 let start = ContinuousClock.now
                 do {
-                    let (outcome, coverHash) = try await design(
+                    let outcome = try await design(
                         for: book, covers: covers, workHash: workHash, context: context,
                         forced: redesigned != nil, mode: mode)
-                    if case .save(let made, let isNew) = outcome {
+                    if case .save(let made, let isNew, let replacing) = outcome {
                         guard try await store.isStillCurrent(context, book: book) else {
                             return true
                         }
-                        try await store.save(made, replacing: redesigned != nil)
+                        try await store.save(made, replacing: redesigned != nil || replacing)
                         continuation.yield(.saved(made))
                         bookDesigns[book.id] = made
                         checkedBooks.insert(book.id)
@@ -304,9 +311,10 @@ actor SpineWorker {
                     // Compute design, needs no recheck when that tier runs. A saved design that
                     // awaits its font is checked again after a day.
                     var awaitsFont = false
-                    if case .save(let made, _) = outcome { awaitsFont = made.awaitsFont }
+                    if case .save(let made, _, _) = outcome { awaitsFont = made.awaitsFont }
                     try await ledger.recordSuccess(
-                        recordName: recordName, workItemHash: workHash, coverHash: coverHash,
+                        recordName: recordName, workItemHash: workHash,
+                        coverHash: outcome.design.coverHash,
                         chosenCover: book.chosenCoverURL,
                         tier: runModel.map { max($0.tier, outcome.design.tier) },
                         awaitsFont: awaitsFont)
@@ -360,41 +368,40 @@ actor SpineWorker {
         /// Leaves this design, iCloud's, in place.
         case keep(SpineDesignV1)
         /// Saves this design. `isNew` tells whether the run's tier made it from the cover rather
-        /// than copying a saved design or look.
-        case save(SpineDesignV1, isNew: Bool)
+        /// than copying a saved design or look. `replacing` tells whether it replaces the saved
+        /// design whatever that design's tier, as one from the cover the reader chose does
+        /// (`SpineDesignV1.outlasts(_:replacing:)`).
+        case save(SpineDesignV1, isNew: Bool, replacing: Bool = false)
 
         var design: SpineDesignV1 {
             switch self {
-            case .keep(let design), .save(let design, _): design
+            case .keep(let design), .save(let design, _, _): design
             }
         }
     }
 
     /// Returns the design to save for `book`, or the saved design to keep when iCloud already
-    /// has this work at the run's tier or better, or a design whose colors the reader chose (see
-    /// `SpineDesignV1.action(workItemHash:coverHash:readerChoseCover:runTier:drawsSeriesLook:upgradesSeriesLook:)`),
-    /// with the hash of the cover it comes from. `forced` always makes a new design.
+    /// has a design from the run's tier or better, or a design whose colors the reader chose (see
+    /// `SpineDesignV1.action(workItemHash:coverHash:readerChoseCover:fromChosenCover:runTier:drawsSeriesLook:upgradesSeriesLook:)`).
+    /// A kept design whose book's metadata changed is saved again under the new work-item hash
+    /// when its face letters the book's title and author, and otherwise left as it is. `forced`
+    /// always makes a new design.
     ///
-    /// The saved design is checked before the cover downloads with `covers`. A saved design that
-    /// stays under its own cover hash is kept without a download, so a recheck of a current
-    /// design costs one iCloud read. That needs the book's default cover, unchanged since its last
-    /// check on this device, and a design of the cover hash that check ended with, or a book
-    /// without a check here: the default covers' URLs enter the work-item hash and stay fixed
-    /// between syncs (`HardcoverClient.coverURLs(edition:book:otherEditions:editionIsInLanguage:previous:)`),
-    /// so a design with the book's work-item hash came from those URLs unless another device
-    /// made it from a cover the reader chose there. The cover hash catches that design once this
-    /// device has checked the book. A new image behind the same URL goes unnoticed until the
-    /// book's metadata or cover URLs change.
+    /// The saved design is checked before the cover downloads with `covers`. While the book
+    /// shows its default cover and the reader chose no other cover since its last check on this
+    /// device, a saved design that stays is kept or saved again without a download, so a recheck
+    /// of a current design costs one iCloud read: the default cover's hash decides nothing then.
+    /// A cover the reader chose is downloaded at every check.
     ///
     /// The book whose design upgrades its group's look (`SeriesLookV1.upgradeSource(among:)`)
     /// is designed as if the group had no look, so a weaker tier's look gets a design from the
-    /// run's tier. When that book's own saved design is kept, it upgrades the look with no
+    /// run's tier. When that book's own saved design stays, it upgrades the look with no
     /// request. A book draws its group's look only when the look's face letters its title and
     /// author, as the app draws it; otherwise its own design follows the tier rule.
     private func design(
         for book: CloudBook, covers: CoverDownloader, workHash: String, context: WorkContext,
         forced: Bool, mode: RunMode
-    ) async throws -> (outcome: Outcome, coverHash: String) {
+    ) async throws -> Outcome {
         // Looked up even when forced, so `saveLook` knows whether the group has a look.
         let savedLook = try await seriesLook(for: book, accountID: context.accountID)
         let runTier = runModel?.tier ?? .local
@@ -411,42 +418,68 @@ actor SpineWorker {
         let readerChoseCover = await ledger.readerChoseCover(
             recordName: Self.recordName(context.accountID, book),
             chosenCover: book.chosenCoverURL)
-        func savedAction(coverHash: String) async throws -> SavedDesignAction {
+        func savedAction(coverHash: String, fromChosenCover: Bool = false) async throws
+            -> SavedDesignAction
+        {
             guard let saved else { return .redesign }
             func action(drawsSeriesLook: Bool) -> SavedDesignAction {
                 saved.action(
                     workItemHash: workHash, coverHash: coverHash,
-                    readerChoseCover: readerChoseCover, runTier: runTier,
-                    drawsSeriesLook: drawsSeriesLook, upgradesSeriesLook: upgradesLook)
+                    readerChoseCover: readerChoseCover, fromChosenCover: fromChosenCover,
+                    runTier: runTier, drawsSeriesLook: drawsSeriesLook,
+                    upgradesSeriesLook: upgradesLook)
             }
-            // The glyph check waits until the book's design would otherwise be redesigned, so
-            // kept designs cost no font download.
-            let ownAction = action(drawsSeriesLook: false)
-            if ownAction == .redesign, let look, action(drawsSeriesLook: true) == .keep,
-                try await analyzer.letters(book, with: look.design(bookID: look.sourceBookID))
+            // The glyph checks wait until they decide, so kept designs cost no font download.
+            var result = action(drawsSeriesLook: false)
+            if result == .redesign, let look {
+                let drawn = action(drawsSeriesLook: true)
+                if drawn != .redesign,
+                    try await analyzer.letters(book, with: look.design(bookID: look.sourceBookID))
+                {
+                    result = drawn
+                }
+            }
+            // A design moves to a new title or author only when its face letters them. Otherwise
+            // it stays under its old work-item hash, which the iPhone and Mac still draw on its
+            // book and the Apple TV ignores.
+            if case .save(let moved) = result, moved.workItemHash != saved.workItemHash,
+                !(try await analyzer.letters(book, with: saved.withAllowedFont))
             {
                 return .keep
             }
-            return ownAction
+            return result
         }
-        func kept(_ saved: SpineDesignV1) async -> Outcome {
-            if upgradesLook, saved.generatedColors == nil {
-                await saveLook(from: saved, for: book, replacing: false)
+        func kept(_ design: SpineDesignV1) async -> SpineDesignV1 {
+            if upgradesLook, design.generatedColors == nil {
+                await saveLook(from: design, for: book, replacing: false)
             }
-            return .keep(saved)
+            return design
         }
-        if let saved, book.chosenCoverURL == nil, !readerChoseCover,
-            await ledger.lastCheckMatches(
-                recordName: Self.recordName(context.accountID, book), coverHash: saved.coverHash),
-            try await savedAction(coverHash: saved.coverHash) == .keep
-        {
-            return (await kept(saved), saved.coverHash)
+        if let saved, book.chosenCoverURL == nil, !readerChoseCover {
+            switch try await savedAction(coverHash: saved.coverHash) {
+            case .keep: return .keep(await kept(saved))
+            case .save(let design): return .save(await kept(design), isNew: false)
+            case .redesign: break
+            }
         }
         let cover = try await covers.fetch(book.coverCandidates)
+        let fromChosenCover = cover.url == book.chosenCoverURL
+        // A saved design from another cover than the reader's choice gives way at any tier, and
+        // so does an untracked copy on the book that upgrades its group's look, whose tier is
+        // unknown.
+        let replacing =
+            saved.map {
+                $0.comesFromAnotherCover(
+                    than: cover.hash, readerChoseCover: readerChoseCover,
+                    fromChosenCover: fromChosenCover) || upgradesLook && $0.isUntrackedCopy
+            } ?? false
         if !forced {
-            switch (try await savedAction(coverHash: cover.hash), saved) {
-            case (.keep, let saved?): return (await kept(saved), cover.hash)
-            case (.save(let design), _): return (.save(design, isNew: false), cover.hash)
+            switch (
+                try await savedAction(coverHash: cover.hash, fromChosenCover: fromChosenCover),
+                saved
+            ) {
+            case (.keep, let saved?): return .keep(await kept(saved))
+            case (.save(let design), _): return .save(await kept(design), isNew: false)
             default: break
             }
             // Books in one look group share a design so their spines match on the shelf. A book
@@ -459,17 +492,23 @@ actor SpineWorker {
                 } else {
                     try await storedSeriesDesign(for: book, context: context)
                 }
+            // A copy replaces a saved design only as a new design would: from a better tier, or
+            // from a cover the reader chose. Otherwise the run's tier designs the book.
             if let source,
                 let reused = try await analyzer.seriesDesign(
                     from: source, book: book, accountID: context.accountID,
-                    workItemHash: workHash, coverHash: cover.hash)
+                    workItemHash: workHash, coverHash: cover.hash),
+                replacing
+                    || saved.map({
+                        $0.isOutranked(by: reused.tier, awaitingFont: reused.awaitsFont)
+                    }) ?? true
             {
-                return (.save(reused, isNew: false), cover.hash)
+                return .save(reused, isNew: false, replacing: replacing)
             }
         }
         let made = try await newDesign(
             for: book, cover: cover, workHash: workHash, accountID: context.accountID, mode: mode)
-        return (.save(made, isNew: true), cover.hash)
+        return .save(made, isNew: true, replacing: replacing)
     }
 
     /// Designs `book` at the run's tier.
@@ -625,7 +664,7 @@ actor SpineWorker {
 
     /// Returns the saved design of `book`'s source in a look group without a saved look, by the
     /// rule the app draws with (`SeriesDesigns.sources(of:lends:canLetter:)`), when that source
-    /// is another book with a usable saved design from this generator, made for that book as it
+    /// is another book with a usable saved design, from any generator, made for that book as it
     /// is now (`SeriesDesigns.isCurrent(_:for:)`).
     ///
     /// A source ranks before the books that draw with it and is always designed from its own
@@ -647,9 +686,8 @@ actor SpineWorker {
                 accountID: context.accountID, bookID: mate.id)
         }
         let designs = earlier.reduce(into: [Int: SpineDesignV1]()) { designs, mate in
-            if let design = bookDesigns[mate.id],
-                design.generatorVersion == CloudContract.generatorVersion,
-                SeriesDesigns.isUsableSource(design), SeriesDesigns.isCurrent(design, for: mate)
+            if let design = bookDesigns[mate.id], SeriesDesigns.isUsableSource(design),
+                SeriesDesigns.isCurrent(design, for: mate)
             {
                 designs[mate.id] = design
             }
@@ -666,17 +704,25 @@ actor SpineWorker {
     /// (`stopForModel(_:mode:)`).
     private func readModel() async -> ModelStatus {
         var status: ModelStatus
-        if let runModel {
+        if let pinnedStatus {
+            status = pinnedStatus
+        } else if let runModel {
             status = await analyzer.status(of: runModel.tier, designer: runModel.designer)
             status.pccUnavailableReason = runModel.pccUnavailableReason
             status.backupUnavailableReason = runModel.backupUnavailableReason
             status.onDeviceUnavailableReason = runModel.onDeviceUnavailableReason
         } else {
-            status = await analyzer.status()
+            status = await bestStatus()
         }
         runModel = status
         snapshot.model = status
         return status
+    }
+
+    /// The best tier's status (`BookAnalyzer.status(for:)`), or the pinned status.
+    private func bestStatus() async -> ModelStatus {
+        if let pinnedStatus { return pinnedStatus }
+        return await analyzer.status()
     }
 
     /// Stops the run when `status` says its model should get no more requests.

@@ -2,6 +2,7 @@ import CloudKit
 import CoreText
 import Foundation
 import FoundationModels
+import ImageIO
 import XCTest
 
 @testable import Bookworms
@@ -392,9 +393,11 @@ final class GenerationTests: XCTestCase {
         XCTAssertFalse(current.upgradeWaits)
     }
 
-    /// A weekly recheck keeps a current design without downloading its cover. Both books' covers
-    /// use a host that `CoverURLPolicy` refuses, so a download attempt fails the book without a
-    /// request, as it does for the book that has no design.
+    /// A weekly recheck keeps a current design without downloading its cover, even when this
+    /// device last checked a design of another cover, such as one another device made from a
+    /// cover the reader chose there and later removed. Both books' covers use a host that
+    /// `CoverURLPolicy` refuses, so a download attempt fails the book without a request, as it
+    /// does for the book that has no design.
     func testRechecksKeepACurrentDesignWithoutDownloadingItsCover() async throws {
         let folder = FileManager.default.temporaryDirectory
             .appending(path: "bookworms-recheck-\(UUID().uuidString)")
@@ -427,12 +430,14 @@ final class GenerationTests: XCTestCase {
         let ledger = WorkLedger(url: folder.appending(path: "ledger.json"))
         try await ledger.useCloudUser("local")
         try await ledger.recordSuccess(
-            recordName: recordName, workItemHash: workHash, coverHash: coverHash,
+            recordName: recordName, workItemHash: workHash,
+            coverHash: String(repeating: "d", count: 64),
             now: Date().addingTimeInterval(-WorkLedger.recheckInterval - 60))
         let due = await ledger.needsCheck(recordName: recordName, workItemHash: workHash)
         XCTAssertTrue(due)
 
-        let worker = SpineWorker(store: LocalSpineStore(folder: folder), ledger: ledger)
+        let worker = SpineWorker(
+            store: LocalSpineStore(folder: folder), ledger: ledger, modelStatus: .local)
         await worker.reconcile(mode: .foreground)
         var finished: WorkerSnapshot?
         for await update in worker.updates {
@@ -451,28 +456,164 @@ final class GenerationTests: XCTestCase {
         XCTAssertFalse(rechecked)
     }
 
-    /// Only a design of the cover hash that this device's last check ended with skips the cover
-    /// download, so a design that another device made from a cover the reader chose there, and
-    /// later removed, is checked against the default cover.
-    func testOnlyADesignOfTheLastCheckedCoverSkipsTheDownload() async throws {
-        let url = FileManager.default.temporaryDirectory
-            .appending(path: "bookworms-ledger-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: url) }
-        let ledger = WorkLedger(url: url)
-        let unchecked = await ledger.lastCheckMatches(recordName: "record", coverHash: "default")
-        XCTAssertTrue(unchecked, "A book this device never checked downloads no cover")
+    /// A run keeps an earlier generator's Private Cloud Compute design, which no tier outranks,
+    /// after the book's title changes to one its face can't letter: the design stays under its
+    /// old work-item hash, with no cover download or model request, and the ledger doesn't queue
+    /// the book again. The cover's host is one that `CoverURLPolicy` refuses, so a download
+    /// attempt would fail the book.
+    func testRunsKeepADesignWhoseFaceCannotLetterTheNewTitle() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appending(path: "bookworms-renamed-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let archive = """
+            {"version":1,"sources":[{"source":"hardcover","accountID":"42","syncedAt":800000000,
+              "books":[{"id":7,"title":"東京物語","author":"Mara Quill",
+                "coverURL":"https://covers.localhost/7.jpg"}]}]}
+            """
+        try Data(archive.utf8).write(to: folder.appending(path: "library-v1.json"))
+        func book(_ title: String) -> CloudBook {
+            CloudBook(
+                id: 7, title: title, author: "Mara Quill",
+                coverURL: URL(string: "https://covers.localhost/7.jpg"), detailCoverURL: nil)
+        }
+        let recordName = CloudContract.designRecordName(accountID: "42", bookID: 7)
+        // Georgia has no glyphs for the new title.
+        let design = SpineDesignV1(
+            version: 1, accountID: "42", bookID: 7,
+            workItemHash: CloudContract.workItemHash(accountID: "42", book: book("Tokyo Story")),
+            coverHash: String(repeating: "c", count: 64), generatorVersion: "ios-pcc-v1",
+            generatedAt: now, backgroundHex: "#101010", foregroundHex: "#F4EEE2",
+            accentHex: "#7A1F1F", typeface: "serif", weight: 700, uppercase: false,
+            fontPostScriptName: "Georgia-Bold")
+        let designs = folder.appending(path: "spine-designs-v1.json")
+        try JSONEncoder().encode([recordName: design]).write(to: designs)
 
-        try await ledger.recordSuccess(
-            recordName: "record", workItemHash: "work", coverHash: "default", now: now)
-        let same = await ledger.lastCheckMatches(recordName: "record", coverHash: "default")
-        let chosenElsewhere = await ledger.lastCheckMatches(
-            recordName: "record", coverHash: "chosen")
-        XCTAssertTrue(same)
-        XCTAssertFalse(chosenElsewhere)
+        let ledger = WorkLedger(url: folder.appending(path: "ledger.json"))
+        let worker = SpineWorker(
+            store: LocalSpineStore(folder: folder), ledger: ledger, modelStatus: .local)
+        await worker.reconcile(mode: .foreground)
+        var finished: WorkerSnapshot?
+        for await update in worker.updates {
+            if case .saved = update { XCTFail("The run saved a design") }
+            if case .status(let status) = update, !status.isRunning {
+                finished = status
+                break
+            }
+        }
+        let status = try XCTUnwrap(finished)
+        XCTAssertEqual(status.phase, "Finished")
+        XCTAssertEqual(status.completed, 1)
+        XCTAssertEqual(status.failed, 0, "The run downloaded no cover")
+        let stored = try JSONDecoder()
+            .decode(
+                [String: SpineDesignV1].self, from: Data(contentsOf: designs))
+        XCTAssertEqual(stored[recordName], design)
+        let requeued = await ledger.needsCheck(
+            recordName: recordName,
+            workItemHash: CloudContract.workItemHash(accountID: "42", book: book("東京物語")),
+            runTier: .privateCloudCompute)
+        XCTAssertFalse(requeued)
+    }
 
-        try await ledger.recordFailure(recordName: "record", workItemHash: "work", now: now)
-        let failed = await ledger.lastCheckMatches(recordName: "record", coverHash: "default")
-        XCTAssertFalse(failed)
+    /// A run moves a design that stays to the book's new title without a cover download or a
+    /// model request, keeping the hash of the cover it comes from, when its face letters the new
+    /// title. The cover's host is one that `CoverURLPolicy` refuses, so a download attempt would
+    /// fail the book.
+    func testRunsMoveADesignToANewTitleItsFaceLetters() async throws {
+        let renamed = LocalRun.book(7, title: "The Lantern Keeper, Revised")
+        let design = LocalRun.design(
+            for: LocalRun.book(7), coverHash: String(repeating: "c", count: 64),
+            generator: "ios-pcc-v1")
+        let run = try LocalRun(books: [renamed], designs: [design])
+        defer { run.remove() }
+        let (status, saved) = try await run.run()
+        XCTAssertEqual(status.phase, "Finished")
+        XCTAssertEqual(status.failed, 0, "The run downloaded no cover")
+        let moved = try XCTUnwrap(saved.first)
+        XCTAssertEqual(saved.count, 1)
+        XCTAssertEqual(moved.workItemHash, LocalRun.workHash(renamed))
+        XCTAssertEqual(moved.coverHash, design.coverHash)
+        XCTAssertEqual(moved.generatorVersion, "ios-pcc-v1")
+        XCTAssertEqual(moved.generatedAt, design.generatedAt)
+        XCTAssertEqual(try run.stored()[7], moved)
+    }
+
+    /// A design with the generator's colors that doesn't come from the cover the reader chose is
+    /// designed again from that cover, at the run's tier, even on a device whose ledger never
+    /// saw the choice, or after a failed first design from it. A default cover downloaded
+    /// because the chosen one is missing replaces nothing.
+    func testRunsDesignAChosenCoverTheSavedDesignDoesNotComeFrom() async throws {
+        let book = LocalRun.book(7, cover: CoverStub.defaultCover)
+        // Private Cloud Compute's design of the default cover, which a local run otherwise keeps.
+        let fromDefault = LocalRun.design(
+            for: book, coverHash: CloudContract.digest(CoverStub.images[CoverStub.defaultCover]!),
+            generator: "ios-pcc-v1")
+        for failedFirst in [false, true] {
+            let run = try LocalRun(
+                books: [book], designs: [fromDefault], chosen: [7: CoverStub.chosenCover])
+            defer { run.remove() }
+            if failedFirst {
+                try await run.ledger.useCloudUser("local")
+                try await run.ledger.recordFailure(
+                    recordName: LocalRun.recordName(7), workItemHash: LocalRun.workHash(book),
+                    chosenCover: CoverStub.chosenCover,
+                    now: Date().addingTimeInterval(-2 * WorkLedger.failureBackoff))
+            }
+            let (status, saved) = try await run.run()
+            XCTAssertEqual(status.failed, 0)
+            let made = try XCTUnwrap(saved.first)
+            XCTAssertEqual(
+                made.coverHash, CloudContract.digest(CoverStub.images[CoverStub.chosenCover]!))
+            XCTAssertEqual(made.tier, .local)
+            XCTAssertFalse(made.isSeriesReuse)
+            XCTAssertEqual(try run.stored()[7], made)
+        }
+
+        let fromChosen = LocalRun.design(
+            for: book, coverHash: CloudContract.digest(CoverStub.images[CoverStub.chosenCover]!),
+            generator: "ios-pcc-v1")
+        let run = try LocalRun(
+            books: [book], designs: [fromChosen], chosen: [7: CoverStub.missingCover])
+        defer { run.remove() }
+        let (status, saved) = try await run.run()
+        XCTAssertEqual(status.failed, 0)
+        XCTAssertEqual(saved, [])
+        XCTAssertEqual(try run.stored()[7], fromChosen)
+    }
+
+    /// A series copy replaces a book's saved design only as a new design would: from a better
+    /// tier, such as a design whose font downloaded over one that awaits it. A copy from the
+    /// saved design's own tier is not saved, and the run designs the book at its tier instead.
+    func testSeriesCopiesReplaceOnlyWeakerDesigns() async throws {
+        let first = LocalRun.book(7, cover: CoverStub.defaultCover, series: 501, position: 1)
+        let second = LocalRun.book(8, cover: CoverStub.secondCover, series: 501, position: 2)
+        let awaiting = LocalRun.design(
+            for: second, coverHash: String(repeating: "c", count: 64),
+            provenance: "model:local font:system")
+        for sourceAwaitsFont in [false, true] {
+            let source = LocalRun.design(
+                for: first, coverHash: String(repeating: "d", count: 64),
+                provenance: sourceAwaitsFont ? "model:local font:system" : "model:local")
+            let run = try LocalRun(books: [first, second], designs: [source, awaiting])
+            defer { run.remove() }
+            // The source's check is current, so the run checks only the second book.
+            try await run.ledger.useCloudUser("local")
+            try await run.ledger.recordSuccess(
+                recordName: LocalRun.recordName(7), workItemHash: LocalRun.workHash(first),
+                coverHash: source.coverHash, tier: .local)
+            let (status, saved) = try await run.run()
+            XCTAssertEqual(status.failed, 0)
+            XCTAssertEqual(saved.count, 1)
+            let stored = try XCTUnwrap(try run.stored()[8])
+            XCTAssertEqual(stored, saved.first)
+            if sourceAwaitsFont {
+                XCTAssertFalse(stored.isSeriesReuse, "The run designed the book itself")
+            } else {
+                XCTAssertEqual(stored.provenance, "series-reuse:7 model:local")
+            }
+            XCTAssertEqual(try run.stored()[7], source)
+        }
     }
 
     func testRunsPreferPrivateCloudComputeThenTheBackupThenTheOnDeviceModelThenLocalDefaults()
@@ -645,7 +786,9 @@ final class GenerationTests: XCTestCase {
             detailCoverURL: nil, genres: ["Science Fiction"])
         let design = try await analyzer.design(
             book: book, accountID: "42", workItemHash: hash,
-            cover: CoverImage(image: image, hash: hash), using: .local)
+            cover: CoverImage(
+                image: image, hash: hash, url: URL(string: "https://covers.example.com/9.jpg")!),
+            using: .local)
         XCTAssertNil(design.fontFamily)
         XCTAssertNil(design.fontPostScriptName)
         XCTAssertEqual(design.typeface, SpineFontStyle.geometricSans.fallbackTypeface)
@@ -994,6 +1137,158 @@ private final class OfflineURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+    }
+    override func stopLoading() {}
+}
+
+/// A local store's folder for a generation run at local defaults that reads covers from
+/// `CoverStub` and downloads no font.
+private struct LocalRun {
+    static let accountID = "42"
+    let folder: URL
+    let ledger: WorkLedger
+
+    /// Saves `books` as a Hardcover snapshot, with `designs` and the reader's `chosen` covers by
+    /// book ID.
+    init(books: [CloudBook], designs: [SpineDesignV1], chosen: [Int: URL] = [:]) throws {
+        folder = FileManager.default.temporaryDirectory
+            .appending(path: "bookworms-run-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        ledger = WorkLedger(url: folder.appending(path: "ledger.json"))
+        struct Archive: Encodable {
+            let version = 1
+            let sources: [CloudSourceSnapshot]
+        }
+        let snapshot = CloudSourceSnapshot(
+            source: "hardcover", accountID: Self.accountID, books: books,
+            syncedAt: Date(timeIntervalSinceReferenceDate: 800_000_000))
+        try JSONEncoder().encode(Archive(sources: [snapshot]))
+            .write(to: folder.appending(path: "library-v1.json"))
+        try JSONEncoder()
+            .encode(
+                Dictionary(uniqueKeysWithValues: designs.map { (Self.recordName($0.bookID), $0) })
+            )
+            .write(to: folder.appending(path: "spine-designs-v1.json"))
+        let choices = chosen.map { bookID, url in
+            (
+                CloudContract.coverChoiceRecordName(accountID: Self.accountID, bookID: bookID),
+                CoverChoiceV1(
+                    version: 1, accountID: Self.accountID, bookID: bookID, coverURL: url,
+                    editionID: 31, chosenAt: Date(timeIntervalSinceReferenceDate: 800_000_000))
+            )
+        }
+        try JSONEncoder().encode(Dictionary(uniqueKeysWithValues: choices))
+            .write(to: folder.appending(path: "cover-choices-v1.json"))
+    }
+
+    static func book(
+        _ id: Int, title: String = "The Lantern Keeper",
+        cover: URL = URL(string: "https://covers.localhost/7.jpg")!, series: Int? = nil,
+        position: Double? = nil
+    ) -> CloudBook {
+        CloudBook(
+            id: id, title: title, author: "Mara Quill", coverURL: cover, detailCoverURL: nil,
+            seriesID: series, seriesPosition: position)
+    }
+
+    static func workHash(_ book: CloudBook) -> String {
+        CloudContract.workItemHash(accountID: accountID, book: book)
+    }
+
+    static func recordName(_ bookID: Int) -> String {
+        CloudContract.designRecordName(accountID: accountID, bookID: bookID)
+    }
+
+    /// A design of `book` as it is now, in the system typeface, which letters any title.
+    static func design(
+        for book: CloudBook, coverHash: String, generator: String = CloudContract.generatorVersion,
+        provenance: String? = nil
+    ) -> SpineDesignV1 {
+        SpineDesignV1(
+            version: 1, accountID: accountID, bookID: book.id, workItemHash: workHash(book),
+            coverHash: coverHash, generatorVersion: generator,
+            generatedAt: Date(timeIntervalSince1970: 1_000_000), backgroundHex: "#101010",
+            foregroundHex: "#F4EEE2", accentHex: "#7A1F1F", typeface: "serif", weight: 700,
+            uppercase: false, provenance: provenance)
+    }
+
+    /// Runs a worker at local defaults once, and returns its final status and the designs it
+    /// reported saving.
+    func run() async throws -> (status: WorkerSnapshot, saved: [SpineDesignV1]) {
+        let offline = URLSessionConfiguration.ephemeral
+        offline.protocolClasses = [OfflineURLProtocol.self]
+        let worker = SpineWorker(
+            store: LocalSpineStore(folder: folder), ledger: ledger,
+            analyzer: BookAnalyzer(
+                fonts: GoogleFonts(root: folder.appending(path: "fonts"), configuration: offline)),
+            covers: CoverDownloader(protocolClasses: [CoverStub.self]), modelStatus: .local)
+        await worker.reconcile(mode: .foreground)
+        var saved: [SpineDesignV1] = []
+        for await update in worker.updates {
+            if case .saved(let design) = update { saved.append(design) }
+            if case .status(let status) = update, !status.isRunning { return (status, saved) }
+        }
+        throw CompanionError.invalidCloudData
+    }
+
+    /// The store's designs by book ID.
+    func stored() throws -> [Int: SpineDesignV1] {
+        let designs = try JSONDecoder()
+            .decode(
+                [String: SpineDesignV1].self,
+                from: Data(contentsOf: folder.appending(path: "spine-designs-v1.json")))
+        return Dictionary(uniqueKeysWithValues: designs.values.map { ($0.bookID, $0) })
+    }
+
+    func remove() { try? FileManager.default.removeItem(at: folder) }
+}
+
+/// Serves two solid-color PNG covers, and a 404 for any other URL.
+private final class CoverStub: URLProtocol {
+    static let defaultCover = URL(string: "https://covers.example.com/7.png")!
+    static let secondCover = URL(string: "https://covers.example.com/8.png")!
+    static let chosenCover = URL(string: "https://covers.example.com/7-chosen.png")!
+    static let missingCover = URL(string: "https://covers.example.com/7-missing.png")!
+    static let images: [URL: Data] = [
+        defaultCover: png(red: 30), secondCover: png(red: 90), chosenCover: png(red: 200),
+    ]
+
+    private static func png(red: UInt8) -> Data {
+        let side = 32
+        var pixels = [UInt8](repeating: 255, count: side * side * 4)
+        for offset in stride(from: 0, to: pixels.count, by: 4) {
+            pixels[offset] = red
+            pixels[offset + 1] = 40
+            pixels[offset + 2] = 90
+        }
+        let data = NSMutableData()
+        pixels.withUnsafeMutableBytes { buffer in
+            guard
+                let image = CGContext(
+                    data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8,
+                    bytesPerRow: side * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?
+                    .makeImage(),
+                let destination = CGImageDestinationCreateWithData(
+                    data, "public.png" as CFString, 1, nil)
+            else { return }
+            CGImageDestinationAddImage(destination, image, nil)
+            CGImageDestinationFinalize(destination)
+        }
+        return data as Data
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url,
+            let response = HTTPURLResponse(
+                url: url, statusCode: Self.images[url] == nil ? 404 : 200, httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "image/png"])
+        else { return }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if let data = Self.images[url] { client?.urlProtocol(self, didLoad: data) }
+        client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
 }
