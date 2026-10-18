@@ -282,8 +282,9 @@ struct ShareInput {
     /// span, such as "2019–2026".
     var period: String {
         guard frame == .lifetime else { return frame.title }
-        let years = books.compactMap(\.finishedYear)
-        guard let first = years.min(), let last = years.max() else { return "" }
+        // Every finish counts, so a reread's earlier reads widen the span.
+        let years = TimeFrame.periods(in: books).years
+        guard let last = years.first, let first = years.last else { return "" }
         return first == last ? String(first) : "\(first)–\(last)"
     }
 

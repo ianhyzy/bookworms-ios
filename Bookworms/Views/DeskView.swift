@@ -129,8 +129,9 @@ struct DeskView: View {
 
     /// The years `books` were finished in, such as "2019–2026", for a scene of every book.
     private static func years(of books: [CloudBook]) -> String {
-        let years = books.compactMap(\.finishedYear)
-        guard let first = years.min(), let last = years.max() else { return "My books" }
+        // Every finish counts, so a reread's earlier reads widen the span.
+        let years = TimeFrame.periods(in: books).years
+        guard let last = years.first, let first = years.last else { return "My books" }
         return first == last ? String(first) : "\(first)–\(last)"
     }
 
