@@ -101,20 +101,26 @@ extension SpineDesignV1 {
             && generatorVersion == other.generatorVersion && generatedAt == other.generatedAt
     }
 
-    /// Whether saving `design` leaves this saved design in place: both are the same work, from
-    /// any generators, and `design` doesn't outrank this one (`isOutranked(by:awaitingFont:)`)
-    /// or this one carries the reader's colors. So the first device to save a work at a tier
-    /// keeps it, and a better tier's design, or one whose font downloaded, replaces a weaker
-    /// one's. With `replacing`, for a redesign the reader asked for, only a saved design that is
-    /// no older stays.
+    /// Whether saving `design` leaves this saved design of the same book in place: `design`
+    /// doesn't outrank it (`isOutranked(by:awaitingFont:)`), from any generator, or it carries
+    /// the reader's colors. So the first device to save a work at a tier keeps it, a better
+    /// tier's design, or one whose font downloaded, replaces a weaker one's, and a save decided
+    /// from an older read, such as under another library snapshot's hashes, replaces no design
+    /// it wouldn't replace now. Only this design moved to a new work-item hash, which keeps its
+    /// generator and `generatedAt` (`SavedDesignAction.save(_:)`), replaces it whatever its
+    /// tier. With `replacing`, for a redesign the reader asked for or a design of the cover the
+    /// reader chose, only a saved design of the same work that is no older stays.
     func outlasts(_ design: SpineDesignV1, replacing: Bool) -> Bool {
-        guard accountID == design.accountID, bookID == design.bookID,
-            workItemHash == design.workItemHash, coverHash == design.coverHash
-        else { return false }
-        return replacing
-            ? generatedAt >= design.generatedAt
-            : !isOutranked(by: design.tier, awaitingFont: design.awaitsFont)
-                || generatedColors != nil
+        guard accountID == design.accountID, bookID == design.bookID else { return false }
+        let sameWork = workItemHash == design.workItemHash && coverHash == design.coverHash
+        if replacing { return sameWork && generatedAt >= design.generatedAt }
+        if !sameWork, generatorVersion == design.generatorVersion,
+            generatedAt == design.generatedAt
+        {
+            return false
+        }
+        return !isOutranked(by: design.tier, awaitingFont: design.awaitsFont)
+            || generatedColors != nil
     }
 
     /// What a generation run at `runTier` does with this saved design for a book whose work-item

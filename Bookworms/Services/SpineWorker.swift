@@ -284,11 +284,11 @@ actor SpineWorker {
                     let outcome = try await design(
                         for: book, covers: covers, workHash: workHash, context: context,
                         forced: redesigned != nil, mode: mode)
-                    if case .save(let made, let isNew) = outcome {
+                    if case .save(let made, let isNew, let replacing) = outcome {
                         guard try await store.isStillCurrent(context, book: book) else {
                             return true
                         }
-                        try await store.save(made, replacing: redesigned != nil)
+                        try await store.save(made, replacing: redesigned != nil || replacing)
                         continuation.yield(.saved(made))
                         bookDesigns[book.id] = made
                         checkedBooks.insert(book.id)
@@ -304,7 +304,7 @@ actor SpineWorker {
                     // Compute design, needs no recheck when that tier runs. A saved design that
                     // awaits its font is checked again after a day.
                     var awaitsFont = false
-                    if case .save(let made, _) = outcome { awaitsFont = made.awaitsFont }
+                    if case .save(let made, _, _) = outcome { awaitsFont = made.awaitsFont }
                     try await ledger.recordSuccess(
                         recordName: recordName, workItemHash: workHash,
                         coverHash: outcome.design.coverHash,
@@ -361,12 +361,14 @@ actor SpineWorker {
         /// Leaves this design, iCloud's, in place.
         case keep(SpineDesignV1)
         /// Saves this design. `isNew` tells whether the run's tier made it from the cover rather
-        /// than copying a saved design or look.
-        case save(SpineDesignV1, isNew: Bool)
+        /// than copying a saved design or look. `replacing` tells whether it replaces the saved
+        /// design whatever that design's tier, as one from the cover the reader chose does
+        /// (`SpineDesignV1.outlasts(_:replacing:)`).
+        case save(SpineDesignV1, isNew: Bool, replacing: Bool = false)
 
         var design: SpineDesignV1 {
             switch self {
-            case .keep(let design), .save(let design, _): design
+            case .keep(let design), .save(let design, _, _): design
             }
         }
     }
@@ -455,6 +457,13 @@ actor SpineWorker {
         }
         let cover = try await covers.fetch(book.coverCandidates)
         let fromChosenCover = cover.url == book.chosenCoverURL
+        // A saved design from another cover than the reader's choice gives way at any tier.
+        let replacing =
+            saved.map {
+                $0.comesFromAnotherCover(
+                    than: cover.hash, readerChoseCover: readerChoseCover,
+                    fromChosenCover: fromChosenCover)
+            } ?? false
         if !forced {
             switch (
                 try await savedAction(coverHash: cover.hash, fromChosenCover: fromChosenCover),
@@ -480,19 +489,17 @@ actor SpineWorker {
                 let reused = try await analyzer.seriesDesign(
                     from: source, book: book, accountID: context.accountID,
                     workItemHash: workHash, coverHash: cover.hash),
-                saved.map({
-                    $0.comesFromAnotherCover(
-                        than: cover.hash, readerChoseCover: readerChoseCover,
-                        fromChosenCover: fromChosenCover)
-                        || $0.isOutranked(by: reused.tier, awaitingFont: reused.awaitsFont)
-                }) ?? true
+                replacing
+                    || saved.map({
+                        $0.isOutranked(by: reused.tier, awaitingFont: reused.awaitsFont)
+                    }) ?? true
             {
-                return .save(reused, isNew: false)
+                return .save(reused, isNew: false, replacing: replacing)
             }
         }
         let made = try await newDesign(
             for: book, cover: cover, workHash: workHash, accountID: context.accountID, mode: mode)
-        return .save(made, isNew: true)
+        return .save(made, isNew: true, replacing: replacing)
     }
 
     /// Designs `book` at the run's tier.

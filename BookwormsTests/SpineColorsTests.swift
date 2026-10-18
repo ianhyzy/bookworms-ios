@@ -325,6 +325,27 @@ final class SpineColorsTests: XCTestCase {
         let television = design(generator: CloudContract.appleTVGeneratorVersion)
         XCTAssertFalse(television.outlasts(onDevice, replacing: false))
         XCTAssertTrue(onDevice.outlasts(television, replacing: false))
+
+        // The tier rule holds for a save under other hashes, such as one decided from a read
+        // before another device saved a better design, or under another library snapshot.
+        let otherWork = String(repeating: "c", count: 64)
+        let laterOnDevice = onDevice.copy(workItemHash: otherWork, generatedAt: Date())
+        XCTAssertTrue(pcc.outlasts(laterOnDevice, replacing: false))
+        XCTAssertTrue(onDevice.outlasts(laterOnDevice, replacing: false))
+        XCTAssertFalse(onDevice.outlasts(pcc.copy(workItemHash: otherWork), replacing: false))
+        XCTAssertTrue(
+            onDevice.recolored(reader).outlasts(pcc.copy(workItemHash: otherWork), replacing: false)
+        )
+        // The design itself moves to a new work-item hash whatever its tier, and a design of
+        // the cover the reader chose replaces one under other hashes.
+        guard
+            case .save(let moved) = onDevice.recolored(reader)
+                .action(
+                    workItemHash: otherWork, coverHash: cover, readerChoseCover: false,
+                    runTier: .backup)
+        else { return XCTFail("The design should move to the new work-item hash") }
+        XCTAssertFalse(onDevice.recolored(reader).outlasts(moved, replacing: false))
+        XCTAssertFalse(pcc.outlasts(laterOnDevice, replacing: true))
     }
 
     func testDesignsReadTheirTierFromProvenance() {
@@ -846,7 +867,7 @@ extension SpineDesignV1 {
         copy(workItemHash: CloudContract.workItemHash(accountID: accountID, book: book))
     }
 
-    private func copy(workItemHash: String? = nil, generatedAt: Date? = nil) -> SpineDesignV1 {
+    fileprivate func copy(workItemHash: String? = nil, generatedAt: Date? = nil) -> SpineDesignV1 {
         SpineDesignV1(
             version: version, accountID: accountID, bookID: bookID,
             workItemHash: workItemHash ?? self.workItemHash, coverHash: coverHash,
