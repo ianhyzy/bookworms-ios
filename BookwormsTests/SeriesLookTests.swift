@@ -330,12 +330,36 @@ final class SeriesLookTests: XCTestCase {
     }
 
     func testLooksReadOtherGeneratorsAndKeepTheReadersColors() throws {
-        // A look seeded from the retired Mac companion's on-device design upgrades.
-        let mac = look().withOrigin(CloudContract.macGeneratorVersion)
-        XCTAssertNil(mac.provenance)
-        XCTAssertEqual(mac.tier, .onDevice)
-        XCTAssertTrue(mac.isUpgraded(at: .privateCloudCompute))
-        XCTAssertFalse(mac.isUpgraded(at: .onDevice))
+        // A look seeded from the retired Mac companion's on-device design, in either version,
+        // upgrades only from a better tier.
+        for origin in [CloudContract.macGeneratorVersion, "mac-foundation-models-v1"] {
+            let mac = look().withOrigin(origin)
+            XCTAssertNil(mac.provenance)
+            XCTAssertEqual(mac.tier, .onDevice, origin)
+            XCTAssertTrue(mac.isUpgraded(at: .privateCloudCompute), origin)
+            XCTAssertTrue(mac.isUpgraded(at: .backup), origin)
+            XCTAssertFalse(mac.isUpgraded(at: .onDevice), origin)
+            XCTAssertFalse(mac.isUpgraded(at: .local), origin)
+        }
+        // Builds that read the companion's first generator as local defaults wrote `model:local`
+        // into the looks they made from its designs; those looks still read as on-device, and
+        // copies of them record the on-device token.
+        var misread = look().withOrigin("mac-foundation-models-v1")
+        misread.provenance = ModelTier.localToken
+        XCTAssertEqual(misread.tier, .onDevice)
+        XCTAssertFalse(misread.isUpgraded(at: .onDevice))
+        XCTAssertTrue(misread.isUpgraded(at: .privateCloudCompute))
+        XCTAssertEqual(misread.design(bookID: 9).tierTokens, [ModelTier.onDeviceToken])
+        var local = look()
+        local.provenance = ModelTier.localToken
+        XCTAssertEqual(local.tier, .local, "This app's local looks stay local")
+
+        // A look seeded from this app's earlier Private Cloud Compute design upgrades from no
+        // tier.
+        let earlier = look().withOrigin("ios-pcc-v1")
+        XCTAssertEqual(earlier.tier, .privateCloudCompute)
+        XCTAssertFalse(earlier.isUpgraded(at: .privateCloudCompute))
+        XCTAssertFalse(earlier.isUpgraded(at: .onDevice))
 
         // A look with a recolored design's tokens lends only its model token, so a copy takes
         // the look's own colors, and no upgrade replaces them.
@@ -404,6 +428,33 @@ final class SeriesLookTests: XCTestCase {
         XCTAssertEqual(edited.origin, CloudContract.appleTVGeneratorVersion, "The edit stays")
         let saved = try await store.seriesLooks(accountID: "42", keys: [local.key])
         XCTAssertEqual(saved[local.key], edited)
+    }
+
+    /// A look from an earlier generator version keeps its tier, so only a better tier's design
+    /// replaces it.
+    func testOnlyABetterTierUpgradesAnEarlierGeneratorsLook() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appending(path: "bookworms-looks-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = LocalSpineStore(folder: folder)
+        let companion = look().withOrigin("mac-foundation-models-v1")
+        try await store.save(companion)
+        func upgrade(_ provenance: String?) -> SeriesLookV1 {
+            SeriesLookV1(
+                design: design(7, provenance: provenance, family: "Lora"), key: companion.key,
+                createdAt: companion.createdAt)
+        }
+        let onDevice = try await store.upgradeLook(upgrade(ModelTier.onDeviceToken))
+        XCTAssertEqual(onDevice, companion, "The same tier keeps the saved look")
+        let backup = try await store.upgradeLook(upgrade("model:openai/gpt-6-luna"))
+        XCTAssertEqual(backup.tier, .backup)
+        XCTAssertEqual(backup.createdAt, companion.createdAt)
+
+        let earlier = look().withOrigin("ios-pcc-v1")
+        try await store.save(earlier)
+        let kept = try await store.upgradeLook(upgrade("model:openai/gpt-6-luna"))
+        XCTAssertEqual(kept, earlier, "No tier upgrades a Private Cloud Compute look")
     }
 
     @MainActor

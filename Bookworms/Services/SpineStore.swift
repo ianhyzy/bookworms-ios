@@ -19,7 +19,7 @@ protocol SpineStore: Sendable {
     /// the reader picked another cover.
     func isStillCurrent(_ context: WorkContext, book: CloudBook) async throws -> Bool
     /// Saves `design` unless the saved design outlasts it (`SpineDesignV1.outlasts(_:replacing:)`),
-    /// such as one of the same work that another device's run saved first at the same tier.
+    /// such as one that another device's run saved first at the same tier or a better one.
     func save(_ design: SpineDesignV1, replacing: Bool) async throws
     /// Saves `design`'s colors to the saved design that it recolors (see
     /// `SpineDesignV1.isSameDesign(as:)`), keeping the saved font and every other field. Throws
@@ -67,7 +67,9 @@ protocol SpineStore: Sendable {
 }
 
 extension SpineStore {
-    /// Saves `design` unless a design of the same work from the same generator already exists.
+    /// Saves `design` unless the saved design outlasts it (`SpineDesignV1.outlasts(_:replacing:)`):
+    /// one from the same tier or a better one, from any generator, unless `design` moves it to a
+    /// new work-item hash, or one with the reader's colors.
     func save(_ design: SpineDesignV1) async throws {
         try await save(design, replacing: false)
     }

@@ -91,11 +91,21 @@ final class ShelfPullOut {
         guard book != nil, !isOut, !isReturning else { return }
         let revision = revision
         isOut = true
+        var end = 1.0
+        #if DEBUG
+            // Check hook: `-BookwormsPullHold <progress>` stops the flight at that progress, so
+            // a screenshot shows one moment of it.
+            if let hold = UserDefaults.standard.string(forKey: "BookwormsPullHold")
+                .flatMap(Double.init)
+            {
+                end = min(1, max(0, hold))
+            }
+        #endif
         withAnimation(Self.opening, completionCriteria: .logicallyComplete) {
-            progress = 1
+            progress = end
             room = 1
         } completion: { [self] in
-            guard self.revision == revision else { return }
+            guard self.revision == revision, progress == 1 else { return }
             // As the Pile's details fade in.
             withAnimation(.easeOut(duration: 0.25)) { showsText = true }
             AccessibilityNotification.ScreenChanged(nil).post()
@@ -162,11 +172,10 @@ final class ShelfPullOut {
 ///
 /// 1. The book slides out of its place, straight toward the reader, which shows as its spine
 ///    growing. On **Stack**, it comes out along the way its spine faces (`slide`), so a turned
-///    book also moves a little to that side, and a flat one down the screen, until it is clear
+///    book also moves a little to that side, and a flat one down the screen, so it stays clear
 ///    of the book above, while the books above and below make a little room (`StackRoom`). The
-///    stack draws this part itself, under the book above in 2D and over the books around it in
-///    3D (`Rest.slidesInStack`). The book casts a shadow on the shelf, and the faces' shading
-///    fades in.
+///    stack draws this part itself, over the books around it (`Rest.slidesInStack`). The book
+///    casts a shadow on the shelf, and the faces' shading fades in.
 /// 2. As the slide ends, the book starts to float to the stage, growing or shrinking to the
 ///    stage's height, and to turn from the way it lay (`Rest`) to the details' pose, while a book
 ///    from **Stack** stands up from lying on its back. On **Shelf**, the float and the turn start
@@ -252,9 +261,9 @@ struct PullOutPath {
         /// The camera's distance from the book's center, in book heights; `nil` for the
         /// details' camera (`BookProjection.standardDistance`).
         var distance: Double? = nil
-        /// Whether the stack draws the book's slide out of its place itself (`slide`), so a flat
-        /// stack's book above keeps covering it. The flight takes over once the book is clear of
-        /// the stack.
+        /// Whether the stack draws the book's slide out of its place itself (`slide`), among the
+        /// books making room for it and under the stack's fades. The flight takes over once the
+        /// book is clear of the stack.
         var slidesInStack = false
     }
 
@@ -335,9 +344,9 @@ struct PullOutPath {
     /// reader along the way its spine faces: it grows by up to `pullScale` and moves a little to
     /// the side it is turned to. A book seen by the 3D stack's camera (`Rest.distance`) grows
     /// about its middle, which lies about level with the camera's eye, as a book coming straight
-    /// toward that eye does; the stack draws it over the books around it. A flat stack draws the
-    /// book above over it, so a flat book also moves down the screen until its top edge, grown
-    /// by `pullScale`, is just below the top edge of its place, clear of the book above.
+    /// toward that eye does. A flat book, seen straight on, also moves down the screen as it
+    /// grows, so its top edge stays on the top edge of its place, clear of the book above. The
+    /// stack draws either over the books around it.
     ///
     /// - Parameters:
     ///   - length: The spine's length on screen.
