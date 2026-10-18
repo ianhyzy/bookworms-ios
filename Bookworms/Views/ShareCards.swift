@@ -163,31 +163,58 @@ struct TopFiveCard: View {
                 startRadius: 0, endRadius: aspect.size.width * 0.75)
             // Titles keep their subtitles while the fan keeps its minimum height. Past that, the
             // longest titles give theirs up one at a time, and only once every title has given
-            // its subtitle up does the fan shrink below its minimum.
+            // its subtitle up does the fan shrink below its minimum. `ViewThatFits` measures the
+            // gaps at their least, so they never cost a title its subtitle.
             ViewThatFits(in: .vertical) {
                 ForEach(0...shortenable.count, id: \.self) { shortened in
-                    VStack(spacing: aspect == .story ? 48 : 32) {
+                    VStack(spacing: 0) {
                         Text(heading)
                             .font(ShareStyle.serif(aspect == .story ? 84 : 68, .semibold))
                             .foregroundStyle(ShareStyle.cream.color)
                             .lineLimit(1)
                             .minimumScaleFactor(0.6)
+                            // Keeps its height, so widening gaps cannot shrink it.
+                            .fixedSize(horizontal: false, vertical: true)
+                        gap(gaps.section)
                         fan(books)
                             .frame(
                                 minHeight: shortened < shortenable.count ? minimumFanHeight : nil)
-                        VStack(spacing: aspect == .story ? 22 : 14) {
+                        gap(gaps.section)
+                        VStack(spacing: 0) {
                             ForEach(Array(books.enumerated()), id: \.element.id) { index, book in
+                                if index > 0 { gap(gaps.row) }
                                 row(
                                     rank: index + 1, book: book, showsAuthor: aspect != .square,
-                                    keepsSubtitle: !shortenable.prefix(shortened).contains(index))
+                                    keepsSubtitle: !shortenable.prefix(shortened).contains(index)
+                                )
+                                // A row never gives up height to its gaps, which could shorten
+                                // its title.
+                                .layoutPriority(2)
                             }
                         }
-                        .layoutPriority(1)
+                        .layoutPriority(2)
                     }
                 }
             }
             .padding(aspect.insets)
         }
+    }
+
+    /// The gaps around the fan and between the ranked rows, from least to most, in pixels.
+    ///
+    /// A story's gaps widen before the fan grows, as far as the fan's minimum height allows, so
+    /// its tall card spreads the heading, fan, and rows apart instead of packing them. The fan
+    /// takes what they leave. Portrait and Square keep fixed gaps, and their fan takes the rest.
+    private var gaps: (section: ClosedRange<CGFloat>, row: ClosedRange<CGFloat>) {
+        input.aspect == .story ? (48...80, 22...36) : (32...32, 14...14)
+    }
+
+    /// Space that grows from `range`'s lower bound to its upper one before the fan, the most
+    /// flexible part of the card, takes any height.
+    private func gap(_ range: ClosedRange<CGFloat>) -> some View {
+        Spacer(minLength: range.lowerBound)
+            .frame(maxHeight: range.upperBound)
+            .layoutPriority(1)
     }
 
     /// The least height the fan keeps while titles show their subtitles, below which its covers
