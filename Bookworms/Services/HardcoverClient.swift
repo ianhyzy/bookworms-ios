@@ -36,8 +36,18 @@ enum HardcoverError: LocalizedError, Equatable {
         case .credentialNotSaved:
             "Bookworms could not save your Hardcover login on this \(ThisDevice.name)."
         case .credentialUnreadable:
-            "Bookworms could not read your Hardcover login from this \(ThisDevice.name)'s keychain. Try again in a moment."
+            "Bookworms could not read your Hardcover login from the keychain. \(Self.keychainAdvice)"
         }
+    }
+
+    /// What lets the Keychain read the login again: on a Mac, allowing its prompt; elsewhere,
+    /// the first unlock after a restart.
+    private static var keychainAdvice: String {
+        #if os(macOS)
+            "Allow access when the Mac asks, then try again."
+        #else
+            "Unlock this \(ThisDevice.name), then try again."
+        #endif
     }
 }
 

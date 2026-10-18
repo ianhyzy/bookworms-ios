@@ -262,11 +262,22 @@ final class HardcoverTests: XCTestCase {
         XCTAssertEqual(tokens.deletes, 0)
         XCTAssertNotNil(defaults.data(forKey: HardcoverAccount.summaryKey))
         XCTAssertTrue(FileManager.default.fileExists(atPath: library.path()))
+        XCTAssertEqual(tokens.loads, 1)
 
+        // A due download and its requests report the refusal without asking the Keychain again,
+        // so a Mac shows no prompt for them.
+        await account.syncIfStale()
+        XCTAssertEqual(account.syncError, HardcoverError.credentialUnreadable.errorDescription)
+        let refusal = await thrownError { try await account.accessToken() }
+        XCTAssertEqual(refusal as? HardcoverError, .credentialUnreadable)
+        XCTAssertEqual(tokens.loads, 1)
+
+        // **Sync now** reads the login once more.
         await account.sync()
         XCTAssertEqual(account.syncError, HardcoverError.credentialUnreadable.errorDescription)
         XCTAssertFalse(account.needsReconnect)
         XCTAssertEqual(tokens.secret, "fictional-token")
+        XCTAssertEqual(tokens.loads, 2)
         let refused = await requests.count
         XCTAssertEqual(refused, 0)
 
@@ -1089,6 +1100,7 @@ final class HardcoverTests: XCTestCase {
 private final class FakeSecretStore: SecretStore {
     var secret: String?
     var isReadable: Bool
+    private(set) var loads = 0
     private(set) var saves: [String] = []
     private(set) var deletes = 0
 
@@ -1098,6 +1110,7 @@ private final class FakeSecretStore: SecretStore {
     }
 
     func load() throws -> String? {
+        loads += 1
         guard isReadable else {
             throw KeychainSecret.Unreadable(status: errSecInteractionNotAllowed)
         }
@@ -1112,6 +1125,17 @@ private final class FakeSecretStore: SecretStore {
     func delete() {
         deletes += 1
         secret = nil
+    }
+}
+
+/// The error that `body` throws, or `nil` when it returns.
+@MainActor
+private func thrownError(_ body: () async throws -> some Any) async -> (any Error)? {
+    do {
+        _ = try await body()
+        return nil
+    } catch {
+        return error
     }
 }
 

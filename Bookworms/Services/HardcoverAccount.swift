@@ -176,8 +176,9 @@ final class HardcoverAccount {
     /// Reads the saved login again when the Keychain refused the last read, and reports a
     /// changed sign-in as a library change.
     ///
-    /// The app calls this when it becomes active, and each sync and request does too, so the
-    /// Keychain is read again only at those times and never for a view update.
+    /// **Sync now** (`sync()`) calls this, and so does the iPhone app when it becomes active
+    /// (`AppModel.reloadIfStale()`). Requests in between fail without reading the Keychain
+    /// (`savedCredential()`), so one refused read never turns into a series of a Mac's prompts.
     func retryUnreadLogin() {
         guard loginIsUnread else { return }
         let before = (isSignedIn, summary)
@@ -189,10 +190,10 @@ final class HardcoverAccount {
     /// not keep it.
     ///
     /// Throws `HardcoverError.invalidToken` when signed out, and
-    /// `HardcoverError.credentialUnreadable` while the Keychain refuses the read; the login then
-    /// stays saved.
+    /// `HardcoverError.credentialUnreadable` when the Keychain refuses this read or refused the
+    /// last one, which only `retryUnreadLogin()` repeats; the login then stays saved.
     private func savedCredential() throws -> HardcoverCredential {
-        retryUnreadLogin()
+        guard !loginIsUnread else { throw HardcoverError.credentialUnreadable }
         guard isSignedIn else { throw HardcoverError.invalidToken }
         let stored: String?
         do {
@@ -341,13 +342,18 @@ final class HardcoverAccount {
     /// When the archive can't be read and this device has no copy, the download is saved but
     /// not published, so a library whose covers were all picked again never replaces the
     /// account's snapshot there.
-    func sync() async { await sync(readsArchive: true) }
+    ///
+    /// When the Keychain refused the last read of the login, reads it again first
+    /// (`retryUnreadLogin()`).
+    func sync() async {
+        retryUnreadLogin()
+        await sync(readsArchive: true)
+    }
 
     /// Downloads the library as `sync()` describes, reading the archive's copy first unless
     /// `readsArchive` is `false`, as when the caller has just read the archive and the cache
     /// holds the account's newest copy.
     private func sync(readsArchive: Bool) async {
-        retryUnreadLogin()
         guard isSignedIn, !isSyncing, let accountID = summary?.accountID else { return }
         isSyncing = true
         syncError = nil
@@ -416,7 +422,6 @@ final class HardcoverAccount {
     /// sign-in, sign-out, or sync that changes the library during the iCloud read starts the
     /// check again for the current account.
     func syncIfStale() async {
-        retryUnreadLogin()
         guard isSignedIn, let accountID = summary?.accountID else { return }
         var newest =
             FileManager.default.fileExists(atPath: libraryURL.path()) ? summary?.syncedAt : nil
