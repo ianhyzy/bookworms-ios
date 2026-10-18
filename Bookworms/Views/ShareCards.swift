@@ -164,8 +164,8 @@ struct TopFiveCard: View {
             // Titles keep their subtitles while the fan keeps its minimum height. Past that, the
             // longest titles give theirs up one at a time. When the fan is short of its minimum
             // even with every subtitle given up, the last layout keeps the gaps at their least and
-            // lets the fan shrink below its minimum. `ViewThatFits` measures the gaps at their
-            // least, so they never cost a title its subtitle.
+            // lets the heading and the fan shrink, the fan below its minimum. `ViewThatFits`
+            // measures the gaps at their least, so they never cost a title its subtitle.
             ViewThatFits(in: .vertical) {
                 ForEach(0...shortenable.count + 1, id: \.self) { layout in
                     let isFallback = layout > shortenable.count
@@ -176,8 +176,8 @@ struct TopFiveCard: View {
                             .foregroundStyle(ShareStyle.cream.color)
                             .lineLimit(1)
                             .minimumScaleFactor(0.6)
-                            // Keeps its height, so widening gaps cannot shrink it.
-                            .fixedSize(horizontal: false, vertical: true)
+                            // Keeps its height where gaps widen, so they cannot shrink it.
+                            .fixedSize(horizontal: false, vertical: !isFallback)
                         gap(gaps.section, widens: !isFallback)
                         fan(books)
                             .frame(minHeight: isFallback ? nil : minimumFanHeight)
