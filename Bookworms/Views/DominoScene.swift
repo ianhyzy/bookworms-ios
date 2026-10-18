@@ -585,9 +585,18 @@ final class DominoScene {
     private static let stallTime: TimeInterval = 1
     /// The cosine of the tilt past which a book counts as fallen.
     private static let fallenTilt: Float = 0.9
-    /// The overview's zoom as a share of the zoom that fits the path, so the path has room
-    /// around it, and the Follow camera's opening view's.
-    private static let overviewRoom: Float = 0.88
+    /// The overview's zoom as a share of the zoom that fits the path, standing and fallen, in
+    /// the part of the view it frames, so the standing chain fills about two thirds of an
+    /// iPhone's width and the fallen books keep room once the camera eases in
+    /// (`followRoom`); and the Follow camera's opening view's.
+    private static let overviewRoom: Float = 0.9
+    /// The overview's turn about the table, in radians, from looking straight across the rows.
+    /// Every other row stands with its spines toward the camera and the rows between with
+    /// their fore edges toward it, so from straight ahead those rows show only page edges.
+    /// From 20 degrees toward the lamp's side, the camera also sees each book's broad side,
+    /// lit: the spine rows' front covers and the other rows' back boards, so every book reads
+    /// as a book while it stands upright.
+    private static let overviewYaw: Float = 0.35
     private static let openingRoom: Float = 0.9
     /// The most the overview camera eases in past the overview while the chain falls, as a
     /// share of the overview's zoom, so the fallen books keep their room in the view.
@@ -1157,7 +1166,8 @@ final class DominoScene {
         aspect = Float(size.width / size.height)
         let rect = frameRect(in: viewport)
         let outline = DominoLayout.outline(of: plan.slots)
-        overview = PileCamera().framing(outline, in: rect, of: size, zoomRange: 0.2...2.5)
+        overview = PileCamera(yaw: Self.overviewYaw)
+            .framing(outline, in: rect, of: size, zoomRange: 0.2...2.5)
         overview.zoom *= Self.overviewRoom
         var high = PileCamera(
             yaw: DominoCameraRig.openingYaw, pitch: DominoCameraRig.openingPitch
@@ -1499,7 +1509,7 @@ final class DominoScene {
             ]
         }
         if let viewport = plannedViewport {
-            view = PileCamera()
+            view = PileCamera(yaw: Self.overviewYaw)
                 .framing(
                     points, in: frameRect(in: viewport), of: viewport.size, zoomRange: 0.05...2.5)
         }
@@ -2714,12 +2724,14 @@ final class DominoScene {
             PileCamera.distance / followZoom * tan(PileCamera.fieldOfView / 2)
             / sin(PileCamera.pitch)
         let bound = max(extent.y - reach, 0)
+        let across =
+            min(max(front.y, overview.target.z - bound), overview.target.z + bound)
+            - overview.target.z
+        // Along the view's own up and down on the table, so a turned overview moves straight
+        // up or down the screen with the front rather than sliding the rows sideways.
+        let yaw = overview.yaw
         return PileCamera(
-            target: [
-                overview.target.x, 0,
-                min(max(front.y, overview.target.z - bound), overview.target.z + bound),
-            ],
-            zoom: followZoom)
+            target: overview.target + SIMD3(tan(yaw), 0, 1) * across, yaw: yaw, zoom: followZoom)
     }
 
     /// The overview camera's lanes for `DominoOverviewSpring`.
