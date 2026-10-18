@@ -1213,10 +1213,6 @@ private struct SeriesRows: View {
     }
 }
 
-/// **Redesign spine** for a book (`GenerationController.redesign(_:)`), or the run's progress
-/// while one runs. A run that ends after `requestedAt` while it is still set, because no new
-/// design arrived, leaves a note with the run's error, for example after a quota stop or when
-/// the cover did not load.
 /// Pins the book to lead Top Five share images, or unpins it (`TopFivePins`). While five other
 /// books are pinned, it is disabled and says where to unpin one.
 private struct TopFivePinButton: View {
@@ -1244,6 +1240,10 @@ private struct TopFivePinButton: View {
     }
 }
 
+/// **Redesign spine** for a book (`GenerationController.redesign(_:)`), or the run's progress
+/// while one runs. A run that ends after `requestedAt` while it is still set, because no new
+/// design arrived, leaves a note with the run's error, for example after a quota stop or when
+/// the cover did not load.
 private struct RedesignButton: View {
     let book: CloudBook
     /// Whether the redesign changes the book's whole series.
