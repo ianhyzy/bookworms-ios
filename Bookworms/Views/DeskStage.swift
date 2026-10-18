@@ -166,7 +166,7 @@ final class DeskStage {
     }
 
     /// Shows or hides the dust drifting through the lamp's beam. Reduce Motion hides it, as
-    /// motion the reader did not start. `fine` motes, the same flecks about 1 to 2.5 mm long,
+    /// motion the reader did not start. `fine` motes, the same flecks about 1 to 3 mm long,
     /// faint, and lit by the lamp, suit a camera that films low among them, as the dominoes'
     /// Follow camera does, where a mote of the desk's that drifts near the lens shows as a
     /// large glowing fleck.
@@ -313,11 +313,11 @@ final class DeskStage {
     /// Gives `motes` the desk's look: slender irregular flecks (`flecks`) about 2 to 5.5 mm
     /// long and a third to half as wide, in cells 5.5 to 9.5 mm across, specks of the lamp's
     /// warm light at half strength that brighten what lies behind them, as dust catching a beam
-    /// does. `fine` motes are the same flecks about 1 to 2.5 mm long, faint, and lit by the
-    /// lamp, so they show only in its beam, and stay small and faint enough not to show as
-    /// discs when a camera passes close to them.
+    /// does. `fine` motes are the same flecks about 1 to 3 mm long, faint, and lit by the lamp,
+    /// so they show only in its beam, and stay small and faint enough not to show as discs when
+    /// a camera passes close to them.
     private static func dress(_ motes: inout ParticleEmitterComponent.ParticleEmitter, fine: Bool) {
-        motes.size = fine ? 0.03 : 0.075
+        motes.size = fine ? 0.04 : 0.075
         motes.sizeVariation = fine ? 0.01 : 0.02
         motes.color = .constant(
             .single(
