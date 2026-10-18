@@ -328,7 +328,8 @@ struct ShareCanvas: View {
 }
 
 /// The quiet credit that every exported share image and video carries at its bottom edge, in
-/// the bottom margin that every card keeps free of content. Previews in the app leave it out.
+/// the bottom margin that every card keeps free of content, which on a story is the bottom 150
+/// pixels (`ShareAspect.reach`). Previews in the app leave it out.
 struct ShareCredit: View {
     /// The strip at the bottom of an export that the credit and its shadow take, in pixels,
     /// which an in-app preview of a video leaves out.
