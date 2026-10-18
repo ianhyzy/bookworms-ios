@@ -541,7 +541,7 @@ actor BookAnalyzer {
                     all.filter { [.script, .rounded].contains($0.style) }
                 } else {
                     switch reading.treatment {
-                    case "outlined or multi-line neon": [.monoton, .bungee, .righteous, .limelight]
+                    case "outlined or multi-line neon": [.bungee, .righteous, .limelight]
                     case "pixel or sci-fi tech":
                         [.orbitron, .michroma, .audiowide, .chakraPetch, .pressStart2p, .russoOne]
                     case "gothic broken strokes": all.filter { $0.style == .blackletter }
@@ -914,7 +914,12 @@ actor BookAnalyzer {
             .compactMap { observation in
                 observation.topCandidates(1).first
                     .map {
-                        TitleLettering.Line(text: $0.string, box: observation.boundingBox)
+                        TitleLettering.Line(
+                            text: $0.string, box: observation.boundingBox,
+                            corners: [
+                                observation.bottomLeft, observation.bottomRight,
+                                observation.topRight, observation.topLeft,
+                            ])
                     }
             }
     }

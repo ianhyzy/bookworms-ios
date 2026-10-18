@@ -806,7 +806,7 @@ final class GenerationTests: XCTestCase {
                     handDrawn: false, serifs: false, treatment: "outlined or multi-line neon"),
                 playful: false
             )
-            .first, "Monoton")
+            .first, "Bungee")
         // Rounded faces need a playful book.
         let serious = BookAnalyzer.families(
             for: .init(handDrawn: false, serifs: false, treatment: "plain"), playful: false)
@@ -1170,6 +1170,88 @@ final class GenerationTests: XCTestCase {
         // The letters alone: (10 + 3 + 10) columns for about 38 rows. The picture's full-width
         // rows would leave no gap to collapse and make the line about three times as wide.
         XCTAssertEqual(measurement.profile.aspect, 0.6, accuracy: 0.08)
+    }
+}
+
+extension GenerationTests {
+    func testTiltedTitleLinesMeasureLevel() throws {
+        // Two 10 × 40 letters 30 pixels apart, turned 30 degrees about the image's center.
+        let size = 300.0
+        let context = try XCTUnwrap(
+            CGContext(
+                data: nil, width: Int(size), height: Int(size), bitsPerComponent: 8,
+                bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: size, height: size))
+        let angle = Double.pi / 6
+        context.translateBy(x: size / 2, y: size / 2)
+        context.rotate(by: angle)
+        context.setFillColor(red: 0, green: 0, blue: 0, alpha: 1)
+        context.fill(CGRect(x: -25, y: -20, width: 10, height: 40))
+        context.fill(CGRect(x: 15, y: -20, width: 10, height: 40))
+        let image = try XCTUnwrap(context.makeImage())
+        // Vision's quadrilateral, normalized with a bottom-left origin as Core Graphics draws.
+        let corners = [(-25.0, -20.0), (25, -20), (25, 20), (-25, 20)]
+            .map { u, v in
+                CGPoint(
+                    x: (size / 2 + u * cos(angle) - v * sin(angle)) / size,
+                    y: (size / 2 + u * sin(angle) + v * cos(angle)) / size)
+            }
+        let xs = corners.map(\.x)
+        let ys = corners.map(\.y)
+        let box = CGRect(
+            x: xs.min()!, y: ys.min()!, width: xs.max()! - xs.min()!,
+            height: ys.max()! - ys.min()!)
+        let tilted = try XCTUnwrap(
+            TitleLettering.measure(
+                image, lines: [TitleLettering.Line(text: "II", box: box, corners: corners)],
+                title: "II"))
+        // As level: (10 + 3 + 10) columns for 40 rows.
+        XCTAssertEqual(tilted.profile.aspect, 0.6, accuracy: 0.1)
+        XCTAssertEqual(try XCTUnwrap(tilted.inkSpan), 1, accuracy: 0.1)
+        let upright = try XCTUnwrap(
+            TitleLettering.measure(
+                image, lines: [TitleLettering.Line(text: "II", box: box)], title: "II"))
+        XCTAssertGreaterThan(abs(upright.profile.aspect - tilted.profile.aspect), 0.2)
+    }
+
+    func testMeasurementsThatLostLettersRankNothing() throws {
+        let atlas = try XCTUnwrap(FontAtlas.shared)
+        let font = try XCTUnwrap(atlas.fonts.first { $0.family == "Oswald" && $0.weight == 400 })
+        let image = try XCTUnwrap(
+            CGContext(
+                data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?
+                .makeImage())
+        func measurement(_ text: String, profileOf drawn: String, inkSpan: Double? = nil) throws
+            -> TitleLettering.Measurement
+        {
+            TitleLettering.Measurement(
+                text: text, crop: image, profile: try XCTUnwrap(font.compose(drawn)?.profile()),
+                ink: ColorValue(hex: "#FFFFFF")!, ground: ColorValue(hex: "#000000")!,
+                inkSpan: inkSpan)
+        }
+        let families = SpineFamily.allCases.map(\.rawValue)
+        XCTAssertFalse(
+            TitleLettering.rank(families, for: try measurement("METHOD", profileOf: "METHOD"))
+                .isEmpty)
+        // Only "ME" of a two-color "METHOD" survived the ink mask: narrower than any face.
+        XCTAssertTrue(
+            TitleLettering.rank(families, for: try measurement("METHOD", profileOf: "ME")).isEmpty)
+        // A gray byline OCR read with the title: the letters span a third of the line.
+        let byline = try measurement(
+            "STEVE JOBS BY WALTER ISAACSON", profileOf: "STEVE JOBS", inkSpan: 0.35)
+        XCTAssertTrue(TitleLettering.rank(families, for: byline).isEmpty)
+        XCTAssertFalse(TitleLettering.hasHairlineStrokes(byline))
+        let book = CloudBook(
+            id: 9, title: "Steve Jobs", author: "Walter Isaacson", coverURL: nil,
+            detailCoverURL: nil)
+        let unranked = BookAnalyzer.candidates(
+            BookAnalyzer.families(for: nil, playful: false), lettering: byline, book: book,
+            local: false)
+        XCTAssertTrue(unranked.allSatisfy { $0.weight == TitleLettering.minimumWeight })
     }
 }
 

@@ -139,15 +139,15 @@ enum SpineFamily: String, CaseIterable {
     ///   "lIHbhkinmrpBDEFKLPR": Caveat measures 19 degrees, Permanent Marker 18, and Kalam 13,
     ///   while upright faces measure under 1. Shadows Into Light's letters tilt unevenly.
     ///   `BookAnalyzer.allowsFamily` blocks the other leaning script and display faces outright.
-    /// - Hairline ultra-narrow faces, whose capitals are under half as wide as they are tall:
-    ///   Six Caps' stems are 7.5 percent of its capitals' height and Amatic SC's at most 7, so
-    ///   at spine size their titles read as scratches. League Gothic, at 15 percent, takes their
-    ///   place for narrow lettering.
+    /// - Hairline faces, whose stems are under 8 percent of their capitals' height, so at spine
+    ///   size their titles read as scratches: the ultra-narrow Six Caps (7.5 percent) and
+    ///   Amatic SC (at most 7), and the outlined Monoton (4.5) and Almendra Display (2.5).
+    ///   League Gothic, at 15 percent, takes the narrow faces' place for narrow lettering.
     /// - Cinzel Decorative, whose swashes the title measurements cannot tell from Cinzel's plain
     ///   capitals.
     static let neverGenerated: Set<SpineFamily> = [
-        .caveat, .kalam, .permanentMarker, .shadowsIntoLight, .sixCaps, .amaticSc,
-        .cinzelDecorative,
+        .caveat, .kalam, .permanentMarker, .shadowsIntoLight, .sixCaps, .amaticSc, .monoton,
+        .almendraDisplay, .cinzelDecorative,
     ]
 
     /// The letterform style group the family belongs to.
