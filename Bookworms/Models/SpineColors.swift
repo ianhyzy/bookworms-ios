@@ -120,12 +120,14 @@ extension SpineDesignV1 {
     /// What a generation run at `runTier` does with this saved design for a book whose work-item
     /// hash is `workItemHash` and whose cover, downloaded for this run, hashes to `coverHash`.
     /// `readerChoseCover` tells whether the reader chose another cover since the book's last
-    /// check, such as with **Change cover**. `drawsSeriesLook` tells whether the book draws its
+    /// check, such as with **Change cover**, and `fromChosenCover` whether the downloaded cover is
+    /// the one the reader chose. `drawsSeriesLook` tells whether the book draws its
     /// look group's `SeriesLookV1` instead of this design. `upgradesSeriesLook` tells whether the
     /// book's design is to replace its group's weaker look (`SeriesLookV1.upgradeSource(among:)`).
     ///
     /// A run replaces a design only with a better tier's (`isOutranked(by:awaitingFont:)`), or
-    /// with a design of a cover the reader chose (`comesFromAnotherCover(than:readerChoseCover:)`).
+    /// with a design of a cover the reader chose
+    /// (`comesFromAnotherCover(than:readerChoseCover:fromChosenCover:)`).
     /// A design with the generator's colors stays when it comes from `runTier` or a better tier,
     /// whatever generator version made it, and so does a design the reader recolored, at any
     /// tier, or the design of a book that draws a series look, since redesigning that book
@@ -142,13 +144,17 @@ extension SpineDesignV1 {
     /// look it would replace, and a copy without a model token reads as Private Cloud Compute
     /// whatever made its source.
     func action(
-        workItemHash: String, coverHash: String, readerChoseCover: Bool, runTier: ModelTier,
-        drawsSeriesLook: Bool = false, upgradesSeriesLook: Bool = false
+        workItemHash: String, coverHash: String, readerChoseCover: Bool,
+        fromChosenCover: Bool = false, runTier: ModelTier, drawsSeriesLook: Bool = false,
+        upgradesSeriesLook: Bool = false
     ) -> SavedDesignAction {
         let stays =
             generatedColors != nil || drawsSeriesLook
             || (!isOutranked(by: runTier) && !(upgradesSeriesLook && isSeriesReuse))
-        guard stays, !comesFromAnotherCover(than: coverHash, readerChoseCover: readerChoseCover),
+        guard stays,
+            !comesFromAnotherCover(
+                than: coverHash, readerChoseCover: readerChoseCover,
+                fromChosenCover: fromChosenCover),
             let colors
         else { return .redesign }
         guard self.workItemHash != workItemHash else { return .keep }
@@ -159,11 +165,19 @@ extension SpineDesignV1 {
     }
 
     /// Whether this design comes from another cover than the one the reader chose, so a run
-    /// designs the book again whatever the design's tier: the run downloaded a cover that hashes
-    /// to `coverHash`, another than this design's, after the reader chose another cover since
-    /// the book's last check (`readerChoseCover`).
-    func comesFromAnotherCover(than coverHash: String, readerChoseCover: Bool) -> Bool {
-        self.coverHash != coverHash && readerChoseCover
+    /// designs the book again whatever the design's tier. The run downloaded a cover that hashes
+    /// to `coverHash`, another than this design's, and either the reader chose another cover
+    /// since the book's last check (`readerChoseCover`) or the downloaded cover is the reader's
+    /// choice (`fromChosenCover`) and the design has the generator's colors. So a device that
+    /// never saw the choice, or whose first design from it failed, still designs the chosen
+    /// cover, and new bytes behind the chosen cover's URL redesign the book too. A default cover
+    /// downloaded because the chosen one is missing replaces no design unless the choice is new,
+    /// and a design the reader recolored gives way only to a new choice.
+    func comesFromAnotherCover(
+        than coverHash: String, readerChoseCover: Bool, fromChosenCover: Bool
+    ) -> Bool {
+        self.coverHash != coverHash
+            && (readerChoseCover || fromChosenCover && generatedColors == nil)
     }
 
     /// The `provenance` token that names the model that made this design, such as

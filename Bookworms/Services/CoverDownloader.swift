@@ -5,6 +5,8 @@ struct CoverImage: Sendable {
     let image: CGImage
     /// The lowercase SHA-256 of the downloaded bytes, which `SpineDesignV1.coverHash` records.
     let hash: String
+    /// The candidate the bytes came from.
+    let url: URL
 }
 
 enum CoverURLPolicy {
@@ -56,11 +58,11 @@ actor CoverDownloader {
     /// temporary server error (HTTP 408, 429, or 5xx) propagates as a `URLError`, so a brief
     /// outage does not swap in the other URL and change the cover hash.
     func fetch(_ urls: [URL]) async throws -> CoverImage {
-        let data = try await fetchData(urls).data
+        let (url, data) = try await fetchData(urls)
         guard let image = Self.image(from: data, maximumPixelSize: 1024) else {
             throw CompanionError.invalidCover
         }
-        return CoverImage(image: image, hash: CloudContract.digest(data))
+        return CoverImage(image: image, hash: CloudContract.digest(data), url: url)
     }
 
     /// Downloads the first usable candidate's bytes after checking that they decode as an image,

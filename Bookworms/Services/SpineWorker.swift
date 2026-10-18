@@ -373,7 +373,7 @@ actor SpineWorker {
 
     /// Returns the design to save for `book`, or the saved design to keep when iCloud already
     /// has a design from the run's tier or better, or a design whose colors the reader chose (see
-    /// `SpineDesignV1.action(workItemHash:coverHash:readerChoseCover:runTier:drawsSeriesLook:upgradesSeriesLook:)`).
+    /// `SpineDesignV1.action(workItemHash:coverHash:readerChoseCover:fromChosenCover:runTier:drawsSeriesLook:upgradesSeriesLook:)`).
     /// A kept design whose book's metadata changed is saved again under the new work-item hash
     /// when its face letters the book's title and author, and otherwise left as it is. `forced`
     /// always makes a new design.
@@ -409,13 +409,16 @@ actor SpineWorker {
         let readerChoseCover = await ledger.readerChoseCover(
             recordName: Self.recordName(context.accountID, book),
             chosenCover: book.chosenCoverURL)
-        func savedAction(coverHash: String) async throws -> SavedDesignAction {
+        func savedAction(coverHash: String, fromChosenCover: Bool = false) async throws
+            -> SavedDesignAction
+        {
             guard let saved else { return .redesign }
             func action(drawsSeriesLook: Bool) -> SavedDesignAction {
                 saved.action(
                     workItemHash: workHash, coverHash: coverHash,
-                    readerChoseCover: readerChoseCover, runTier: runTier,
-                    drawsSeriesLook: drawsSeriesLook, upgradesSeriesLook: upgradesLook)
+                    readerChoseCover: readerChoseCover, fromChosenCover: fromChosenCover,
+                    runTier: runTier, drawsSeriesLook: drawsSeriesLook,
+                    upgradesSeriesLook: upgradesLook)
             }
             // The glyph checks wait until they decide, so kept designs cost no font download.
             var result = action(drawsSeriesLook: false)
@@ -451,8 +454,12 @@ actor SpineWorker {
             }
         }
         let cover = try await covers.fetch(book.coverCandidates)
+        let fromChosenCover = cover.url == book.chosenCoverURL
         if !forced {
-            switch (try await savedAction(coverHash: cover.hash), saved) {
+            switch (
+                try await savedAction(coverHash: cover.hash, fromChosenCover: fromChosenCover),
+                saved
+            ) {
             case (.keep, let saved?): return .keep(await kept(saved))
             case (.save(let design), _): return .save(await kept(design), isNew: false)
             default: break
@@ -474,7 +481,9 @@ actor SpineWorker {
                     from: source, book: book, accountID: context.accountID,
                     workItemHash: workHash, coverHash: cover.hash),
                 saved.map({
-                    $0.comesFromAnotherCover(than: cover.hash, readerChoseCover: readerChoseCover)
+                    $0.comesFromAnotherCover(
+                        than: cover.hash, readerChoseCover: readerChoseCover,
+                        fromChosenCover: fromChosenCover)
                         || $0.isOutranked(by: reused.tier, awaitingFont: reused.awaitsFont)
                 }) ?? true
             {

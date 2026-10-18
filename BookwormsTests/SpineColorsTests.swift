@@ -143,6 +143,17 @@ final class SpineColorsTests: XCTestCase {
         // A cover the reader chose redesigns the spine.
         XCTAssertEqual(action(edited, cover: otherCover, readerChoseCover: true), .redesign)
         XCTAssertEqual(action(design(), cover: otherCover, readerChoseCover: true), .redesign)
+        // So does a downloaded chosen cover that the design doesn't come from, such as on a
+        // device that never saw the choice, or after a failed first design from it. Only a new
+        // choice replaces the reader's colors.
+        func fromChosen(_ design: SpineDesignV1, cover: String) -> SavedDesignAction {
+            design.action(
+                workItemHash: work, coverHash: cover, readerChoseCover: false,
+                fromChosenCover: true, runTier: .local)
+        }
+        XCTAssertEqual(fromChosen(design(), cover: otherCover), .redesign)
+        XCTAssertEqual(fromChosen(design(), cover: cover), .keep)
+        XCTAssertEqual(fromChosen(edited, cover: otherCover), .keep)
 
         // A book that draws its series' look keeps a weaker tier's design, since a redesign
         // would not change its spine, and moves it to new hashes.

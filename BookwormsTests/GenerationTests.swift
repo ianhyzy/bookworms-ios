@@ -683,7 +683,9 @@ final class GenerationTests: XCTestCase {
             detailCoverURL: nil, genres: ["Science Fiction"])
         let design = try await analyzer.design(
             book: book, accountID: "42", workItemHash: hash,
-            cover: CoverImage(image: image, hash: hash), using: .local)
+            cover: CoverImage(
+                image: image, hash: hash, url: URL(string: "https://covers.example.com/9.jpg")!),
+            using: .local)
         XCTAssertNil(design.fontFamily)
         XCTAssertNil(design.fontPostScriptName)
         XCTAssertEqual(design.typeface, SpineFontStyle.geometricSans.fallbackTypeface)
