@@ -310,12 +310,12 @@ final class DeskStage {
         return emitter
     }
 
-    /// Gives `motes` the desk's look: irregular flecks (`flecks`) about 3 to 6 mm long and
-    /// half as wide or less, in cells 5.5 to 9.5 mm across, specks of the lamp's warm light at
-    /// half strength that brighten what lies behind them, as dust catching a beam does. `fine`
-    /// motes are the same flecks about 1 to 2.5 mm long, faint, and lit by the lamp, so they
-    /// show only in its beam, and stay small and faint enough not to show as discs when a
-    /// camera passes close to them.
+    /// Gives `motes` the desk's look: slender irregular flecks (`flecks`) about 2 to 5.5 mm
+    /// long and a third to half as wide, in cells 5.5 to 9.5 mm across, specks of the lamp's
+    /// warm light at half strength that brighten what lies behind them, as dust catching a beam
+    /// does. `fine` motes are the same flecks about 1 to 2.5 mm long, faint, and lit by the
+    /// lamp, so they show only in its beam, and stay small and faint enough not to show as
+    /// discs when a camera passes close to them.
     private static func dress(_ motes: inout ParticleEmitterComponent.ParticleEmitter, fine: Bool) {
         motes.size = fine ? 0.03 : 0.075
         motes.sizeVariation = fine ? 0.01 : 0.02
@@ -344,8 +344,10 @@ final class DeskStage {
     /// The motes' images: a sheet of `fleckColumns` by `fleckColumns` cells, 32 pixels each,
     /// with one dust fleck in each. A fleck is four or five overlapping soft blobs of different
     /// sizes, strung along a slightly bent line and pushed a little to either side, so it is
-    /// lumpy and longer than it is wide, with soft edges: some are compact flakes, others
-    /// fibers that span most of their cell. A fixed seed draws the same flecks every launch.
+    /// lumpy and two to three times as long as it is wide, which still shows when a mote spans
+    /// only a few pixels. Each blob peaks at 0.8 opacity and fades over most of its radius, so a
+    /// mote reads as a soft speck rather than a hard chip. A fixed seed draws the same flecks
+    /// every launch.
     private static let flecks: TextureResource? = {
         let cell: CGFloat = 32
         let side = cell * CGFloat(fleckColumns)
@@ -355,7 +357,7 @@ final class DeskStage {
         func jitter(_ range: CGFloat) -> CGFloat { .random(in: -range...range, using: &random) }
         let image = UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format)
             .image { context in
-                let colors = [0.95, 0.6, 0].map { UIColor(white: 1, alpha: $0).cgColor }
+                let colors = [0.8, 0.4, 0].map { UIColor(white: 1, alpha: $0).cgColor }
                 guard
                     let blob = CGGradient(
                         colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors as CFArray,
@@ -368,9 +370,9 @@ final class DeskStage {
                         y: (CGFloat(index / fleckColumns) + 0.5) * cell)
                     let axis = jitter(.pi)
                     let bend = jitter(0.5)
-                    // Half the distance between the end blobs' middles: compact flakes to
-                    // long fibers.
-                    let length = 4.25 + jitter(1.75)
+                    // Half the distance between the end blobs' middles, long enough against the
+                    // blobs' width that every fleck is slender.
+                    let length = 5.5 + jitter(1)
                     let count = 4 + index % 2
                     // No blob reaches past 16 pixels from the cell's middle, so none spills
                     // into a neighbor's cell.
@@ -379,13 +381,13 @@ final class DeskStage {
                         let along = CGFloat(part) / CGFloat(count - 1) * 2 - 1
                         let turn = axis + bend * along
                         let reach = length * along + jitter(1)
-                        let aside = jitter(2)
+                        let aside = jitter(0.75)
                         graphics.saveGState()
                         graphics.translateBy(
                             x: middle.x + cos(turn) * reach - sin(turn) * aside,
                             y: middle.y + sin(turn) * reach + cos(turn) * aside)
-                        graphics.rotate(by: turn + jitter(0.8))
-                        graphics.scaleBy(x: 5 + jitter(1.8), y: 3.6 + jitter(1))
+                        graphics.rotate(by: turn + jitter(0.4))
+                        graphics.scaleBy(x: 4.5 + jitter(1.2), y: 3 + jitter(0.6))
                         graphics.drawRadialGradient(
                             blob, startCenter: .zero, startRadius: 0, endCenter: .zero,
                             endRadius: 1, options: [])
