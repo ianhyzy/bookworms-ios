@@ -7,15 +7,17 @@ extension SpineFamily {
     /// ships it as a system font, so every Bookworms app uses the same replacement.
     static let impactReplacement = SpineFamily.bebasNeue
 
-    /// Stand-ins, keyed by lowercased name without spaces, for catalog families that slant by
-    /// design without declaring it: the allowed decorative or hand-drawn family nearest in weight
-    /// and role. Kalam, Caveat, and Permanent Marker declare no slant, but their letters lean
-    /// too, so new designs never use them (`SpineFamily.neverGenerated`).
+    /// Stand-ins, keyed by lowercased name without spaces, for families that slant by design
+    /// without declaring it: the allowed decorative family nearest in weight and role, or, for a
+    /// script or hand-drawn family, Patrick Hand, the catalog's upright hand-drawn face. That
+    /// includes Kalam, Caveat, Permanent Marker, and Shadows Into Light, whose letters lean,
+    /// so a design saved in one of them draws upright too.
     static let slantedReplacements: [String: SpineFamily] = [
-        "bangers": .bungee, "shrikhand": .changaOne, "dancingscript": .kalam,
-        "pacifico": .permanentMarker, "satisfy": .caveat, "greatvibes": .caveat,
-        "lobster": .permanentMarker, "courgette": .kalam, "homemadeapple": .caveat,
-        "rocksalt": .permanentMarker,
+        "bangers": .bungee, "shrikhand": .changaOne, "dancingscript": .patrickHand,
+        "pacifico": .patrickHand, "satisfy": .patrickHand, "greatvibes": .patrickHand,
+        "lobster": .patrickHand, "courgette": .patrickHand, "homemadeapple": .patrickHand,
+        "rocksalt": .patrickHand, "kalam": .patrickHand, "caveat": .patrickHand,
+        "permanentmarker": .patrickHand, "shadowsintolight": .patrickHand,
     ]
 
     /// The allowed upright family that a saved design shows in place of `family`, which the type
@@ -26,7 +28,7 @@ extension SpineFamily {
     /// | Impact, in any spelling | Bebas Neue (`impactReplacement`) |
     /// | Bangers | Bungee |
     /// | Shrikhand | Changa One |
-    /// | Dancing Script, Pacifico, or another slanted script | Kalam, Caveat, or Permanent Marker |
+    /// | Dancing Script, Kalam, Caveat, or another leaning script | Patrick Hand |
     /// | An italic, oblique, or slanted variant, such as "Lora Italic" | Its upright family, Lora |
     /// | Anything else blocked | `nil` |
     ///
@@ -54,7 +56,7 @@ extension SpineDesignV1 {
     /// so `GoogleFonts` picks the upright instance nearest `weight`. A blocked PostScript name
     /// beside an allowed family, such as "Lora-Italic" with Lora, keeps the family. Without a
     /// family, a blocked PostScript name takes the catalog's upright stand-in for the name's
-    /// family, such as Kalam for "DancingScript-Bold", as the Apple TV app draws it; outside the
+    /// family, such as Patrick Hand for "DancingScript-Bold", as the Apple TV app draws it; outside the
     /// catalog, the design's system typeface. `SpineFonts` also rejects a loaded face with the
     /// italic trait or a slant.
     ///

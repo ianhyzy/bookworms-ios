@@ -21,7 +21,9 @@ let height = 32
 struct SpineFontAtlasTool {
     static func main() async throws {
         let output = URL(fileURLWithPath: CommandLine.arguments[1])
-        let cache = URL.cachesDirectory.appending(path: "spine-font-atlas")
+        // Versioned with `SpineFamily.fileName(for:in:)`: earlier caches kept only a family's
+        // variable files, so the file rule could not find its static cuts there.
+        let cache = URL.cachesDirectory.appending(path: "spine-font-atlas-v2")
         var data = Data("BWA1".utf8)
         data.append(uint16: height)
         data.append(uint16: characters.utf8.count)

@@ -968,12 +968,16 @@ final class GenerationTests: XCTestCase {
             ("EB Garamond", "EBGaramond-Italic", "EB Garamond"),
             ("Lora", "Lora-BoldIt", "Lora"),
             ("Italic", nil, nil),
-            ("Dancing Script", "DancingScript-Bold", "Kalam"),
-            ("Great Vibes", "GreatVibes-Regular", "Caveat"),
-            ("Pacifico", nil, "Permanent Marker"),
+            ("Dancing Script", "DancingScript-Bold", "Patrick Hand"),
+            ("Great Vibes", "GreatVibes-Regular", "Patrick Hand"),
+            ("Pacifico", nil, "Patrick Hand"),
+            // Faces whose letters lean without declaring it draw upright too.
+            ("Caveat", "Caveat-Regular", "Patrick Hand"),
+            ("Kalam", nil, "Patrick Hand"),
+            ("Shadows Into Light", "ShadowsIntoLight", "Patrick Hand"),
             // A PostScript name alone, as an Apple TV look saves it, shows its family's stand-in.
-            (nil, "DancingScript-Bold", "Kalam"),
-            (nil, "GreatVibes-Regular", "Caveat"),
+            (nil, "DancingScript-Bold", "Patrick Hand"),
+            (nil, "GreatVibes-Regular", "Patrick Hand"),
             (nil, "EBGaramond-Italic", "EB Garamond"),
             (nil, "Georgia-Italic", nil),
         ]

@@ -729,7 +729,7 @@ actor BookAnalyzer {
         let blocked = [
             "impact", "italic", "oblique", "slanted", "bangers", "shrikhand", "dancingscript",
             "pacifico", "satisfy", "greatvibes", "lobster", "courgette", "homemadeapple",
-            "rocksalt",
+            "rocksalt", "kalam", "caveat", "permanentmarker", "shadowsintolight",
         ]
         let postScriptStyle = name.split(separator: "-").dropFirst().last
         return !blocked.contains { lowered.contains($0) }

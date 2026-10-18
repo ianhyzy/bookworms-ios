@@ -138,7 +138,9 @@ enum SpineFamily: String, CaseIterable {
     ///   lettering stays upright. The lean is the median angle of the upright strokes in
     ///   "lIHbhkinmrpBDEFKLPR": Caveat measures 19 degrees, Permanent Marker 18, and Kalam 13,
     ///   while upright faces measure under 1. Shadows Into Light's letters tilt unevenly.
-    ///   `BookAnalyzer.allowsFamily` blocks the other leaning script and display faces outright.
+    ///   `BookAnalyzer.allowsFamily` blocks these and the other leaning script and display faces
+    ///   outright, so a saved design in one draws in Patrick Hand
+    ///   (`SpineFamily.slantedReplacements`).
     /// - Hairline faces, whose stems are under 8 percent of their capitals' height, so at spine
     ///   size their titles read as scratches: the ultra-narrow Six Caps (7.5 percent) and
     ///   Amatic SC (at most 7), and the outlined Monoton (4.5) and Almendra Display (2.5).
