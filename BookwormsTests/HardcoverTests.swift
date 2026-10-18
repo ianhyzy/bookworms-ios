@@ -287,6 +287,7 @@ final class HardcoverTests: XCTestCase {
         XCTAssertNil(account.syncError)
         XCTAssertEqual(PhoneLibrary.load(from: library)?.books.map(\.id), [101, 303, 202])
         XCTAssertEqual(tokens.deletes, 0)
+        XCTAssertEqual(tokens.loads, 3, "The download reuses the login that Sync now read")
     }
 
     @MainActor
@@ -357,6 +358,7 @@ final class HardcoverTests: XCTestCase {
         XCTAssertEqual(next, "fictional-new")
         let after = await renewals.count
         XCTAssertEqual(after, 1)
+        XCTAssertEqual(tokens.loads, 1, "Requests reuse the login read at launch")
     }
 
     @MainActor
@@ -924,6 +926,8 @@ final class HardcoverTests: XCTestCase {
         let saved = HardcoverCredential(stored: try XCTUnwrap(tokens.read()))
         XCTAssertEqual(saved.accessToken, "fictional-new")
         XCTAssertEqual(saved.refreshToken, "fictional-refresh-2", "The login keeps refreshing")
+        let token = try await account.accessToken()
+        XCTAssertEqual(token, "fictional-new", "Requests use the new login")
 
         await account.syncIfStale()
         XCTAssertEqual(PhoneLibrary.load(from: library)?.syncedAt, kept.syncedAt)

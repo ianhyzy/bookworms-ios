@@ -72,6 +72,9 @@ final class HardcoverAccount {
     /// Whether the Keychain refused the last read of the login, so the login and summary stay
     /// until a read succeeds (`retryUnreadLogin()`).
     @ObservationIgnored private var loginIsUnread = false
+    /// The saved login, decoded when `restoreLogin()` reads it or a sign-in or renewal saves it,
+    /// so requests never read the Keychain. `nil` while signed out or unread.
+    @ObservationIgnored private var cachedCredential: HardcoverCredential?
     /// The renewal in progress. Every request that needs a new access token meanwhile awaits it,
     /// so only one request spends the refresh token.
     @ObservationIgnored private var renewal: Task<HardcoverCredential, any Error>?
@@ -159,11 +162,14 @@ final class HardcoverAccount {
         let saved = defaults.data(forKey: Self.summaryKey)
             .flatMap { try? JSONDecoder().decode(Summary.self, from: $0) }
         summary = saved
+        cachedCredential = nil
         do {
-            let hasLogin = try tokens.load() != nil
+            let stored = try tokens.load()
             loginIsUnread = false
-            isSignedIn = hasLogin && saved != nil
-            if !isSignedIn {
+            isSignedIn = stored != nil && saved != nil
+            if isSignedIn {
+                cachedCredential = stored.map(HardcoverCredential.init(stored:))
+            } else {
                 tokens.delete()
                 forgetLibrary()
             }
@@ -186,24 +192,16 @@ final class HardcoverAccount {
         if before != (isSignedIn, summary) { libraryChanged() }
     }
 
-    /// Returns the saved login for an explicit request. Callers use it for that request and do
-    /// not keep it.
+    /// Returns the saved login for an explicit request from `cachedCredential`, without reading
+    /// the Keychain. Callers use it for that request and do not keep it.
     ///
     /// Throws `HardcoverError.invalidToken` when signed out, and
-    /// `HardcoverError.credentialUnreadable` when the Keychain refuses this read or refused the
-    /// last one, which only `retryUnreadLogin()` repeats; the login then stays saved.
+    /// `HardcoverError.credentialUnreadable` when the Keychain refused the last read, which only
+    /// `retryUnreadLogin()` repeats; the login then stays saved.
     private func savedCredential() throws -> HardcoverCredential {
         guard !loginIsUnread else { throw HardcoverError.credentialUnreadable }
-        guard isSignedIn else { throw HardcoverError.invalidToken }
-        let stored: String?
-        do {
-            stored = try tokens.load()
-        } catch {
-            loginIsUnread = true
-            throw HardcoverError.credentialUnreadable
-        }
-        guard let stored else { throw HardcoverError.invalidToken }
-        return HardcoverCredential(stored: stored)
+        guard isSignedIn, let cachedCredential else { throw HardcoverError.invalidToken }
+        return cachedCredential
     }
 
     /// Returns an access token for an explicit request, renewing the login first when the token
@@ -275,6 +273,7 @@ final class HardcoverAccount {
                     needsReconnect = true
                     throw HardcoverError.credentialNotSaved
                 }
+                cachedCredential = renewed
                 return renewed
             } catch {
                 if Task.isCancelled { throw CancellationError() }
@@ -320,6 +319,7 @@ final class HardcoverAccount {
                 } catch {
                     throw HardcoverError.credentialNotSaved
                 }
+                cachedCredential = credential
                 // A renewal of the replaced login must not overwrite this one.
                 cancelRenewal()
                 let accountID = String(user.id)
@@ -492,6 +492,7 @@ final class HardcoverAccount {
         isSyncing = false
         cancelRenewal()
         tokens.delete()
+        cachedCredential = nil
         isSignedIn = false
         loginIsUnread = false
         needsReconnect = false
