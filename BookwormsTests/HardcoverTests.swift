@@ -404,14 +404,19 @@ final class HardcoverTests: XCTestCase {
             books: [
                 book(1, "2026-02-01", ["2026-02-01", "2019-07-04"]),
                 book(2, "2025-05-05", ["2025-05-05", "2020-01-01"]),
+                book(3, "2024-04-04", ["2024-04-04", "2018-08-08"]),
             ])
         // Book 2 was finished again after this device's copy, so its list is out of date.
         let copy = CloudSourceSnapshot(
             source: "hardcover", accountID: "4242",
-            books: [book(1, "2026-02-01"), book(2, "2026-03-03")], syncedAt: Self.hoursAgo(1))
+            // An empty list counts as absent, like a missing one.
+            books: [book(1, "2026-02-01"), book(2, "2026-03-03"), book(3, "2024-04-04", [])],
+            syncedAt: Self.hoursAgo(1))
         let adopted = PhoneLibrary(copy, username: nil, keepingReadsOf: cached)
-        XCTAssertEqual(adopted.books.map(\.finishedDates), [["2026-02-01", "2019-07-04"], nil])
-        XCTAssertEqual(adopted.books.map(\.readCount), [2, 1])
+        XCTAssertEqual(
+            adopted.books.map(\.finishedDates),
+            [["2026-02-01", "2019-07-04"], nil, ["2024-04-04", "2018-08-08"]])
+        XCTAssertEqual(adopted.books.map(\.readCount), [2, 1, 2])
 
         let other = PhoneLibrary(
             accountID: "7", username: nil, syncedAt: Self.hoursAgo(5), books: cached.books)

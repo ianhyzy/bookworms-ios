@@ -386,7 +386,7 @@ extension PhoneLibrary {
     /// The account's snapshot from the iCloud archive, as this device caches it.
     ///
     /// A book of `copy` without `finishedDates`, as an Apple TV build that predates the list
-    /// saves it, keeps the list from `cached`, this device's copy of the same account, when its
+    /// saves it, or with an empty list, which counts as absent, keeps the list from `cached`, this device's copy of the same account, when its
     /// newest finish there is the copy's `finished`. Otherwise such a book shows one read until
     /// this device downloads the library again.
     init(_ copy: CloudSourceSnapshot, username: String?, keepingReadsOf cached: PhoneLibrary? = nil)
@@ -396,7 +396,7 @@ extension PhoneLibrary {
                 .compactMap { book in book.finishedDates.map { (book.id, $0) } },
             uniquingKeysWith: { first, _ in first })
         let books = copy.books.map { book in
-            guard book.finishedDates == nil, let kept = reads[book.id],
+            guard book.finishedDates?.isEmpty ?? true, let kept = reads[book.id],
                 kept.first == book.finished
             else { return book }
             var book = book
