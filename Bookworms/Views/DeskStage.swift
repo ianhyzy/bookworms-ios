@@ -280,7 +280,7 @@ final class DeskStage {
     /// (`BookPileScene`'s `dustStop`).
     nonisolated static let longestMoteLife: Double = 3
 
-    /// Slow motes in the beam around its axis, over the middle of the pool. About 140 drift at
+    /// Slow motes in the beam around its axis, over the middle of the pool. About 100 drift at
     /// a time, each fading in and out over 2 to `longestMoteLife` seconds, born at any angle
     /// and turning slowly, up to about 30 degrees a second either way, as specks of dust
     /// tumble. The emitter has no warm-up, which a new emitter simulates in a single frame,
@@ -295,7 +295,7 @@ final class DeskStage {
         emitter.speedVariation = 0.03
         emitter.timing = .repeating(emit: .init(duration: 60))
         var motes = emitter.mainEmitter
-        motes.birthRate = 56
+        motes.birthRate = 40
         motes.lifeSpanVariation = 0.5
         motes.lifeSpan = longestMoteLife - motes.lifeSpanVariation
         motes.opacityCurve = .gradualFadeInOut
@@ -311,19 +311,19 @@ final class DeskStage {
     }
 
     /// Gives `motes` the desk's look: irregular flecks (`flecks`) about 3 to 6 mm long and
-    /// half as wide or less, in cells 5 to 9 mm across, specks of the lamp's warm light that
-    /// brighten what lies behind them, as dust catching a beam does. `fine` motes are the same
-    /// flecks about 1 to 2.5 mm long, faint, and lit by the lamp, so they show only in its
-    /// beam, and stay small and faint enough not to show as discs when a camera passes close
-    /// to them.
+    /// half as wide or less, in cells 5.5 to 9.5 mm across, specks of the lamp's warm light at
+    /// half strength that brighten what lies behind them, as dust catching a beam does. `fine`
+    /// motes are the same flecks about 1 to 2.5 mm long, faint, and lit by the lamp, so they
+    /// show only in its beam, and stay small and faint enough not to show as discs when a
+    /// camera passes close to them.
     private static func dress(_ motes: inout ParticleEmitterComponent.ParticleEmitter, fine: Bool) {
-        motes.size = fine ? 0.03 : 0.07
+        motes.size = fine ? 0.03 : 0.075
         motes.sizeVariation = fine ? 0.01 : 0.02
         motes.color = .constant(
             .single(
                 fine
                     ? UIColor(red: 1, green: 0.9, blue: 0.75, alpha: 0.35)
-                    : UIColor(red: 1, green: 0.8, blue: 0.52, alpha: 0.8)))
+                    : UIColor(red: 1, green: 0.8, blue: 0.52, alpha: 0.5)))
         motes.isLightingEnabled = fine
         motes.blendMode = fine ? .alpha : .additive
         motes.image = flecks
