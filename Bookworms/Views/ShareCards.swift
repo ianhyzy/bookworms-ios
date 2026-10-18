@@ -332,7 +332,7 @@ struct TopFiveCard: View {
         }
     }
 
-    /// A ranked book: its rank and title in cream, author, and stars.
+    /// A ranked book: its rank, title, and author in cream, and its stars.
     private func row(
         rank: Int, book: CloudBook, showsAuthor: Bool, keepsSubtitle: Bool
     ) -> some View {
