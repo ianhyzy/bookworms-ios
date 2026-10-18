@@ -529,6 +529,38 @@ final class ShelfLogicTests: XCTestCase {
             content - viewport, max(track.offsets[4], track.offsets[7]), accuracy: 0.001)
     }
 
+    @MainActor func testPulledBookStaysWithinTheStacksAtTheirOuterEnds() {
+        // The stacks' area in the Mac's default window, in a wide window, and in the smallest.
+        let areas = [
+            CGSize(width: 1_035, height: 640), CGSize(width: 2_400, height: 1_300),
+            CGSize(width: 615, height: 380),
+        ]
+        for area in areas {
+            for style in [StackStyle.flat, .threeD] {
+                let camera = style == .threeD ? StackCamera.distance(viewing: area) : nil
+                let room = StackArrangement.pullRoom(twist: style.maximumTwist, camera: camera)
+                XCTAssertGreaterThan(room, 0)
+                let width = area.width - 2 * room
+                let columns = StackArrangement.columns(in: width, books: 40)
+                let layout = StackArrangement(width: width / CGFloat(columns))
+                // The longest book, shifted as far left as a book lies, and turned to face left,
+                // in the first stack.
+                let length = layout.scale * CGFloat(BookShape.longest)
+                let shift = layout.width * StackArrangement.maximumShift
+                let leading = room + (layout.width - length) / 2 - shift
+                let distance = camera.map {
+                    Double($0 / length + Book3DView.aspects.upperBound / 2)
+                }
+                let slide = PullOutPath.slide(
+                    at: 1, length: length, thickness: 0, extent: 0,
+                    rest: PullOutPath.Rest(pitch: style.maximumTwist, distance: distance))
+                XCTAssertLessThan(slide.offset.width, 0)
+                let left = leading + length / 2 * (1 - slide.scale) + slide.offset.width
+                XCTAssertGreaterThanOrEqual(left, -0.001, "\(area) \(style)")
+            }
+        }
+    }
+
     func testShelfTrackLaysOutTheShelvedSpines() {
         let books = (1...40).map { book($0, "Book \($0)", pages: 60 + $0 * 33) }
         let widths = books.map { $0.shelfSpineSize(scale: 150).width }
@@ -836,8 +868,8 @@ final class ShelfLogicTests: XCTestCase {
         // the slide moves it.
         let out = path.pose(at: PullOutPath.pullEnd)
         XCTAssertEqual(out.roll, -.pi / 2, accuracy: 0.0001)
-        // A flat book, which the book above covers, instead moves down the screen until it is
-        // just clear of the book above.
+        // A flat book, seen straight on, instead moves down the screen as it grows, so its top
+        // edge ends on its place's top edge, clear of the book above.
         let flat = PullOutPath(
             home: home, upright: false, stage: path.stage, pose: .resting, aspect: 2 / 3,
             thicknessRatio: 0.1, rest: PullOutPath.Rest(pitch: 0.05, slidesInStack: true))

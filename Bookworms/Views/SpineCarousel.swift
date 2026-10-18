@@ -33,27 +33,22 @@ enum StackStyle: String {
     /// left or right and never show their page edges.
     static let flatTwist = 0.05
 
+    /// How far a book of this style turns at most, in radians.
+    var maximumTwist: Double { self == .flat ? Self.flatTwist : StackArrangement.maximumTwist }
+
     /// How `book` lies in the stack, which is also where its flight to the details starts.
     ///
     /// A 3D book's camera distance depends on the stack's size and the book's cover, so
     /// `StackedBook` sets it.
     ///
     /// Nothing fades: the book shows every face throughout. The book slides out inside the
-    /// stack (`Rest.slidesInStack`): in 2D under the book above, until it is clear of it, and in
-    /// 3D over the books around it, as a book that comes out in front of them. The flight then
-    /// draws it in front of the stack. The books around it make a little room while it is out
-    /// (`StackRoom`).
+    /// stack (`Rest.slidesInStack`), over the books around it and the stacks beside it, as a book
+    /// that comes out in front of them. The flight then draws it in front of the stack. The books
+    /// around it make a little room while it is out (`StackRoom`).
     func rest(of book: CloudBook) -> PullOutPath.Rest {
-        switch self {
-        case .flat:
-            return PullOutPath.Rest(
-                pitch: StackArrangement.twist(of: book, maximum: Self.flatTwist),
-                slidesInStack: true)
-        case .threeD:
-            return PullOutPath.Rest(
-                pitch: StackArrangement.twist(of: book), lighting: Self.lighting,
-                slidesInStack: true)
-        }
+        PullOutPath.Rest(
+            pitch: StackArrangement.twist(of: book, maximum: maximumTwist),
+            lighting: self == .threeD ? Self.lighting : 0, slidesInStack: true)
     }
 }
 
@@ -139,18 +134,33 @@ struct SpineCarousel: View {
     /// most one book. The stacks rest on one line and scroll together, in both styles, as stacks
     /// of books on a shelf would, and the caption names the centered book of one stack
     /// (`CenterTracking`).
+    ///
+    /// On the Mac, the stacks keep room at their outer ends (`StackArrangement.pullRoom`), so a
+    /// book pulled from the stack beside the sidebar or the window's edge stays in view.
     private func stack(in size: CGSize) -> some View {
-        let columns = StackArrangement.columns(in: size.width, books: books.count)
+        let camera = style == .threeD ? StackCamera.distance(viewing: size) : nil
+        #if os(macOS)
+            let room = StackArrangement.pullRoom(twist: style.maximumTwist, camera: camera)
+        #else
+            let room: CGFloat = 0
+        #endif
+        let width = max(0, size.width - 2 * room)
+        let columns = StackArrangement.columns(in: width, books: books.count)
         // Where each run starts; the first `books.count % columns` runs take one more book.
         let bound = { ($0 * books.count + columns - 1) / columns }
         let runs = (0..<columns).map { Array(books[bound($0)..<bound($0 + 1)]) }
-        let arrangement = StackArrangement(width: size.width / CGFloat(columns))
-        return stackScroll(arrangement.track(of: runs), arrangement: arrangement, in: size)
+        let arrangement = StackArrangement(width: width / CGFloat(columns))
+        return stackScroll(
+            arrangement.track(of: runs), arrangement: arrangement, inset: room, camera: camera,
+            in: size)
     }
 
-    /// A scroll view `size` big of `track`'s stacks, side by side, each `arrangement.width` wide.
+    /// A scroll view `size` big of `track`'s stacks, side by side, each `arrangement.width` wide,
+    /// starting `inset` points in, seen by a camera `camera` points in front of the spines, or
+    /// straight on.
     private func stackScroll(
-        _ track: SpineTrack, arrangement: StackArrangement, in size: CGSize
+        _ track: SpineTrack, arrangement: StackArrangement, inset: CGFloat, camera: CGFloat?,
+        in size: CGSize
     ) -> some View {
         // A lazy stack builds only the pages within its scroll view's bounds. A spine overhangs
         // its page by up to half its thickness, and toward the ends of a 3D stack, a book's top
@@ -163,7 +173,6 @@ struct SpineCarousel: View {
         // VoiceOver gets the stack's area alone, so it treats only books on screen as visible;
         // there, the top has no clear band, so the books still run to the edge, where a book
         // from a page above the screen can show late.
-        let camera = style == .threeD ? StackCamera.distance(viewing: size) : nil
         let longest = books.lazy.map { arrangement.spine(of: $0).width }.max() ?? 0
         let rise =
             camera == nil
@@ -182,7 +191,7 @@ struct SpineCarousel: View {
             height: top + size.height + bleed, top: band, bottom: track.maxThickness / 2 + rise)
         // The pulled book's index, which the books of its stack make room for.
         let pulled = pullOut.roomID.flatMap { track.ids.firstIndex(of: $0) }
-        // The book that is out, which a 3D stack draws over the books around it.
+        // The book that is out, which the stack draws over the books around it.
         let out = pullOut.book?.id
         return ScrollView(.vertical) {
             VStack(spacing: 0) {
@@ -202,7 +211,7 @@ struct SpineCarousel: View {
                                 }
                                 .padding(
                                     .leading,
-                                    CGFloat(slot.column) * arrangement.width
+                                    inset + CGFloat(slot.column) * arrangement.width
                                         + arrangement.leading(of: slot.book)
                                 )
                                 .padding(.top, slot.inset)
@@ -341,7 +350,13 @@ struct SpineCarousel: View {
         Button {
             open(book)
         } label: {
-            label().matchedTransitionSource(id: book.id, in: namespace)
+            #if os(iOS)
+                label().matchedTransitionSource(id: book.id, in: namespace)
+            #else
+                // Only the iPhone zooms pushed details out of the book. On the Mac, the source
+                // clips the book to its place, which would cut off a pulled book's slide.
+                label()
+            #endif
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(book.title), by \(book.author)")
@@ -491,13 +506,15 @@ enum StackCamera {
 /// Orders a stacked book, or a page of them, as one eye sees them (`StackCamera`): below the eye,
 /// a book lies over the top board of the book below it, and above the eye, over the underside of
 /// the book above it. The book that the eye's level passes through lies over both, and so does
-/// its page over the other pages. A pulled book, and its page, lie over all of them while it is
-/// out, since it comes out in front of the stack.
+/// its page over the other pages. In a flat stack, every view lies over the one below.
+///
+/// A pulled book, and its page, lie over all of them while it is out, in both styles, since it
+/// comes out in front of the stack and the stacks beside it. A flat book's slide keeps its top
+/// edge on the top edge of its place (`PullOutPath.slide`), so it never covers the book above.
 ///
 /// The span of the view's books, `books` in its own coordinates, decides which side of the eye's
 /// level the view lies on. Only a change of side updates the view, as a book's top or bottom
-/// crosses the eye's level, when the faces that change order lie edge on. In a flat stack, every
-/// view lies over the one below.
+/// crosses the eye's level, when the faces that change order lie edge on.
 private struct EyeLevelOrder: ViewModifier {
     enum Side { case above, level, below }
 
@@ -527,8 +544,8 @@ private struct EyeLevelOrder: ViewModifier {
     }
 
     private var order: Double {
-        guard eye != nil else { return -Double(index) }
         if isOut { return Double(Int32.max) + 1 }
+        guard eye != nil else { return -Double(index) }
         switch side {
         case .above: return Double(index)
         case .below: return -Double(index)
@@ -539,9 +556,8 @@ private struct EyeLevelOrder: ViewModifier {
 }
 
 /// A stacked book's slide out of its place while it is pulled (`PullOutPath.slide`), drawn in
-/// the stack: in 2D under the book above, which keeps covering what still lies under it, and in
-/// 3D over the books around it (`EyeLevelOrder`). Once the book is clear of the stack, the
-/// flight draws it and the stack hides it.
+/// the stack over the books around it (`EyeLevelOrder`). Once the book is clear of the stack,
+/// the flight draws it and the stack hides it.
 ///
 /// SwiftUI animates `progress`, so the slide follows the flight frame by frame.
 private struct StackSlide: ViewModifier, Animatable {
@@ -958,6 +974,24 @@ struct StackArrangement {
     static func columns(in width: CGFloat, books: Int) -> Int {
         let needed = CGFloat(BookShape.longest) * columnScale / (1 - 2 * maximumShift) + 2 * margin
         return max(1, min(Int(width / (needed + columnGap)), books / 3))
+    }
+
+    /// How much room the stacks keep past `margin` at their outer ends, so a book pulled from
+    /// the end of a stack stays within the stacks' width (`PullOutPath.slide`): the book grows
+    /// about its middle and comes out toward the side its spine faces, turned by up to `twist`,
+    /// for a camera `camera` points in front of the spines, or straight on.
+    ///
+    /// It reckons with the longest book at the largest scale and the widest cover, so the room
+    /// holds at every width. Between stacks, a pulled book draws over the stack beside it.
+    @MainActor static func pullRoom(twist: Double, camera: CGFloat?) -> CGFloat {
+        let length = CGFloat(BookShape.longest) * maximumScale
+        // As `StackedBook` places the camera: the spines lie half the book's width in front of
+        // its center.
+        let distance = camera.map { Double($0 / length + Book3DView.aspects.upperBound / 2) }
+        let slide = PullOutPath.slide(
+            at: 1, length: length, thickness: 0, extent: 0,
+            rest: PullOutPath.Rest(pitch: twist, distance: distance))
+        return max(0, (slide.scale - 1) * length / 2 + abs(slide.offset.width) - margin)
     }
 
     /// The smallest scale a stack takes to make room for another stack beside it.
