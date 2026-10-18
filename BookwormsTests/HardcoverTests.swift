@@ -434,6 +434,40 @@ final class HardcoverTests: XCTestCase {
         XCTAssertEqual(tokens.saves, [])
     }
 
+    @MainActor
+    func testFailedEarlyRenewalKeepsTheTokenUntilItExpires() async throws {
+        let (_, defaults, library) = try signedInStores()
+        let tokens = FakeSecretStore(
+            try HardcoverCredential(
+                accessToken: "fictional-old", refreshToken: "fictional-refresh-1",
+                expiresAt: .now.addingTimeInterval(600)
+            )
+            .stored())
+        let status = ReplyStatus(503)
+        let client = HardcoverClient { request in
+            if request.url?.path() == "/oauth2/token" {
+                return Self.respond(await status.value, "", to: request)
+            }
+            guard request.value(forHTTPHeaderField: "Authorization") == "Bearer fictional-old"
+            else { return Self.respond(401, "", to: request) }
+            return Self.respond(200, Self.me, to: request)
+        }
+        let account = HardcoverAccount(
+            tokens: tokens, client: client, defaults: defaults, libraryURL: library)
+
+        // Hardcover is down, so the token in use stays until it expires.
+        let user = try await account.withAccessToken { try await client.account(token: $0) }
+        XCTAssertEqual(user.id, 4242)
+        XCTAssertFalse(account.needsReconnect)
+
+        // A token endpoint that refuses the refresh grant can't renew the login.
+        await status.set(404)
+        let refusal = await thrownError { try await account.accessToken() }
+        XCTAssertEqual(refusal as? HardcoverError, .invalidToken)
+        XCTAssertTrue(account.needsReconnect)
+        XCTAssertEqual(tokens.saves, [])
+    }
+
     // MARK: - Library
 
     func testLibraryNormalizesFixturePage() async throws {
@@ -1144,6 +1178,15 @@ private actor RequestCount {
     private(set) var count = 0
 
     func add() { count += 1 }
+}
+
+/// An HTTP status that a test changes between requests.
+private actor ReplyStatus {
+    private(set) var value: Int
+
+    init(_ value: Int) { self.value = value }
+
+    func set(_ value: Int) { self.value = value }
 }
 
 /// Replays poll results and records the waits between them.

@@ -234,8 +234,9 @@ actor HardcoverClient {
     /// The request is never retried, because Hardcover revokes the whole login when a refresh
     /// token it already spent comes back, as a retry of a request that reached it would. The
     /// new login keeps `refreshToken` only if Hardcover sends no new one. Throws
-    /// `HardcoverError.invalidToken` when Hardcover rejects the refresh token with HTTP 400 or
-    /// 401, as it does once the token expired, was revoked, or was spent.
+    /// `HardcoverError.invalidToken` for any HTTP 4xx reply other than 408 or 429: Hardcover
+    /// answers 400 or 401 once the token expired, was revoked, or was spent, and a token
+    /// endpoint that refuses the request in another way can't renew the login either.
     func renew(refreshToken: String) async throws -> HardcoverCredential {
         let (data, status) = try await postForm(
             Self.tokenEndpoint,
@@ -251,7 +252,8 @@ actor HardcoverClient {
             else { throw HardcoverError.rejected }
             if credential.refreshToken == nil { credential.refreshToken = refreshToken }
             return credential
-        case 400, 401: throw HardcoverError.invalidToken
+        case 408, 429: throw HardcoverError.http(status)
+        case 400..<500: throw HardcoverError.invalidToken
         default: throw HardcoverError.http(status)
         }
     }
