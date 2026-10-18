@@ -108,21 +108,20 @@ final class SpineColorsTests: XCTestCase {
                 readerChoseCover: readerChoseCover, runTier: .privateCloudCompute)
         }
 
-        // Generator colors from the run's tier stay under any generator version, and move to new
-        // hashes.
+        // Generator colors from the run's tier stay under any generator version, and move to a
+        // new work-item hash with the hash of the cover they come from. New bytes behind the
+        // default cover change nothing.
         XCTAssertEqual(action(design()), .keep)
         XCTAssertEqual(action(design(generator: "ios-pcc-v0")), .keep)
-        guard case .save(let moved) = action(design(), work: otherWork) else {
+        guard case .save(let moved) = action(design(), work: otherWork, cover: otherCover) else {
             return XCTFail("The design should move to the new work-item hash")
         }
         XCTAssertEqual(moved.workItemHash, otherWork)
+        XCTAssertEqual(moved.coverHash, cover)
         XCTAssertEqual(moved.colors, design().colors)
         XCTAssertNil(moved.generatedColors)
         XCTAssertEqual(moved.generatedAt, design().generatedAt)
-        guard case .save(let recovered) = action(design(), cover: otherCover) else {
-            return XCTFail("The design should move to the new cover hash")
-        }
-        XCTAssertEqual(recovered.coverHash, otherCover)
+        XCTAssertEqual(action(design(), cover: otherCover), .keep)
 
         // Reader colors outlast a generator change, and move to the new work-item hash.
         XCTAssertEqual(action(edited), .keep)
@@ -139,14 +138,7 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertNoThrow(try rehashed.validate())
 
         // New bytes for the same cover, such as a new default cover, keep the reader's colors.
-        guard case .save(let recolored) = action(edited, cover: otherCover) else {
-            return XCTFail("Reader colors should move to the new cover hash")
-        }
-        XCTAssertEqual(recolored.coverHash, otherCover)
-        XCTAssertEqual(recolored.workItemHash, work)
-        XCTAssertEqual(recolored.colors, reader)
-        XCTAssertEqual(recolored.generatedColors, edited.generatedColors)
-        XCTAssertEqual(recolored.generatedAt, edited.generatedAt)
+        XCTAssertEqual(action(edited, cover: otherCover), .keep)
 
         // A cover the reader chose redesigns the spine.
         XCTAssertEqual(action(edited, cover: otherCover, readerChoseCover: true), .redesign)
@@ -213,10 +205,7 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertEqual(moved.provenance, companion.provenance)
         XCTAssertEqual(moved.tier, .onDevice)
         XCTAssertNoThrow(try moved.validate())
-        guard case .save(let recovered) = action(earlierPCC, runTier: .onDevice, cover: otherCover)
-        else { return XCTFail("The design should move to the new cover hash") }
-        XCTAssertEqual(recovered.coverHash, otherCover)
-        XCTAssertEqual(recovered.tier, .privateCloudCompute)
+        XCTAssertEqual(action(earlierPCC, runTier: .onDevice, cover: otherCover), .keep)
 
         // A cover the reader chose, with new image bytes, redesigns at any tier.
         XCTAssertEqual(

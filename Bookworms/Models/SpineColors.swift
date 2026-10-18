@@ -15,9 +15,9 @@ struct SpineColors: Hashable, Sendable {
 enum SavedDesignAction: Equatable {
     /// Leaves the saved design in place.
     case keep
-    /// Saves this copy of the saved design, which keeps its colors and type under the book's new
-    /// work-item and cover hashes, so readers that check the work-item hash, such as the Apple
-    /// TV, still accept it.
+    /// Saves this copy of the saved design, which keeps its colors, type, and cover hash under the
+    /// book's new work-item hash, so readers that check the work-item hash, such as the Apple TV,
+    /// still accept it.
     case save(SpineDesignV1)
     /// Designs the book again.
     case redesign
@@ -125,34 +125,45 @@ extension SpineDesignV1 {
     /// book's design is to replace its group's weaker look (`SeriesLookV1.upgradeSource(among:)`).
     ///
     /// A run replaces a design only with a better tier's (`isOutranked(by:awaitingFont:)`), or
-    /// with a design of a cover the reader chose, with new image bytes. A design with the
-    /// generator's colors stays when it comes from `runTier` or a better tier, whatever
-    /// generator version made it, and so does a design the reader recolored, at any tier, or the
-    /// design of a book that draws a series look, since redesigning that book changes nothing on
-    /// the shelf. A design that stays is kept while both hashes match; otherwise, after a
-    /// metadata or cover-image change, it is saved again under the new hashes with its colors,
-    /// font, generator, and `generatedAt`, because the Apple TV ignores a design whose work-item
-    /// hash doesn't match the book. So a new generator version, a recheck, or a run at the same
-    /// or a weaker tier never replaces a model's choices. A design that awaits its font ranks
-    /// below its tier, so a run at its tier designs the book again, and that design replaces it
-    /// once the font downloads (`outlasts(_:replacing:)`). A series copy
-    /// (`isSeriesReuse`) never upgrades a look, so it is redesigned instead: it reproduces a
-    /// look or another book's design, perhaps the very look it would replace, and a copy without
-    /// a model token reads as Private Cloud Compute whatever made its source.
+    /// with a design of a cover the reader chose (`comesFromAnotherCover(than:readerChoseCover:)`).
+    /// A design with the generator's colors stays when it comes from `runTier` or a better tier,
+    /// whatever generator version made it, and so does a design the reader recolored, at any
+    /// tier, or the design of a book that draws a series look, since redesigning that book
+    /// changes nothing on the shelf. A design that stays is kept while the work-item hash
+    /// matches; after a metadata change it is saved again under the new work-item hash with its
+    /// cover hash, colors, font, generator, and `generatedAt`, because the Apple TV ignores a
+    /// design whose work-item hash doesn't match the book. A new image behind the book's default
+    /// cover changes nothing, and the design keeps the hash of the cover it comes from. So a new
+    /// generator version, a recheck, or a run at the same or a weaker tier never replaces a
+    /// model's choices. A design that awaits its font ranks below its tier, so a run at its tier
+    /// designs the book again, and that design replaces it once the font downloads
+    /// (`outlasts(_:replacing:)`). A series copy (`isSeriesReuse`) never upgrades a look, so it
+    /// is redesigned instead: it reproduces a look or another book's design, perhaps the very
+    /// look it would replace, and a copy without a model token reads as Private Cloud Compute
+    /// whatever made its source.
     func action(
         workItemHash: String, coverHash: String, readerChoseCover: Bool, runTier: ModelTier,
         drawsSeriesLook: Bool = false, upgradesSeriesLook: Bool = false
     ) -> SavedDesignAction {
-        let newCover = self.coverHash != coverHash
         let stays =
             generatedColors != nil || drawsSeriesLook
             || (!isOutranked(by: runTier) && !(upgradesSeriesLook && isSeriesReuse))
-        guard stays, !(readerChoseCover && newCover), let colors else { return .redesign }
-        guard newCover || self.workItemHash != workItemHash else { return .keep }
+        guard stays, !comesFromAnotherCover(than: coverHash, readerChoseCover: readerChoseCover),
+            let colors
+        else { return .redesign }
+        guard self.workItemHash != workItemHash else { return .keep }
         return .save(
             rebuilt(
-                workItemHash: workItemHash, coverHash: coverHash, colors: colors,
+                workItemHash: workItemHash, coverHash: self.coverHash, colors: colors,
                 provenance: provenance))
+    }
+
+    /// Whether this design comes from another cover than the one the reader chose, so a run
+    /// designs the book again whatever the design's tier: the run downloaded a cover that hashes
+    /// to `coverHash`, another than this design's, after the reader chose another cover since
+    /// the book's last check (`readerChoseCover`).
+    func comesFromAnotherCover(than coverHash: String, readerChoseCover: Bool) -> Bool {
+        self.coverHash != coverHash && readerChoseCover
     }
 
     /// The `provenance` token that names the model that made this design, such as

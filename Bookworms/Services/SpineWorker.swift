@@ -281,7 +281,7 @@ actor SpineWorker {
                 publish()
                 let start = ContinuousClock.now
                 do {
-                    let (outcome, coverHash) = try await design(
+                    let outcome = try await design(
                         for: book, covers: covers, workHash: workHash, context: context,
                         forced: redesigned != nil, mode: mode)
                     if case .save(let made, let isNew) = outcome {
@@ -306,7 +306,8 @@ actor SpineWorker {
                     var awaitsFont = false
                     if case .save(let made, _) = outcome { awaitsFont = made.awaitsFont }
                     try await ledger.recordSuccess(
-                        recordName: recordName, workItemHash: workHash, coverHash: coverHash,
+                        recordName: recordName, workItemHash: workHash,
+                        coverHash: outcome.design.coverHash,
                         chosenCover: book.chosenCoverURL,
                         tier: runModel.map { max($0.tier, outcome.design.tier) },
                         awaitsFont: awaitsFont)
@@ -372,21 +373,16 @@ actor SpineWorker {
 
     /// Returns the design to save for `book`, or the saved design to keep when iCloud already
     /// has a design from the run's tier or better, or a design whose colors the reader chose (see
-    /// `SpineDesignV1.action(workItemHash:coverHash:readerChoseCover:runTier:drawsSeriesLook:upgradesSeriesLook:)`),
-    /// with the hash of the cover it comes from. A kept design whose book's metadata or cover
-    /// image changed is saved again under the new hashes when its face letters the book's title
-    /// and author, and otherwise left as it is. `forced` always makes a new design.
+    /// `SpineDesignV1.action(workItemHash:coverHash:readerChoseCover:runTier:drawsSeriesLook:upgradesSeriesLook:)`).
+    /// A kept design whose book's metadata changed is saved again under the new work-item hash
+    /// when its face letters the book's title and author, and otherwise left as it is. `forced`
+    /// always makes a new design.
     ///
-    /// The saved design is checked before the cover downloads with `covers`. A saved design that
-    /// stays under its own cover hash is kept without a download, so a recheck of a current
-    /// design costs one iCloud read. That needs the book's default cover, unchanged since its last
-    /// check on this device, and a design of the cover hash that check ended with, or a book
-    /// without a check here: the default covers' URLs enter the work-item hash and stay fixed
-    /// between syncs (`HardcoverClient.coverURLs(edition:book:otherEditions:editionIsInLanguage:previous:)`),
-    /// so a design with the book's work-item hash came from those URLs unless another device
-    /// made it from a cover the reader chose there. The cover hash catches that design once this
-    /// device has checked the book. A new image behind the same URL goes unnoticed until the
-    /// book's metadata or cover URLs change.
+    /// The saved design is checked before the cover downloads with `covers`. While the book
+    /// shows its default cover and the reader chose no other cover since its last check on this
+    /// device, a saved design that stays is kept or saved again without a download, so a recheck
+    /// of a current design costs one iCloud read: the default cover's hash decides nothing then.
+    /// A cover the reader chose is downloaded at every check.
     ///
     /// The book whose design upgrades its group's look (`SeriesLookV1.upgradeSource(among:)`)
     /// is designed as if the group had no look, so a weaker tier's look gets a design from the
@@ -396,7 +392,7 @@ actor SpineWorker {
     private func design(
         for book: CloudBook, covers: CoverDownloader, workHash: String, context: WorkContext,
         forced: Bool, mode: RunMode
-    ) async throws -> (outcome: Outcome, coverHash: String) {
+    ) async throws -> Outcome {
         // Looked up even when forced, so `saveLook` knows whether the group has a look.
         let savedLook = try await seriesLook(for: book, accountID: context.accountID)
         let runTier = runModel?.tier ?? .local
@@ -447,19 +443,18 @@ actor SpineWorker {
             }
             return design
         }
-        if let saved, book.chosenCoverURL == nil, !readerChoseCover,
-            await ledger.lastCheckMatches(
-                recordName: Self.recordName(context.accountID, book), coverHash: saved.coverHash),
-            try await savedAction(coverHash: saved.coverHash) == .keep
-        {
-            return (.keep(await kept(saved)), saved.coverHash)
+        if let saved, book.chosenCoverURL == nil, !readerChoseCover {
+            switch try await savedAction(coverHash: saved.coverHash) {
+            case .keep: return .keep(await kept(saved))
+            case .save(let design): return .save(await kept(design), isNew: false)
+            case .redesign: break
+            }
         }
         let cover = try await covers.fetch(book.coverCandidates)
         if !forced {
             switch (try await savedAction(coverHash: cover.hash), saved) {
-            case (.keep, let saved?): return (.keep(await kept(saved)), cover.hash)
-            case (.save(let design), _):
-                return (.save(await kept(design), isNew: false), cover.hash)
+            case (.keep, let saved?): return .keep(await kept(saved))
+            case (.save(let design), _): return .save(await kept(design), isNew: false)
             default: break
             }
             // Books in one look group share a design so their spines match on the shelf. A book
@@ -479,16 +474,16 @@ actor SpineWorker {
                     from: source, book: book, accountID: context.accountID,
                     workItemHash: workHash, coverHash: cover.hash),
                 saved.map({
-                    readerChoseCover && $0.coverHash != cover.hash
+                    $0.comesFromAnotherCover(than: cover.hash, readerChoseCover: readerChoseCover)
                         || $0.isOutranked(by: reused.tier, awaitingFont: reused.awaitsFont)
                 }) ?? true
             {
-                return (.save(reused, isNew: false), cover.hash)
+                return .save(reused, isNew: false)
             }
         }
         let made = try await newDesign(
             for: book, cover: cover, workHash: workHash, accountID: context.accountID, mode: mode)
-        return (.save(made, isNew: true), cover.hash)
+        return .save(made, isNew: true)
     }
 
     /// Designs `book` at the run's tier.

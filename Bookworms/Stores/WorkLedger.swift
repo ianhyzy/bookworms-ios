@@ -8,13 +8,12 @@ import Foundation
 /// when it saved a design that awaits its font (`SpineDesignV1.awaitsFont`). A new generator
 /// version alone queues no book, because a run keeps a design from its tier or a better one
 /// whatever generator made it (`SpineDesignV1.action`). A recheck reads the book's saved design
-/// first and downloads the cover only when the run would not keep that design, the reader chose
-/// the cover, or the design's cover hash differs from the one this device last checked
-/// (`SpineWorker`). So a weekly recheck of a current design downloads no default cover and sends
-/// no model request, and a design deleted from iCloud is still made again within a week. A
-/// failed book waits 24 hours unless its work-item hash or chosen cover changed. A library sync
-/// alone does not trigger a recheck: it would read every book's design from iCloud, and download
-/// every chosen cover, after each sync.
+/// first and downloads the cover only when the run would not keep that design or the reader
+/// chose a cover (`SpineWorker`). So a weekly recheck of a current design downloads no default
+/// cover and sends no model request, and a design deleted from iCloud is still made again within
+/// a week. A failed book waits 24 hours unless its work-item hash or chosen cover changed. A
+/// library sync alone does not trigger a recheck: it would read every book's design from iCloud,
+/// and download every chosen cover, after each sync.
 actor WorkLedger {
     private struct LedgerState: Codable {
         var cloudUserRecordName: String?
@@ -23,7 +22,7 @@ actor WorkLedger {
 
     struct Entry: Codable, Sendable {
         let workItemHash: String
-        /// The cover's hash after a successful check; `nil` after a failure.
+        /// The hash of the cover that the checked design comes from; `nil` after a failure.
         let coverHash: String?
         /// The generator version at the check. Rechecks ignore it, but earlier builds can't read
         /// an entry without it, and would then check every book again.
@@ -94,13 +93,6 @@ actor WorkLedger {
     /// reader chose.
     func readerChoseCover(recordName: String, chosenCover: URL?) -> Bool {
         entries[recordName].map { $0.chosenCover != chosenCover } ?? false
-    }
-
-    /// Whether the book's last check on this device ended with a design of `coverHash`. A book
-    /// without an entry counts as matching, so a new or reset ledger downloads no cover for a
-    /// current design; a failed check doesn't match.
-    func lastCheckMatches(recordName: String, coverHash: String) -> Bool {
-        entries[recordName].map { $0.coverHash == coverHash } ?? true
     }
 
     /// Records a successful check at `tier` (`Entry.tier`), which saved a design that awaits
