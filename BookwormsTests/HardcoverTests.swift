@@ -291,7 +291,7 @@ final class HardcoverTests: XCTestCase {
     }
 
     @MainActor
-    func testUnreadableLoginWithoutASummaryDeletesNothingUntilARead() throws {
+    func testUnreadableLoginWithoutASummaryDeletesNothingUntilALaunchReadsIt() throws {
         // Before the first unlock, user defaults can read as empty too.
         let (_, defaults, library) = try signedInStores()
         defaults.removeObject(forKey: HardcoverAccount.summaryKey)
@@ -303,10 +303,16 @@ final class HardcoverTests: XCTestCase {
         XCTAssertEqual(tokens.deletes, 0)
         XCTAssertTrue(FileManager.default.fileExists(atPath: library.path()))
 
-        // Once a read succeeds, the login without a summary is a leftover.
+        // User defaults may still read as empty after the unlock in the same process, so a
+        // retry that reads the login keeps it and the library.
         tokens.isReadable = true
         account.retryUnreadLogin()
         XCTAssertFalse(account.isSignedIn)
+        XCTAssertEqual(tokens.deletes, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: library.path()))
+
+        // A launch that reads the login without a summary deletes it as a leftover.
+        _ = HardcoverAccount(tokens: tokens, defaults: defaults, libraryURL: library)
         XCTAssertNil(tokens.secret)
         XCTAssertFalse(FileManager.default.fileExists(atPath: library.path()))
     }

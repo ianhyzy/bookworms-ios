@@ -158,7 +158,11 @@ final class HardcoverAccount {
     /// deleted, so the sheet and `signedInAccountID` agree. When the Keychain refuses the read,
     /// as before the first unlock after a restart, nothing is deleted: the summary alone marks
     /// the sign-in until a read succeeds (`retryUnreadLogin()`).
-    private func restoreLogin() {
+    ///
+    /// User defaults that read as empty before the first unlock may stay empty for the rest of
+    /// the process. So a retry (`isRetry`) that reads a login but no summary deletes neither and
+    /// stays signed out, and the next launch restores or deletes the login.
+    private func restoreLogin(isRetry: Bool = false) {
         let saved = defaults.data(forKey: Self.summaryKey)
             .flatMap { try? JSONDecoder().decode(Summary.self, from: $0) }
         summary = saved
@@ -169,7 +173,7 @@ final class HardcoverAccount {
             isSignedIn = stored != nil && saved != nil
             if isSignedIn {
                 cachedCredential = stored.map(HardcoverCredential.init(stored:))
-            } else {
+            } else if stored == nil || !isRetry {
                 tokens.delete()
                 forgetLibrary()
             }
@@ -188,7 +192,7 @@ final class HardcoverAccount {
     func retryUnreadLogin() {
         guard loginIsUnread else { return }
         let before = (isSignedIn, summary)
-        restoreLogin()
+        restoreLogin(isRetry: true)
         if before != (isSignedIn, summary) { libraryChanged() }
     }
 
