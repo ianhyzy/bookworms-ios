@@ -108,23 +108,31 @@ extension View {
     /// The outcome shows as a toast (`ShareOutcome.toast`), then goes to `onComplete`. SwiftUI's
     /// `ShareLink` cannot report either, so this presents `UIActivityViewController` from a view
     /// controller behind this view, over any sheet this view is in.
+    ///
+    /// On a Mac, the sharing picker drops down from the view this modifies when `fromButton` is
+    /// on: attach it to the share button itself. Otherwise it drops from near this view's top
+    /// trailing corner, where a toolbar's last button sits. An iPhone's share sheet rises from
+    /// the bottom wherever it is attached, so attach it to the content there, outside the
+    /// toolbar.
     func shareSheet(
-        _ files: Binding<SharedFiles?>,
+        _ files: Binding<SharedFiles?>, fromButton: Bool = false,
         onComplete: @escaping @MainActor (ShareOutcome) -> Void = { _ in }
     ) -> some View {
-        background(ShareSheetPresenter(files: files, onComplete: onComplete))
+        background(
+            ShareSheetPresenter(files: files, fromButton: fromButton, onComplete: onComplete))
     }
 }
 
 #if os(macOS)
-    /// Shows the sharing service picker below the toolbar's share button whenever `files` is
-    /// set.
+    /// Shows the sharing service picker below the share button whenever `files` is set: below
+    /// this view when `fromButton` is on, and else below where a toolbar's last button sits.
     ///
     /// The picker lists only the services that can take every item it holds, and services such
     /// as **Add to Photos** cannot take text. So it holds the files alone, and each service that
     /// can also take `SharedFiles.text` sends the text with them.
     private struct ShareSheetPresenter: NSViewRepresentable {
         @Binding var files: SharedFiles?
+        let fromButton: Bool
         let onComplete: @MainActor (ShareOutcome) -> Void
         @Environment(AppModel.self) private var model
 
@@ -212,16 +220,19 @@ extension View {
             context.coordinator.text = files.text
             let picker = NSSharingServicePicker(items: files.urls)
             picker.delegate = context.coordinator
-            // The share buttons sit at the toolbar's trailing end, above this view's top
-            // trailing corner, so the picker drops down from there.
-            let anchor = CGRect(
-                x: host.bounds.maxX - 44, y: host.bounds.maxY - 2, width: 28, height: 2)
+            // Without the button's own frame, the share button sits at the toolbar's trailing
+            // end, above this view's top trailing corner, so the picker drops down from there.
+            let anchor =
+                fromButton
+                ? host.bounds
+                : CGRect(x: host.bounds.maxX - 44, y: host.bounds.maxY - 2, width: 28, height: 2)
             picker.show(relativeTo: anchor, of: host, preferredEdge: .minY)
         }
     }
 #else
     private struct ShareSheetPresenter: UIViewControllerRepresentable {
         @Binding var files: SharedFiles?
+        let fromButton: Bool
         let onComplete: @MainActor (ShareOutcome) -> Void
         @Environment(AppModel.self) private var model
 

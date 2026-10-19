@@ -212,7 +212,9 @@ struct ShareStudioView: View {
                 studio(isPending: isPending, hasNoBooks: request.isEmpty)
             }
         }
-        .shareSheet($files)
+        #if os(iOS)
+            .shareSheet($files)
+        #endif
         #if os(macOS)
             // The commands dim without an image and while a newer one is on its way.
             .focusedSceneValue(\.shareImage, isPending ? nil : image, in: .share)
@@ -352,6 +354,9 @@ struct ShareStudioView: View {
                         Task { await share() }
                     }
                     .disabled(isPending || isPreparing)
+                    #if os(macOS)
+                        .shareSheet($files, fromButton: true)
+                    #endif
                 }
             }
             #if os(macOS)

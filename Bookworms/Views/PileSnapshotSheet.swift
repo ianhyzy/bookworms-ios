@@ -121,11 +121,16 @@ struct PileSnapshotSheet: View {
                             Task { await share(image) }
                         }
                         .disabled(isPending || isPreparing)
+                        #if os(macOS)
+                            .shareSheet($files, fromButton: true)
+                        #endif
                     }
                 }
             }
         }
-        .shareSheet($files)
+        #if os(iOS)
+            .shareSheet($files)
+        #endif
         .task(id: LoopKey(options: options.restartKey, redraws: redraws)) { await render() }
         .presentationSizing(.page)
         #if os(macOS)

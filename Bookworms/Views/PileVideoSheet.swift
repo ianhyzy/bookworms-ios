@@ -99,10 +99,15 @@ struct PileVideoSheet: View {
                     Button("Share", systemImage: "square.and.arrow.up") {
                         files = SharedFiles(urls: [movie.movie])
                     }
+                    #if os(macOS)
+                        .shareSheet($files, fromButton: true)
+                    #endif
                 }
             }
         }
-        .shareSheet($files)
+        #if os(iOS)
+            .shareSheet($files)
+        #endif
         #if os(macOS)
             .fileExporter(
                 isPresented: $savesVideo, item: movie.map { MovieFile(url: $0.movie) },
