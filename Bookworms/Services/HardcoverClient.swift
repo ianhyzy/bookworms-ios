@@ -234,11 +234,12 @@ actor HardcoverClient {
     /// token it already spent comes back, as a retry of a request that reached it would. The
     /// new login keeps `refreshToken` only if Hardcover sends no new one.
     ///
-    /// Throws `HardcoverError.invalidToken` only for an HTTP 400 or 401 reply with an OAuth
-    /// `error`, such as `invalid_grant` once the token expired, was revoked, or was spent; the
-    /// Apple TV and Android apps apply the same rule. Any other reply, such as a rate limit, a
-    /// server error, another 4xx status, or a body that isn't an OAuth error, throws
-    /// `HardcoverError.http(_:)`, so the caller keeps the login.
+    /// Throws `HardcoverError.invalidToken` only for an HTTP 400 or 401 reply with the OAuth
+    /// error `invalid_grant`, which RFC 6749 sends once the token expired, was revoked, or was
+    /// spent; the Apple TV and Android apps apply the same rule. Any other reply, such as a rate
+    /// limit, a server error, another 4xx status, another OAuth error such as `invalid_client`, or
+    /// a body that isn't an OAuth error, throws `HardcoverError.http(_:)`, so the caller keeps the
+    /// login.
     func renew(refreshToken: String) async throws -> HardcoverCredential {
         let (data, status) = try await postForm(
             Self.tokenEndpoint,
@@ -254,7 +255,9 @@ actor HardcoverClient {
             if credential.refreshToken == nil { credential.refreshToken = refreshToken }
             return credential
         }
-        if [400, 401].contains(status), reply?.error != nil { throw HardcoverError.invalidToken }
+        if [400, 401].contains(status), reply?.error == "invalid_grant" {
+            throw HardcoverError.invalidToken
+        }
         throw HardcoverError.http(status)
     }
 

@@ -426,7 +426,7 @@ final class HardcoverTests: XCTestCase {
                 defaults: defaults, libraryURL: library)
         }
 
-        // A server failure, or a refusal that isn't an OAuth error, keeps the login for the next
+        // A server failure, or a refusal other than `invalid_grant`, keeps the login for the next
         // try.
         for (status, body) in [(503, ""), (403, #"{"error":"access_denied"}"#), (400, "<html>")] {
             let unavailable = account(renewalStatus: status, body: body)
@@ -445,10 +445,12 @@ final class HardcoverTests: XCTestCase {
         XCTAssertEqual(tokens.saves, [])
     }
 
-    func testOnlyAnOAuthErrorWithHTTP400Or401RejectsTheRefreshToken() async {
+    func testOnlyInvalidGrantWithHTTP400Or401RejectsTheRefreshToken() async {
         let cases: [(status: Int, body: String, expected: HardcoverError)] = [
             (400, #"{"error":"invalid_grant"}"#, .invalidToken),
-            (401, #"{"error":"invalid_client","error_description":"Unknown"}"#, .invalidToken),
+            (401, #"{"error":"invalid_grant"}"#, .invalidToken),
+            (401, #"{"error":"invalid_client","error_description":"Unknown"}"#, .http(401)),
+            (400, #"{"error":"unsupported_grant_type"}"#, .http(400)),
             (400, "<html>Bad request</html>", .http(400)),
             (401, "", .http(401)),
             (400, #"{"error":400}"#, .http(400)),
