@@ -13,6 +13,7 @@ import os
 @MainActor
 private func finishLaunching(registerForPushes: () -> Void) {
     let testing = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    if !testing { configureTips() }
     if !testing && !AppModel.shared.isPreview {
         registerForPushes()
         Task { await GenerationController.shared.installWorklistSubscription() }
@@ -68,6 +69,7 @@ private func finishLaunching(registerForPushes: () -> Void) {
 ///
 /// Debug builds accept `-BookwormsTips <show|hide|reset>`: `show` shows every tip whatever its
 /// rules, `hide` hides them all for screenshots, and `reset` forgets which tips were shown.
+@MainActor
 private func configureTips() {
     #if DEBUG
         let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
@@ -200,6 +202,7 @@ struct BookwormsApp: App {
                 SidebarCommands()
                 BookwormsCommands(model: model)
                 LibraryCommands(model: model, generation: generation)
+                DeskCommands()
             }
             // A book's details, opened from Library in a window of their own.
             WindowGroup("Book", id: BookWindow.id, for: Int.self) { $id in

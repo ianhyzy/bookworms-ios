@@ -20,8 +20,8 @@ struct DeskHandover {
 /// the Desk scene (`BookPileScene`), the pile of books to grab and throw, and the dominoes
 /// (`DominoScene`) that the desk's books set up.
 ///
-/// **Set up dominoes** (`setUpDominoes(books:)`) hands the books on the desk, as they lie, to the
-/// dominoes, which set themselves up from there. **Back to desk** (`backToDesk(books:tidy:
+/// **Dominoes** in the bar (`setUpDominoes(books:)`) hands the books on the desk, as they lie, to
+/// the dominoes, which set themselves up from there. **Back to desk** (`backToDesk(books:tidy:
 /// periods:)`) hands the dominoes' books back, wherever they lie, standing, fallen, or gathered,
 /// as the desk's arrangement. Each handover swaps the scenes in the view between two frames,
 /// while the desk, the lamp, the books, and the camera stay as they were, so the eye sees one
@@ -66,6 +66,10 @@ final class DeskScenes {
     /// The view as the pile came to rest, which shows while the desk pauses and under the view
     /// as it returns, until it draws. A full-screen still takes about 13 MB.
     private(set) var still: UIImage?
+    /// Where the push tip points (`PushTip`), in the scenes' points: the dominoes' pointing
+    /// hand, which `DominoesView` finds once the chain waits for its first push with the camera
+    /// at rest.
+    var pushTipPoint: CGPoint?
 
     let pile: BookPileScene
     let dominoes: DominoScene
@@ -151,7 +155,8 @@ final class DeskScenes {
     /// Brings the view back, or keeps it, once the pile no longer rests.
     private func resume() {
         restRequest += 1
-        isPaused = false
+        // Each scroll and touch wakes the desk; only a change should update the views.
+        if isPaused { isPaused = false }
     }
 
     /// Wakes a paused desk, or keeps a live one from pausing for another `restDelay`, for a
@@ -172,6 +177,37 @@ final class DeskScenes {
         while still != nil, !isPaused, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(16))
         }
+    }
+
+    /// Moves the camera of the scene that shows in one step, for the Mac's scroll wheel and
+    /// **View** menu: zooms by `magnification` toward the table under `focus`, or under the
+    /// middle of what the bars leave clear, and turns the Desk scene's view by `rotation`.
+    /// Wakes a paused desk, which then shows the new view once its view has drawn. A move of
+    /// the dominoes' camera takes down the push tip, since the hand it points at moves.
+    func moveCamera(magnification: CGFloat, rotation: Angle = .zero, focus: CGPoint? = nil) {
+        guard let viewport else { return }
+        let focus = focus ?? CGPoint(x: viewport.clear.midX, y: viewport.clear.midY)
+        switch mode {
+        case .desk:
+            wake()
+            pile.moveCamera(
+                magnification: magnification, rotation: rotation, focus: focus,
+                in: viewport.size)
+            pile.endCameraMove()
+        case .dominoes:
+            PushTip.chainWaits = false
+            dominoes.moveCamera(
+                translation: .zero, magnification: magnification, focus: focus,
+                in: viewport.size)
+            dominoes.endCameraMove()
+        }
+    }
+
+    /// **Actual Size**: returns the Desk scene's camera to its home zoom.
+    func zoomToActualSize() {
+        guard mode == .desk else { return }
+        wake()
+        pile.zoomToActualSize()
     }
 
     /// Frees the Desk scene's books and textures, and its still, while Desk is out of sight.
@@ -203,7 +239,7 @@ final class DeskScenes {
         wake()
     }
 
-    /// **Set up dominoes**: hands the books on the desk to the dominoes as the chain of `books`,
+    /// **Dominoes**: hands the books on the desk to the dominoes as the chain of `books`,
     /// the books the desk drops, which then set themselves up from where they lie, or, with
     /// `reduceMotion`, stand in their places at once. Does nothing before a view shows the desk.
     func setUpDominoes(books: [CloudBook], reduceMotion: Bool) {
@@ -231,7 +267,7 @@ final class DeskScenes {
         mode = .dominoes
     }
 
-    /// Whether **Set up dominoes** hands the desk's books to the dominoes. In Debug builds,
+    /// Whether **Dominoes** hands the desk's books to the dominoes. In Debug builds,
     /// `-BookwormsDominoesFromAbove YES` keeps them back, so the chain stands up from above, as
     /// another time frame's chain does.
     private static var handsBooksOver: Bool {
@@ -278,7 +314,7 @@ final class DeskScenes {
         /// launch.
         private static var setUpOnLaunch = false
 
-        /// Simulator hook: `-BookwormsSetUpDominoes YES` chooses **Set up dominoes** for
+        /// Simulator hook: `-BookwormsSetUpDominoes YES` chooses **Dominoes** for
         /// `books` once, two seconds after the desk's first drop finishes.
         func setUpDominoesOnLaunch(books: [CloudBook], reduceMotion: Bool) async {
             guard !Self.setUpOnLaunch,
