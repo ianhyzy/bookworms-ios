@@ -127,16 +127,19 @@ struct TasteMatch: Equatable, Sendable {
     /// The owner's books rated `lovedRating` or more that the other reader never shelved,
     /// highest rated first.
     let forThem: [CloudBook]
-    /// The other reader's books rated `lovedRating` or more that the owner never shelved,
-    /// highest rated first, with the other reader's rating.
+    /// The other reader's books rated `lovedRating` or more that the owner never shelved or has
+    /// on **Want to Read**, highest rated first, with the other reader's rating.
     let forMe: [CloudBook]
+    /// The IDs of the `forMe` books on the owner's **Want to Read**, which Book Swap labels as
+    /// already on the owner's list.
+    let onMyList: Set<Int>
     private let theirRatings: [Int: Double]
 
     /// Compares the owner's library `mine` with another reader's library `theirs`. Ratings
     /// outside 0.5 to 5 stars count as unrated.
     init(mine: [CloudBook], theirs: [CloudBook]) {
         let theirBooks = Dictionary(theirs.map { ($0.id, $0) }) { first, _ in first }
-        let myIDs = Set(mine.map(\.id))
+        let myBooks = Dictionary(mine.map { ($0.id, $0) }) { first, _ in first }
         var seen = Set<Int>()
         shared = mine.compactMap { book in
             guard let mine = Self.valid(book.rating), seen.insert(book.id).inserted,
@@ -164,7 +167,13 @@ struct TasteMatch: Equatable, Sendable {
                 }
                 .prefix(Self.limit))
         forThem = Self.picks(mine.filter { theirBooks[$0.id] == nil })
-        forMe = Self.picks(theirs.filter { !myIDs.contains($0.id) })
+        // Only Hardcover's Want to Read status puts a shelved book on the owner's list, so a book
+        // on Paused or Did Not Finish, or one from a snapshot saved without statuses, stays out.
+        forMe = Self.picks(
+            theirs.filter {
+                myBooks[$0.id].map { $0.statusID == HardcoverClient.wantToReadStatus } ?? true
+            })
+        onMyList = Set(forMe.map(\.id).filter { myBooks[$0] != nil })
     }
 
     /// The score of `shared`, or `nil` with fewer than `minimumShared` books.

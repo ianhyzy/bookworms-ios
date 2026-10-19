@@ -88,7 +88,11 @@ final class GenerationTests: XCTestCase {
         let ready = await analyzer.status(of: .backup, designer: custom)
         XCTAssertTrue(ready.isAvailable)
 
+        let readersRejection = UserDefaults.standard.object(forKey: "SpineDesignerRejection")
         custom.rememberRejection("Custom: Unknown model.", sentKey: custom.provider.key.read())
+        XCTAssertEqual(
+            UserDefaults.standard.object(forKey: "SpineDesignerRejection") as? NSDictionary,
+            readersRejection as? NSDictionary, "Tests keep their own defaults")
         let rejected = await analyzer.status(of: .backup, designer: custom)
         XCTAssertFalse(rejected.isAvailable)
         XCTAssertEqual(rejected.unavailableReason, "Custom: Unknown model.")

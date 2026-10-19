@@ -54,11 +54,11 @@ struct SpineDesigner: Hashable, Sendable {
         /// The Keychain item that holds this provider's API key.
         var key: KeychainSecret { KeychainSecret(service: Self.keyService, account: rawValue) }
 
-        /// Unit tests keep keys of their own, so a Mac test run, whose host app shares the
-        /// reader's Keychain items, never reads or prompts for the reader's keys.
+        /// Unit tests keep keys of their own, so a test run never reads the keys that the app
+        /// saved on the same device.
         private static let keyService =
-            ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
-            ? "gay.ian.Bookworms.ai-provider" : "gay.ian.Bookworms.ai-provider.tests"
+            SpineDesigner.isUnitTest
+            ? "gay.ian.Bookworms.ai-provider.tests" : "gay.ian.Bookworms.ai-provider"
     }
 
     /// No backup model.
@@ -73,9 +73,17 @@ struct SpineDesigner: Hashable, Sendable {
     private static let baseURLKey = "SpineDesignerBaseURL"
     private static let rejectionKey = "SpineDesignerRejection"
 
+    /// The user defaults that hold the choice and the remembered rejection. Unit tests keep a
+    /// suite of their own, as they keep their own keys, so a test run never reads or changes the
+    /// choice that the app saved on the same device.
+    private static var defaults: UserDefaults {
+        isUnitTest ? UserDefaults(suiteName: "gay.ian.Bookworms.tests")! : .standard
+    }
+    private static let isUnitTest =
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+
     /// The saved choice, or no backup model.
     static var current: SpineDesigner {
-        let defaults = UserDefaults.standard
         let provider = defaults.string(forKey: providerKey).flatMap(Provider.init) ?? .apple
         return SpineDesigner(
             provider: provider,
@@ -84,10 +92,9 @@ struct SpineDesigner: Hashable, Sendable {
     }
 
     func save() {
-        let defaults = UserDefaults.standard
-        defaults.set(provider.rawValue, forKey: Self.providerKey)
-        defaults.set(model, forKey: Self.modelKey)
-        defaults.set(baseURL, forKey: Self.baseURLKey)
+        Self.defaults.set(provider.rawValue, forKey: Self.providerKey)
+        Self.defaults.set(model, forKey: Self.modelKey)
+        Self.defaults.set(baseURL, forKey: Self.baseURLKey)
     }
 
     /// Why this choice cannot design yet, such as no backup model or a missing key or model name;
@@ -116,7 +123,7 @@ struct SpineDesigner: Hashable, Sendable {
     /// request to a model that refuses them all.
     var rejection: String? {
         guard
-            let saved = UserDefaults.standard.dictionary(forKey: Self.rejectionKey)
+            let saved = Self.defaults.dictionary(forKey: Self.rejectionKey)
                 as? [String: String],
             saved["settings"] == settingsID
         else { return nil }
@@ -130,8 +137,7 @@ struct SpineDesigner: Hashable, Sendable {
     /// them is saved. Returns whether it remembered the rejection.
     @discardableResult func rememberRejection(_ message: String, sentKey: String?) -> Bool {
         guard provider.key.read() == sentKey else { return false }
-        UserDefaults.standard.set(
-            ["settings": settingsID, "message": message], forKey: Self.rejectionKey)
+        Self.defaults.set(["settings": settingsID, "message": message], forKey: Self.rejectionKey)
         return true
     }
 
@@ -139,7 +145,6 @@ struct SpineDesigner: Hashable, Sendable {
     /// **Generate now**, and returns its message, or `nil` without one. A new key needs this: the
     /// settings ID records only whether a key exists.
     @discardableResult static func forgetRejection() -> String? {
-        let defaults = UserDefaults.standard
         let message = (defaults.dictionary(forKey: rejectionKey) as? [String: String])?["message"]
         defaults.removeObject(forKey: rejectionKey)
         return message
