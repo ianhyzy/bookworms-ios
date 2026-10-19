@@ -1,6 +1,6 @@
 import SwiftUI
 
-// The app's two content grounds: the walnut room behind Library, Desk, and book
+// The app's two content grounds and its type: the walnut room behind Library, Desk, and book
 // details, and paper behind the screens outside the room, such as Share and Spines. System glass
 // (bars, the sidebar, sheets, menus) stays system and takes only the accent color
 // (`AccentColor`). Both grounds are gradients and static tiled images, so they cost nothing
@@ -106,4 +106,17 @@ struct PaperGround: View {
         .overlay { Image(.paperDither).resizable(resizingMode: .tile).opacity(0.03) }
         .accessibilityHidden(true)
     }
+}
+
+extension View {
+    /// Sets a heading in New York, the serif of the app's book titles and share images: section
+    /// headers, empty-state titles, and screen headers. Controls and rows stay in SF.
+    func bookHeading() -> some View { fontDesign(.serif) }
+}
+
+extension Font {
+    /// A small-caps label, like a library catalog card's headings, for card captions and stat
+    /// labels. It scales with Dynamic Type from footnote, below which small caps grow hard to
+    /// read.
+    static let catalogLabel = Font.footnote.weight(.semibold).smallCaps()
 }
