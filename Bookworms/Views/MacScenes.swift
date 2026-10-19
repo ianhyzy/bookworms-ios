@@ -103,14 +103,21 @@
         }
     }
 
-    /// Menu bar commands for the main window: a **Go** menu that switches sections with
-    /// Command-1 through Command-4, and generation in the **Spines** menu.
+    /// Menu bar commands for the main window: a **Go** menu that closes a book's details with
+    /// **Back** (Command-[) and switches sections with Command-1 through Command-4, and
+    /// generation in the **Spines** menu. Other areas add their own `Commands` (see
+    /// `FocusedActions.swift`).
     struct BookwormsCommands: Commands {
         let model: AppModel
         let generation: GenerationController
+        @FocusedValue(\.goBack) private var goBack
 
         var body: some Commands {
             CommandMenu("Go") {
+                Button("Back") { goBack?() }
+                    .keyboardShortcut("[")
+                    .disabled(goBack == nil)
+                Divider()
                 Button("Share") { model.selectedTab = .share }.keyboardShortcut("1")
                 Button("Library") { model.selectedTab = .library }.keyboardShortcut("2")
                 Button("Desk") { model.selectedTab = .desk }.keyboardShortcut("3")

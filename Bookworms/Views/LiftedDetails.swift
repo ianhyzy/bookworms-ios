@@ -164,6 +164,10 @@ struct LiftedDetailsOverlay: ViewModifier {
                 guard let sceneDressing else { return }
                 await scene.lifter.restyle(sceneDressing.book, model: model)
             }
+            .focusedSceneValue(
+                \.goBack,
+                details.lift?.isReturning == false ? SceneAction { details.close(scene) } : nil
+            )
             .toolbar {
                 if let lift = details.lift {
                     ToolbarItem(placement: .topBarLeading) {

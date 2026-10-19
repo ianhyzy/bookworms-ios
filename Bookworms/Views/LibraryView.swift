@@ -271,6 +271,9 @@ private struct LibraryBar: ViewModifier {
                     options != nil && !pullOut.showsDetails ? .hidden : .automatic,
                     for: .navigationBar)
             #endif
+            .focusedSceneValue(
+                \.goBack, pullOut.showsDetails ? SceneAction(perform: pullOut.putBack) : nil
+            )
             .toolbar {
                 if let book = pullOut.book, pullOut.showsDetails {
                     ToolbarItem(placement: .topBarLeading) {
@@ -441,15 +444,20 @@ private struct LibraryOptions: View {
 struct PushedBookDetail: View {
     let id: Int
     @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        if let book = model.books.first(where: { $0.id == id }) {
-            BookDetailView(book: book)
-        } else {
-            ContentUnavailableView(
-                "Book unavailable", systemImage: "book.closed",
-                description: Text("The latest library no longer includes this book."))
+        Group {
+            if let book = model.books.first(where: { $0.id == id }) {
+                BookDetailView(book: book)
+            } else {
+                ContentUnavailableView(
+                    "Book unavailable", systemImage: "book.closed",
+                    description: Text("The latest library no longer includes this book."))
+            }
         }
+        // Dismissing pops the details off their navigation stack.
+        .focusedSceneValue(\.goBack, SceneAction { dismiss() })
     }
 }
 

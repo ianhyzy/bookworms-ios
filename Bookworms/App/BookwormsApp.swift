@@ -117,7 +117,10 @@ struct BookwormsApp: App {
                     .frame(minWidth: 760, minHeight: 560)
             }
             .defaultSize(width: 1180, height: 820)
-            .commands { BookwormsCommands(model: model, generation: generation) }
+            // Each area's menu commands, one line each (see `FocusedActions.swift`).
+            .commands {
+                BookwormsCommands(model: model, generation: generation)
+            }
             Settings {
                 MacSettingsView()
                     .environment(model)
