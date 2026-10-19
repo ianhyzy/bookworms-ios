@@ -402,57 +402,30 @@ private struct LibraryFooter: View {
     @Binding var showsAccount: Bool
 
     @Environment(AppModel.self) private var model
-    @ScaledMetric(relativeTo: .body) private var button: CGFloat = 44
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
-        let sync = LibrarySync(model: model)
-        // The sides share the width the status leaves, so the status centers on the screen.
-        HStack(spacing: 8) {
-            ShelfModePicker(mode: options.$mode)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            // Smaller than the caption, so the footer reads as the screen's status, not as
-            // more about the centered book.
-            VStack(spacing: 1) {
-                // Breaks between the time and the count when the status does not fit on one line.
-                ViewThatFits(in: .horizontal) {
-                    Text(options.status)
-                    VStack(spacing: 1) {
-                        Text(options.time.title)
-                        Text(options.books)
+        Group {
+            if typeSize.isAccessibilitySize {
+                // The status takes the screen's width, over the controls.
+                VStack(spacing: 6) {
+                    status
+                    HStack {
+                        ShelfModePicker(mode: options.$mode)
+                        Spacer()
+                        buttons
                     }
                 }
-                .foregroundStyle(ShelfPalette.paper)
-                .monospacedDigit()
-                if sync.failed {
-                    Button(sync.status + " · Retry") { Task { await model.syncLibrary() } }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(sync.status)
-                        .accessibilityHint("Syncs the library again.")
-                } else {
-                    Text(sync.status)
+            } else {
+                // The sides share the width the status leaves, so the status centers on the
+                // screen.
+                HStack(spacing: 8) {
+                    ShelfModePicker(mode: options.$mode)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    status.layoutPriority(1)
+                    buttons.frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
-            .layoutPriority(1)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Library")
-            // Names the screen for VoiceOver's headings, as the hidden bar's title did.
-            .accessibilityAddTraits(.isHeader)
-            HStack(spacing: 0) {
-                Button("Find a book", systemImage: "magnifyingglass") { findsBook = true }
-                    .frame(width: button, height: button)
-                options.menu(showsAccount: $showsAccount)
-                    .frame(width: button, height: button)
-            }
-            .labelStyle(.iconOnly)
-            .buttonStyle(.plain)
-            .foregroundStyle(.tint)
-            .contentShape(.capsule)
-            .padding(.horizontal, 2)
-            .glassEffect(.regular.interactive(), in: .capsule)
-            .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(.horizontal, 16)
         // A little more space above than between the caption's lines, so the footer reads as
@@ -462,6 +435,63 @@ private struct LibraryFooter: View {
         // Larger sizes would take lines that the books need.
         .dynamicTypeSize(...DynamicTypeSize.accessibility2)
         .allowsHitTesting(!pullOut.showsDetails)
+    }
+
+    /// Smaller than the caption, so the footer reads as the screen's status, not as more about
+    /// the centered book.
+    private var status: some View {
+        let sync = LibrarySync(model: model)
+        return VStack(spacing: 1) {
+            // Breaks between the time and the count when the status does not fit on one line.
+            ViewThatFits(in: .horizontal) {
+                Text(options.status)
+                VStack(spacing: 1) {
+                    Text(options.time.title)
+                    Text(options.books)
+                }
+            }
+            .foregroundStyle(ShelfPalette.paper)
+            .monospacedDigit()
+            if sync.failed {
+                Button(sync.status + " · Retry") { Task { await model.syncLibrary() } }
+                    .buttonStyle(.plain)
+            } else {
+                Text(sync.status)
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .multilineTextAlignment(.center)
+        .accessibilityElement(children: .ignore)
+        // Names the screen for VoiceOver's headings, as the hidden bar's title did.
+        .accessibilityLabel("Library")
+        .accessibilityValue("\(options.status), \(sync.status)")
+        .accessibilityAddTraits(.isHeader)
+        .accessibilityActions {
+            if sync.failed {
+                Button("Retry") { Task { await model.syncLibrary() } }
+            }
+        }
+    }
+
+    /// **Find a book** and **View options** in one glass capsule. They stop growing at the
+    /// largest standard text size, and the large content viewer names them at accessibility
+    /// sizes, so the status keeps its room.
+    private var buttons: some View {
+        HStack(spacing: 0) {
+            Button("Find a book", systemImage: "magnifyingglass") { findsBook = true }
+                .frame(width: 44, height: 44)
+            options.menu(showsAccount: $showsAccount)
+                .frame(width: 44, height: 44)
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.plain)
+        .foregroundStyle(.tint)
+        .contentShape(.capsule)
+        .padding(.horizontal, 2)
+        .glassEffect(.regular.interactive(), in: .capsule)
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .accessibilityShowsLargeContentViewer()
     }
 }
 
@@ -480,6 +510,9 @@ private struct ShelfModePicker: View {
         #if os(iOS)
             .labelsHidden()
             .controlSize(.large)
+            // Stops growing at the largest standard text size, as the footer's buttons do.
+            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+            .accessibilityShowsLargeContentViewer()
         #else
             .help("View as Stack or Shelf")
         #endif
