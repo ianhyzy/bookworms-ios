@@ -125,7 +125,8 @@ def year_in_books():
 def top_five():
     parts = [heading(64)]
     # Five books fanned like a hand of cards, as the card fans them: the first-ranked in the
-    # middle and in front, each book further out smaller, turned further, and lower on the arc.
+    # middle and in front, larger than the others, which turn further and sit lower on the arc
+    # the further out they are.
     lead = 42
     colors = [BOOKS[0], BOOKS[2], BOOKS[1], BOOKS[3], BOOKS[4]]
     for rank in reversed(range(5)):
