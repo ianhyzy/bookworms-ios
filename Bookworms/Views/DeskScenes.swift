@@ -175,17 +175,28 @@ final class DeskScenes {
         }
     }
 
-    /// Moves the Desk scene's camera in one step, for the Mac's scroll wheel and **View** menu:
-    /// zooms by `magnification` toward the table under `focus`, or under the middle of what
-    /// the bars leave clear, and turns by `rotation`. Wakes a paused desk, which then shows the
-    /// new view once its view has drawn.
+    /// Moves the camera of the scene that shows in one step, for the Mac's scroll wheel and
+    /// **View** menu: zooms by `magnification` toward the table under `focus`, or under the
+    /// middle of what the bars leave clear, and turns the Desk scene's view by `rotation`.
+    /// Wakes a paused desk, which then shows the new view once its view has drawn. A move of
+    /// the dominoes' camera takes down the push tip, since the hand it points at moves.
     func moveCamera(magnification: CGFloat, rotation: Angle = .zero, focus: CGPoint? = nil) {
-        guard mode == .desk, let viewport else { return }
+        guard let viewport else { return }
         let focus = focus ?? CGPoint(x: viewport.clear.midX, y: viewport.clear.midY)
-        wake()
-        pile.moveCamera(
-            magnification: magnification, rotation: rotation, focus: focus, in: viewport.size)
-        pile.endCameraMove()
+        switch mode {
+        case .desk:
+            wake()
+            pile.moveCamera(
+                magnification: magnification, rotation: rotation, focus: focus,
+                in: viewport.size)
+            pile.endCameraMove()
+        case .dominoes:
+            PushTip.chainWaits = false
+            dominoes.moveCamera(
+                translation: .zero, magnification: magnification, focus: focus,
+                in: viewport.size)
+            dominoes.endCameraMove()
+        }
     }
 
     /// **Actual Size**: returns the Desk scene's camera to its home zoom.

@@ -19,10 +19,10 @@
         @Entry var deskSheetShows: Bool?
     }
 
-    /// The menu bar's Desk commands: **Zoom In**, **Zoom Out**, and **Actual Size** in the
-    /// **View** menu for the Desk scene, and the switch to the dominoes and back in the **Desk**
-    /// menu. They are unavailable while another section shows, or while details or a sheet
-    /// cover the scene.
+    /// The menu bar's Desk commands: **Zoom In** and **Zoom Out** in the **View** menu for
+    /// either scene, **Actual Size** for the Desk scene, and the switch to the dominoes and
+    /// back in the **Desk** menu. They are unavailable while another section shows, or while
+    /// details or a sheet cover the scene.
     struct DeskCommands: Commands {
         /// How much each **Zoom In** zooms, and each **Zoom Out** undoes.
         private static let zoomStep: CGFloat = 1.25
@@ -33,16 +33,17 @@
         var body: some Commands {
             let target = sheetShows == true ? nil : shown
             CommandGroup(after: .toolbar) {
-                let pile = target.flatMap { $0.isDominoes ? nil : $0.desk }
+                let desk = target?.desk
                 Section {
-                    Button("Zoom In") { pile?.moveCamera(magnification: Self.zoomStep) }
+                    Button("Zoom In") { desk?.moveCamera(magnification: Self.zoomStep) }
                         .keyboardShortcut("+")
-                    Button("Zoom Out") { pile?.moveCamera(magnification: 1 / Self.zoomStep) }
+                    Button("Zoom Out") { desk?.moveCamera(magnification: 1 / Self.zoomStep) }
                         .keyboardShortcut("-")
-                    Button("Actual Size") { pile?.zoomToActualSize() }
+                    Button("Actual Size") { desk?.zoomToActualSize() }
                         .keyboardShortcut("0")
+                        .disabled(target?.isDominoes != false)
                 }
-                .disabled(pile == nil)
+                .disabled(desk == nil)
             }
             CommandMenu("Desk") {
                 Button(target?.isDominoes == true ? "Back to Desk" : "Set Up Dominoes") {

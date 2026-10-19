@@ -20,9 +20,9 @@ import SwiftUI
 /// they are arranged. With Reduce Motion on, or when the scene cannot lift the book, `open`
 /// pushes the details instead, and the chain is as the reader left it on return.
 /// **Camera** in the desk's options menu chooses how the camera films the chain
-/// (`DominoCameraMode`). Pinch to zoom, and drag to look along the path; either takes the
-/// camera over until the next push. **Set up again** sets every book up again from where it
-/// lies.
+/// (`DominoCameraMode`). Pinch to zoom, or on the Mac scroll, and drag to look along the path;
+/// each takes the camera over until the next push. **Set up again** sets every book up again
+/// from where it lies.
 /// Collisions play taps and, while the desk's **Sounds** is on, knocks (`ImpactFeedback`).
 /// While the scene records a run, from the push until the heading shows over the gathered
 /// books, a red dot and the time since the push show under the bar (`RecordingBadge`). Once the books have gathered,
@@ -105,6 +105,9 @@ struct DominoesView: View {
                     }
             )
             .simultaneousGesture(moveCamera)
+            #if os(macOS)
+                .background { ScrollWheelReader(onScroll: scroll) }
+            #endif
             // In the scene's own points, which reach under the bars as the scene does.
             .overlay { TipAnchor(tip: PushTip(), point: handPoint) }
             .allowsHitTesting(details.lift == nil)
@@ -400,6 +403,19 @@ struct DominoesView: View {
             open(book)
         }
     }
+
+    #if os(macOS)
+        /// Zooms toward `point` for a scroll over the part of the view the bars leave clear, as
+        /// a pinch does, and returns whether it did; scrolls elsewhere, or while details cover
+        /// the chain, go on to the views under them.
+        private func scroll(_ event: NSEvent, at point: CGPoint) -> Bool {
+            guard isShown, details.lift == nil, viewport?.clear.contains(point) == true else {
+                return false
+            }
+            desk.moveCamera(magnification: PilePointer.move(for: event).magnification, focus: point)
+            return true
+        }
+    #endif
 
     /// Pinches zoom toward the fingers; a one-finger drag slides along the path.
     private var moveCamera: some Gesture {
