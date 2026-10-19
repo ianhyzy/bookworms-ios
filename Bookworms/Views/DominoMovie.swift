@@ -706,15 +706,16 @@ final class DominoRecorder {
 
     /// An image of the view as it shows now, in a 9:16 PNG with the heading and the credit,
     /// for **Share** when no recording of the run was kept. It frames `viewport`, the view the
-    /// chain was planned in, so a wider view's image shows the spread's area
-    /// (`DominoFinale.area(in:)`) also after the sidebar shows or hides, or the view's current
-    /// layout without one. Replaces the previous one.
+    /// chain was planned in, while the view keeps that size, so a wider view's image shows the
+    /// spread's area (`DominoFinale.area(in:)`) also after the sidebar shows or hides. A view
+    /// resized since, or one without a plan, frames its current layout, which matches the
+    /// snapshot it takes. Replaces the previous one.
     ///
     /// - Throws: `PileSnapshotError` when the view or its snapshot is missing or cannot be
     ///   drawn.
     func snapshot(in viewport: PileViewport?) async throws -> URL {
         guard let view, var layout else { throw PileSnapshotError.drawingFailed }
-        if let viewport { layout.viewport = viewport }
+        if let viewport, viewport.size == layout.viewport.size { layout.viewport = viewport }
         let image: UIImage? = await withCheckedContinuation { done in
             view.snapshot(saveToHDR: false) { done.resume(returning: $0) }
         }

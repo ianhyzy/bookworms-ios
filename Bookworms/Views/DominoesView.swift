@@ -366,13 +366,19 @@ struct DominoesView: View {
         }
     }
 
-    /// The view's layout and heading, for the recording.
+    /// The view's layout and heading, for the recording. While the view keeps the size the
+    /// chain was planned in, it is the planned view (`DominoScene.plannedViewport`), whose clear
+    /// area the finale gathers in: showing or hiding the sidebar changes only the insets, so
+    /// the recording's frame still lands on the spread. A resized view uses its own layout,
+    /// since the frames the recording takes are that view's.
     private var recordingLayout: DominoRecorder.Layout? {
-        viewport.map {
-            DominoRecorder.Layout(
-                viewport: $0, title: title, count: books.count,
-                pages: DominoFinaleCard.pages(of: books))
-        }
+        let planned = scene.plannedViewport.flatMap { $0.size == viewport?.size ? $0 : nil }
+        return (planned ?? viewport)
+            .map {
+                DominoRecorder.Layout(
+                    viewport: $0, title: title, count: books.count,
+                    pages: DominoFinaleCard.pages(of: books))
+            }
     }
 
     /// The chain's phase as VoiceOver reads it.
