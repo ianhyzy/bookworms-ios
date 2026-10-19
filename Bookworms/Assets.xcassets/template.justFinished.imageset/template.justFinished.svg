@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="150" viewBox="0 0 120 150">
+<defs>
+<linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0" stop-color="#3A2A1F"/><stop offset="1" stop-color="#1E1611"/>
+</linearGradient>
+<radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+<stop offset="0" stop-color="#E9B949" stop-opacity="0.38"/>
+<stop offset="1" stop-color="#E9B949" stop-opacity="0"/>
+</radialGradient>
+<radialGradient id="lamp" cx="0.5" cy="0.35" r="0.7">
+<stop offset="0" stop-color="#8A5F3C"/><stop offset="1" stop-color="#4A3020"/>
+</radialGradient>
+</defs>
+<rect x="0" y="0" width="120" height="150" rx="10" fill="url(#ground)"/>
+<circle cx="60" cy="56" r="50" fill="url(#glow)"/>
+<polygon points="40,25 48,24 48,82 40,81.4" fill="#1D3931"/><rect x="48" y="24" width="32" height="58" rx="0.8" fill="#2F5D50" fill-opacity="1"/><rect x="54.4" y="35.6" width="19.2" height="2" rx="1" fill="#FAF2DE" fill-opacity="0.7"/>
+<rect x="31" y="94" width="58" height="5.5" rx="2.75" fill="#FAF2DE" fill-opacity="1"/>
+<rect x="43" y="104" width="34" height="3" rx="1.5" fill="#FAF2DE" fill-opacity="0.6"/>
+<polygon points="47.70,112.30 48.41,114.02 50.27,114.17 48.86,115.38 49.29,117.18 47.70,116.22 46.11,117.18 46.54,115.38 45.13,114.17 46.99,114.02" fill="#E9B949" fill-opacity="1"/><polygon points="53.91,112.30 54.62,114.02 56.48,114.17 55.07,115.38 55.50,117.18 53.91,116.22 52.32,117.18 52.75,115.38 51.34,114.17 53.20,114.02" fill="#E9B949" fill-opacity="1"/><polygon points="60.12,112.30 60.83,114.02 62.69,114.17 61.28,115.38 61.71,117.18 60.12,116.22 58.53,117.18 58.96,115.38 57.55,114.17 59.41,114.02" fill="#E9B949" fill-opacity="1"/><polygon points="66.33,112.30 67.04,114.02 68.90,114.17 67.49,115.38 67.92,117.18 66.33,116.22 64.74,117.18 65.17,115.38 63.76,114.17 65.62,114.02" fill="#E9B949" fill-opacity="1"/><polygon points="72.54,112.30 73.25,114.02 75.11,114.17 73.70,115.38 74.13,117.18 72.54,116.22 70.95,117.18 71.38,115.38 69.97,114.17 71.83,114.02" fill="#E9B949" fill-opacity="1"/>
+<rect x="26" y="126" width="68" height="2.5" rx="1.25" fill="#FAF2DE" fill-opacity="0.5"/>
+<rect x="0.5" y="0.5" width="119" height="149" rx="9.5" fill="none" stroke="#FAF2DE" stroke-opacity="0.22"/>
+</svg>

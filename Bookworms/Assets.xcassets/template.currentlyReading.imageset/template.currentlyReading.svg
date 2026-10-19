@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="150" viewBox="0 0 120 150">
+<defs>
+<linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0" stop-color="#3A2A1F"/><stop offset="1" stop-color="#1E1611"/>
+</linearGradient>
+<radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+<stop offset="0" stop-color="#E9B949" stop-opacity="0.38"/>
+<stop offset="1" stop-color="#E9B949" stop-opacity="0"/>
+</radialGradient>
+<radialGradient id="lamp" cx="0.5" cy="0.35" r="0.7">
+<stop offset="0" stop-color="#8A5F3C"/><stop offset="1" stop-color="#4A3020"/>
+</radialGradient>
+</defs>
+<rect x="0" y="0" width="120" height="150" rx="10" fill="url(#ground)"/>
+<rect x="32" y="13" width="56" height="4" rx="2" fill="#E9B949" fill-opacity="1"/>
+<polygon points="40,25 48,24 48,82 40,81.4" fill="#1C2D44"/><rect x="48" y="24" width="32" height="58" rx="0.8" fill="#2E4A6E" fill-opacity="1"/><rect x="54.4" y="35.6" width="19.2" height="2" rx="1" fill="#FAF2DE" fill-opacity="0.7"/>
+<rect x="31" y="92" width="58" height="5.5" rx="2.75" fill="#FAF2DE" fill-opacity="1"/>
+<rect x="44" y="102" width="32" height="3" rx="1.5" fill="#FAF2DE" fill-opacity="0.6"/>
+<rect x="20" y="116" width="62" height="5" rx="2.5" fill="#FAF2DE" fill-opacity="0.2"/>
+<rect x="20" y="116" width="38" height="5" rx="2.5" fill="#E9B949" fill-opacity="1"/>
+<rect x="88" y="114.5" width="14" height="8" rx="2" fill="#FAF2DE" fill-opacity="0.9"/>
+<rect x="38" y="131" width="44" height="2.5" rx="1.25" fill="#FAF2DE" fill-opacity="0.5"/>
+<rect x="0.5" y="0.5" width="119" height="149" rx="9.5" fill="none" stroke="#FAF2DE" stroke-opacity="0.22"/>
+</svg>

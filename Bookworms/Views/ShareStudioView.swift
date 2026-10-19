@@ -286,7 +286,7 @@ struct ShareStudioView: View {
         #endif
     }
 
-    /// The studio: the preview and the settings.
+    /// The studio: the preview, a print on the desk blotter (`ShareBlotter`), and the settings.
     ///
     /// On an iPhone in portrait, the preview stays pinned under the navigation bar while the
     /// settings scroll beneath it, so each change shows in the image. In landscape, the preview
@@ -370,8 +370,11 @@ struct ShareStudioView: View {
             return min(380, max(220, studioHeight * share))
         }
 
+        /// The settings on paper.
         private func settingsForm(hasNoBooks: Bool) -> some View {
             Form { settings(hasNoBooks: hasNoBooks) }
+                .scrollContentBackground(.hidden)
+                .background { PaperGround().ignoresSafeArea() }
         }
     #endif
 
@@ -388,7 +391,7 @@ struct ShareStudioView: View {
         }
     #endif
 
-    /// The preview, and on a Mac, the image's size and cover style under it.
+    /// The preview on the blotter, and on a Mac, the image's size and cover style under it.
     private func stage(isPending: Bool, hasNoBooks: Bool) -> some View {
         VStack(spacing: 16) {
             preview(isPending: isPending, hasNoBooks: hasNoBooks)
@@ -411,7 +414,7 @@ struct ShareStudioView: View {
             .padding(.vertical, 12)
         #endif
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background { Rectangle().fill(.background).ignoresSafeArea() }
+        .background { ShareBlotter().ignoresSafeArea() }
     }
 
     /// **My reading** / **With friends**, which chooses the templates listed below it.
@@ -671,8 +674,9 @@ struct ShareStudioView: View {
             }
         }
         .aspectRatio(size.width / size.height, contentMode: .fit)
+        // A blank sheet until the first image arrives.
         .background(.quaternary)
-        .clipShape(.rect(cornerRadius: 12))
+        .modifier(PrintEdge())
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -856,31 +860,34 @@ struct ShareStudioView: View {
         }
     }
 
-    /// A template's tile. Every name reserves two lines, so the tiles line up whichever names
-    /// wrap.
+    /// A template's tile: a small drawing of its card (`script/template-art.py`), outlined in
+    /// brass while chosen, over its name. Every name reserves two lines, so the tiles line up
+    /// whichever names wrap.
     private func templateTile(_ option: ShareTemplate) -> some View {
         let isSelected = option == template
         return Button {
             template = option
         } label: {
             VStack(spacing: 6) {
-                Image(systemName: option.systemImage)
-                    .font(.title3)
-                    .frame(height: 28)
+                Image("template.\(option.rawValue)")
+                    .resizable()
+                    .frame(width: 56, height: 70)
+                    .padding(3)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(.tint, lineWidth: 2.5)
+                            .opacity(isSelected ? 1 : 0)
+                    }
                     // VoiceOver reads the template's name alone.
                     .accessibilityHidden(true)
                 Text(option.title)
                     .font(.caption)
                     .multilineTextAlignment(.center)
                     .lineLimit(2, reservesSpace: true)
+                    .foregroundStyle(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-            .foregroundStyle(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
-            .background(
-                isSelected ? AnyShapeStyle(.tint.opacity(0.15)) : AnyShapeStyle(.clear),
-                in: .rect(cornerRadius: 10)
-            )
+            .padding(.vertical, 4)
             .contentShape(.rect)
         }
         // A plain style keeps each button's tap separate inside one form row.
@@ -1280,6 +1287,61 @@ struct ShareImage: Transferable, Equatable, Sendable {
             throw CocoaError(.fileWriteUnknown)
         }
         return data
+    }
+}
+
+/// The preview's paper: square corners, a one-pixel paper edge, and the thin shadow of a sheet
+/// lying flat on the blotter, drawn as two offset fills rather than a blur, so it costs nothing
+/// when the image changes.
+private struct PrintEdge: ViewModifier {
+    @Environment(\.displayScale) private var displayScale
+
+    func body(content: Content) -> some View {
+        content
+            .clipShape(.rect(cornerRadius: 2))
+            .overlay {
+                RoundedRectangle(cornerRadius: 2)
+                    .strokeBorder(ShareStyle.cream.color.opacity(0.5), lineWidth: 1 / displayScale)
+            }
+            .background {
+                RoundedRectangle(cornerRadius: 3).fill(.black.opacity(0.14)).padding(-1.5)
+                    .offset(y: 3)
+                RoundedRectangle(cornerRadius: 2).fill(.black.opacity(0.3)).offset(y: 1)
+            }
+    }
+}
+
+/// The desk blotter behind the Share tab's preview: in dark appearance, the table's wood
+/// (`TableWood`) darkened under the pool of the lamp's light, as on the Desk, and in light
+/// appearance cream paper (`PaperGround`). Increase Contrast leaves out the grain and the pool,
+/// so the print's edge stands out.
+///
+/// It is a static image under two gradients, so nothing redraws while the settings scroll or
+/// the image changes.
+struct ShareBlotter: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        if colorScheme == .light {
+            PaperGround()
+        } else {
+            Color(.shelfWallBottom)
+                .overlay {
+                    if contrast == .standard {
+                        Image("TableWood").resizable(resizingMode: .tile)
+                        // Dark walnut, as the bookcase's wood is (`WoodGrain`), lit from above
+                        // the print and falling off toward the edges.
+                        RadialGradient(
+                            colors: [
+                                Color(red: 0.17, green: 0.085, blue: 0.035).opacity(0.55),
+                                Color(red: 0.08, green: 0.04, blue: 0.015).opacity(0.9),
+                            ],
+                            center: UnitPoint(x: 0.5, y: 0.4), startRadius: 40, endRadius: 560)
+                    }
+                }
+                .accessibilityHidden(true)
+        }
     }
 }
 
