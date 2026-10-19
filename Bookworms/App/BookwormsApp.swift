@@ -243,8 +243,9 @@ struct RootView: View {
     @Environment(GenerationController.self) private var generation
     @Environment(\.scenePhase) private var scenePhase
     #if os(macOS)
-        /// The window's section when it last closed, which it reopens on; Share at first launch.
-        @SceneStorage("BookwormsTab") private var savedTab = AppTab.share
+        /// The section last chosen, which the next launch reopens on; Share at first launch. The
+        /// app keeps it rather than the window, whose saved state ends when the window closes.
+        @AppStorage("BookwormsLastTab") private var savedTab = AppTab.share
     #endif
     @State private var showsAccount = false
     /// The share image shown full size over every tab and bar, while the Share tab's preview is

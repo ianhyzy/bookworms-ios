@@ -141,7 +141,7 @@ Each design records its tier in `provenance` (see [iCloud contract](#icloud-cont
 
 The Mac app is a native macOS build of the same target and source, so it reads the same library and saves designs the Apple TV picks up. `Bookworms/Support/AppKitBridge.swift` names AppKit's image, color, and font types after UIKit's and adds the UIKit members the shared drawing code uses. Its differences from the iPhone:
 
-- The sections (**Share**, **Library**, **Desk**, and **Spines**) are in a sidebar, which marks the selected section in your accent color, as other Mac apps do. **View > Show Sidebar** (Control-Command-S) shows and hides it. The window reopens on the section it last showed when macOS restores it, which it does when **Close windows when quitting an application** is off in System Settings; otherwise it opens on **Share**. **Share** in a book's window opens the main window on **Share** either way.
+- The sections (**Share**, **Library**, **Desk**, and **Spines**) are in a sidebar, which marks the selected section in your accent color, as other Mac apps do. **View > Show Sidebar** (Control-Command-S) shows and hides it. Each launch opens on the section you last chose, or on **Share** at first launch or when a book window asked for **Share**. **Share** in a book's window opens the main window on **Share** either way.
 - The menu bar holds every Library command (`LibraryCommands`), which act on the window in front:
   - **File > Open in New Window** (Option-Command-O) opens the centered book's details in a window of their own (see [Library](#library)).
   - **View** offers **as Stack** and **as Shelf** (Control-Command-1 and Control-Command-2), **3D Books**, and the **Time** and **Sort By** menus while Library shows its books.
