@@ -17,7 +17,9 @@
             let designed = model.library?.designs.count ?? 0
             let total = model.library?.books.count ?? 0
             Text("\(designed) of \(total) books designed")
-            Text(generation.status.currentBook?.title ?? generation.status.phase)
+            // The run's count and time left, as the Spines tab shows them.
+            Text(generation.status.headline)
+            if let left = generation.status.timeLeftText { Text(left) }
             Divider()
             GenerateButton()
             Button("Open Bookworms") {

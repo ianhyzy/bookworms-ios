@@ -129,24 +129,8 @@ struct GenerationView: View {
 
     private var progress: some View {
         let status = generation.status
-        let done = status.completed + status.failed
         return Section {
-            if status.isRunning {
-                ProgressView(value: Double(done), total: Double(max(done + status.queue, 1))) {
-                    Text(status.phase)
-                } currentValueLabel: {
-                    Group {
-                        if let book = status.currentBook {
-                            BookText(book.title, of: book)
-                        } else {
-                            Text("\(done) of \(done + status.queue)")
-                        }
-                    }
-                    .lineLimit(1)
-                }
-            } else {
-                LabeledContent("Status", value: status.phase)
-            }
+            runProgress(status)
             if let lastRun = status.lastRunAt {
                 LabeledContent(
                     "Last run", value: lastRun.formatted(.relative(presentation: .named)))
@@ -168,6 +152,61 @@ struct GenerationView: View {
         }
     }
 
+    /// The run's progress (`WorkerSnapshot.headline`): while it runs, a bar of its books, the
+    /// book being designed and the model designing it, and the time left; then its tally.
+    /// VoiceOver reads it as one element.
+    private func runProgress(_ status: WorkerSnapshot) -> some View {
+        let done = status.completed + status.failed
+        let left = status.timeLeftText
+        let tally = status.tally
+        let model = Self.modelName(status.model)
+        return VStack(alignment: .leading, spacing: 6) {
+            if status.isRunning {
+                ProgressView(value: Double(done), total: Double(max(done + status.queue, 1))) {
+                    Text(status.headline)
+                } currentValueLabel: {
+                    if let book = status.currentBook {
+                        // One line when the title and the model fit, as at most text sizes;
+                        // otherwise the model goes under the title.
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 4) {
+                                BookText(book.title, of: book)
+                                Text("· \(model)")
+                            }
+                            .lineLimit(1)
+                            VStack(alignment: .leading, spacing: 2) {
+                                BookText(book.title, of: book).lineLimit(2)
+                                Text(model)
+                            }
+                        }
+                    }
+                }
+                if let left { Text(left).font(.subheadline) }
+            } else {
+                Text(status.headline)
+            }
+            if !tally.isEmpty {
+                Text(tally.joined(separator: " · "))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(status.headline)
+        .accessibilityValue(
+            ([status.currentBook.map { "\($0.title), \(model)" }, left] + tally)
+                .compactMap { $0 }
+                .joined(separator: ", "))
+    }
+
+    /// The model's name as the **Model** row shows it. Until the first status arrives, the best
+    /// tier this build could use names the model.
+    private static func modelName(_ status: ModelStatus?) -> String {
+        let tier = status?.tier ?? expectedTier
+        let name = status?.designerName ?? expectedTier.name(backup: .current)
+        return tier == .privateCloudCompute ? "Apple \(name)" : name
+    }
+
     /// The run's model tier: Private Cloud Compute with its daily limit, or, when it isn't
     /// available, the reader's model with an API key, the on-device model, or local defaults.
     /// **Choose model** opens the model settings. A provider the reader chose but didn't set up,
@@ -179,11 +218,10 @@ struct GenerationView: View {
         let status = generation.status.model
         // Until the first status arrives, the best tier this build could use names the model.
         let tier = status?.tier ?? Self.expectedTier
-        let name = status?.designerName ?? Self.expectedTier.name(backup: .current)
         return Section {
             LabeledContent("Model") {
                 HStack(spacing: 6) {
-                    Text(tier == .privateCloudCompute ? "Apple \(name)" : name)
+                    Text(Self.modelName(status))
                     Button("About the model", systemImage: "info.circle") {
                         showsModelInfo = true
                     }
