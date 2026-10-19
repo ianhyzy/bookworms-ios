@@ -83,7 +83,7 @@ extension WorkerSnapshot {
 
     /// How many of the latest books' times the estimate averages: enough that a cluster of quick
     /// series copies or slow new designs doesn't swing it.
-    static let estimateWindow = 20
+    static let estimateWindow = 40
     /// How many books a run times, and how many seconds it runs, before it estimates the time
     /// left, so a few quick checks of saved designs at the start don't promise a short run.
     static let estimateMinimum = (books: 5, seconds: 30.0)
