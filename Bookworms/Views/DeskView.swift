@@ -153,7 +153,7 @@ struct DeskView: View {
 
     /// The books in the chosen order, and in `frame` when it is set.
     private func shownBooks(frame: TimeFrame?) -> [CloudBook] {
-        // The read books, as in Library, and current reads, which **All books** marks with
+        // The read books, as in Library, and current reads, which **All Time** marks with
         // ribbons. Want to Read and other unread shelves stay off.
         var books = model.books.filter { $0.hasBeenRead || $0.isReading == true }
         // A reread shows by its finish in the frame, which can change its place.
@@ -301,7 +301,7 @@ private struct DeskBar: ViewModifier {
 }
 
 /// The scenes' time frame and book count, such as "2025" and "39", in a button in the middle of
-/// the navigation bar. The button opens the time frame menu: **All books**, or a **Year** or
+/// the navigation bar. The button opens the time frame menu: **All Time**, or a **Year** or
 /// **Month** with finished books. Every 3D view shares the choice, and the app saves it.
 struct FrameChip: View {
     /// The time frame's name, such as "2025", or the years that every book spans.

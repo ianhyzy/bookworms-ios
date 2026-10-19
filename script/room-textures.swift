@@ -1,6 +1,7 @@
-// Bakes the paper ground's dither tile (`PaperDither`), which `PaperGround` draws. Run it from
-// the repository root with `xcrun swift script/paper-dither.swift` after changing a value
-// below; the output is deterministic.
+// Bakes the room's textures: the walnut wall's grain (`WallGrain`) from `TableWood`, which
+// `WalnutWall` draws, and the paper ground's dither tile (`PaperDither`), which `PaperGround`
+// draws. Run it from the repository root with `xcrun swift script/room-textures.swift` after
+// changing a value below; the output is deterministic.
 import CoreGraphics
 import Foundation
 import ImageIO

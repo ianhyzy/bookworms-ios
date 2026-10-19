@@ -296,7 +296,7 @@ private struct LibraryBar: ViewModifier {
     }
 }
 
-/// On the iPhone, the library's name and its status, such as "Last 12 Months · 39 books",
+/// On the iPhone, the library's name and its status, such as "Last 12 months · 39 books",
 /// centered under the caption, with **View options** as a round glass button at the trailing
 /// end, as Mail shows a mailbox's status beside its filter button.
 ///
@@ -371,7 +371,7 @@ private struct LibraryOptions: View {
 
     @ScaledMetric(relativeTo: .body) private var icon: CGFloat = 17
 
-    /// The time and the number of books shown, such as "Last 12 Months · 39 books".
+    /// The time and the number of books shown, such as "Last 12 months · 39 books".
     var status: String { "\(time.title) · \(books)" }
     /// The number of books shown, such as "39 books".
     var books: String { FrameChip.books(count, of: count) }
