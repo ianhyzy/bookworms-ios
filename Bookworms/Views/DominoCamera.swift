@@ -457,6 +457,9 @@ struct DominoCameraRig {
     /// Whether the establishing move has ended, with the camera on the first book.
     var isEstablished: Bool { established >= establishTime }
 
+    /// How long until the establishing move ends, in seconds, or 0 once it has.
+    var establishRemaining: Float { max(establishTime - established, 0) }
+
     /// Advances the camera by `deltaTime` seconds, following `input`, and returns its pose.
     @discardableResult
     mutating func step(_ input: Front, by deltaTime: Float) -> DominoCameraPose {

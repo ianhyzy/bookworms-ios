@@ -1777,6 +1777,13 @@ final class DominoScene {
         handoff.map { TimeInterval(max($0.duration - $0.time, 0)) } ?? 0
     }
 
+    /// How long until the camera comes to rest before the first push: the blend, and in Follow
+    /// the establishing move that ends on the first book. 0 once it rests.
+    var settleRemaining: TimeInterval {
+        let establishing = follows ? TimeInterval(rig?.establishRemaining ?? 0) : 0
+        return max(blendRemaining, establishing)
+    }
+
     /// Where the pointing hand shows, in points in a view of `size`, or `nil` while no hand
     /// shows: where the push tip points (`PushTip`).
     func handPoint(in size: CGSize) -> CGPoint? {

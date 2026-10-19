@@ -217,7 +217,7 @@ struct DominoesView: View {
                 PushTip.chainWaits = false
                 desk.pushTipPoint = nil
                 guard waitsForPush else { return }
-                try? await Task.sleep(for: .seconds(scene.blendRemaining + 0.2))
+                try? await Task.sleep(for: .seconds(scene.settleRemaining + 0.2))
                 guard !Task.isCancelled, let size = viewport?.size else { return }
                 desk.pushTipPoint = scene.handPoint(in: size)
                 PushTip.chainWaits = desk.pushTipPoint != nil
