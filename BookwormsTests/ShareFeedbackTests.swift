@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreTransferable
 import UIKit
 import XCTest
 
@@ -52,6 +53,36 @@ final class ShareFeedbackTests: XCTestCase {
         let changes = Self.changedRows(original, exported, in: (1920 - 48)..<1920)
         XCTAssertEqual(changes.outside, 0)
         XCTAssertGreaterThan(changes.inside, 1000)
+    }
+
+    /// A dragged, copied, or saved image is the same credited PNG that sharing writes, and the
+    /// Quick Look file in its own folder survives the next share, which replaces its own files.
+    @MainActor
+    func testTransferredImageCarriesTheCreditAndPreviewFilesStay() async throws {
+        let book = CloudBook(
+            id: 1, title: "Fictional Book", author: "An Author", coverURL: nil,
+            detailCoverURL: nil, finished: "2025-03-15", rating: 4)
+        let input = ShareInput(
+            template: .justFinished, aspect: .square, books: [book], frame: .year(2025))
+        let image = ShareImage(image: try XCTUnwrap(input.render()), name: "Fictional")
+        // Folders of this run's own, so other tests' shares don't replace these files.
+        let shareFolder = "ShareTest-\(UUID().uuidString)"
+        let previewFolder = "PreviewTest-\(UUID().uuidString)"
+        defer {
+            for folder in [shareFolder, previewFolder] {
+                try? FileManager.default.removeItem(
+                    at: URL.temporaryDirectory.appending(path: folder))
+            }
+        }
+        let transferred = try await image.exported(as: .png)
+        let shared = try await SharedFiles.images([image], in: shareFolder)
+        XCTAssertEqual(transferred, try Data(contentsOf: try XCTUnwrap(shared.urls.first)))
+        XCTAssertEqual(image, ShareImage(image: image.image, name: "Fictional"))
+
+        let preview = try await SharedFiles.images([image], in: previewFolder)
+        _ = try await SharedFiles.images([image], in: shareFolder)
+        let url = try XCTUnwrap(preview.urls.first)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path()))
     }
 
     /// A **My reading** image letters the profile link in its bottom margin and nowhere else: on

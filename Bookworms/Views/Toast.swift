@@ -19,11 +19,17 @@ struct Toast: Equatable, Identifiable {
     }
 }
 
-/// Shows one toast at a time, over every tab, sheet, and the share sheet.
+/// Shows one toast at a time: on an iPhone over every tab, sheet, and the share sheet, and on a
+/// Mac over the selected tab's content in the main window, just below the toolbar.
 ///
 /// A toast stays for `duration`, then leaves; a new toast replaces the one showing and starts
 /// the time again. Each toast's message is announced to VoiceOver as it appears. `RootView`
-/// hosts the toasts once (`ToastWindow`).
+/// hosts the toasts: once on an iPhone (`ToastWindow`), and on a Mac in each tab's content
+/// (`toastOverlay(_:)`). A Mac sheet is a window of its own over the main window's toasts, so
+/// a sheet reports its own failures, such as in an alert.
+///
+/// Debug builds launched with `-BookwormsToast <message>` show that message for 30 seconds, a
+/// few seconds after launch, for screenshots.
 @MainActor
 @Observable
 final class ToastCenter {
@@ -32,7 +38,21 @@ final class ToastCenter {
     private(set) var toast: Toast?
     @ObservationIgnored private var dismissal: Task<Void, Never>?
 
-    func show(_ toast: Toast) {
+    init() {
+        #if DEBUG
+            guard let message = UserDefaults.standard.string(forKey: "BookwormsToast") else {
+                return
+            }
+            Task {
+                try? await Task.sleep(for: .seconds(4))
+                show(
+                    Toast(message: message, systemImage: "checkmark.circle.fill"), for: .seconds(30)
+                )
+            }
+        #endif
+    }
+
+    func show(_ toast: Toast, for duration: Duration = ToastCenter.duration) {
         self.toast = toast
         // High priority, so the announcement survives the screen change of a closing sheet.
         var announcement = AttributedString(toast.message)
@@ -40,7 +60,7 @@ final class ToastCenter {
         AccessibilityNotification.Announcement(announcement).post()
         dismissal?.cancel()
         dismissal = Task { [weak self] in
-            guard (try? await Task.sleep(for: Self.duration)) != nil else { return }
+            guard (try? await Task.sleep(for: duration)) != nil else { return }
             self?.toast = nil
         }
     }
@@ -102,8 +122,21 @@ final class ToastCenter {
     }
 #endif
 
-/// The current toast, centered at the top of the toast window, or of the Mac's window. It slides
-/// down from the top, or fades with Reduce Motion.
+extension View {
+    /// On a Mac, shows `toasts` over this view, a tab's content in the main window, so they sit
+    /// centered over the content beside the sidebar, below the toolbar. An iPhone shows them in
+    /// a window of their own (`ToastWindow`), so there this changes nothing.
+    @ViewBuilder func toastOverlay(_ toasts: ToastCenter) -> some View {
+        #if os(macOS)
+            overlay { ToastOverlay(toasts: toasts).allowsHitTesting(false) }
+        #else
+            self
+        #endif
+    }
+}
+
+/// The current toast, centered at the top of the toast window, or on a Mac of the content's
+/// safe area, below the toolbar. It slides down from the top, or fades with Reduce Motion.
 struct ToastOverlay: View {
     let toasts: ToastCenter
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -131,9 +164,11 @@ struct ToastOverlay: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        // The window already starts below the status bar, but it still reports the screen's
-        // top inset, which would push the toast down by that much again.
-        .ignoresSafeArea()
+        #if os(iOS)
+            // The window already starts below the status bar, but it still reports the screen's
+            // top inset, which would push the toast down by that much again.
+            .ignoresSafeArea()
+        #endif
         .animation(
             reduceMotion ? .easeInOut(duration: 0.2) : .spring(duration: 0.4, bounce: 0.2),
             value: toasts.toast)

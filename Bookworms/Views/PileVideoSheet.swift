@@ -1,6 +1,7 @@
 import AVKit
 import Photos
 import SwiftUI
+import UniformTypeIdentifiers
 import os
 
 #if canImport(UIKit)
@@ -9,7 +10,11 @@ import os
     import AppKit
 #endif
 
-/// Films the pile as a six-second video, then shares the MP4 or saves the clip as a Live Photo.
+/// Films the pile as a six-second video, then shares the MP4, saves it to a file on a Mac, or
+/// saves the clip as a Live Photo.
+///
+/// **Share desk** pushes it in its own navigation stack, so only one sheet ever shows; the Share
+/// tab's Desk template presents it in a sheet of its own, with `showsClose` on.
 ///
 /// The video renders as soon as the sheet opens, with its progress and its latest frame in the
 /// preview (see `PileSnapshotRenderer.renderMovie`). Pile images and videos take turns in the
@@ -20,13 +25,21 @@ import os
 /// gone. The finished clip loops in the preview, except with Reduce Motion on, when it waits
 /// for **Play**; a tap pauses or plays it. The preview leaves out the credit at the clip's
 /// bottom edge, which the shared MP4 and the Live Photo carry. **Share** offers the MP4 in the
-/// share sheet, which reports the result in a toast (`shareSheet(_:onComplete:)`). **Save as Live Photo** asks to add to Photos, then saves the
-/// clip's last frame paired with the clip's QuickTime copy, and reports the result in a toast.
+/// share sheet, which reports the result in a toast (`shareSheet(_:fromButton:showsToast:onComplete:)`). **Save as
+/// Live Photo** asks to add to Photos, then saves the clip's last frame paired with the clip's
+/// QuickTime copy; once saved, the button says so. On an iPhone, a toast reports the result.
+///
+/// On a Mac, **Save Video…** saves the MP4 where the reader chooses, Space plays and pauses the
+/// clip, and failures show in an alert in the sheet, since the main window's toasts sit behind
+/// it.
 struct PileVideoSheet: View {
     let books: [CloudBook]
     let title: String
     let aspect: ShareAspect
     let seed: UInt64
+    /// Whether the view is a sheet's root, which closes with **Cancel** or the close button,
+    /// rather than pushed, which goes back with the back button.
+    var showsClose = false
 
     nonisolated private static let log = Logger(
         subsystem: "gay.ian.Bookworms.iOS", category: "video")
@@ -48,6 +61,13 @@ struct PileVideoSheet: View {
     @State private var looper: AVPlayerLooper?
     @State private var files: SharedFiles?
     @State private var isSaving = false
+    /// Whether **Save as Live Photo** has saved this clip.
+    @State private var savedLivePhoto = false
+    #if os(macOS)
+        @State private var savesVideo = false
+        /// A failure to show in the sheet's alert.
+        @State private var failure: String?
+    #endif
 
     /// Owns the video's files, and deletes them when the sheet's state goes away. The sheet's
     /// `onDisappear` cannot tell that from the share sheet covering it.
@@ -57,20 +77,15 @@ struct PileVideoSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 20) {
-                preview
-                if movie != nil {
-                    Button("Save as Live Photo", systemImage: "livephoto") {
-                        Task { await saveLivePhoto() }
-                    }
-                    .disabled(isSaving)
-                }
-            }
-            .padding()
-            .navigationTitle("Desk video")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
+        VStack(spacing: 20) {
+            preview
+            if let movie { actions(movie) }
+        }
+        .padding()
+        .navigationTitle("Desk video")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if showsClose {
                 ToolbarItem(placement: .cancellationAction) {
                     if movie == nil && !failed {
                         Button("Cancel", role: .cancel) { dismiss() }
@@ -78,6 +93,10 @@ struct PileVideoSheet: View {
                         Button(role: .close) { dismiss() }
                     }
                 }
+            }
+            // A Mac sheet shows a pushed view's toolbar items nowhere, so the Mac's **Share**
+            // sits in the row under the clip (`actions(_:)`).
+            #if os(iOS)
                 if let movie {
                     ToolbarItem(placement: .primaryAction) {
                         Button("Share", systemImage: "square.and.arrow.up") {
@@ -85,9 +104,30 @@ struct PileVideoSheet: View {
                         }
                     }
                 }
-            }
+            #endif
         }
-        .shareSheet($files)
+        #if os(iOS)
+            .shareSheet($files)
+        #endif
+        #if os(macOS)
+            .fileExporter(
+                isPresented: $savesVideo, item: movie.map { MovieFile(url: $0.movie) },
+                contentTypes: [.mpeg4Movie], defaultFilename: movie?.name
+            ) { result in
+                if case .failure(let error) = result {
+                    Self.log.error("The video could not be saved: \(error)")
+                    failure = "Couldn't save the video."
+                }
+            }
+            .alert(
+                failure ?? "",
+                isPresented: Binding {
+                    failure != nil
+                } set: { _ in
+                    failure = nil
+                }
+            ) {}
+        #endif
         // Stops the render when the app stops being active, and starts it again on return; a
         // finished clip stays.
         .task(id: scenePhase == .active) {
@@ -101,8 +141,8 @@ struct PileVideoSheet: View {
     /// credit, which the app leaves out: the preview is `ShareCredit.height` shorter than the
     /// clip at the bottom, and as much at the top, above the heading, and fills its width, so
     /// the credit falls outside it. The clip has no system controls, whose full-screen view
-    /// would show the whole frame: a tap pauses or plays it, and **Play** shows while it is
-    /// paused.
+    /// would show the whole frame: a tap pauses or plays it, and on an iPhone, **Play** shows
+    /// over it while it is paused.
     private var preview: some View {
         ZStack {
             // Fills the video's shape before there is one.
@@ -120,18 +160,24 @@ struct PileVideoSheet: View {
                     Image(decorative: frame, scale: 1).resizable().scaledToFill()
                 }
             }
-            if player != nil, !isPlaying {
-                Button("Play", systemImage: "play.fill") { play(true) }
-                    .labelStyle(.iconOnly)
-                    .font(.title)
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.circle)
-                    .controlSize(.large)
-            }
+            #if os(iOS)
+                // A Mac's row under the clip holds the one **Play** button.
+                if player != nil, !isPlaying {
+                    Button("Play", systemImage: "play.fill") { play(true) }
+                        .labelStyle(.iconOnly)
+                        .font(.title)
+                        .buttonStyle(.glass)
+                        .buttonBorderShape(.circle)
+                        .controlSize(.large)
+                }
+            #endif
             if failed {
                 ContentUnavailableView(
                     "Couldn't film the desk", systemImage: "exclamationmark.triangle",
-                    description: Text("Close this, then try Shuffle or another size."))
+                    description: Text(
+                        showsClose
+                            ? "Close this, then try Shuffle or another size."
+                            : "Go back, then try Shuffle or another size."))
             } else if player == nil {
                 Group {
                     if let progress {
@@ -199,6 +245,44 @@ struct PileVideoSheet: View {
         }
     }
 
+    /// What to do with the finished clip: on a Mac, play or pause it (Space), save it as a Live
+    /// Photo, share it, or save it as a file; on an iPhone, whose share sheet saves the video,
+    /// save it as a Live Photo.
+    @ViewBuilder
+    private func actions(_ movie: PileMovie) -> some View {
+        let livePhoto = Button(
+            savedLivePhoto ? "Saved to Photos" : "Save as Live Photo",
+            systemImage: savedLivePhoto ? "checkmark.circle" : "livephoto"
+        ) {
+            Task { await saveLivePhoto() }
+        }
+        .disabled(isSaving || savedLivePhoto)
+        #if os(macOS)
+            HStack(spacing: 12) {
+                Button(
+                    isPlaying ? "Pause" : "Play",
+                    systemImage: isPlaying ? "pause.fill" : "play.fill"
+                ) {
+                    play(!isPlaying)
+                }
+                .keyboardShortcut(.space, modifiers: [])
+                Spacer()
+                livePhoto
+                Button("Share", systemImage: "square.and.arrow.up") {
+                    files = SharedFiles(urls: [movie.movie])
+                }
+                .shareSheet($files, fromButton: true, showsToast: false) { outcome in
+                    if case .failed(let message) = outcome { failure = message + "." }
+                }
+                Button("Save Video…") { savesVideo = true }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
+        #else
+            livePhoto
+        #endif
+    }
+
     /// Plays or pauses the clip.
     private func play(_ plays: Bool) {
         isPlaying = plays
@@ -206,14 +290,19 @@ struct PileVideoSheet: View {
     }
 
     /// Saves the clip's QuickTime copy and its last frame to Photos as one Live Photo, with the
-    /// app's permission to add photos, and shows the result in a toast.
+    /// app's permission to add photos, and reports the result.
     private func saveLivePhoto() async {
         guard let movie, let livePhoto = movie.livePhoto else { return }
         isSaving = true
         defer { isSaving = false }
         let access = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
         guard access == .authorized || access == .limited else {
-            model.toasts.show(.failure("Allow Bookworms to add to Photos in Settings"))
+            #if os(macOS)
+                failure =
+                    "Allow Bookworms in System Settings > Privacy & Security > Photos."
+            #else
+                model.toasts.show(.failure("Allow Bookworms to add to Photos in Settings"))
+            #endif
             return
         }
         do {
@@ -223,14 +312,32 @@ struct PileVideoSheet: View {
                     request.addResource(with: .photo, fileURL: movie.still, options: nil)
                     request.addResource(with: .pairedVideo, fileURL: livePhoto, options: nil)
                 }
-            model.toasts.show(
-                Toast(message: "Saved to Photos", systemImage: "checkmark.circle.fill"))
+            savedLivePhoto = true
+            #if os(iOS)
+                model.toasts.show(
+                    Toast(message: "Saved to Photos", systemImage: "checkmark.circle.fill"))
+            #endif
         } catch {
             Self.log.error("The Live Photo could not be saved: \(error)")
-            model.toasts.show(.failure("Couldn't save to Photos"))
+            #if os(macOS)
+                failure = "Couldn't save to Photos."
+            #else
+                model.toasts.show(.failure("Couldn't save to Photos"))
+            #endif
         }
     }
 }
+
+#if os(macOS)
+    /// The clip's MP4, which **Save Video…** copies where the reader chooses.
+    private struct MovieFile: Transferable {
+        let url: URL
+
+        static var transferRepresentation: some TransferRepresentation {
+            FileRepresentation(exportedContentType: .mpeg4Movie) { SentTransferredFile($0.url) }
+        }
+    }
+#endif
 
 /// A player layer whose video fills its view, cropping the video's edges, which SwiftUI's
 /// `VideoPlayer` cannot do.

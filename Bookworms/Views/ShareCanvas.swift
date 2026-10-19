@@ -379,7 +379,13 @@ struct ShareCredit: View {
 /// On a story, the link sits above the bottom 150 pixels, which the platforms' reply bar may
 /// cover, in the `storyHeight` that cards reaching into the bottom strip leave it
 /// (`ShareInput.reach`). On Portrait and Square, it sits just above the credit's strip.
+///
+/// **Show profile link**, on by default, leaves it out, and the share text then leaves out the
+/// profile link too.
 struct ShareProfileLink: View {
+    /// The `UserDefaults` key of **Show profile link**, which the Share tab and **Share desk**
+    /// share.
+    static let settingKey = "BookwormsShareProfileLink"
     /// The room the link takes above a story's bottom 150 pixels, in pixels.
     nonisolated static let storyHeight: CGFloat = 80
     static let fontSize: CGFloat = 26

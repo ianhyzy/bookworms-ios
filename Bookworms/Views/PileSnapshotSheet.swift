@@ -13,13 +13,16 @@ import SwiftUI
 /// books, such as a library update, draws again once the image in progress, if any, is ready. The previous image stays in view
 /// under a progress indicator until the new one is ready, and sharing waits for it. The preview
 /// leaves out the credit, which the shared file carries. **Video** films the same books falling
-/// into the same spread (`PileVideoSheet`).
+/// into the same spread (`PileVideoSheet`), pushed in this sheet's navigation stack so only one
+/// sheet shows at a time. On a Mac, the sheet takes the page size, which leaves the preview room,
+/// and a failure shows in an alert in the sheet, since the main window's toasts sit behind it.
 struct PileSnapshotSheet: View {
     let books: [CloudBook]
     let title: String
 
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @AppStorage(ShareProfileLink.settingKey) private var showsProfileLink = true
     @State private var aspect = ShareAspect.story
     @State private var seed: UInt64 = 0
     /// `books` as last passed in, which the render loop reads between renders.
@@ -38,6 +41,9 @@ struct PileSnapshotSheet: View {
     @State private var files: SharedFiles?
     /// Whether **Share** is adding the credit and writing the file.
     @State private var isPreparing = false
+    #if os(macOS)
+        @State private var failure: String?
+    #endif
 
     private struct Options: Equatable {
         var aspect: ShareAspect
@@ -79,8 +85,7 @@ struct PileSnapshotSheet: View {
 
     var body: some View {
         let options = Options(
-            aspect: aspect, seed: seed, ids: books.map(\.id), title: title,
-            username: model.social.owner?.username)
+            aspect: aspect, seed: seed, ids: books.map(\.id), title: title, username: username)
         let isPending = rendered != options
         NavigationStack {
             VStack(spacing: 20) {
@@ -93,10 +98,21 @@ struct PileSnapshotSheet: View {
                     Button("Shuffle", systemImage: "shuffle") { seed = .random(in: 1 ... .max) }
                     Button("Video", systemImage: "video") { filmsPile = true }
                 }
+                // Shown once the app has read the username the link names.
+                if model.social.owner?.username != nil {
+                    Toggle("Show profile link", isOn: $showsProfileLink)
+                        .accessibilityHint("Letters your Hardcover profile link on the image.")
+                        .fixedSize()
+                        // The image being prepared already letters the link, or doesn't.
+                        .disabled(isPreparing)
+                }
             }
             .padding()
             .navigationTitle("Share desk")
             .navigationBarTitleDisplayMode(.inline)
+            .navigationDestination(isPresented: $filmsPile) {
+                PileVideoSheet(books: latest, title: title, aspect: aspect, seed: seed)
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(role: .close) { dismiss() }
@@ -107,18 +123,33 @@ struct PileSnapshotSheet: View {
                             Task { await share(image) }
                         }
                         .disabled(isPending || isPreparing)
+                        #if os(macOS)
+                            .shareSheet($files, fromButton: true, showsToast: false) { outcome in
+                                if case .failed(let message) = outcome { failure = message + "." }
+                            }
+                        #endif
                     }
                 }
             }
         }
-        .shareSheet($files)
+        #if os(iOS)
+            .shareSheet($files)
+        #endif
         .task(id: LoopKey(options: options.restartKey, redraws: redraws)) { await render() }
-        .sheet(isPresented: $filmsPile) {
-            PileVideoSheet(books: latest, title: title, aspect: aspect, seed: seed)
-        }
+        .presentationSizing(.page)
+        #if os(macOS)
+            .alert(
+                failure ?? "",
+                isPresented: Binding {
+                    failure != nil
+                } set: { _ in
+                    failure = nil
+                }
+            ) {}
+        #endif
         #if DEBUG
             .task {
-                // Lets this sheet finish presenting before it presents another.
+                // Lets this sheet finish presenting before it pushes the video.
                 guard PileVideoDebug.opensSheet else { return }
                 try? await Task.sleep(for: .seconds(1))
                 filmsPile = true
@@ -163,14 +194,23 @@ struct PileSnapshotSheet: View {
     private func share(_ image: ShareImage) async {
         isPreparing = true
         defer { isPreparing = false }
+        // The text names the same profile as the image, whatever the toggle says by the time
+        // the files are ready.
+        let username = username
         do {
             files = try await SharedFiles.images([image])
-            files?.text = HardcoverInvite.readingText(
-                books: image.books, username: model.social.owner?.username)
+            files?.text = HardcoverInvite.readingText(books: image.books, username: username)
         } catch {
-            model.toasts.show(.failure("Couldn't prepare the image"))
+            #if os(macOS)
+                failure = "Couldn't prepare the image."
+            #else
+                model.toasts.show(.failure("Couldn't prepare the image"))
+            #endif
         }
     }
+
+    /// The username the image and its text link, unless **Show profile link** is off.
+    private var username: String? { showsProfileLink ? model.social.owner?.username : nil }
 
     /// Renders until the image shows the latest books.
     private func render() async {
@@ -180,7 +220,7 @@ struct PileSnapshotSheet: View {
             let books = latest
             let options = Options(
                 aspect: aspect, seed: seed, ids: books.map(\.id), title: title,
-                username: model.social.owner?.username)
+                username: username)
             guard rendered != options else { return }
             await render(books, options)
         }

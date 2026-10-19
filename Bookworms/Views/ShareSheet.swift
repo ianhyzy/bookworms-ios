@@ -22,27 +22,30 @@ struct SharedFiles: Identifiable {
     var items: [Any] { urls + (text.map { [$0] } ?? []) }
 
     /// Writes `images`, each with the credit (`UIImage.withShareCredit()`), as PNG files named
-    /// after them, in order. Each call first deletes the files of the previous one, so at most
-    /// one share's files stay in the temporary folder.
+    /// after them, in order, in the temporary folder named `folder`. Each call first deletes the
+    /// files that the previous call wrote there, so at most one set of files stays in each
+    /// folder.
     ///
     /// - Throws: `CocoaError(.fileWriteUnknown)` when an image cannot be drawn or encoded, and
     ///   any error from writing the files.
     @MainActor
-    static func images(_ images: [ShareImage]) async throws -> SharedFiles {
+    static func images(_ images: [ShareImage], in folder: String = "Share") async throws
+        -> SharedFiles
+    {
         let credited = try images.map { image in
             guard let credited = image.image.withShareCredit() else {
                 throw CocoaError(.fileWriteUnknown)
             }
             return (image: credited, name: image.name)
         }
-        return SharedFiles(urls: try await write(credited))
+        return SharedFiles(urls: try await write(credited, in: folder))
     }
 
     @concurrent
-    nonisolated private static func write(_ images: [(image: UIImage, name: String)]) async throws
-        -> [URL]
-    {
-        let folder = URL.temporaryDirectory.appending(path: "Share")
+    nonisolated private static func write(
+        _ images: [(image: UIImage, name: String)], in folder: String
+    ) async throws -> [URL] {
+        let folder = URL.temporaryDirectory.appending(path: folder)
         try? FileManager.default.removeItem(at: folder)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         return try images.map { image, name in
@@ -86,12 +89,17 @@ enum ShareOutcome: Equatable {
         }
     #endif
 
-    /// The toast that reports the outcome, or `nil` for a cancel.
+    /// The toast that reports the outcome, or `nil` for a cancel, and on a Mac for a share,
+    /// since the sharing service shows its own progress and result.
     var toast: Toast? {
         switch self {
         case .savedToPhotos: Toast(message: "Saved to Photos", systemImage: "checkmark.circle.fill")
         case .copied: Toast(message: "Copied", systemImage: "checkmark.circle.fill")
-        case .shared: Toast(message: "Shared", systemImage: "checkmark.circle.fill")
+        #if os(macOS)
+            case .shared: nil
+        #else
+            case .shared: Toast(message: "Shared", systemImage: "checkmark.circle.fill")
+        #endif
         case .cancelled: nil
         case .failed(let message): .failure(message)
         }
@@ -102,26 +110,39 @@ extension View {
     /// Presents the system share sheet for `files` whenever it is set, and sets it back to `nil`
     /// once the sheet closes.
     ///
-    /// The outcome shows as a toast (`ShareOutcome.toast`), then goes to `onComplete`. SwiftUI's
-    /// `ShareLink` cannot report either, so this presents `UIActivityViewController` from a view
-    /// controller behind this view, over any sheet this view is in.
+    /// The outcome shows as a toast (`ShareOutcome.toast`) unless `showsToast` is off, then goes
+    /// to `onComplete`. SwiftUI's `ShareLink` cannot report either, so this presents
+    /// `UIActivityViewController` from a view controller behind this view, over any sheet this
+    /// view is in. A Mac sheet is a window over the main window's toasts, so it turns
+    /// `showsToast` off and reports a failure itself, such as in an alert.
+    ///
+    /// On a Mac, the sharing picker drops down from the view this modifies when `fromButton` is
+    /// on: attach it to the share button itself. Otherwise it drops from near this view's top
+    /// trailing corner, where a toolbar's last button sits. An iPhone's share sheet rises from
+    /// the bottom wherever it is attached, so attach it to the content there, outside the
+    /// toolbar.
     func shareSheet(
-        _ files: Binding<SharedFiles?>,
+        _ files: Binding<SharedFiles?>, fromButton: Bool = false, showsToast: Bool = true,
         onComplete: @escaping @MainActor (ShareOutcome) -> Void = { _ in }
     ) -> some View {
-        background(ShareSheetPresenter(files: files, onComplete: onComplete))
+        background(
+            ShareSheetPresenter(
+                files: files, fromButton: fromButton, showsToast: showsToast,
+                onComplete: onComplete))
     }
 }
 
 #if os(macOS)
-    /// Shows the sharing service picker below the toolbar's share button whenever `files` is
-    /// set.
+    /// Shows the sharing service picker below the share button whenever `files` is set: below
+    /// this view when `fromButton` is on, and else below where a toolbar's last button sits.
     ///
     /// The picker lists only the services that can take every item it holds, and services such
     /// as **Add to Photos** cannot take text. So it holds the files alone, and each service that
     /// can also take `SharedFiles.text` sends the text with them.
     private struct ShareSheetPresenter: NSViewRepresentable {
         @Binding var files: SharedFiles?
+        let fromButton: Bool
+        let showsToast: Bool
         let onComplete: @MainActor (ShareOutcome) -> Void
         @Environment(AppModel.self) private var model
 
@@ -199,26 +220,30 @@ extension View {
             guard let files, context.coordinator.presented != files.id else { return }
             context.coordinator.presented = files.id
             let binding = $files
-            let toasts = model.toasts
+            let toasts = showsToast ? model.toasts : nil
             let onComplete = onComplete
             context.coordinator.finish = { outcome in
-                if let toast = outcome.toast { toasts.show(toast) }
+                if let toast = outcome.toast { toasts?.show(toast) }
                 binding.wrappedValue = nil
                 onComplete(outcome)
             }
             context.coordinator.text = files.text
             let picker = NSSharingServicePicker(items: files.urls)
             picker.delegate = context.coordinator
-            // The share buttons sit at the toolbar's trailing end, above this view's top
-            // trailing corner, so the picker drops down from there.
-            let anchor = CGRect(
-                x: host.bounds.maxX - 44, y: host.bounds.maxY - 2, width: 28, height: 2)
+            // Without the button's own frame, the share button sits at the toolbar's trailing
+            // end, above this view's top trailing corner, so the picker drops down from there.
+            let anchor =
+                fromButton
+                ? host.bounds
+                : CGRect(x: host.bounds.maxX - 44, y: host.bounds.maxY - 2, width: 28, height: 2)
             picker.show(relativeTo: anchor, of: host, preferredEdge: .minY)
         }
     }
 #else
     private struct ShareSheetPresenter: UIViewControllerRepresentable {
         @Binding var files: SharedFiles?
+        let fromButton: Bool
+        let showsToast: Bool
         let onComplete: @MainActor (ShareOutcome) -> Void
         @Environment(AppModel.self) private var model
 
@@ -240,13 +265,13 @@ extension View {
                 activityItems: files.items, applicationActivities: nil)
             sheet.popoverPresentationController?.sourceView = host.view
             let binding = $files
-            let toasts = model.toasts
+            let toasts = showsToast ? model.toasts : nil
             let onComplete = onComplete
             sheet.completionWithItemsHandler = { activity, completed, _, error in
                 if let error { Self.log.error("Sharing failed: \(error)") }
                 let outcome = ShareOutcome(activity: activity, completed: completed, error: error)
                 MainActor.assumeIsolated {
-                    if let toast = outcome.toast { toasts.show(toast) }
+                    if let toast = outcome.toast { toasts?.show(toast) }
                     binding.wrappedValue = nil
                     onComplete(outcome)
                 }

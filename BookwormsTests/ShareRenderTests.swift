@@ -162,38 +162,30 @@ final class ShareRenderTests: XCTestCase {
         }
     }
 
-    /// Top Five's fan reaches as far above its middle as below it, so the space over the books
-    /// matches the space under them, stays inside its height, and its turned books reach no
-    /// further than `TopFiveCard.overhang` past its width.
+    /// Top Five's books stand upright on the ledge: every base rests on its top surface,
+    /// the first-ranked book at its front edge and the others behind it, the books and the lip
+    /// span as much height above the space's middle as below it and stay inside it, and the
+    /// outermost books reach no further than `TopFiveCard.overhang` past its width.
     @MainActor
-    func testTopFiveFanIsCenteredInItsSpace() {
+    func testTopFiveBooksStandOnTheLedge() {
         let size = CGSize(width: 920, height: 560)
-        for style in [ShareCoverStyle.threeD, .flat] {
-            for count in [1, 3, 5] {
-                let aspects = (0..<count).map { 0.6 + CGFloat($0) * 0.04 }
-                let jitters = (0..<count).map { Double($0) / 5 - 0.4 }
-                let cards = TopFiveCard.fan(
-                    aspects: aspects, jitters: jitters, style: style, in: size)
-                let extents = zip(cards, aspects)
-                    .map { card, aspect in
-                        let angle = abs(card.turn) * .pi / 180
-                        let width = card.height * aspect
-                        let half = CGSize(
-                            width: (width * cos(angle) + card.height * sin(angle)) / 2,
-                            height: (width * sin(angle) + card.height * cos(angle)) / 2)
-                        return CGRect(
-                            x: card.offset.x - half.width, y: card.offset.y - half.height,
-                            width: half.width * 2, height: half.height * 2)
-                    }
-                let top = extents.map(\.minY).min() ?? 0
-                let bottom = extents.map(\.maxY).max() ?? 0
-                XCTAssertEqual(-top, bottom, accuracy: 0.01, "\(count) \(style) books")
-                XCTAssertLessThanOrEqual(bottom, size.height / 2, "\(count) \(style) books")
-                let reach = size.width / 2 + TopFiveCard.overhang
-                XCTAssertGreaterThanOrEqual(
-                    extents.map(\.minX).min() ?? 0, -reach, "\(count) \(style) books")
+        for count in [1, 2, 3, 5] {
+            let aspects = (0..<count).map { 0.6 + CGFloat($0) * 0.06 }
+            let ledge = TopFiveCard.ledge(aspects: aspects, in: size)
+            XCTAssertEqual(ledge.books.first?.base, ledge.front, "\(count) books")
+            for book in ledge.books {
+                XCTAssertLessThanOrEqual(book.base, ledge.front, "\(count) books")
+                XCTAssertGreaterThanOrEqual(book.base, ledge.front - ledge.depth, "\(count) books")
+            }
+            let top = ledge.books.map { $0.base - $0.height }.min() ?? 0
+            let bottom = ledge.front + ledge.lip
+            XCTAssertEqual(top + bottom, size.height, accuracy: 0.01, "\(count) books")
+            XCTAssertGreaterThanOrEqual(top, 0, "\(count) books")
+            let reach = size.width / 2 + TopFiveCard.overhang
+            for (book, aspect) in zip(ledge.books, aspects) {
                 XCTAssertLessThanOrEqual(
-                    extents.map(\.maxX).max() ?? 0, reach, "\(count) \(style) books")
+                    abs(book.x) + book.height * aspect * 1.12 / 2, reach + 0.01,
+                    "\(count) books")
             }
         }
     }
