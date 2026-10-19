@@ -58,6 +58,8 @@ final class ShelfPullOut {
     private(set) var showsText = false
     /// Set by **Back**, until the book is back in its place.
     private(set) var isReturning = false
+    /// Counts the returns that slid their book back into its place, for the haptic as it seats.
+    private(set) var seats = 0
     /// Set by the book's **Share**, so the details stay while the Share tab shows.
     @ObservationIgnored var keepsForShare = false
     /// Counts pulls and returns, so a completion from an earlier one changes nothing.
@@ -136,6 +138,7 @@ final class ShelfPullOut {
         } completion: { [self] in
             guard self.revision == revision else { return }
             close(keepingRoom: true)
+            seats &+= 1
             // The neighbors snap back into place now that the book is back between them.
             withAnimation(.linear(duration: StackRoom.closingDuration)) { closing = 1 }
             AccessibilityNotification.ScreenChanged(nil).post()
@@ -396,6 +399,16 @@ struct ShelfPullOutStage: ViewModifier {
             // Another tab closes the details at once, except for the book's Share, which
             // keeps them for the reader's return, as pushed details stay.
             .onDisappear { if !pullOut.keepsForShare { pullOut.close() } }
+            // A light tap as the book leaves its place, and another as it seats again, as the
+            // Desk's books knock. The Mac's trackpad has no impact, so it only marks the seat.
+            #if os(iOS)
+                .sensoryFeedback(trigger: pullOut.isOut) { _, isOut in
+                    isOut ? .impact(weight: .light, intensity: 0.5) : nil
+                }
+                .sensoryFeedback(.impact(weight: .light, intensity: 0.5), trigger: pullOut.seats)
+            #else
+                .sensoryFeedback(.alignment, trigger: pullOut.seats)
+            #endif
     }
 }
 

@@ -279,12 +279,17 @@ private struct LibraryBar: ViewModifier {
     @Environment(AppModel.self) private var model
 
     func body(content: Content) -> some View {
+        let details = pullOut.showsDetails ? pullOut.book : nil
         content
-            // Details over the shelf show no title, as pushed details do. Hidden, the title
-            // still names Library for the back button of details that push.
-            .navigationTitle(pullOut.showsDetails ? "" : "Library")
             #if os(macOS)
-                .navigationSubtitle(pullOut.showsDetails ? "" : options?.status ?? "")
+                // The window takes the name of the book whose details show, for the Window menu
+                // and Mission Control.
+                .navigationTitle(details?.title ?? "Library")
+                .navigationSubtitle(details?.author ?? options?.status ?? "")
+            #else
+                // Details over the shelf show no title, as pushed details do. Hidden, the title
+                // still names Library for the back button of details that push.
+                .navigationTitle(details == nil ? "Library" : "")
             #endif
             .navigationBarTitleDisplayMode(.inline)
             #if os(iOS)
@@ -297,9 +302,12 @@ private struct LibraryBar: ViewModifier {
                 in: .library
             )
             .toolbar {
-                if let book = pullOut.book, pullOut.showsDetails {
+                if let book = details {
                     ToolbarItem(placement: .topBarLeading) {
+                        // Escape goes back too, without the keyboard focus that an exit command
+                        // needs; Command-[ is **Go > Back**.
                         Button("Back", systemImage: "chevron.backward") { pullOut.putBack() }
+                            .keyboardShortcut(.cancelAction)
                     }
                     ToolbarItem(placement: .primaryAction) {
                         Button("Share", systemImage: "square.and.arrow.up") {
@@ -471,8 +479,9 @@ struct PushedBookDetail: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
+        let book = model.books.first { $0.id == id }
         Group {
-            if let book = model.books.first(where: { $0.id == id }) {
+            if let book {
                 BookDetailView(book: book)
             } else {
                 ContentUnavailableView(
@@ -480,6 +489,11 @@ struct PushedBookDetail: View {
                     description: Text("The latest library no longer includes this book."))
             }
         }
+        #if os(macOS)
+            // The window takes the book's name, as details over the shelf give it.
+            .navigationTitle(book?.title ?? "Book unavailable")
+            .navigationSubtitle(book?.author ?? "")
+        #endif
         // Dismissing pops the details off their navigation stack.
         .focusedSceneValue(\.goBack, SceneAction { dismiss() }, in: tab)
     }

@@ -172,7 +172,10 @@ struct LiftedDetailsOverlay: ViewModifier {
             .toolbar {
                 if let lift = details.lift {
                     ToolbarItem(placement: .topBarLeading) {
+                        // Escape goes back too, without the keyboard focus that an exit command
+                        // needs; Command-[ is **Go > Back**.
                         Button("Back", systemImage: "chevron.backward") { details.close(scene) }
+                            .keyboardShortcut(.cancelAction)
                     }
                     ToolbarItem(placement: .primaryAction) {
                         Button("Share", systemImage: "square.and.arrow.up") {
