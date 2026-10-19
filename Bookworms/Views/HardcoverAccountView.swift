@@ -207,8 +207,10 @@ struct HardcoverAccountForm: View {
             Section {
                 LibraryCard(code: code)
                     .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 12, trailing: 0))
-                HStack(spacing: 12) {
+                    .listRowSeparator(.hidden)
+                    // Room for the card's shadow, which the row would clip.
+                    .listRowInsets(EdgeInsets(top: 20, leading: 0, bottom: 24, trailing: 0))
+                VStack(spacing: 12) {
                     Button {
                         UIPasteboard.general.string = code
                         copiedCode = true
@@ -259,7 +261,8 @@ struct HardcoverAccountForm: View {
                 progress: account.downloadProgress
             )
             .listRowBackground(Color.clear)
-            .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 12, trailing: 0))
+            // Room for the bookplate's shadow, which the row would clip.
+            .listRowInsets(EdgeInsets(top: 20, leading: 0, bottom: 24, trailing: 0))
         }
         Section {
             // A download from Hardcover and a design load from iCloud fail independently, so each
@@ -331,7 +334,7 @@ private struct LibraryCard: View {
             }
             .padding(16)
         }
-        .padding(.horizontal, 4)
+        .padding(.horizontal, 16)
     }
 }
 
