@@ -1165,7 +1165,7 @@ struct ShareStudioView: View {
         failed = !request.isEmpty && rendered == nil
         renderedRequest = request
         #if os(iOS)
-            if rendered != nil { HoldPreviewTip.imageShown() }
+            if rendered != nil { HoldPreviewTip.imageShown(for: choices) }
         #endif
         #if DEBUG
             ShareDebug.write(image)
@@ -1176,6 +1176,17 @@ struct ShareStudioView: View {
             }
         #endif
     }
+
+    #if os(iOS)
+        /// The options the reader chooses, without what syncs, downloads, and new designs
+        /// change, so `HoldPreviewTip` can tell an image the reader asked for.
+        private var choices: [AnyHashable] {
+            [
+                mode, template, aspect, frameSetting, bookID, coverStyle, direction, showsRatings,
+                seed, pins.ids, readerID, showsProfileLink,
+            ]
+        }
+    #endif
 
     /// Loads the readers' profile photos for a social card. A reader without one, or whose
     /// photo fails to load, is left out and shows initials.
@@ -1205,24 +1216,30 @@ struct ShareStudioView: View {
 
 #if os(iOS)
     /// Teaches the preview's touch and hold, which nothing on screen shows, once the studio has
-    /// drawn its second image in a launch, so the tip never covers the first image. Holding the
-    /// preview, or VoiceOver's **Show full size**, retires it.
+    /// drawn an image for options the reader changed in a launch. A launch's first image, and
+    /// the images that a sync, a download, or a new design redraws without the reader, never
+    /// show it. Holding the preview, or VoiceOver's **Show full size**, retires it.
     ///
-    /// The count lives in memory and the rule's parameter is transient, so drawing an image never
-    /// writes to TipKit's store; only showing and retiring the tip do.
+    /// The first image's options live in memory and the rule's parameter is transient, so
+    /// drawing an image never writes to TipKit's store; only showing and retiring the tip do.
     struct HoldPreviewTip: Tip {
         @Parameter(.transient) static var isReady: Bool = false
-        @MainActor private static var shownImages = 0
+        /// The options of the launch's first image.
+        @MainActor private static var firstChoices: [AnyHashable]?
 
         var title: Text { Text("See it full size") }
         var message: Text? { Text("Touch and hold the preview to see the image as it will look.") }
         var image: Image? { Image(systemName: "hand.tap") }
         var rules: [Rule] { #Rule(Self.$isReady) { $0 } }
 
-        /// Counts an image the preview shows, and makes the tip ready at the second.
-        @MainActor static func imageShown() {
-            shownImages += 1
-            if shownImages == 2 { isReady = true }
+        /// Notes an image the preview shows, drawn for the reader's `choices`, and makes the tip
+        /// ready once they differ from the first image's.
+        @MainActor static func imageShown(for choices: [AnyHashable]) {
+            guard let first = firstChoices else {
+                firstChoices = choices
+                return
+            }
+            if choices != first && !isReady { isReady = true }
         }
     }
 #endif
