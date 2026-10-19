@@ -137,17 +137,19 @@ struct SpineView: View {
     }
 
     /// Words that belong to the surname that follows them, such as "Le" in "Ursula K. Le Guin".
-    private static let surnameParticles: Set<String> = [
+    private nonisolated static let surnameParticles: Set<String> = [
         "al", "bin", "da", "de", "del", "della", "der", "di", "du", "el", "la", "le", "st.",
         "ten", "ter", "van", "von",
     ]
     /// Words that follow a surname, such as "Jr." in "Walter M. Miller Jr.".
-    private static let nameSuffixes: Set<String> = ["jr.", "jr", "sr.", "sr", "ii", "iii", "iv"]
+    private nonisolated static let nameSuffixes: Set<String> = [
+        "jr.", "jr", "sr.", "sr", "ii", "iii", "iv",
+    ]
 
     /// `author` with each name shortened to its surname, such as "Le Guin" for "Ursula K. Le
     /// Guin" or "Gaiman, Pratchett" for "Neil Gaiman, Terry Pratchett", keeping the "et al."
     /// that `shortAuthor(_:)` adds. Returns `nil` when no name has a shorter form.
-    static func surname(_ author: String) -> String? {
+    nonisolated static func surname(_ author: String) -> String? {
         let (names, others) = names(of: author)
         let surnames = names.map(lastName)
         guard surnames != names else { return nil }
@@ -156,7 +158,7 @@ struct SpineView: View {
 
     /// `author` on two lines: a pair of names one over the other, or one name broken before
     /// its surname, such as "David Foster" over "Wallace". Returns `nil` for anything else.
-    static func twoLines(_ author: String) -> String? {
+    nonisolated static func twoLines(_ author: String) -> String? {
         let (names, others) = names(of: author)
         if names.count == 2 { return names[0] + ",\n" + names[1] + others }
         guard let name = names.first, names.count == 1 else { return nil }
@@ -167,7 +169,7 @@ struct SpineView: View {
     }
 
     /// The names in `author`, and " et al." when `shortAuthor(_:)` ended it with that.
-    private static func names(of author: String) -> (names: [String], others: String) {
+    private nonisolated static func names(of author: String) -> (names: [String], others: String) {
         let others = " et al."
         let hasOthers = author.hasSuffix(others)
         let names = author.dropLast(hasOthers ? others.count : 0).split(separator: ",")
@@ -177,7 +179,7 @@ struct SpineView: View {
 
     /// One name's surname, with the particles before it and any suffix after it, or the whole
     /// name when it is a single word.
-    private static func lastName(_ name: String) -> String {
+    private nonisolated static func lastName(_ name: String) -> String {
         var words = name.split(separator: " ").map(String.init)
         guard words.count > 1 else { return name }
         var surname = [words.removeLast()]
