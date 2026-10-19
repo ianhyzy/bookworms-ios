@@ -820,6 +820,9 @@ final class DominoScene {
         /// (`DominoFinale.area(in:)`), and the view's size, in points.
         let area: CGRect
         let view: CGSize
+        /// Where a recording's frame centered as the last book fell, as a share of the view's
+        /// width, which it moves on from (`recordingSubject`).
+        let subject: CGFloat?
         /// The books' flights into the spread, in its order, once they start to gather, and how
         /// many have landed.
         var flights: [Flight] = []
@@ -2009,23 +2012,26 @@ final class DominoScene {
     /// where the hand pushes it. A blend between the cameras moves from one to the other.
     /// Once the last book falls, it is where that book lands (`landing`).
     ///
-    /// In the finale, it moves from there to the middle of the spread's area
-    /// (`DominoFinale.area(in:)`), which the frame then shows exactly, with every gathered book
-    /// and the last book as it springs up. It sets off at once and slows to arrive as the books
-    /// lift, so the frame leaves the chain's end, where it can show bare table beyond the last
-    /// book, as soon as the last book falls, and then holds still while the camera's move
-    /// carries the books; the frame's own easing smooths the start. With Reduce Motion on, it
-    /// moves on the rest of the way as the books appear in their places.
+    /// In the finale, it moves from where it was as the last book fell (`Ending.subject`) to the
+    /// middle of the spread's area (`DominoFinale.area(in:)`), which the frame then shows
+    /// exactly, with every gathered book and the last book as it springs up. It moves across
+    /// the view, not with the camera, so a frame that already shows the area holds still. It
+    /// sets off at once and slows to arrive as the books lift, so the frame leaves the chain's
+    /// end, where it can show bare table beyond the last book, as soon as the last book falls,
+    /// and then holds still while the camera's move carries the books; the frame's own easing
+    /// smooths the start. With Reduce Motion on, it moves on the rest of the way as the books
+    /// appear in their places.
     private var recordingSubject: CGFloat? {
         func across(_ point: SIMD3<Float>) -> CGFloat? {
             screenPoint(of: point, in: CGSize(width: 1, height: 1))?.x
         }
-        if let ending, let landing {
+        if let ending {
             let clock =
                 reducesMotion && status.phase == .finished ? DominoFinale.gatherDelay : ending.clock
             let rest = CGFloat(1 - min(clock / DominoFinale.gatherDelay, 1))
             let middle = ending.area.midX / max(ending.view.width, 1)
-            return across(landing).map { $0 + (middle - $0) * (1 - rest * rest * rest) }
+            guard let start = ending.subject else { return middle }
+            return start + (middle - start) * (1 - rest * rest * rest)
         }
         // Until the Follow camera has made its establishing move, the front is the subject, so
         // a push during that move still opens the video on the first book and the hand.
@@ -2399,6 +2405,7 @@ final class DominoScene {
         let yaw = PileCamera(matching: camera.transform, fallback: view.target).yaw
         let placed = DominoFinale.turned(spread.slots, camera: spread.camera, by: yaw)
         let moves = follows && cameraMove == nil
+        let subject = recordingSubject
         handoff = nil
         cameraMove = nil
         // The overview shows the last book with the rest of the chain, so the move does not
@@ -2406,7 +2413,8 @@ final class DominoScene {
         ending = Ending(
             start: camera.transform, motion: moves ? motion : Motion(),
             focus: moves && mode == .follow ? landing : nil, slots: placed.slots,
-            camera: placed.camera, area: DominoFinale.area(in: viewport), view: viewport.size)
+            camera: placed.camera, area: DominoFinale.area(in: viewport), view: viewport.size,
+            subject: subject)
         if !reducesMotion, let book = placed.slots.last?.book { sharpenCover(of: book) }
     }
 
