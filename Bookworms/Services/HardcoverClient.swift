@@ -157,8 +157,7 @@ actor HardcoverClient {
 
     func requestDeviceAuthorization() async throws -> DeviceAuthorization {
         let (data, status) = try await postForm(
-            "https://hardcover.app/oauth2/device",
-            [("client_id", Self.clientID), ("scope", Self.scopes)])
+            Self.deviceEndpoint, [("client_id", Self.clientID), ("scope", Self.scopes)])
         guard status == 200 else { throw HardcoverError.http(status) }
         guard let authorization = try? JSONDecoder().decode(DeviceAuthorization.self, from: data)
         else { throw HardcoverError.rejected }
@@ -233,10 +232,14 @@ actor HardcoverClient {
     ///
     /// The request is never retried, because Hardcover revokes the whole login when a refresh
     /// token it already spent comes back, as a retry of a request that reached it would. The
-    /// new login keeps `refreshToken` only if Hardcover sends no new one. Throws
-    /// `HardcoverError.invalidToken` for any HTTP 4xx reply other than 408 or 429: Hardcover
-    /// answers 400 or 401 once the token expired, was revoked, or was spent, and a token
-    /// endpoint that refuses the request in another way can't renew the login either.
+    /// new login keeps `refreshToken` only if Hardcover sends no new one.
+    ///
+    /// Throws `HardcoverError.invalidToken` only for an HTTP 400 or 401 reply with the OAuth
+    /// error `invalid_grant`, which RFC 6749 sends once the token expired, was revoked, or was
+    /// spent; the Apple TV and Android apps apply the same rule. Any other reply, such as a rate
+    /// limit, a server error, another 4xx status, another OAuth error such as `invalid_client`, or
+    /// a body that isn't an OAuth error, throws `HardcoverError.http(_:)`, so the caller keeps the
+    /// login.
     func renew(refreshToken: String) async throws -> HardcoverCredential {
         let (data, status) = try await postForm(
             Self.tokenEndpoint,
@@ -244,18 +247,18 @@ actor HardcoverClient {
                 ("grant_type", "refresh_token"), ("refresh_token", refreshToken),
                 ("client_id", Self.clientID),
             ])
-        switch status {
-        case 200:
-            guard
-                var credential = (try? JSONDecoder().decode(TokenReply.self, from: data))?
-                    .credential(receivedAt: .now)
-            else { throw HardcoverError.rejected }
+        let reply = try? JSONDecoder().decode(TokenReply.self, from: data)
+        if status == 200 {
+            guard var credential = reply?.credential(receivedAt: .now) else {
+                throw HardcoverError.rejected
+            }
             if credential.refreshToken == nil { credential.refreshToken = refreshToken }
             return credential
-        case 408, 429: throw HardcoverError.http(status)
-        case 400..<500: throw HardcoverError.invalidToken
-        default: throw HardcoverError.http(status)
         }
+        if [400, 401].contains(status), reply?.error == "invalid_grant" {
+            throw HardcoverError.invalidToken
+        }
+        throw HardcoverError.http(status)
     }
 
     /// Returns the token's account. Signing in checks it before saving the token.
@@ -469,6 +472,7 @@ actor HardcoverClient {
 
     /// Downloads a reader's rated books and the books on their Currently Reading, Read, Paused,
     /// and Did Not Finish shelves, highest rated first, 100 per request about a second apart.
+    /// Rated books the reader marked **Ignored** are left out, as in the owner's library.
     ///
     /// Each book carries the reader's own rating and finish date, but no review. A library
     /// larger than `readerLibraryLimit` keeps its highest-rated books. Hardcover leaves out what
@@ -528,7 +532,10 @@ actor HardcoverClient {
 
     // MARK: - Requests
 
-    private static let tokenEndpoint = "https://hardcover.app/oauth2/token"
+    // Hardcover's documented OAuth endpoints, which the Apple TV and Android apps use too. The
+    // token endpoint serves device-code polling and renewal.
+    private static let deviceEndpoint = "https://api.hardcover.app/oauth2/device"
+    private static let tokenEndpoint = "https://api.hardcover.app/oauth2/token"
 
     /// A reply from the token endpoint (RFC 6749, section 5): a login, or an error code.
     private struct TokenReply: Decodable {
@@ -756,7 +763,7 @@ actor HardcoverClient {
     // catalog details that only the owner's books show.
     private static let readerLibraryQuery = """
         query ReaderLibrary($user: Int!, $offset: Int!, $language: String!) {
-          user_books(where: {user_id: {_eq: $user},
+          user_books(where: {user_id: {_eq: $user}, status_id: {_neq: 6},
               _or: [{rating: {_is_null: false}}, {status_id: {_in: [2, 3, 4, 5]}}]},
             order_by: [{rating: desc_nulls_last}, {id: asc}], limit: 100, offset: $offset) {
             last_read_date rating status_id
@@ -789,10 +796,14 @@ actor HardcoverClient {
         }
         """
 
+    /// Hardcover's `status_id` for **Want to Read**.
+    static let wantToReadStatus = 1
     /// Hardcover's `status_id` for **Currently Reading**.
     private static let currentlyReadingStatus = 2
     /// Hardcover's `status_id` for **Read**.
     private static let readStatus = 3
+    /// Hardcover's `status_id` for **Ignored**, books the reader chose not to see.
+    private static let ignoredStatus = 6
 
     /// The two-letter code of this iPhone's preferred language. Cover choice considers other
     /// editions only in this language or with no recorded language.
@@ -802,15 +813,17 @@ actor HardcoverClient {
     }
 
     /// Converts rows to books the way the Apple TV app does, keeping one row per book: the most
-    /// recently finished. A book keeps every finished read's date in `finishedDates`, and its
-    /// newest read's edition. `previous` holds the account's books from its last sync, by ID, whose
+    /// recently finished. Books the reader marked **Ignored** are left out, as on the Apple TV,
+    /// so a snapshot this app saves to the archive never brings them back there. A book keeps
+    /// its shelf in `statusID`, every finished read's date in `finishedDates`, and its newest
+    /// read's edition. `previous` holds the account's books from its last sync, by ID, whose
     /// covers stay fixed unless an upgrade applies
     /// (`coverURLs(edition:book:otherEditions:editionIsInLanguage:previous:)`).
     private static func normalize(_ rows: [LibraryPage.Row], previous: [Int: CloudBook] = [:])
         -> [CloudBook]
     {
         var unique: [Int: CloudBook] = [:]
-        for row in rows {
+        for row in rows where row.statusID != ignoredStatus {
             let source = row.book
             let read = row.finishedReads?.first
             let finishes = (row.finishedReads ?? []).compactMap(\.finishedAt)
@@ -863,6 +876,7 @@ actor HardcoverClient {
                 // As the Apple TV marks read books: on the Read shelf, or finished at some point.
                 isRead: (row.statusID == readStatus || !finishes.isEmpty
                     || row.lastReadDate != nil) ? true : nil,
+                statusID: row.statusID,
                 progress: isReading
                     ? progress(
                         of: current, pages: row.edition?.pages ?? source.pages,

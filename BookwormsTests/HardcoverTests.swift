@@ -55,14 +55,14 @@ final class HardcoverTests: XCTestCase {
             XCTAssertEqual(request.httpMethod, "POST")
             let body = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
             XCTAssertTrue(body.contains("client_id=ca996be3-0df1-4cbf-819a-e17644fbcf38"))
-            if request.url?.absoluteString == "https://hardcover.app/oauth2/device" {
+            if request.url?.absoluteString == "https://api.hardcover.app/oauth2/device" {
                 XCTAssertTrue(body.contains("scope=read:me:content%20read:library"))
                 return Self.respond(
                     200,
                     #"{"device_code":"pending","user_code":"TEST-0001","verification_uri":"https://hardcover.app/link","verification_uri_complete":"https://hardcover.app/link?code=TEST-0001","expires_in":600,"interval":5}"#,
                     to: request)
             }
-            XCTAssertEqual(request.url?.absoluteString, "https://hardcover.app/oauth2/token")
+            XCTAssertEqual(request.url?.absoluteString, "https://api.hardcover.app/oauth2/token")
             XCTAssertTrue(body.contains("grant_type=urn:ietf:params:oauth:grant-type:device_code"))
             let replies = [
                 "device_code=pending": (400, #"{"error":"authorization_pending"}"#),
@@ -332,7 +332,7 @@ final class HardcoverTests: XCTestCase {
         let account = HardcoverAccount(
             tokens: tokens,
             client: HardcoverClient { request in
-                guard request.url?.absoluteString == "https://hardcover.app/oauth2/token" else {
+                guard request.url?.absoluteString == "https://api.hardcover.app/oauth2/token" else {
                     XCTFail("Only the renewal is requested")
                     return Self.respond(500, "", to: request)
                 }
@@ -426,11 +426,14 @@ final class HardcoverTests: XCTestCase {
                 defaults: defaults, libraryURL: library)
         }
 
-        // A server failure keeps the login for the next try.
-        let unavailable = account(renewalStatus: 503, body: "")
-        await unavailable.sync()
-        XCTAssertEqual(unavailable.syncError, HardcoverError.http(503).errorDescription)
-        XCTAssertFalse(unavailable.needsReconnect)
+        // A server failure, or a refusal other than `invalid_grant`, keeps the login for the next
+        // try.
+        for (status, body) in [(503, ""), (403, #"{"error":"access_denied"}"#), (400, "<html>")] {
+            let unavailable = account(renewalStatus: status, body: body)
+            await unavailable.sync()
+            XCTAssertEqual(unavailable.syncError, HardcoverError.http(status).errorDescription)
+            XCTAssertFalse(unavailable.needsReconnect, "HTTP \(status)")
+        }
 
         // A spent, expired, or revoked refresh token needs a new sign-in.
         let revoked = account(renewalStatus: 400, body: #"{"error":"invalid_grant"}"#)
@@ -440,6 +443,35 @@ final class HardcoverTests: XCTestCase {
         XCTAssertEqual(revoked.syncError, HardcoverError.invalidToken.errorDescription)
         XCTAssertEqual(tokens.secret, login)
         XCTAssertEqual(tokens.saves, [])
+    }
+
+    func testOnlyInvalidGrantWithHTTP400Or401RejectsTheRefreshToken() async {
+        let cases: [(status: Int, body: String, expected: HardcoverError)] = [
+            (400, #"{"error":"invalid_grant"}"#, .invalidToken),
+            (401, #"{"error":"invalid_grant"}"#, .invalidToken),
+            (401, #"{"error":"invalid_client","error_description":"Unknown"}"#, .http(401)),
+            (400, #"{"error":"unsupported_grant_type"}"#, .http(400)),
+            (400, "<html>Bad request</html>", .http(400)),
+            (401, "", .http(401)),
+            (400, #"{"error":400}"#, .http(400)),
+            (403, #"{"error":"access_denied"}"#, .http(403)),
+            (408, #"{"error":"timeout"}"#, .http(408)),
+            (429, #"{"error":"slow_down"}"#, .http(429)),
+            (503, #"{"error":"temporarily_unavailable"}"#, .http(503)),
+        ]
+        for (status, body, expected) in cases {
+            let client = HardcoverClient { request in
+                XCTAssertEqual(
+                    request.url?.absoluteString, "https://api.hardcover.app/oauth2/token")
+                return Self.respond(status, body, to: request)
+            }
+            do {
+                _ = try await client.renew(refreshToken: "fictional-refresh")
+                XCTFail("Expected \(expected) for HTTP \(status) \(body)")
+            } catch {
+                XCTAssertEqual(error as? HardcoverError, expected, "HTTP \(status) \(body)")
+            }
+        }
     }
 
     @MainActor
@@ -595,7 +627,8 @@ final class HardcoverTests: XCTestCase {
                     ],
                     pages: 336,
                     finished: "2025-03-01", finishedDates: ["2025-03-01", "2022-06-10"],
-                    rating: 4.5, isRead: true, communityRating: 4.12, ratingsCount: 250,
+                    rating: 4.5, isRead: true, statusID: 3, communityRating: 4.12,
+                    ratingsCount: 250,
                     ratingDistribution: [
                         RatingBucket(rating: 4, count: 120), RatingBucket(rating: 5, count: 130),
                     ],
@@ -605,15 +638,16 @@ final class HardcoverTests: XCTestCase {
                 CloudBook(
                     id: 303, title: "Someday Soon", author: "Lena Marsh", coverURL: nil,
                     detailCoverURL: nil, publicationYear: 2026, seriesMemberships: [], pages: 280,
-                    ratingsCount: 3),
+                    statusID: 1, ratingsCount: 3),
                 CloudBook(
                     id: 202, title: "Salt and Static", author: "Iris Okafor", coverURL: nil,
                     detailCoverURL: nil, publicationYear: 2024, format: "Read",
                     seriesMemberships: [], pages: 200,
-                    isReading: true, progress: 0.25, started: "2025-04-10", ratingsCount: 0),
+                    isReading: true, statusID: 2, progress: 0.25, started: "2025-04-10",
+                    ratingsCount: 0),
             ])
-        // Only the finished book belongs on the shelf: not the current read, and not the book
-        // on Want to Read.
+        // The Ignored book is left out. Only the finished book belongs on the shelf: not the
+        // current read, and not the book on Want to Read.
         XCTAssertEqual(library.books.filter(\.hasBeenRead).map(\.id), [101])
         // The featured series names the book; the shorter series decides its look.
         XCTAssertEqual(SeriesDesigns.styleSeries(of: library.books[0], link: nil)?.id, 7)
@@ -1228,7 +1262,8 @@ final class HardcoverTests: XCTestCase {
         #"{"access_token":"fictional-new","refresh_token":"fictional-refresh-2","expires_in":604800,"token_type":"Bearer"}"#
 
     /// One fictional page: a book read twice with an HTML review, a current read, a book on Want
-    /// to Read, and an older row for the first book that normalization drops.
+    /// to Read, and two rows that normalization drops: a finished book on Ignored and an older
+    /// row for the first book.
     private static let libraryPage = """
         {"data":{"user_books":[
           {"status_id":3,"last_read_date":"2025-03-02","rating":4.5,
@@ -1270,6 +1305,12 @@ final class HardcoverTests: XCTestCase {
              "cached_contributors":[{"author":{"name":"Lena Marsh"},"contribution":null}],
              "cached_tags":null,"rating":null,"ratings_count":3,"image":null,"book_series":[],"editions":[]},
            "edition":null,"user_book_reads":[],"current_read":[]},
+          {"status_id":6,"last_read_date":"2024-08-01","rating":2,"review":null,
+           "book":{"id":404,"title":"Set Aside","pages":150,"release_year":2020,
+             "cached_contributors":[],"cached_tags":null,"rating":null,"ratings_count":0,
+             "image":null,"book_series":[],"editions":[]},
+           "edition":null,"user_book_reads":[{"finished_at":"2024-08-01","edition":null}],
+           "current_read":[]},
           {"status_id":3,"last_read_date":"2023-01-05","rating":3,"review":"Older read.",
            "book":{"id":101,"title":"The Lantern Keeper: A Novel","pages":320,"release_year":2021,
              "cached_contributors":[],"cached_tags":null,"rating":4.12,"ratings_count":250,

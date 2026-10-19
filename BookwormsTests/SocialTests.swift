@@ -121,9 +121,29 @@ final class SocialTests: XCTestCase {
             "Highest rated first, then the latest finish; 6 is on their shelf; three at most")
         XCTAssertEqual(
             match.forMe.map(\.id), [10, 11], "20 is on my shelf, even without my rating")
+        XCTAssertEqual(match.onMyList, [])
         XCTAssertEqual(
             ShareTemplate.bookSwap.books(from: mine, in: .lifetime, match: match).map(\.id),
             [1, 2, 4, 10, 11])
+    }
+
+    func testBookSwapKeepsOnlyWantToReadPicksAndLabelsThem() {
+        // Unstarted and unrated, on Want to Read, Paused, and in a snapshot without statuses.
+        let statuses: [(id: Int, status: Int?)] = [
+            (21, HardcoverClient.wantToReadStatus), (22, 4), (23, nil),
+        ]
+        let shelved = statuses.map {
+            var book = Self.book($0.id, rating: nil, finished: nil)
+            book.statusID = $0.status
+            return book
+        }
+        let theirs = [
+            Self.book(10, rating: 5), Self.book(11, rating: 4), Self.book(21, rating: 4.5),
+            Self.book(22, rating: 5), Self.book(23, rating: 5),
+        ]
+        let match = TasteMatch(mine: shelved, theirs: theirs)
+        XCTAssertEqual(match.forMe.map(\.id), [10, 21, 11])
+        XCTAssertEqual(match.onMyList, [21], "Only Want to Read is already on my list")
     }
 
     // MARK: - Usernames and invitations
