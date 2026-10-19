@@ -11,13 +11,14 @@ extension CloudBook {
     /// The book's likely binding.
     ///
     /// The library does not record which edition the reader holds, so this is a deterministic
-    /// guess. A book finished within a year of its publication is most likely a new release,
-    /// which publishers issue in hardcover first, so three in four such books are hardcovers;
-    /// two in five other books are. The book's ID decides which books those are, so a book
-    /// keeps its binding everywhere and across launches.
+    /// guess. A book first finished within a year of its publication is most likely a new
+    /// release, which publishers issue in hardcover first, so three in four such books are
+    /// hardcovers; two in five other books are. The book's ID decides which books those are, so
+    /// a book keeps its binding everywhere and across launches.
     var binding: BookBinding {
+        let firstYear = firstFinish.flatMap { Int($0.prefix(4)) }
         let isNewRelease =
-            publicationYear.flatMap { year in finishedYear.map { $0 - year <= 1 } } ?? false
+            publicationYear.flatMap { year in firstYear.map { $0 - year <= 1 } } ?? false
         return ShareStyle.unit(0, id, 60) < (isNewRelease ? 0.75 : 0.4) ? .hardcover : .paperback
     }
 }

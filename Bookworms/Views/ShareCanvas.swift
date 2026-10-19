@@ -71,7 +71,7 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
             return library.filter { $0.isReading == true }
                 .sorted { ($0.started ?? "") > ($1.started ?? "") }
         }
-        let pool = self == .review && frame == .lifetime ? library : library.filter(frame.contains)
+        let pool = self == .review && frame == .lifetime ? library : frame.books(in: library)
         let sorted = pool.sorted { ($0.finished ?? "", $0.id) > ($1.finished ?? "", $1.id) }
         return self == .review ? sorted.filter { $0.reviewText != nil } : sorted
     }
@@ -105,10 +105,13 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         }
         if isSingleBook {
             let choices = choices(from: library, in: frame)
-            let chosen = (self == .justFinished ? library : choices).first { $0.id == bookID }
+            // A chosen reread in the frame keeps its finish there.
+            let chosen =
+                choices.first { $0.id == bookID }
+                ?? (self == .justFinished ? library.first { $0.id == bookID } : nil)
             return [chosen ?? choices.first].compactMap(\.self)
         }
-        let finished = library.filter(frame.contains)
+        let finished = frame.books(in: library)
             .sorted { ($0.finished ?? "", $0.id) < ($1.finished ?? "", $1.id) }
         switch self {
         case .pile:
@@ -279,8 +282,9 @@ struct ShareInput {
     /// span, such as "2019–2026".
     var period: String {
         guard frame == .lifetime else { return frame.title }
-        let years = books.compactMap(\.finishedYear)
-        guard let first = years.min(), let last = years.max() else { return "" }
+        // Every finish counts, so a reread's earlier reads widen the span.
+        let years = TimeFrame.periods(in: books).years
+        guard let last = years.first, let first = years.last else { return "" }
         return first == last ? String(first) : "\(first)–\(last)"
     }
 

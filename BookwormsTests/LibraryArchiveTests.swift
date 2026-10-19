@@ -29,6 +29,8 @@ final class LibraryArchiveTests: XCTestCase {
         XCTAssertEqual(mine.syncedAt, newer.syncedAt)
         XCTAssertEqual(mine.books.map(\.title), ["New"])
         XCTAssertEqual(mine.books.first?.review, "Loved it.")
+        XCTAssertEqual(mine.books.first?.finished, "2026-02-01")
+        XCTAssertEqual(mine.books.first?.finishedDates, ["2026-02-01", "2019-07-04"])
         XCTAssertNil(mine.books.first?.chosenCoverURL)
         // The fields only the Apple TV stores survive the replacement.
         XCTAssertEqual(mine.books.first?.sources, [.hardcover])
@@ -48,8 +50,35 @@ final class LibraryArchiveTests: XCTestCase {
         XCTAssertNil(book["chosenCoverURL"])
         XCTAssertNil(book["seriesLink"])
 
+        // An app that predates rereads still decodes the archive and keeps the newest finish.
+        let legacy = try JSONDecoder().decode(LegacyArchive.self, from: spliced)
+        XCTAssertEqual(
+            legacy.sources.first { $0.accountID == "42" }?.books.first?.finished, "2026-02-01")
+
         // This app reads the series back, and a download with its own series replaces them.
         let ported = try JSONDecoder().decode(CloudLibraryArchive.self, from: spliced)
+        XCTAssertEqual(
+            ported.sources.first { $0.accountID == "42" }?.books.first?.readCount, 2)
+        // The reads survive the Apple TV's re-encoding too.
+        let reencoded = try JSONDecoder()
+            .decode(CloudLibraryArchive.self, from: try JSONEncoder().encode(archive))
+        XCTAssertEqual(
+            reencoded.sources.first { $0.accountID == "42" }?.books.first?.finishedDates,
+            ["2026-02-01", "2019-07-04"])
+        // An Apple TV build without the list drops it when it re-encodes the archive, and this
+        // app then knows only the newest read.
+        var olderTV = archive
+        for source in olderTV.sources.indices {
+            for book in olderTV.sources[source].books.indices {
+                olderTV.sources[source].books[book].finishedDates = nil
+            }
+        }
+        let olderTVCopy = try JSONDecoder()
+            .decode(CloudLibraryArchive.self, from: try JSONEncoder().encode(olderTV))
+        let stripped = olderTVCopy.sources.first { $0.accountID == "42" }?.books.first
+        XCTAssertEqual(stripped?.finished, "2026-02-01")
+        XCTAssertNil(stripped?.finishedDates)
+        XCTAssertEqual(stripped?.readCount, 1)
         XCTAssertEqual(
             ported.sources.first { $0.accountID == "42" }?.series?.first?.name, "The Stored Series")
         var withSeries = snapshot(accountID: "42", syncedAt: synced.addingTimeInterval(120))
@@ -136,8 +165,8 @@ final class LibraryArchiveTests: XCTestCase {
         }
     }
 
-    /// A Hardcover snapshot as this app writes it, with a book that carries a review, a chosen
-    /// cover, and a series link.
+    /// A Hardcover snapshot as this app writes it, with a reread book that carries a review, a
+    /// chosen cover, and a series link.
     private func snapshot(accountID: String, syncedAt: Date) -> CloudSourceSnapshot {
         let book = CloudBook(
             id: 1, title: "New", author: "Author", coverURL: nil,
@@ -146,6 +175,7 @@ final class LibraryArchiveTests: XCTestCase {
                 SeriesMembership(
                     seriesID: 5, name: "The Stored Series", featured: true, compilation: false)
             ],
+            finished: "2026-02-01", finishedDates: ["2026-02-01", "2019-07-04"],
             ratingDistribution: [RatingBucket(rating: 4.5, count: 3)], review: "Loved it.",
             chosenCoverURL: URL(string: "https://assets.hardcover.app/chosen.jpg"),
             seriesLink: SeriesLinkV1(
@@ -232,6 +262,7 @@ private struct TVBook: Codable {
     var coverURL: URL?
     var pages: Int?
     var finished: String?
+    var finishedDates: [String]? = nil
     var rating: Double?
     var format: String?
     var seriesID: Int?
@@ -286,4 +317,22 @@ private struct TVDesign: Codable {
     let bookID: Int
     let coverHash: String
     let generatedAt: Date
+}
+
+/// The archive as an app from before `finishedDates` decodes it: the keys it requires, and no
+/// reread history.
+private struct LegacyArchive: Decodable {
+    let sources: [Snapshot]
+
+    struct Snapshot: Decodable {
+        let accountID: String
+        let books: [Book]
+    }
+
+    struct Book: Decodable {
+        let id: Int
+        let title: String
+        let author: String
+        let finished: String?
+    }
 }

@@ -569,6 +569,8 @@ final class HardcoverTests: XCTestCase {
             XCTAssertTrue(body.contains("description"))
             XCTAssertTrue(body.contains("ratings_distribution"))
             XCTAssertFalse(body.contains("review_raw"))
+            // Every finished read, in the same request.
+            XCTAssertTrue(body.contains("order_by: [{finished_at: desc}, {id: desc}]) {"))
             return Self.respond(200, Self.libraryPage, to: request)
         }
         let library = try await client.library(token: "fictional-token")
@@ -592,7 +594,7 @@ final class HardcoverTests: XCTestCase {
                             compilation: false, size: 12),
                     ],
                     pages: 336,
-                    finished: "2025-03-01",
+                    finished: "2025-03-01", finishedDates: ["2025-03-01", "2022-06-10"],
                     rating: 4.5, isRead: true, communityRating: 4.12, ratingsCount: 250,
                     ratingDistribution: [
                         RatingBucket(rating: 4, count: 120), RatingBucket(rating: 5, count: 130),
@@ -725,6 +727,40 @@ final class HardcoverTests: XCTestCase {
     }
 
     // MARK: - iCloud copies
+
+    /// A copy from an Apple TV build without `finishedDates` keeps this device's list for a book
+    /// whose newest finish is unchanged.
+    func testAdoptedCopyKeepsReadsAnOlderAppleTVDropped() {
+        func book(_ id: Int, _ finished: String, _ dates: [String]? = nil) -> CloudBook {
+            CloudBook(
+                id: id, title: "Book \(id)", author: "Mara Quill", coverURL: nil,
+                detailCoverURL: nil, finished: finished, finishedDates: dates)
+        }
+        let cached = PhoneLibrary(
+            accountID: "4242", username: nil, syncedAt: Self.hoursAgo(5),
+            books: [
+                book(1, "2026-02-01", ["2026-02-01", "2019-07-04"]),
+                book(2, "2025-05-05", ["2025-05-05", "2020-01-01"]),
+                book(3, "2024-04-04", ["2024-04-04", "2018-08-08"]),
+            ])
+        // Book 2 was finished again after this device's copy, so its list is out of date.
+        let copy = CloudSourceSnapshot(
+            source: "hardcover", accountID: "4242",
+            // An empty list counts as absent, like a missing one.
+            books: [book(1, "2026-02-01"), book(2, "2026-03-03"), book(3, "2024-04-04", [])],
+            syncedAt: Self.hoursAgo(1))
+        let adopted = PhoneLibrary(copy, username: nil, keepingReadsOf: cached)
+        XCTAssertEqual(
+            adopted.books.map(\.finishedDates),
+            [["2026-02-01", "2019-07-04"], nil, ["2024-04-04", "2018-08-08"]])
+        XCTAssertEqual(adopted.books.map(\.readCount), [2, 1, 2])
+
+        let other = PhoneLibrary(
+            accountID: "7", username: nil, syncedAt: Self.hoursAgo(5), books: cached.books)
+        XCTAssertNil(
+            PhoneLibrary(copy, username: nil, keepingReadsOf: other).books.first?.finishedDates,
+            "Another account's copy never adds reads")
+    }
 
     @MainActor
     func testSyncAdoptsANewerICloudCopyWithoutAskingHardcover() async throws {
@@ -1144,8 +1180,8 @@ final class HardcoverTests: XCTestCase {
     private static let renewedLogin =
         #"{"access_token":"fictional-new","refresh_token":"fictional-refresh-2","expires_in":604800,"token_type":"Bearer"}"#
 
-    /// One fictional page: a finished book with an HTML review, a current read, a book on Want to
-    /// Read, and an older row for the first book that normalization drops.
+    /// One fictional page: a book read twice with an HTML review, a current read, a book on Want
+    /// to Read, and an older row for the first book that normalization drops.
     private static let libraryPage = """
         {"data":{"user_books":[
           {"status_id":3,"last_read_date":"2025-03-02","rating":4.5,
@@ -1171,7 +1207,8 @@ final class HardcoverTests: XCTestCase {
            "edition":null,
            "user_book_reads":[{"finished_at":"2025-03-01","edition":{"pages":336,"audio_seconds":null,
              "image":{"url":"https://covers.example.com/reader-101.jpg","width":800,"height":1200},
-             "reading_format":{"format":"Ebook"},"language":null}}],
+             "reading_format":{"format":"Ebook"},"language":null}},
+             {"finished_at":"2022-06-10","edition":null}],
            "current_read":[]},
           {"status_id":2,"last_read_date":null,"rating":null,"review":null,
            "book":{"id":202,"title":"Salt and Static","pages":400,"release_year":2024,

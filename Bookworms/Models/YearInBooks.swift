@@ -4,8 +4,9 @@ import Synchronization
 
 /// Reading statistics for a time frame, computed with the Apple TV Year in Review's rules.
 ///
-/// The library keeps each book's most recent read, so a reread counts once, in the frame of its
-/// latest finish. Books without a valid finish date are left out.
+/// A reread counts once in each frame it was finished in, by its newest finish there
+/// (`TimeFrame.books(in:)`), so its column and order follow that read. Books without a valid
+/// finish date are left out.
 struct YearInBooks: Equatable {
     /// A name and how many books it applies to, such as a genre or format.
     struct Tally: Equatable {
@@ -32,8 +33,8 @@ struct YearInBooks: Equatable {
     /// Every book finished in the frame, earliest first.
     let books: [CloudBook]
     /// The chart's columns, earliest first: the twelve months of a year, a month's weeks (days
-    /// 1–7, 8–14, and so on, the last one shorter), or every year from the first finish to the
-    /// last. Past `maximumYearSpan` years, as a mistyped date can make it, a lifetime charts only
+    /// 1–7, 8–14, and so on, the last one shorter), or every year from the first finish, a
+    /// reread's earliest included, to the last. Past `maximumYearSpan` years, as a mistyped date can make it, a lifetime charts only
     /// the years with books.
     let columns: [Column]
     /// The column with the most books, when it has at least two; the earliest wins a tie.
@@ -65,7 +66,7 @@ struct YearInBooks: Equatable {
     /// Computes the statistics for the books in `library` finished in `frame`.
     init(frame: TimeFrame, library: [CloudBook]) {
         self.frame = frame
-        let books = library.filter(frame.contains)
+        let books = frame.books(in: library)
             .sorted { ($0.finished ?? "", $0.id) < ($1.finished ?? "", $1.id) }
         self.books = books
 
@@ -140,7 +141,11 @@ struct YearInBooks: Equatable {
                         books: books.filter { range.contains(part($0, 8, 2)) })
                 }
         case .lifetime:
-            let years = Set(books.map { part($0, 0, 4) })
+            // A reread sits in its newest finish's year, but its first finish's year still bounds
+            // the chart, as it does `ShareInput.period`.
+            let years = Set(
+                books.map { part($0, 0, 4) }
+                    + books.compactMap { $0.firstFinish.flatMap { Int($0.prefix(4)) } })
             guard let first = years.min(), let last = years.max() else { return [] }
             return (last - first < maximumYearSpan ? Array(first...last) : years.sorted())
                 .map { year in
