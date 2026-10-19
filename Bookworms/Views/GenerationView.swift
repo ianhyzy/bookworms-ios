@@ -32,9 +32,9 @@ struct GenerationView: View {
         @Bindable var generation = generation
         NavigationStack(path: $path) {
             Form {
-                BinderyHeader(
-                    current: generation.status.currentBook, open: { path.append($0) },
-                    connect: { showsAccount = true })
+                // Equatable on the book in progress, so a run's other progress updates skip it.
+                BinderyHeader(current: generation.status.currentBook, showsAccount: $showsAccount)
+                    .equatable()
                 progress
                 designModel
                 Section {
@@ -315,34 +315,48 @@ struct GenerationView: View {
 /// right, and under it a gauge of the library in its designed books' colors. While a run
 /// designs, the book in progress stands at the shelf's end in blank cloth, with its cover in a
 /// row below; when its design saves, its lettering appears like a foil stamp. Without a library,
-/// the shelf stands empty with **Connect Hardcover**.
+/// the shelf stands empty with **Connect Hardcover**. A spine opens its book's details.
 ///
-/// It reads the library alone, so its body runs when the library changes, such as when a design
-/// saves, not at each progress update of a run.
-private struct BinderyHeader: View {
+/// The shelf's books and the gauge's colors are prepared when the books' designs change
+/// (`AppModel.designRevision`) or a run moves to another book, not in the body. The header is
+/// equal for the same book in progress, so a run's other progress updates skip it.
+private struct BinderyHeader: View, Equatable {
     let current: CloudBook?
-    let open: (Int) -> Void
-    let connect: () -> Void
+    @Binding var showsAccount: Bool
 
     @Environment(AppModel.self) private var model
+    @State private var prepared = Prepared()
 
-    /// How many designed books the shelf shows.
-    static let shown = 10
-    /// The books' size, large enough that thin spines keep legible lettering.
-    static let scale: CGFloat = 80
+    /// What the header draws, prepared from every design in the library.
+    private struct Prepared {
+        /// The latest designed books, oldest first, without the book in progress.
+        var designed: [CloudBook] = []
+        /// The designed books' spine colors, in the library's order, for the gauge.
+        var colors: [ColorValue] = []
+    }
+
+    /// How many designed books the shelf shows: fewer on the iPhone, so the books stand large
+    /// enough that thin spines letter their authors legibly.
+    #if os(macOS)
+        static let shown = 10
+    #else
+        static let shown = 6
+    #endif
+    /// The books' size.
+    static let scale: CGFloat = 128
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.current == rhs.current }
 
     var body: some View {
         Section {
-            if let library = model.library {
-                let books = shelfBooks(library)
+            if model.library != nil {
+                let books = shelfBooks
                 let length = books.reduce(0) { $0 + $1.size.width + 1 }
                 let shelf = ShortShelf(height: Bookcase.height(scale: Self.scale), length: length) {
                     _ in
                     HStack(alignment: .bottom, spacing: 1) {
                         ForEach(books, id: \.book.id) { item in
-                            Button {
-                                open(item.book.id)
-                            } label: {
+                            NavigationLink(value: item.book.id) {
                                 BinderySpine(book: item.book, look: item.look, size: item.size)
                             }
                             .buttonStyle(.plain)
@@ -362,14 +376,14 @@ private struct BinderyHeader: View {
                 .frame(maxWidth: .infinity)
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("Latest designs")
-                DesignGauge(library: library, books: model.books)
+                DesignGauge(colors: prepared.colors, total: model.books.count)
                 if let current { CurrentBookRow(book: current) }
             } else {
                 VStack(spacing: 16) {
                     EmptyBookcase()
                     Text("No library yet").font(.title3.weight(.semibold)).bookHeading()
                     if !model.isPreview {
-                        Button("Connect Hardcover", action: connect)
+                        Button("Connect Hardcover") { showsAccount = true }
                             .buttonStyle(.glassProminent)
                             .controlSize(.large)
                     }
@@ -379,25 +393,36 @@ private struct BinderyHeader: View {
         }
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
+        .onChange(of: model.designRevision, initial: true) { prepare() }
+        .onChange(of: current?.id) { prepare() }
     }
 
-    /// The latest designed books, oldest first, then the book in progress without a look.
-    private func shelfBooks(_ library: LibrarySnapshot) -> [(
-        book: CloudBook, look: SpineLook?, size: CGSize
-    )] {
-        let latest = library.designs.values
-            .filter { $0.bookID != current?.id }
-            .sorted { $0.generatedAt > $1.generatedAt }
-            .prefix(Self.shown)
-        var books = latest.reversed()
-            .compactMap { design in
-                model.books.first { $0.id == design.bookID }
-            }
-            .map { (book: $0, look: Optional(model.look(for: $0))) }
+    /// The prepared designed books, then the book in progress without a look.
+    private var shelfBooks: [(book: CloudBook, look: SpineLook?, size: CGSize)] {
+        var books = prepared.designed.map { (book: $0, look: Optional(model.look(for: $0))) }
         if let current {
             books.append((book: model.books.first { $0.id == current.id } ?? current, look: nil))
         }
         return books.map { ($0.book, $0.look, $0.book.shelfSpineSize(scale: Self.scale)) }
+    }
+
+    private func prepare() {
+        guard let library = model.library else {
+            prepared = Prepared()
+            return
+        }
+        let latest = library.designs.values
+            .filter { $0.bookID != current?.id }
+            .sorted { $0.generatedAt > $1.generatedAt }
+            .prefix(Self.shown)
+        prepared = Prepared(
+            designed: latest.reversed()
+                .compactMap { design in
+                    model.books.first { $0.id == design.bookID }
+                },
+            colors: model.books.compactMap {
+                model.design(for: $0).flatMap { ColorValue(hex: $0.backgroundHex) }
+            })
     }
 }
 
@@ -483,24 +508,21 @@ private struct CurrentBookRow: View {
 /// designed books' in their spines' colors from the left. The canvas draws again only when the
 /// colors change.
 private struct DesignGauge: View {
-    let library: LibrarySnapshot
-    let books: [CloudBook]
-
-    @Environment(AppModel.self) private var model
+    /// The designed books' spine colors.
+    let colors: [ColorValue]
+    /// The library's book count.
+    let total: Int
 
     var body: some View {
-        let designed = books.compactMap {
-            model.design(for: $0).flatMap { ColorValue(hex: $0.backgroundHex) }
-        }
         VStack(alignment: .leading, spacing: 8) {
-            Text("\(designed.count) of \(books.count) books designed").font(.headline)
-            GaugeSlivers(colors: designed, total: books.count)
+            Text("\(colors.count) of \(total) books designed").font(.headline)
+            GaugeSlivers(colors: colors, total: total)
                 .frame(height: 12)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityRepresentation {
             ProgressView(
-                "Books designed", value: Double(designed.count), total: Double(max(books.count, 1)))
+                "Books designed", value: Double(colors.count), total: Double(max(total, 1)))
         }
     }
 }
