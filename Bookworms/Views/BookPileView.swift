@@ -97,6 +97,8 @@ struct BookPileView: View {
     #if os(macOS)
         /// The book whose cover the context menu's **Change Cover…** changes.
         @State private var coverBook: CloudBook?
+        /// Where the pointer last was over the desk.
+        @State private var pointerSpot = DeskPointer.Spot()
     #endif
     /// Set while a finger touches the desk. SwiftUI resets it when the touch ends or is
     /// cancelled, so a held book is let go either way.
@@ -144,7 +146,8 @@ struct BookPileView: View {
             #if os(macOS)
                 .modifier(
                     DeskPointer(
-                        scene: scene, books: books, size: viewport?.size, carries: isCarrying,
+                        desk: desk, books: books, size: viewport?.size, spot: pointerSpot,
+                        presses: touch != nil, carries: isCarrying,
                         open: { book in
                             Task {
                                 await desk.awake()
@@ -402,6 +405,9 @@ struct BookPileView: View {
             }
             .onEnded { value in
                 let size = viewport?.size ?? .zero
+                #if os(macOS)
+                    pointerSpot.location = value.location
+                #endif
                 switch touch {
                 case .pressing(let hold):
                     hold?.cancel()
@@ -599,10 +605,24 @@ private struct PileTipAnchor: View {
     /// it carries one, and the context menu of the book under it. Books are found from their
     /// poses (`BookPileScene.bookID(under:in:)`), so hovering never wakes a paused desk, and the
     /// view updates only when the pointer passes onto another book or off one.
+    ///
+    /// macOS reports no hovering during a press, or while books move under a pointer that
+    /// stays still. So once a press ends, which may have thrown the book or turned the view,
+    /// the pointer names no book until it moves, and it finds its book again when the desk
+    /// rests or wakes.
     private struct DeskPointer: ViewModifier {
-        let scene: BookPileScene
+        /// Where the pointer last was over the desk, as hovering and the end of a press report
+        /// it: a plain reference, so moving the pointer updates no view.
+        final class Spot {
+            var location: CGPoint?
+        }
+
+        let desk: DeskScenes
         let books: [CloudBook]
         let size: CGSize?
+        let spot: Spot
+        /// Whether the pointer's button is down over the desk.
+        let presses: Bool
         /// Whether the pointer carries a book.
         let carries: Bool
         let open: (CloudBook) -> Void
@@ -613,18 +633,30 @@ private struct PileTipAnchor: View {
         func body(content: Content) -> some View {
             content
                 .onContinuousHover { phase in
-                    var id: Int?
-                    if case .active(let point) = phase, let size {
-                        id = scene.bookID(under: point, in: size)
+                    if case .active(let point) = phase {
+                        spot.location = point
+                    } else {
+                        spot.location = nil
                     }
-                    if id != hovered { hovered = id }
+                    findHovered()
                 }
+                .onChange(of: presses) { if !presses { hovered = nil } }
+                .onChange(of: desk.isPaused) { findHovered() }
                 .pointerStyle(carries ? .grabActive : hovered == nil ? nil : .grabIdle)
                 .contextMenu {
                     if let book = hovered.flatMap({ id in books.first { $0.id == id } }) {
                         BookMenuItems(book: book, open: open, changeCover: changeCover)
                     }
                 }
+        }
+
+        /// Finds the book under the pointer's last spot.
+        private func findHovered() {
+            var id: Int?
+            if let point = spot.location, let size {
+                id = desk.pile.bookID(under: point, in: size)
+            }
+            if id != hovered { hovered = id }
         }
     }
 #endif
