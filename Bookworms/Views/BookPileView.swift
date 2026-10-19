@@ -102,10 +102,9 @@ struct BookPileView: View {
     /// Counts books picked up, each of which plays a light haptic tap.
     @State private var pickups = 0
     #if os(macOS)
-        /// The book whose cover the context menu's **Change Cover…** changes.
-        @State private var coverBook: CloudBook?
-        /// Set when the cover picker asks to sign in, which shows the Hardcover sheet in its place.
-        @State private var showsAccount = false
+        /// The sheet over the desk: the cover picker from the context menu's **Change Cover…**,
+        /// or the Hardcover sheet that replaces it when it asks to sign in.
+        @State private var deskSheet: DeskSheet?
         @Environment(\.undoManager) private var undoManager
         /// Where the pointer last was over the desk.
         @State private var pointerSpot = DeskPointer.Spot()
@@ -163,7 +162,7 @@ struct BookPileView: View {
                                 await desk.awake()
                                 show(book)
                             }
-                        }, changeCover: { coverBook = $0 })
+                        }, changeCover: { deskSheet = .cover($0) })
                 )
                 .background { ScrollWheelReader(onScroll: scroll) }
             #endif
@@ -302,24 +301,25 @@ struct BookPileView: View {
             }
             .sheet(isPresented: $sharesPile) { PileSnapshotSheet(books: books, title: title) }
             #if os(macOS)
-                .focusedSceneValue(
-                    \.deskSheetShows, sharesPile || coverBook != nil || showsAccount
-                )
-                // As a book's details open it: a series that shares a design takes its spine
-                // from its source's cover, and the sheet matches the room's dark scheme.
-                .sheet(item: $coverBook) { book in
-                    CoverPickerView(
-                        book: model.designSource(for: book), scope: .init(of: book, in: model),
-                        undoManager: undoManager
-                    ) {
-                    } signIn: {
-                        coverBook = nil
-                        showsAccount = true
+                .focusedSceneValue(\.deskSheetShows, sharesPile || deskSheet != nil)
+                // One item drives both sheets, so the picker gives way to the account sheet in a
+                // single presentation change. As a book's details open it: a series that shares
+                // a design takes its spine from its source's cover, and the sheet matches the
+                // room's dark scheme.
+                .sheet(item: $deskSheet) { item in
+                    switch item {
+                    case .cover(let book):
+                        CoverPickerView(
+                            book: model.designSource(for: book), scope: .init(of: book, in: model),
+                            undoManager: undoManager
+                        ) {
+                        } signIn: {
+                            deskSheet = .account
+                        }
+                        .preferredColorScheme(.dark)
+                    case .account:
+                        HardcoverAccountView().preferredColorScheme(.dark)
                     }
-                    .preferredColorScheme(.dark)
-                }
-                .sheet(isPresented: $showsAccount) {
-                    HardcoverAccountView().preferredColorScheme(.dark)
                 }
             #endif
             #if DEBUG
@@ -486,11 +486,24 @@ struct BookPileView: View {
     }
 
     #if os(macOS)
+        /// A sheet over the Desk scene on the Mac.
+        private enum DeskSheet: Identifiable {
+            case cover(CloudBook)
+            case account
+
+            var id: String {
+                switch self {
+                case .cover(let book): "cover-\(book.id)"
+                case .account: "account"
+                }
+            }
+        }
+
         /// Zooms or turns the view for a scroll at `point` over the part of the desk the bars
         /// leave clear, and returns whether it did; scrolls elsewhere, such as over the
         /// sidebar, or while details or a sheet cover the desk, go on to the views under them.
         private func scroll(_ event: NSEvent, at point: CGPoint) -> Bool {
-            guard isShown, details.lift == nil, !sharesPile, coverBook == nil,
+            guard isShown, details.lift == nil, !sharesPile, deskSheet == nil,
                 viewport?.clear.contains(point) == true
             else { return false }
             let move = PilePointer.move(for: event)
