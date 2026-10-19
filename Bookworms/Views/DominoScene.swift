@@ -731,6 +731,10 @@ final class DominoScene {
         /// The camera log's lines, and whether it has ended (see `logCamera`).
         private var cameraLog: [String] = []
         private var cameraLogEnded = false
+        /// The overlap log's lines, and the frames it checked in each phase (see
+        /// `logOverlaps`).
+        private var overlapLog: [String] = []
+        private var overlapFrames: [String: Int] = [:]
     #endif
     /// The camera and the table point under the fingers when they started moving the camera,
     /// whether they pinch, and the drag's translation then.
@@ -788,8 +792,9 @@ final class DominoScene {
         var webs: [Int: Entity] = [:]
         var fades: [Int: Float] = [:]
         #if DEBUG
-            /// The setup log's lines (see `logSetup`).
+            /// The setup log's lines (see `logSetup`), and when the setup was asked for.
             var log: [String] = []
+            let requested = ContinuousClock.now
         #endif
 
         init(count: Int) {
@@ -1150,6 +1155,8 @@ final class DominoScene {
         #if DEBUG
             cameraLog = []
             cameraLogEnded = false
+            overlapLog = []
+            overlapFrames = [:]
         #endif
         factory.release(keeping: ids)
         status.phase = .settingUp
@@ -1675,6 +1682,15 @@ final class DominoScene {
             }
         }
         self.arrangement = arrangement
+        #if DEBUG
+            logOverlaps(
+                "setup", at: time,
+                states: books.indices.map { index in
+                    guard let move = arrangement.moves[index] else { return "lying" }
+                    return arrangement.landed[index]
+                        ? "standing" : move.isHopping(at: time) ? "hopping" : "turning"
+                })
+        #endif
         if arrangement.next == books.count, !arrangement.landed.contains(false),
             arrangement.fades.isEmpty
         {
@@ -1689,6 +1705,7 @@ final class DominoScene {
         guard let arrangement else { return }
         #if DEBUG
             logSetup(arrangement)
+            writeOverlaps()
         #endif
         for (book, slot) in zip(books, slots) {
             book.transform = DominoLayout.standingPose(of: slot)
@@ -2549,7 +2566,21 @@ final class DominoScene {
                 land(book, firmly: snaps)
             }
         }
-        if ending.landed == ending.flights.count { status.phase = .finished }
+        #if DEBUG
+            var states = Array(repeating: "lying", count: books.count)
+            for (order, flight) in ending.flights.enumerated() {
+                let time = ending.clock - flight.start
+                let flies = time < (order == last ? DominoFinale.snapTime : DominoFinale.flightTime)
+                states[flight.book] = time <= 0 ? "lying" : flies ? "flying" : "placed"
+            }
+            logOverlaps("finale", at: ending.clock, states: states)
+        #endif
+        if ending.landed == ending.flights.count {
+            status.phase = .finished
+            #if DEBUG
+                writeOverlaps()
+            #endif
+        }
     }
 
     /// Plays a book's landing in the spread: a soft knock, or the flourish's deep knock and
@@ -2861,14 +2892,75 @@ final class DominoScene {
         /// plan in the frame it started, and, last, when the last book landed. A row without a
         /// lift is a check that found the book's way blocked, with the milliseconds it took.
         private func logSetup(_ arrangement: Arrangement) {
-            guard UserDefaults.standard.bool(forKey: "BookwormsSetupLog") else { return }
+            guard Self.logsSetup else { return }
             let lines =
                 ["book,due,start,held,lift,ms"] + arrangement.log
-                + [String(format: "landed,%.3f", arrangement.time ?? 0)]
+                + [
+                    String(format: "landed,%.3f", arrangement.time ?? 0),
+                    String(
+                        format: "ready,%.3f",
+                        (ContinuousClock.now - arrangement.requested) / .seconds(1)),
+                ]
             let url = URL.cachesDirectory.appending(path: "Bookworms/domino-setup.csv")
             try? FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try? lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        }
+
+        /// Whether `-BookwormsSetupLog YES` asks for the setup and overlap logs, read once.
+        private static let logsSetup = UserDefaults.standard.bool(forKey: "BookwormsSetupLog")
+        /// How far each book's box shrinks on every side before the overlap log tests it, in
+        /// units, so books that rest on each other, which the physics lets sink a hair, do not
+        /// count.
+        private static let overlapTolerance: Float = 0.02
+
+        /// Simulator hook: with `-BookwormsSetupLog YES`, tests every pair of books' boxes,
+        /// shrunk by `overlapTolerance`, for overlap, and logs each overlap with the `phase`,
+        /// such as `setup` or `finale`, `time` seconds into it, the two books' indices in the
+        /// chain, and what each was doing (`states`). `writeOverlaps()` writes the log.
+        private func logOverlaps(_ phase: String, at time: Float, states: [String]) {
+            guard Self.logsSetup else { return }
+            overlapFrames[phase, default: 0] += 1
+            let boxes = books.indices.map {
+                DominoSetup.Box(
+                    books[$0].transform, size: size(of: $0), grow: -Self.overlapTolerance)
+            }
+            let bounds = boxes.map(\.bounds)
+            // Sweep and prune along x, so a frame tests only the pairs whose bounds meet in x.
+            let order = boxes.indices.sorted { bounds[$0].low.x < bounds[$1].low.x }
+            for (position, first) in order.enumerated() {
+                for second in order[(position + 1)...] {
+                    guard bounds[second].low.x < bounds[first].high.x else { break }
+                    guard bounds[first].overlaps(bounds[second]),
+                        boxes[first].overlaps(boxes[second])
+                    else { continue }
+                    let (low, high) = (min(first, second), max(first, second))
+                    overlapLog.append(
+                        "\(phase),\(String(format: "%.3f", time)),\(low),\(high),\(states[low]),\(states[high])"
+                    )
+                }
+            }
+        }
+
+        /// Writes the overlap log to `Library/Caches/Bookworms/domino-overlaps.csv`, with, for
+        /// each phase, the frames checked, the overlaps found, and the pairs of books that
+        /// overlapped.
+        private func writeOverlaps() {
+            guard Self.logsSetup else { return }
+            let summaries = overlapFrames.keys.sorted()
+                .map { phase in
+                    let lines = overlapLog.filter { $0.hasPrefix(phase + ",") }
+                    let pairs = Set(
+                        lines.map { $0.split(separator: ",")[2...3].joined(separator: ",") })
+                    return
+                        "summary,\(phase),frames,\(overlapFrames[phase] ?? 0),overlaps,\(lines.count),pairs,\(pairs.count)"
+                }
+            let url = URL.cachesDirectory.appending(path: "Bookworms/domino-overlaps.csv")
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? (["phase,time,first,second,firststate,secondstate"] + overlapLog + summaries)
+                .joined(separator: "\n")
+                .write(to: url, atomically: true, encoding: .utf8)
         }
 
         /// Simulator hook: `-BookwormsDominoPush <seconds>` pushes the next book whenever the
