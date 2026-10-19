@@ -320,8 +320,9 @@ struct TopFiveCard: View {
                         style: input.coverStyle, height: card.height,
                         yaw: 0.36 + jitters[index] * 0.12, pitch: -0.1
                     )
-                    .shadow(color: .black.opacity(0.45), radius: 24, y: 18)
                     .rotationEffect(.degrees(card.turn))
+                    // After the turn, so every book's shadow falls straight down from one light.
+                    .shadow(color: .black.opacity(0.45), radius: 24, y: 18)
                     .position(
                         x: size.width / 2 + card.offset.x, y: size.height / 2 + card.offset.y)
                 }
