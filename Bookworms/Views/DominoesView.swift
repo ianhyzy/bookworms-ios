@@ -11,7 +11,7 @@ import SwiftUI
 ///
 /// A pointing hand floats before the first book, as a finger about to poke it; a tap on the
 /// hand topples the whole chain, tearing the cobwebs as it goes. The first time a chain stands,
-/// a tip points at the hand (`PushTip`). Should the chain stop, such as
+/// a tip points at the hand (`PushTip`, `DeskScenes.pushTipPoint`). Should the chain stop, such as
 /// where a book leans on the next without knocking it over, the hand points at the book to tap
 /// to nudge it on. Tapping or touching and holding a book, before the push, while the chain
 /// falls, or once the books lie gathered, lifts it out of the chain to its details over the
@@ -74,9 +74,6 @@ struct DominoesView: View {
     /// Where the current touch started, for a touch and hold, which `LongPressGesture` does not
     /// locate.
     @GestureState private var touch: CGPoint?
-    /// Where the pointing hand shows while the chain waits for its first push, for the push
-    /// tip.
-    @State private var handPoint: CGPoint?
 
     private struct SetUpRequest: Equatable {
         let ids: [Int]
@@ -108,8 +105,6 @@ struct DominoesView: View {
             #if os(macOS)
                 .background { ScrollWheelReader(onScroll: scroll) }
             #endif
-            // In the scene's own points, which reach under the bars as the scene does.
-            .overlay { TipAnchor(tip: PushTip(), point: handPoint) }
             .allowsHitTesting(details.lift == nil)
             .onGeometryChange(for: CGRect.self) {
                 $0.frame(in: .global)
@@ -178,6 +173,7 @@ struct DominoesView: View {
             .onDisappear {
                 isShown = false
                 PushTip.chainWaits = false
+                desk.pushTipPoint = nil
                 scene.endCameraMove()
                 scene.recorder.interrupt()
                 // `onChange(of: playsFeedback)` does not run for a view that is being removed.
@@ -219,12 +215,12 @@ struct DominoesView: View {
             // down, and it points at the hand again once they end.
             .task(id: waitsForPush) {
                 PushTip.chainWaits = false
-                handPoint = nil
+                desk.pushTipPoint = nil
                 guard waitsForPush else { return }
                 try? await Task.sleep(for: .seconds(scene.blendRemaining + 0.2))
                 guard !Task.isCancelled, let size = viewport?.size else { return }
-                handPoint = scene.handPoint(in: size)
-                PushTip.chainWaits = handPoint != nil
+                desk.pushTipPoint = scene.handPoint(in: size)
+                PushTip.chainWaits = desk.pushTipPoint != nil
             }
             .onChange(of: scene.status.phase) {
                 if scene.status.phase == .running { DeskTips.pushed() }

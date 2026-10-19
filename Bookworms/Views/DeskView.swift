@@ -1,4 +1,5 @@
 import SwiftUI
+import TipKit
 
 /// The books on a desk under a lamp, in one 3D scene (`DeskScenes`): the Desk scene, which drops
 /// them onto the desk to throw around (`BookPileView`), and the dominoes that the bar's
@@ -117,6 +118,7 @@ struct DeskView: View {
                             path.append($0.id)
                         }
                     }
+                    DeskTipAnchors(desk: desk)
                 }
             }
         } else {
@@ -184,6 +186,41 @@ private struct DeskCanvas: View {
                 .ignoresSafeArea()
                 .accessibilityHidden(true)
         }
+    }
+}
+
+/// Where the Desk's tips point (`DeskTips`), over whichever scene shows: the Desk scene's tips
+/// at the book nearest the view's middle while the desk rests, and the push tip at the
+/// dominoes' hand (`DeskScenes.pushTipPoint`). The anchors lie over both scenes rather than in
+/// either, since only the modifier that presented a tip's popover can take it down, so it must
+/// outlive a switch between the scenes.
+///
+/// It tells the Desk scene's tips when the desk rests, so they show only over the resting
+/// pile's still and go when the desk wakes, the dominoes show, or Desk leaves the screen, and it
+/// finds the book once per rest.
+private struct DeskTipAnchors: View {
+    let desk: DeskScenes
+
+    /// The scenes' full size, under the bars, in which the tips' points lie.
+    @State private var size: CGSize?
+
+    var body: some View {
+        let rests = desk.isPaused && desk.mode == .desk && size != nil
+        ZStack {
+            TipAnchor(
+                tip: DeskTips.pile.currentTip,
+                point: rests ? size.flatMap { desk.pile.middleBookPoint(in: $0) } : nil)
+            TipAnchor(tip: PushTip(), point: desk.pushTipPoint)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onGeometryChange(for: CGSize.self) { proxy in
+            proxy.size
+        } action: {
+            size = $0
+        }
+        .ignoresSafeArea()
+        .onChange(of: rests, initial: true) { PickUpTip.deskRests = rests }
+        .onDisappear { PickUpTip.deskRests = false }
     }
 }
 

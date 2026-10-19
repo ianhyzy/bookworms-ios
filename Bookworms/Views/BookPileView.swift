@@ -1,6 +1,5 @@
 import RealityKit
 import SwiftUI
-import TipKit
 
 /// The pile view's full size, under the bars, and the insets of the bars that cover its edges.
 struct PileViewport: Equatable {
@@ -165,7 +164,6 @@ struct BookPileView: View {
                 )
                 .background { ScrollWheelReader(onScroll: scroll) }
             #endif
-            .overlay { PileTipAnchor(desk: desk, size: viewport?.size) }
             .allowsHitTesting(details.lift == nil)
             .onGeometryChange(for: CGRect.self) {
                 $0.frame(in: .global)
@@ -571,25 +569,6 @@ extension TimeFrame {
         case .month where !periods.months.contains(saved): return periods.months.first
         default: return saved
         }
-    }
-}
-
-/// Where the Desk scene's tips point (`DeskTips`): at the book nearest the view's middle,
-/// while the desk rests. It tells the tips' rules when the desk rests, so a tip shows only over
-/// the resting pile's still and goes when the desk wakes or Desk leaves the screen, and it
-/// finds its book once per rest.
-private struct PileTipAnchor: View {
-    let desk: DeskScenes
-    let size: CGSize?
-
-    var body: some View {
-        let rests = desk.isPaused && desk.mode == .desk && size != nil
-        TipAnchor(
-            tip: DeskTips.pile.currentTip,
-            point: rests ? size.flatMap { desk.pile.middleBookPoint(in: $0) } : nil
-        )
-        .onChange(of: rests, initial: true) { PickUpTip.deskRests = rests }
-        .onDisappear { PickUpTip.deskRests = false }
     }
 }
 

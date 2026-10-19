@@ -66,6 +66,10 @@ final class DeskScenes {
     /// The view as the pile came to rest, which shows while the desk pauses and under the view
     /// as it returns, until it draws. A full-screen still takes about 13 MB.
     private(set) var still: UIImage?
+    /// Where the push tip points (`PushTip`), in the scenes' points: the dominoes' pointing
+    /// hand, which `DominoesView` finds once the chain waits for its first push with the camera
+    /// at rest.
+    var pushTipPoint: CGPoint?
 
     let pile: BookPileScene
     let dominoes: DominoScene
