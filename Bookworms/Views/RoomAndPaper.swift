@@ -12,8 +12,8 @@ import SwiftUI
 /// High Contrast variant, which Increase Contrast selects; the room is dark in both appearances,
 /// so none has a dark variant.
 enum ShelfPalette {
-    /// The wall's lighter end, at its top, for contrast math; `ShelfWallTop` holds the same
-    /// color for drawing, and `PaletteTests` keeps the two equal.
+    /// The wall's lighter end, at its top, for contrast math. `ShelfWallTop` draws it: the same
+    /// color, which `PaletteTests` keeps equal, except under Increase Contrast, which darkens it.
     static let wallLight = ColorValue(red: 51, green: 37, blue: 27)
     /// The wall's color alone, for small stand-ins, renders, and Desk, whose scene covers the
     /// wall. Other screens draw `WalnutWall`.
