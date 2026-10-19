@@ -22,8 +22,12 @@ extension FocusedValues {
     ///
     /// Publish it once scrolling settles, not as each book passes the center during a fling.
     @Entry var centeredBook: CloudBook?
-    /// The image the Share tab's preview shows.
+    /// The image the Share tab's preview shows, while no newer image is on its way.
     @Entry var shareImage: ShareImage?
+    /// Saves the Share tab's image to a file: **File > Save Image…** (Command-S).
+    @Entry var saveShareImage: SceneAction?
+    /// Shows the Share tab's image full size in Quick Look: **View > Quick Look** (Command-Y).
+    @Entry var previewShareImage: SceneAction?
     /// Opens the Hardcover account sheet over the key window.
     @Entry var showAccount: SceneAction?
 }

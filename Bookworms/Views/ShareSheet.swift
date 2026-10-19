@@ -22,27 +22,30 @@ struct SharedFiles: Identifiable {
     var items: [Any] { urls + (text.map { [$0] } ?? []) }
 
     /// Writes `images`, each with the credit (`UIImage.withShareCredit()`), as PNG files named
-    /// after them, in order. Each call first deletes the files of the previous one, so at most
-    /// one share's files stay in the temporary folder.
+    /// after them, in order, in the temporary folder named `folder`. Each call first deletes the
+    /// files that the previous call wrote there, so at most one set of files stays in each
+    /// folder.
     ///
     /// - Throws: `CocoaError(.fileWriteUnknown)` when an image cannot be drawn or encoded, and
     ///   any error from writing the files.
     @MainActor
-    static func images(_ images: [ShareImage]) async throws -> SharedFiles {
+    static func images(_ images: [ShareImage], in folder: String = "Share") async throws
+        -> SharedFiles
+    {
         let credited = try images.map { image in
             guard let credited = image.image.withShareCredit() else {
                 throw CocoaError(.fileWriteUnknown)
             }
             return (image: credited, name: image.name)
         }
-        return SharedFiles(urls: try await write(credited))
+        return SharedFiles(urls: try await write(credited, in: folder))
     }
 
     @concurrent
-    nonisolated private static func write(_ images: [(image: UIImage, name: String)]) async throws
-        -> [URL]
-    {
-        let folder = URL.temporaryDirectory.appending(path: "Share")
+    nonisolated private static func write(
+        _ images: [(image: UIImage, name: String)], in folder: String
+    ) async throws -> [URL] {
+        let folder = URL.temporaryDirectory.appending(path: folder)
         try? FileManager.default.removeItem(at: folder)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         return try images.map { image, name in

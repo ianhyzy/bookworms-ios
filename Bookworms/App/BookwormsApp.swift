@@ -147,6 +147,7 @@ struct BookwormsApp: App {
             // Each area's menu commands, one line each (see `FocusedActions.swift`).
             .commands {
                 BookwormsCommands(model: model, generation: generation)
+                ShareCommands()
             }
             Settings {
                 MacSettingsView()

@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
     import UIKit
 #else
     import AppKit
+    import QuickLook
 #endif
 
 /// The Share tab: choose a template and its options, preview the export, and share it.
@@ -58,9 +59,18 @@ struct ShareStudioView: View {
     @State private var files: SharedFiles?
     /// Whether **Share** is adding the credit and writing the files.
     @State private var isPreparing = false
-    /// Whether a finger, or on a Mac the mouse button, holds the preview, which then shows
-    /// full size (`RootView`).
-    @GestureState private var holdsPreview = false
+    #if os(iOS)
+        /// Whether a finger holds the preview, which then shows full size (`RootView`).
+        @GestureState private var holdsPreview = false
+    #else
+        /// Whether **Save Image…** shows the save panel.
+        @State private var savesImage = false
+        /// The credited copy of the image that Quick Look shows, or `nil` while it is closed.
+        @State private var quickLookURL: URL?
+        /// The menu commands' actions, made once so that publishing them never rebuilds the
+        /// menus (`FocusedActions.swift`).
+        @State private var commands: (save: SceneAction, preview: SceneAction)?
+    #endif
     /// VoiceOver's focus on the preview, which returns there when the full-size view closes.
     @AccessibilityFocusState private var focusesPreview: Bool
     @Environment(\.fullSizeShareImage) private var fullSizeImage
@@ -167,6 +177,9 @@ struct ShareStudioView: View {
         let request = request
         // A newer design alone keeps the image shareable while the render loop draws it.
         let isPending = renderedRequest?.options != request.options
+        #if os(macOS)
+            let shownCommands = image == nil || isPending ? nil : commands
+        #endif
         NavigationStack {
             if model.library == nil {
                 NoLibraryView(showsAccount: $showsAccount)
@@ -178,6 +191,27 @@ struct ShareStudioView: View {
             }
         }
         .shareSheet($files)
+        #if os(macOS)
+            // The commands dim without an image and while a newer one is on its way.
+            .focusedSceneValue(\.shareImage, isPending ? nil : image, in: .share)
+            .focusedSceneValue(\.saveShareImage, shownCommands?.save, in: .share)
+            .focusedSceneValue(\.previewShareImage, shownCommands?.preview, in: .share)
+            .onAppear {
+                guard commands == nil else { return }
+                commands = (
+                    SceneAction { savesImage = true }, SceneAction { Task { await quickLook() } }
+                )
+            }
+            .fileExporter(
+                isPresented: $savesImage, item: image, contentTypes: [.png],
+                defaultFilename: image?.name
+            ) { result in
+                if case .failure = result {
+                    model.toasts.show(.failure("Couldn't save the image"))
+                }
+            }
+            .quickLookPreview($quickLookURL)
+        #endif
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
         .sheet(isPresented: $filmsPile) {
             PileVideoSheet(books: film.books, title: film.title, aspect: aspect, seed: seed)
@@ -277,6 +311,15 @@ struct ShareStudioView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if image != nil {
+                #if os(macOS)
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Quick Look", systemImage: "eye") {
+                            Task { await quickLook() }
+                        }
+                        .help("Show the image full size")
+                        .disabled(isPending)
+                    }
+                #endif
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Share", systemImage: "square.and.arrow.up") {
                         Task { await share() }
@@ -286,6 +329,19 @@ struct ShareStudioView: View {
             }
         }
     }
+
+    #if os(macOS)
+        /// Shows the image with its credit in Quick Look, from a file of its own, so a share in
+        /// progress, which replaces its own files, leaves the preview's file alone.
+        private func quickLook() async {
+            guard let image, renderedRequest?.options == request.options else { return }
+            do {
+                quickLookURL = try await SharedFiles.images([image], in: "Preview").urls.first
+            } catch {
+                model.toasts.show(.failure("Couldn't prepare the image"))
+            }
+        }
+    #endif
 
     private var modePicker: some View {
         Picker("Templates for", selection: $mode) {
@@ -481,9 +537,13 @@ struct ShareStudioView: View {
 
     /// The preview's image in a box shaped like it, with the render's progress over it.
     ///
-    /// Holding the image shows it full size until the finger lifts; VoiceOver's **Show full
-    /// size** action shows it until dismissed. The hold starts after a moment without movement,
-    /// so a scroll that starts on the preview still scrolls.
+    /// On an iPhone, holding the image shows it full size until the finger lifts; VoiceOver's
+    /// **Show full size** action shows it until dismissed. The hold starts after a moment without
+    /// movement, so a scroll that starts on the preview still scrolls.
+    ///
+    /// On a Mac, the image drags out as a PNG file with its credit, and once clicked, it takes
+    /// keyboard focus: Space shows it in Quick Look and Command-C copies it. VoiceOver's **Show
+    /// full size** opens Quick Look.
     private func box(isPending: Bool, maxHeight: CGFloat) -> some View {
         let size = aspect.size
         return ZStack {
@@ -493,26 +553,41 @@ struct ShareStudioView: View {
                 Image(uiImage: image.image)
                     .resizable()
                     .scaledToFit()
-                    .gesture(
-                        LongPressGesture(minimumDuration: 0.25)
-                            // The drag keeps the hold going, wherever the finger moves, until it
-                            // lifts.
-                            .sequenced(before: DragGesture(minimumDistance: 0))
-                            .updating($holdsPreview) { value, state, _ in
-                                if case .second(true, _) = value { state = true }
-                            }
-                    )
-                    // A render that finishes during the hold replaces the image shown.
-                    .onChange(of: holdsPreview ? image.image : nil) { _, shown in
-                        fullSizeImage.wrappedValue = shown
-                    }
-                    .onChange(of: fullSizeImage.wrappedValue == nil) { _, isClosed in
-                        if isClosed { focusesPreview = true }
-                    }
+                    #if os(iOS)
+                        .gesture(
+                            LongPressGesture(minimumDuration: 0.25)
+                                // The drag keeps the hold going, wherever the finger moves,
+                                // until it lifts.
+                                .sequenced(before: DragGesture(minimumDistance: 0))
+                                .updating($holdsPreview) { value, state, _ in
+                                    if case .second(true, _) = value { state = true }
+                                }
+                        )
+                        // A render that finishes during the hold replaces the image shown.
+                        .onChange(of: holdsPreview ? image.image : nil) { _, shown in
+                            fullSizeImage.wrappedValue = shown
+                        }
+                        .onChange(of: fullSizeImage.wrappedValue == nil) { _, isClosed in
+                            if isClosed { focusesPreview = true }
+                        }
+                    #else
+                        // The representation adds the credit only once the image is dropped.
+                        .draggable(image)
+                        .focusable()
+                        .copyable([image])
+                        .onKeyPress(.space) {
+                            Task { await quickLook() }
+                            return .handled
+                        }
+                    #endif
                     .accessibilityLabel("\(image.name) preview")
                     .accessibilityFocused($focusesPreview)
                     .accessibilityAction(named: "Show full size") {
-                        fullSizeImage.wrappedValue = image.image
+                        #if os(iOS)
+                            fullSizeImage.wrappedValue = image.image
+                        #else
+                            Task { await quickLook() }
+                        #endif
                     }
             }
             if template == .pile && isPending {
@@ -1018,19 +1093,35 @@ struct FullSizeShareImage: View {
     }
 }
 
-/// A rendered share image and the name its file takes, which `ShareLink` receives as PNG data.
-struct ShareImage: Transferable {
+/// A rendered share image and the name its file takes.
+///
+/// As a `Transferable`, such as an image dragged out of the preview, copied, or saved on a Mac,
+/// it is a PNG with the credit (`UIImage.withShareCredit()`), drawn only when it is dropped,
+/// pasted, or written, and named after the image, such as "Top Five 2025.png". Two values are
+/// equal when they hold the same rendered image.
+struct ShareImage: Transferable, Equatable, Sendable {
     let image: UIImage
     let name: String
     /// The books the image draws, which its share text can link.
     var books: [CloudBook] = []
 
     static var transferRepresentation: some TransferRepresentation {
-        DataRepresentation(exportedContentType: .png) { item in
-            guard let data = item.image.pngData() else { throw CocoaError(.fileWriteUnknown) }
-            return data
+        DataRepresentation(exportedContentType: .png) { item in try await item.creditedPNG() }
+            .suggestedFileName { $0.name }
+    }
+
+    static func == (lhs: ShareImage, rhs: ShareImage) -> Bool {
+        lhs.image === rhs.image && lhs.name == rhs.name
+    }
+
+    /// The image with its credit, as PNG data.
+    ///
+    /// - Throws: `CocoaError(.fileWriteUnknown)` when the image cannot be drawn or encoded.
+    @MainActor func creditedPNG() throws -> Data {
+        guard let data = image.withShareCredit()?.pngData() else {
+            throw CocoaError(.fileWriteUnknown)
         }
-        .suggestedFileName { $0.name }
+        return data
     }
 }
 
