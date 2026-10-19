@@ -122,7 +122,9 @@ struct PileSnapshotSheet: View {
                         }
                         .disabled(isPending || isPreparing)
                         #if os(macOS)
-                            .shareSheet($files, fromButton: true)
+                            .shareSheet($files, fromButton: true, showsToast: false) { outcome in
+                                if case .failed(let message) = outcome { failure = message + "." }
+                            }
                         #endif
                     }
                 }

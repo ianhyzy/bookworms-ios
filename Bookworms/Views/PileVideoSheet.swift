@@ -25,7 +25,7 @@ import os
 /// gone. The finished clip loops in the preview, except with Reduce Motion on, when it waits
 /// for **Play**; a tap pauses or plays it. The preview leaves out the credit at the clip's
 /// bottom edge, which the shared MP4 and the Live Photo carry. **Share** offers the MP4 in the
-/// share sheet, which reports the result in a toast (`shareSheet(_:onComplete:)`). **Save as
+/// share sheet, which reports the result in a toast (`shareSheet(_:fromButton:showsToast:onComplete:)`). **Save as
 /// Live Photo** asks to add to Photos, then saves the clip's last frame paired with the clip's
 /// QuickTime copy; once saved, the button says so. On an iPhone, a toast reports the result.
 ///
@@ -265,7 +265,9 @@ struct PileVideoSheet: View {
                 Button("Share", systemImage: "square.and.arrow.up") {
                     files = SharedFiles(urls: [movie.movie])
                 }
-                .shareSheet($files, fromButton: true)
+                .shareSheet($files, fromButton: true, showsToast: false) { outcome in
+                    if case .failed(let message) = outcome { failure = message + "." }
+                }
                 Button("Save Video…") { savesVideo = true }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)

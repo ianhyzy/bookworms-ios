@@ -110,9 +110,11 @@ extension View {
     /// Presents the system share sheet for `files` whenever it is set, and sets it back to `nil`
     /// once the sheet closes.
     ///
-    /// The outcome shows as a toast (`ShareOutcome.toast`), then goes to `onComplete`. SwiftUI's
-    /// `ShareLink` cannot report either, so this presents `UIActivityViewController` from a view
-    /// controller behind this view, over any sheet this view is in.
+    /// The outcome shows as a toast (`ShareOutcome.toast`) unless `showsToast` is off, then goes
+    /// to `onComplete`. SwiftUI's `ShareLink` cannot report either, so this presents
+    /// `UIActivityViewController` from a view controller behind this view, over any sheet this
+    /// view is in. A Mac sheet is a window over the main window's toasts, so it turns
+    /// `showsToast` off and reports a failure itself, such as in an alert.
     ///
     /// On a Mac, the sharing picker drops down from the view this modifies when `fromButton` is
     /// on: attach it to the share button itself. Otherwise it drops from near this view's top
@@ -120,11 +122,13 @@ extension View {
     /// the bottom wherever it is attached, so attach it to the content there, outside the
     /// toolbar.
     func shareSheet(
-        _ files: Binding<SharedFiles?>, fromButton: Bool = false,
+        _ files: Binding<SharedFiles?>, fromButton: Bool = false, showsToast: Bool = true,
         onComplete: @escaping @MainActor (ShareOutcome) -> Void = { _ in }
     ) -> some View {
         background(
-            ShareSheetPresenter(files: files, fromButton: fromButton, onComplete: onComplete))
+            ShareSheetPresenter(
+                files: files, fromButton: fromButton, showsToast: showsToast,
+                onComplete: onComplete))
     }
 }
 
@@ -138,6 +142,7 @@ extension View {
     private struct ShareSheetPresenter: NSViewRepresentable {
         @Binding var files: SharedFiles?
         let fromButton: Bool
+        let showsToast: Bool
         let onComplete: @MainActor (ShareOutcome) -> Void
         @Environment(AppModel.self) private var model
 
@@ -215,10 +220,10 @@ extension View {
             guard let files, context.coordinator.presented != files.id else { return }
             context.coordinator.presented = files.id
             let binding = $files
-            let toasts = model.toasts
+            let toasts = showsToast ? model.toasts : nil
             let onComplete = onComplete
             context.coordinator.finish = { outcome in
-                if let toast = outcome.toast { toasts.show(toast) }
+                if let toast = outcome.toast { toasts?.show(toast) }
                 binding.wrappedValue = nil
                 onComplete(outcome)
             }
@@ -238,6 +243,7 @@ extension View {
     private struct ShareSheetPresenter: UIViewControllerRepresentable {
         @Binding var files: SharedFiles?
         let fromButton: Bool
+        let showsToast: Bool
         let onComplete: @MainActor (ShareOutcome) -> Void
         @Environment(AppModel.self) private var model
 
@@ -259,13 +265,13 @@ extension View {
                 activityItems: files.items, applicationActivities: nil)
             sheet.popoverPresentationController?.sourceView = host.view
             let binding = $files
-            let toasts = model.toasts
+            let toasts = showsToast ? model.toasts : nil
             let onComplete = onComplete
             sheet.completionWithItemsHandler = { activity, completed, _, error in
                 if let error { Self.log.error("Sharing failed: \(error)") }
                 let outcome = ShareOutcome(activity: activity, completed: completed, error: error)
                 MainActor.assumeIsolated {
-                    if let toast = outcome.toast { toasts.show(toast) }
+                    if let toast = outcome.toast { toasts?.show(toast) }
                     binding.wrappedValue = nil
                     onComplete(outcome)
                 }
