@@ -417,7 +417,9 @@ final class DominoRecorder {
     /// The part of a view of `viewport` that a 9:16 recording shows, in points. It spans the
     /// view's width and puts the heading at a story's top margin, where the share images put
     /// theirs, unless that would leave out the bottom of the scene above the tab bar. A view
-    /// wider than 9:16 shows its full height, centered, which a recording pans across the view
+    /// wider than 9:16 shows its full height, centered on the part of the view that the bars
+    /// leave clear as far as the view allows. That is where the finale gathers the books
+    /// (`DominoFinale.area(in:)`), and a recording pans there from across the view
     /// (`DominoPan`).
     nonisolated static func crop(in viewport: PileViewport) -> CGRect {
         let size = viewport.size
@@ -425,7 +427,8 @@ final class DominoRecorder {
         let height = size.width * story.height / story.width
         guard height <= size.height else {
             let width = size.height * story.width / story.height
-            return CGRect(x: (size.width - width) / 2, y: 0, width: width, height: size.height)
+            let left = min(max(viewport.clear.midX - width / 2, 0), size.width - width)
+            return CGRect(x: left, y: 0, width: width, height: size.height)
         }
         let heading = viewport.insets.top + DominoFinaleCard.liveTop
         let preferred = heading - ShareAspect.story.insets.top * size.width / story.width

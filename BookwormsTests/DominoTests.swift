@@ -605,21 +605,35 @@ final class DominoTests: XCTestCase {
         let to = Transform(rotation: PileSpread.upright, translation: [3, 0.15, -2])
         let camera = PileCamera(target: [1, 0, -1], zoom: 1)
         let slope = tan(PileCamera.fieldOfView / 2)
-        // A tall paperback in a phone's portrait view, and a wide hardcover in a Mac's window.
-        for (size, aspect): (SIMD3<Float>, Float) in [
-            ([1.1, 1.8, 0.25], 0.46), ([1.9, 2.4, 0.4], 1.5),
-        ] {
-            // It hangs in the middle of the view, facing the camera squarely, head up, near
-            // enough to fill the view's width or height as far as fits, and well past the near
+        let phone = CGSize(width: 402, height: 874)
+        let mac = PileViewport(
+            size: CGSize(width: 1_180, height: 820),
+            insets: EdgeInsets(top: 52, leading: 144, bottom: 0, trailing: 0))
+        // A tall paperback in a phone's portrait view, which the spread fills whole, and a
+        // wide hardcover in a Mac's window, in the 9:16 frame clear of the sidebar.
+        let cases: [(size: SIMD3<Float>, view: CGSize, area: CGRect)] = [
+            (SIMD3(1.1, 1.8, 0.25), phone, CGRect(origin: .zero, size: phone)),
+            (SIMD3(1.9, 2.4, 0.4), mac.size, DominoFinale.area(in: mac)),
+        ]
+        for (size, view, area) in cases {
+            // It hangs in the middle of the area, facing the camera squarely, head up, near
+            // enough to fill the area's width or height as far as fits, and well past the near
             // plane.
-            let top = DominoFinale.snapTop(size: size, seenBy: camera, aspect: aspect)
+            let top = DominoFinale.snapTop(size: size, seenBy: camera, in: area, of: view)
+            let aspect = Float(view.width / view.height)
             XCTAssertEqual(
                 abs(simd_dot(top.rotation.vector, camera.rotation.vector)), 1, accuracy: 1e-5)
-            XCTAssertLessThan(simd_length(camera.project(top.translation, aspect: aspect)), 1e-4)
-            let cover = simd_distance(top.translation, camera.transform.translation) - size.z / 2
+            let middleX = Float(2 * area.midX / view.width - 1)
+            let middleY = Float(1 - 2 * area.midY / view.height)
+            let middle = SIMD2(middleX, middleY)
+            XCTAssertLessThan(
+                simd_distance(camera.project(top.translation, aspect: aspect), middle), 1e-4)
+            let local = camera.rotation.inverse.act(top.translation - camera.transform.translation)
+            let cover = -local.z - size.z / 2
             XCTAssertGreaterThan(cover, 3)
-            let width = size.x / (2 * cover * slope * aspect)
-            let height = size.y / (2 * cover * slope)
+            let share = SIMD2(Float(area.width / view.width), Float(area.height / view.height))
+            let width = size.x / (2 * cover * slope * aspect) / share.x
+            let height = size.y / (2 * cover * slope) / share.y
             XCTAssertLessThanOrEqual(width, DominoFinale.snapWidth + 1e-4)
             XCTAssertLessThanOrEqual(height, DominoFinale.snapHeight + 1e-4)
             XCTAssertEqual(
@@ -945,6 +959,41 @@ final class DominoTests: XCTestCase {
         let wide = DominoRecorder.crop(
             in: PileViewport(size: CGSize(width: 900, height: 900), insets: EdgeInsets()))
         XCTAssertEqual(wide, CGRect(x: 196.875, y: 0, width: 506.25, height: 900))
+    }
+
+    func testTheFinaleFillsTheRecordingsFrameInAWideView() {
+        // A phone's portrait view: the spread keeps the whole view, between the bars.
+        let phone = PileViewport(
+            size: CGSize(width: 402, height: 874),
+            insets: EdgeInsets(top: 176, leading: 0, bottom: 83, trailing: 0))
+        XCTAssertEqual(DominoFinale.area(in: phone), CGRect(x: 0, y: 0, width: 402, height: 874))
+        let rect = DominoFinale.spreadRect(in: phone)
+        XCTAssertEqual(rect.minX, 16, accuracy: 1e-9)
+        XCTAssertEqual(rect.minY, 176 + 402 * 0.28, accuracy: 1e-9)
+        XCTAssertEqual(rect.width, 370, accuracy: 1e-9)
+        XCTAssertEqual(rect.maxY, 874 - 83 - 24, accuracy: 1e-9)
+        // A Mac's window with the sidebar: the spread fills the recording's 9:16 frame, which
+        // centers on the part of the view the sidebar leaves clear.
+        let mac = PileViewport(
+            size: CGSize(width: 1_180, height: 820),
+            insets: EdgeInsets(top: 52, leading: 144, bottom: 0, trailing: 0))
+        let area = DominoFinale.area(in: mac)
+        XCTAssertEqual(area, DominoRecorder.crop(in: mac))
+        XCTAssertEqual(area.width / area.height, 9.0 / 16, accuracy: 1e-9)
+        XCTAssertEqual(area.height, 820)
+        XCTAssertEqual(area.midX, 144 + (1_180 - 144) / 2, accuracy: 1e-9)
+        let wide = DominoFinale.spreadRect(in: mac)
+        XCTAssertEqual(wide.minX, area.minX + 16, accuracy: 1e-9)
+        XCTAssertEqual(wide.maxX, area.maxX - 16, accuracy: 1e-9)
+        XCTAssertEqual(wide.minY, 52 + area.width * 0.28, accuracy: 1e-9)
+        XCTAssertEqual(wide.maxY, 820 - 24, accuracy: 1e-9)
+        // A narrow window keeps the frame within the view, and the spread clear of the sidebar.
+        let narrow = PileViewport(
+            size: CGSize(width: 700, height: 820),
+            insets: EdgeInsets(top: 52, leading: 300, bottom: 0, trailing: 0))
+        let squeezed = DominoFinale.area(in: narrow)
+        XCTAssertEqual(squeezed.maxX, 700, accuracy: 1e-9)
+        XCTAssertEqual(DominoFinale.spreadRect(in: narrow).minX, 316, accuracy: 1e-9)
     }
 
     func testARecordingPansAfterItsSubjectWithoutOvershooting() {
