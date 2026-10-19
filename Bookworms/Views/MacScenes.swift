@@ -67,42 +67,6 @@
         }
     }
 
-    /// The Settings window (**Bookworms > Settings…**): background generation, launch at
-    /// login, the backup spine design model, and the Hardcover account.
-    struct MacSettingsView: View {
-        @Environment(AppModel.self) private var model
-        @Environment(GenerationController.self) private var generation
-        @State private var showsAccount = false
-
-        var body: some View {
-            @Bindable var generation = generation
-            Form {
-                Section {
-                    Toggle("Generate while idle", isOn: $generation.generatesWhileCharging)
-                    LaunchAtLoginToggle()
-                } header: {
-                    Text("Spines")
-                } footer: {
-                    Text(
-                        "Bookworms keeps running in the menu bar after you close its window, and macOS runs generation when this Mac is idle. The Apple TV picks up new designs through iCloud."
-                    )
-                }
-                SpineDesignerSettings()
-                Section("Hardcover") {
-                    LabeledContent(
-                        "Account", value: model.account.isSignedIn ? "Connected" : "Not connected")
-                    Button(model.account.isSignedIn ? "Manage Account…" : "Connect Hardcover…") {
-                        showsAccount = true
-                    }
-                }
-            }
-            .formStyle(.grouped)
-            .frame(width: 520)
-            .fixedSize(horizontal: false, vertical: true)
-            .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
-        }
-    }
-
     /// Menu bar commands for the main window: a **Go** menu that closes a book's details with
     /// **Back** (Command-[) and switches sections with Command-1 through Command-4, and
     /// generation in the **Spines** menu. Other areas add their own `Commands` (see

@@ -214,7 +214,7 @@ struct ShareStudioView: View {
         #endif
         NavigationStack {
             if model.library == nil {
-                NoLibraryView(showsAccount: $showsAccount)
+                NoLibraryView(room: .share, showsAccount: $showsAccount)
                     .navigationTitle("Share")
                     // The title keeps its place when the library arrives.
                     .navigationBarTitleDisplayMode(.inline)

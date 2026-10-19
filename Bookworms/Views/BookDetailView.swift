@@ -1,20 +1,22 @@
 import SwiftUI
 
-/// A book's details: a 3D model to turn with a drag and its title, over three tabs that switch
-/// only the content below them: **Details** (the book's description and facts on a grid of
-/// cards), **Journal** (the reader's reading dates, progress, format, and review, on the same
-/// cards, and for a finished book **Pin to Top Five**), and **Style** (**Change cover**, then the
-/// spine's design: its series, colors, and **Redesign spine**).
+/// A book's details: a 3D model to turn with a drag and its title, with a section picker pinned
+/// under the bar that switches only the content below it: **Details** (the book's description
+/// and facts on a grid of cards), **Your reading** (the reader's reading dates on a date-due
+/// card, progress and format on cards, the review as a page, and for a finished book **Pin to
+/// Top Five**), and **Style** (**Change cover**, then the spine's design: its series, colors, and
+/// **Redesign spine**). In a wide Mac window, the book stands in a column of its own beside them.
 ///
 /// A book that shares its series' spine design changes the series under **Style**: the series
 /// look's or source's colors, and the cover and design of the source book
-/// (`AppModel.designSource(for:)`), from which **Redesign spines** remakes the look. With **Edit**
-/// set to **This book**, the book keeps its own design and the edits change only it.
+/// (`AppModel.designSource(for:)`), from which **Redesign spines** remakes the look. With
+/// **Changes apply to** set to **This book only**, the book keeps its own design and the edits
+/// change only it. Color, series, and cover changes register with the window's undo manager.
 ///
-/// With a `HostedBook`, the details draw no book, backdrop, or **Share** button of their own: a
-/// transparent stand-in takes the book's place and turns as it would, the host draws the book
-/// there behind the details, such as the Pile's RealityKit book or the shelf's pulled-out book,
-/// and the host's bar offers **Share**.
+/// With a `HostedBook`, the details draw no book, backdrop, or **Make share image** button of
+/// their own: a transparent stand-in takes the book's place and turns as it would, the host
+/// draws the book there behind the details, such as the Pile's RealityKit book or the shelf's
+/// pulled-out book, and the host's bar offers **Make share image**.
 struct BookDetailView: View {
     /// The book as the shelf opened it. The view shows the library's current copy, so a new
     /// cover or design appears at once.
@@ -22,8 +24,9 @@ struct BookDetailView: View {
     let hostedBook: HostedBook?
 
     @Environment(AppModel.self) private var model
+    @Environment(\.undoManager) private var undoManager
     @State private var cover: UIImage?
-    @State private var choosesCover = false
+    @State private var sheet: DetailSheet?
     /// When the reader last changed the cover here.
     @State private var coverChangedAt: Date?
     /// The chosen cover the shown spine design comes from, as far as this screen knows: the
@@ -36,6 +39,31 @@ struct BookDetailView: View {
     /// The book's description as plain text, or `nil` without one. Cleaning a long description
     /// takes milliseconds, so it happens off the main actor when the description changes.
     @State private var about: String?
+    /// Whether the details are wide enough to stand the book beside the text, on the Mac. It
+    /// changes only when the width crosses `twoColumnWidth`. The Mac's default window is wide
+    /// enough, so its details start wide. Crossing the width rebuilds the details' views: the
+    /// scroll position resets, an expanded description shrinks again, the book's drift and pose
+    /// restart, and a picked color saves.
+    #if os(macOS)
+        @State private var isWide = true
+    #else
+        @State private var isWide = false
+    #endif
+    #if DEBUG
+        /// Where `-BookwormsDetailScroll` scrolls the details.
+        @State private var debugScroll = ScrollPosition()
+    #endif
+
+    /// The narrowest details that put the book in a column of its own: its stage and a text
+    /// column of about 440 points.
+    nonisolated private static let twoColumnWidth: CGFloat = 820
+
+    /// A sheet the details show. The account sheet replaces the cover picker, rather than
+    /// opening over it, when the picker needs a sign-in.
+    private enum DetailSheet: Identifiable {
+        case cover, account
+        var id: Self { self }
+    }
 
     init(book: CloudBook, hostedBook: HostedBook? = nil) {
         opened = book
@@ -57,28 +85,28 @@ struct BookDetailView: View {
         let book = book
         let look = model.look(for: book)
         let design = model.design(for: book)
-        ScrollView {
-            VStack(spacing: 24) {
-                TurningBook(book: book, look: look, cover: cover, host: hostedBook)
-                header
-                Picker("Section", selection: $tab) {
-                    ForEach(DetailTab.allCases) { Text($0.title).tag($0) }
+        Group {
+            if isWide {
+                HStack(spacing: 0) {
+                    TurningBook(book: book, look: look, cover: cover, host: hostedBook)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    scroll { content(book: book, look: look, design: design) }
+                        .frame(maxWidth: 640)
                 }
-                .pickerStyle(.segmented)
-                tabContent(look: look, design: design)
-                    // Cards take the height they are offered, so the content keeps its own
-                    // height and the minimum height adds room below it instead.
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, minHeight: viewport, alignment: .top)
+            } else {
+                scroll {
+                    TurningBook(book: book, look: look, cover: cover, host: hostedBook)
+                    content(book: book, look: look, design: design)
+                }
             }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 24)
         }
-        .onScrollGeometryChange(for: CGFloat.self) {
-            $0.containerSize.height
-        } action: {
-            viewport = $1
-        }
+        #if os(macOS)
+            .onGeometryChange(for: Bool.self) {
+                $0.size.width >= Self.twoColumnWidth
+            } action: {
+                isWide = $0
+            }
+        #endif
         .background {
             if hostedBook == nil { WalnutWall().ignoresSafeArea() }
         }
@@ -86,7 +114,7 @@ struct BookDetailView: View {
             // A host shows its own bar, which outlasts these details as they leave.
             if hostedBook == nil {
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Share", systemImage: "square.and.arrow.up") { model.share(book) }
+                    MakeShareImageButton { model.share(book) }
                 }
             }
         }
@@ -103,17 +131,82 @@ struct BookDetailView: View {
             else { return }
             designedCover = model.designSource(for: book).chosenCoverURL
         }
-        .sheet(isPresented: $choosesCover) {
-            // The shelf sets a dark scheme for its walnut backdrop, which the sheet's content
-            // inherits; the sheet's own background must match it to keep text readable.
-            // A new cover can call for a new spine, which **Style** offers below the button.
-            // A series that shares a design takes its spine from its source's cover.
-            CoverPickerView(book: model.designSource(for: book)) { coverChangedAt = .now }
+        .sheet(item: $sheet) { sheet in
+            switch sheet {
+            case .cover:
+                // The shelf sets a dark scheme for its walnut backdrop, which the sheet's content
+                // inherits; the sheet's own background must match it to keep text readable.
+                // A new cover can call for a new spine, which **Style** offers below the button.
+                // A series that shares a design takes its spine from its source's cover.
+                CoverPickerView(
+                    book: model.designSource(for: book),
+                    scope: .init(of: book, in: model),
+                    undoManager: undoManager
+                ) {
+                    coverChangedAt = .now
+                } signIn: {
+                    self.sheet = .account
+                }
                 .preferredColorScheme(.dark)
+                .presentationSizing(.form)
+            case .account:
+                HardcoverAccountView().preferredColorScheme(.dark)
+            }
         }
         #if DEBUG
-            .onAppear { if CoverPickerDebug.opensPicker { choosesCover = true } }
+            .onAppear { if CoverPickerDebug.opensPicker { sheet = .cover } }
         #endif
+    }
+
+    /// The details' scroll view, with the section picker pinned under the bar and the content
+    /// scrolling beneath it.
+    private func scroll(@ViewBuilder content: () -> some View) -> some View {
+        ScrollView {
+            VStack(spacing: 24) { content() }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 24)
+        }
+        .onScrollGeometryChange(for: CGFloat.self) {
+            $0.containerSize.height
+        } action: {
+            viewport = $1
+        }
+        #if DEBUG
+            // `-BookwormsDetailScroll <points>` scrolls the details that far down a second after
+            // they appear, for Simulator checks.
+            .scrollPosition($debugScroll)
+            .task {
+                guard
+                    let offset = UserDefaults.standard.string(forKey: "BookwormsDetailScroll")
+                    .flatMap(Double.init)
+                else { return }
+                try? await Task.sleep(for: .seconds(1))
+                debugScroll.scrollTo(y: offset)
+            }
+        #endif
+        // Hides text that scrolls under the bar and the pinned picker. The soft style lets the
+        // book's title read through the picker's unselected segments.
+        .scrollEdgeEffectStyle(.hard, for: .top)
+        .safeAreaBar(edge: .top) {
+            Picker("Section", selection: $tab) {
+                ForEach(DetailTab.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
+        }
+    }
+
+    /// The title and the selected section's content.
+    @ViewBuilder
+    private func content(book: CloudBook, look: SpineLook, design: SpineDesignV1?) -> some View {
+        header
+        tabContent(look: look, design: design)
+            // Cards take the height they are offered, so the content keeps its own height and
+            // the minimum height adds room below it instead.
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, minHeight: viewport, alignment: .top)
     }
 
     /// Offers a run that redesigns the spine from the new cover.
@@ -163,7 +256,7 @@ struct BookDetailView: View {
                 Button(
                     series ? "Change series cover" : "Change cover",
                     systemImage: "photo.on.rectangle"
-                ) { choosesCover = true }
+                ) { sheet = .cover }
                 .buttonStyle(.bordered)
                 if coverChanged { redesignCard(series: series) }
                 designCard(look: look, design: design, offersRedesign: !coverChanged)
@@ -171,13 +264,18 @@ struct BookDetailView: View {
         }
     }
 
-    /// The reader's own record of the book, all from their reading service, with a note on where
-    /// a missing review would come from.
+    /// The reader's own record of the book, all from their reading service: the dates on a
+    /// date-due card, progress and format on cards, and the review as a page, with a note on
+    /// where a missing review would come from.
     @ViewBuilder private var journal: some View {
         let cards = DetailCard.journal(of: book)
+        let parts = DetailCard.journalParts(cards)
         VStack(spacing: 24) {
-            CardGrid(cards: cards, book: book)
-            if !cards.contains(where: { if case .review = $0 { true } else { false } }) {
+            if !parts.record.isEmpty { DateDueCard(rows: parts.record) }
+            if !parts.others.isEmpty { CardGrid(cards: parts.others, book: book) }
+            if let review = parts.review {
+                ReviewPage(review: review, book: book)
+            } else {
                 Text(
                     cards.isEmpty
                         ? "Your reading dates and review from Hardcover appear here."
@@ -213,10 +311,17 @@ enum DetailTab: String, CaseIterable, Identifiable {
     case style
 
     var id: Self { self }
-    var title: String { rawValue.capitalized }
+
+    var title: String {
+        switch self {
+        case .details: "Details"
+        case .journal: "Your reading"
+        case .style: "Style"
+        }
+    }
 }
 
-/// One card of the **Details** or **Journal** grid, with what it shows.
+/// One card of the **Details** or **Your reading** grid, with what it shows.
 enum DetailCard: Hashable {
     /// The description as plain text.
     case about(String)
@@ -277,7 +382,7 @@ enum DetailCard: Hashable {
         return cards.compactMap(\.self)
     }
 
-    /// The **Journal** cards: the reader's own record of the book, from their reading service.
+    /// The **Your reading** cards: the reader's own record of the book, from their reading service.
     /// The format card gives the length of the format read: listening time for an audiobook when
     /// known, pages otherwise.
     static func journal(of book: CloudBook) -> [DetailCard] {
@@ -294,6 +399,24 @@ enum DetailCard: Hashable {
             review?.isEmpty == false ? review.map(DetailCard.review) : nil,
         ]
         return cards.compactMap(\.self)
+    }
+
+    /// Splits **Your reading**'s cards into the date-due card's rows (start, finish, and reading
+    /// time, in order), the review, and the other cards, in order.
+    static func journalParts(_ cards: [DetailCard]) -> (
+        record: [DetailCard], review: String?, others: [DetailCard]
+    ) {
+        var record: [DetailCard] = []
+        var review: String?
+        var others: [DetailCard] = []
+        for card in cards {
+            switch card {
+            case .started, .finished, .readingTime: record.append(card)
+            case .review(let text): review = text
+            default: others.append(card)
+            }
+        }
+        return (record, review, others)
     }
 
     /// The number of readers who gave each rating, in half-star steps from half a star to five
@@ -686,14 +809,141 @@ private struct DetailCardView: View {
                 title: "Read as", systemImage: ShelfLabels.formatSymbol(format), value: format,
                 detail: length)
         case .review(let review):
-            Card {
-                caption("Your review", systemImage: "text.quote")
+            ReviewPage(review: review, book: book)
+        }
+    }
+}
+
+/// The reader's dates on a date-due card: when they started and finished the book, stamped in
+/// violet ink, and how long it took, typed, each on a printed rule. A stamp sits a degree or two
+/// off level, as an inked stamp does; the card itself lies straight. VoiceOver reads each line
+/// as one element.
+private struct DateDueCard: View {
+    /// The `.started`, `.finished`, and `.readingTime` cards to letter.
+    let rows: [DetailCard]
+
+    /// The rules' spacing, which grows with Dynamic Type so a line of text fits between them.
+    @ScaledMetric private var line: CGFloat = 34
+    @ScaledMetric private var labelColumn: CGFloat = 104
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    /// A date stamp's day, month, and year. Reading dates are days, kept at midnight GMT.
+    static let stampFormat = Date.FormatStyle(timeZone: .gmt).day().month(.abbreviated).year()
+
+    var body: some View {
+        CardStockSheet(ruleSpacing: line) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Reading record")
+                    .font(.catalogLabel)
+                    .foregroundStyle(Stationery.labelInk)
+                    .frame(maxWidth: .infinity, minHeight: line, alignment: .leading)
+                    .overlay(alignment: .bottom) {
+                        Rectangle().fill(Stationery.red).frame(height: 1)
+                            .accessibilityHidden(true)
+                    }
+                    .accessibilityAddTraits(.isHeader)
+                ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                    entryLine(row, tilt: index.isMultiple(of: 2) ? -1.5 : 1)
+                        .frame(minHeight: line)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+        }
+    }
+
+    @ViewBuilder private func entryLine(_ row: DetailCard, tilt: Double) -> some View {
+        switch row {
+        case .started(let date):
+            entry("Started", stamp: date, spoken: date.formatted(ShelfLabels.finishedFormat))
+        case .finished(let date, let reads):
+            entry(
+                "Finished", stamp: date, spoken: date.formatted(ShelfLabels.finishedFormat),
+                detail: ShelfLabels.reads(reads), tilt: tilt)
+        case .readingTime(let time):
+            entry("Reading time", typed: time)
+        default:
+            EmptyView()
+        }
+    }
+
+    /// One line: its printed label, then a stamped date or typed text, and a detail. At
+    /// accessibility text sizes, the label stands above the rest.
+    private func entry(
+        _ label: String, stamp: Date? = nil, typed: String? = nil, spoken: String? = nil,
+        detail: String? = nil, tilt: Double = -1.5
+    ) -> some View {
+        let stacked = typeSize.isAccessibilitySize
+        let layout =
+            stacked
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+            : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
+        return layout {
+            Text(label)
+                .font(.catalogLabel)
+                .foregroundStyle(Stationery.labelInk)
+                .frame(width: stacked ? nil : labelColumn, alignment: .leading)
+            if let stamp {
+                Text(stamp.formatted(Self.stampFormat).uppercased())
+                    .font(.system(.body, design: .monospaced, weight: .semibold))
+                    .foregroundStyle(Stationery.stampInk)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .rotationEffect(.degrees(tilt))
+            } else if let typed {
+                Text(typed).bookHeading()
+            }
+            if !stacked { Spacer(minLength: 0) }
+            if let detail {
+                Text(detail).font(.footnote).foregroundStyle(Stationery.labelInk)
+            }
+        }
+        .padding(.vertical, stacked ? 8 : 0)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue([spoken ?? typed, detail].compactMap(\.self).joined(separator: ", "))
+    }
+}
+
+/// The reader's review as a page: New York type with a hanging quotation mark in the margin,
+/// and a red ribbon lying down the page's edge and out past its foot, as a bookmark does.
+private struct ReviewPage: View {
+    let review: String
+    let book: CloudBook
+
+    var body: some View {
+        CardStockSheet(cornerRadius: 2) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Your review")
+                    .font(.catalogLabel)
+                    .foregroundStyle(Stationery.labelInk)
+                    .accessibilityAddTraits(.isHeader)
                 BookText(review, of: book)
+                    .bookHeading()
+                    .lineSpacing(3)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
+                    .overlay(alignment: .topLeading) {
+                        Text("\u{201C}")
+                            .font(.system(size: 44, design: .serif))
+                            .foregroundStyle(Stationery.labelInk.opacity(0.55))
+                            .offset(x: -24, y: -12)
+                            .accessibilityHidden(true)
+                    }
             }
-            .accessibilityElement(children: .combine)
+            .padding(.leading, 40)
+            .padding(.trailing, 44)
+            .padding(.vertical, 18)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .overlay(alignment: .topTrailing) {
+            Ribbon()
+                .frame(width: 12)
+                .padding(.trailing, 18)
+                .padding(.bottom, -18)
+        }
+        .padding(.bottom, 18)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -865,15 +1115,17 @@ private struct GenresCard: View {
 /// The **Spine design** card: the spine, the book's series choices (`SeriesRows`), the design's
 /// font, and its colors, which the reader can change, with **Redesign spine**.
 ///
-/// Each color opens the system color picker. The card's spine shows picked colors at once. The
-/// rest of the app shows them, and the library's store saves them, one second after the last
-/// change or when the card leaves (`AppModel.recolor(_:to:)`), so dragging in the picker
-/// neither redraws 3D textures nor writes to iCloud for each frame. Colors whose text and
-/// background contrast less than 4.5:1 show only here, with a note, and are never saved.
+/// Each color opens the system color picker: on the iPhone in a sheet, and on the Mac from an
+/// inline color well, which opens the Colors panel. The card's spine shows picked colors at
+/// once. The rest of the app shows them, and the library's store saves them, one second after
+/// the last change or when the card leaves (`AppModel.recolor(_:to:)`), so dragging in the
+/// picker neither redraws 3D textures nor writes to iCloud for each frame. Colors whose text and
+/// background contrast less than 4.5:1 show only here, with a note, and are never saved. Each
+/// save registers its undo as the library shows the new colors.
 ///
-/// The picker's sheet covers the lower half of the screen. While it shows, the card adds room
-/// below itself and scrolls its top to the top of the details, so the spine, the contrast note,
-/// and the swatches stay above the sheet.
+/// On the iPhone, the picker's sheet covers the lower half of the screen. While it shows, the
+/// card adds room below itself and scrolls its top to the top of the details, so the spine, the
+/// contrast note, and the swatches stay above the sheet.
 private struct SpineDesignCard: View {
     let book: CloudBook
     /// The look of the saved design, as the rest of the app shows it.
@@ -889,6 +1141,7 @@ private struct SpineDesignCard: View {
 
     @Environment(AppModel.self) private var model
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.undoManager) private var undoManager
     /// Picked colors that the library does not show yet, or that it shows but failed to save.
     @State private var draft: SpineColors?
     @State private var saveError: String?
@@ -899,50 +1152,23 @@ private struct SpineDesignCard: View {
 
     private static let cardID = "spine-design-card"
 
-    private var saved: SpineColors {
+    private var saved: SpineColors { Self.colors(of: look) }
+
+    private static func colors(of look: SpineLook) -> SpineColors {
         SpineColors(background: look.background, foreground: look.foreground, accent: look.accent)
     }
 
     var body: some View {
         let shown = draft ?? saved
-        ScrollViewReader { proxy in
-            VStack(spacing: 0) {
-                card(shown: shown).id(Self.cardID)
-                if picking != nil {
-                    Color.clear.containerRelativeFrame(.vertical)
-                }
-            }
-            .animation(.smooth, value: picking == nil)
-            .onChange(of: picking == nil) {
-                guard picking != nil else { return }
-                withAnimation(.smooth) { proxy.scrollTo(Self.cardID, anchor: .top) }
-            }
-        }
-        .sheet(item: $picking) { role in
-            SystemColorPicker(
-                title: "\(role.name) color", initial: shown[keyPath: role.keyPath]
-            ) { color in
-                var colors = draft ?? saved
-                colors[keyPath: role.keyPath] = color
-                draft = colors
-            } finish: {
-                picking = nil
-            }
-            #if os(iOS)
-                .presentationDetents([.medium])
+        Group {
+            #if os(macOS)
+                card(shown: shown)
+            #else
+                pickerSheetHost(shown: shown)
             #endif
         }
-        .task(id: draft) {
-            guard let draft else { return }
-            try? await Task.sleep(for: .seconds(1))
-            if !Task.isCancelled { await save(draft) }
-        }
-        .onDisappear {
-            // The card cannot report a failure once it is gone; the colors stay on screen until
-            // the next reload.
-            guard let draft, draft.isReadable else { return }
-            Task { [model, book] in try? await model.recolor(book, to: draft) }
-        }
+        .task(id: draft) { await saveAfterPause() }
+        .onDisappear(perform: saveOnLeaving)
         // A new design, such as a redesign from a new cover, replaces the colors being picked.
         // Recoloring a look sets its edit date, so the source's stored design tells instead; an
         // ordinary run's copy of the series look is no new design.
@@ -955,6 +1181,55 @@ private struct SpineDesignCard: View {
         #if DEBUG
             .onAppear(perform: applyDebugColors)
         #endif
+    }
+
+    #if os(iOS)
+        /// The card, which makes room for the color picker's sheet and scrolls above it.
+        private func pickerSheetHost(shown: SpineColors) -> some View {
+            ScrollViewReader { proxy in
+                VStack(spacing: 0) {
+                    card(shown: shown).id(Self.cardID)
+                    if picking != nil {
+                        Color.clear.containerRelativeFrame(.vertical)
+                    }
+                }
+                .animation(.smooth, value: picking == nil)
+                .onChange(of: picking == nil) {
+                    guard picking != nil else { return }
+                    withAnimation(.smooth) { proxy.scrollTo(Self.cardID, anchor: .top) }
+                }
+            }
+            .sheet(item: $picking) { role in
+                SystemColorPicker(
+                    title: "\(role.name) color", initial: shown[keyPath: role.keyPath]
+                ) { color in
+                    pick(color, for: role)
+                } finish: {
+                    picking = nil
+                }
+                .presentationDetents([.medium])
+            }
+        }
+    #endif
+
+    /// Shows `color` for `role` on the card's spine; it saves after a pause.
+    private func pick(_ color: ColorValue, for role: ColorRole) {
+        var colors = draft ?? saved
+        colors[keyPath: role.keyPath] = color
+        draft = colors
+    }
+
+    /// Saves the draft one second after the last change.
+    private func saveAfterPause() async {
+        guard let draft else { return }
+        try? await Task.sleep(for: .seconds(1))
+        if !Task.isCancelled { save(draft) }
+    }
+
+    /// Saves a draft as the card leaves. The card cannot report a failure once it is gone; the
+    /// colors stay on screen until the next reload.
+    private func saveOnLeaving() {
+        if let draft { save(draft) }
     }
 
     private func card(shown: SpineColors) -> some View {
@@ -980,19 +1255,29 @@ private struct SpineDesignCard: View {
                     typeSize.isAccessibilitySize
                     ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
                     : AnyLayout(HStackLayout(alignment: .top))
-                swatches {
+                #if os(macOS)
                     ForEach(ColorRole.allCases) { role in
-                        Swatch(role: role, color: shown[keyPath: role.keyPath]) { picking = role }
+                        ColorWellRow(role: role, color: shown[keyPath: role.keyPath]) {
+                            pick($0, for: role)
+                        }
                     }
-                }
+                #else
+                    swatches {
+                        ForEach(ColorRole.allCases) { role in
+                            Swatch(role: role, color: shown[keyPath: role.keyPath]) {
+                                picking = role
+                            }
+                        }
+                    }
+                #endif
                 if shown.isReadable {
                     if let saveError {
                         note(saveError, systemImage: "exclamationmark.icloud")
                     } else {
                         Text(
                             series == nil
-                                ? "Tap a color to change it."
-                                : "Tap a color to change it for the whole series."
+                                ? "Choose a color to change it."
+                                : "Choose a color to change it for the whole series."
                         )
                         .font(.footnote)
                         .foregroundStyle(cardNote)
@@ -1001,7 +1286,7 @@ private struct SpineDesignCard: View {
                 if let generated, shown != generated {
                     Button("Reset colors", systemImage: "arrow.uturn.backward") {
                         draft = generated
-                        Task { await save(generated) }
+                        save(generated, action: "Reset Colors")
                     }
                     .buttonStyle(.bordered)
                 }
@@ -1046,16 +1331,37 @@ private struct SpineDesignCard: View {
 
     /// Shows and saves readable `colors`, then clears the draft unless the reader has picked
     /// other colors since.
-    private func save(_ colors: SpineColors) async {
-        guard colors.isReadable else { return }
-        do {
-            try await model.recolor(book, to: colors)
-            saveError = nil
-            if draft == colors { draft = nil }
-        } catch is CancellationError {
-            // A newer draft replaced these colors.
-        } catch {
-            saveError = error.localizedDescription
+    ///
+    /// The library shows the colors at once (`AppModel.recolor(_:to:)`), so the undo named
+    /// `action` registers then, with the colors shown before, rather than when iCloud's save
+    /// returns. The save runs in a task of its own, so a later pick or the card's leaving never
+    /// cancels it. Colors the library already shows save again only after a failed save, and
+    /// register no second undo.
+    private func save(_ colors: SpineColors, action: String = "Change Color") {
+        let before = Self.colors(of: model.look(for: book))
+        guard colors.isReadable, colors != before || saveError != nil else { return }
+        if colors != before {
+            undoManager?
+                .registerStyleChange(action) { [model, book] in
+                    try await model.recolor(book, to: before)
+                } redo: { [model, book] in
+                    try await model.recolor(book, to: colors)
+                }
+        }
+        Task.immediate {
+            do {
+                try await model.recolor(book, to: colors)
+                saveError = nil
+                if draft == colors { draft = nil }
+            } catch {
+                saveError = error.localizedDescription
+                // A save that failed before the library showed the colors, or that reloaded the
+                // library for another device's design, leaves the style undo history naming
+                // colors the library no longer shows.
+                if Self.colors(of: model.look(for: book)) != colors {
+                    undoManager?.removeAllActions(withTarget: AppModel.shared)
+                }
+            }
         }
     }
 
@@ -1081,12 +1387,12 @@ private struct SpineDesignCard: View {
     #endif
 }
 
-/// The **Series** menu and the **Edit** choice of a book's spine design, saved as the book's
+/// The **Series** menu and the **Changes apply to** choice of a book's spine design, saved as the book's
 /// `SeriesLinkV1` (`AppModel.setSeriesLink(for:linkedSeriesID:standsAlone:ownLook:)`).
 ///
 /// **Series** chooses the series whose look the book draws: by default its shortest series
 /// (`SeriesDesigns.styleSeries(of:link:)`), or another of its Hardcover series, or none. It shows
-/// when the book has a series or a link. **Edit** chooses whether recoloring, **Reset colors**,
+/// when the book has a series or a link. **Changes apply to** chooses whether recoloring, **Reset colors**,
 /// and **Redesign spine** change the series' look or only this book, which then draws its own
 /// design. It shows when the book's look group has a saved look or another book
 /// (`AppModel.choosesEditScope(for:)`). A choice shows at once and stays while it saves; a failed
@@ -1121,6 +1427,7 @@ private struct SeriesRows: View {
     let book: CloudBook
 
     @Environment(AppModel.self) private var model
+    @Environment(\.undoManager) private var undoManager
     /// The choice being saved, shown until the library has it.
     @State private var saving: Choice?
 
@@ -1159,9 +1466,9 @@ private struct SeriesRows: View {
             }
         }
         if model.choosesEditScope(for: book) {
-            LabeledContent("Edit") {
+            LabeledContent("Changes apply to") {
                 Picker(
-                    "Edit",
+                    "Changes apply to",
                     selection: Binding {
                         choice.ownLook
                     } set: {
@@ -1170,8 +1477,8 @@ private struct SeriesRows: View {
                         choose(new)
                     }
                 ) {
-                    Text("Series").tag(false)
-                    Text("This book").tag(true)
+                    Text("Whole series").tag(false)
+                    Text("This book only").tag(true)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
@@ -1199,19 +1506,30 @@ private struct SeriesRows: View {
     }
 
     private func choose(_ new: Choice) {
+        let old = saving ?? Choice(book.seriesLink)
         saving = new
-        var linked: Int?
-        if case .linked(let id) = new.series { linked = id }
-        Task {
+        Task { [model, book, undoManager] in
             do {
-                try await model.setSeriesLink(
-                    for: book, linkedSeriesID: linked, standsAlone: new.series == .alone,
-                    ownLook: new.ownLook)
+                try await Self.save(new, for: book, model: model)
+                undoManager?
+                    .registerStyleChange("Change Series Choice") {
+                        try await Self.save(old, for: book, model: model)
+                    } redo: {
+                        try await Self.save(new, for: book, model: model)
+                    }
             } catch {
                 model.toasts.show(.failure("Couldn't save the series choice"))
             }
             if saving == new { saving = nil }
         }
+    }
+
+    private static func save(_ choice: Choice, for book: CloudBook, model: AppModel) async throws {
+        var linked: Int?
+        if case .linked(let id) = choice.series { linked = id }
+        try await model.setSeriesLink(
+            for: book, linkedSeriesID: linked, standsAlone: choice.series == .alone,
+            ownLook: choice.ownLook)
     }
 }
 
@@ -1341,38 +1659,38 @@ private struct Swatch: View {
     }
 }
 
-/// The system color picker, without opacity, reporting each pick and the picker's close.
-///
-/// SwiftUI's `ColorPicker` opens the same picker but reports neither its opening nor its close,
-/// which the **Spine design** card needs to move above the picker's sheet and back. The card
-/// presents this picker in its own sheet instead.
 #if os(macOS)
-    /// The Mac's color well, which opens the system color panel, in a small sheet whose **Done**
-    /// ends picking.
-    private struct SystemColorPicker: View {
-        let title: String
-        let initial: ColorValue
+    /// One design color on the Mac: its role, its hex value, and an inline color well, which
+    /// opens the Colors panel and reports each pick, without opacity.
+    private struct ColorWellRow: View {
+        let role: ColorRole
+        let color: ColorValue
         let pick: (ColorValue) -> Void
-        let finish: () -> Void
-        @State private var color: Color?
 
         var body: some View {
-            VStack(spacing: 16) {
-                ColorPicker(
-                    title,
-                    selection: Binding(
-                        get: { color ?? Color(uiColor: initial.uiColor) },
-                        set: { color = $0 }),
-                    supportsOpacity: false)
-                Button("Done", action: finish).keyboardShortcut(.defaultAction)
-            }
-            .padding(24)
-            .onChange(of: color) { _, color in
-                if let color { pick(ColorValue(color)) }
+            LabeledContent {
+                HStack(spacing: 10) {
+                    Text(color.hex).font(.callout.monospaced()).foregroundStyle(cardNote)
+                    ColorPicker(
+                        "\(role.name) color",
+                        selection: Binding(
+                            get: { Color(uiColor: color.uiColor) },
+                            set: { pick(ColorValue($0)) }),
+                        supportsOpacity: false
+                    )
+                    .labelsHidden()
+                }
+            } label: {
+                Text(role.name)
             }
         }
     }
 #else
+    /// The system color picker, without opacity, reporting each pick and the picker's close.
+    ///
+    /// SwiftUI's `ColorPicker` opens the same picker but reports neither its opening nor its
+    /// close, which the **Spine design** card needs to move above the picker's sheet and back.
+    /// The card presents this picker in its own sheet instead.
     private struct SystemColorPicker: UIViewControllerRepresentable {
         let title: String
         let initial: ColorValue
@@ -1419,5 +1737,41 @@ extension ColorValue {
         let resolved = color.resolve(in: EnvironmentValues())
         func byte(_ value: Float) -> Int { Int((min(max(value, 0), 1) * 255).rounded()) }
         self.init(red: byte(resolved.red), green: byte(resolved.green), blue: byte(resolved.blue))
+    }
+}
+
+/// **Make share image**, with the Share tab's keepsake-card symbol: it opens the Share tab with
+/// the book (`AppModel.share(_:)`) rather than a share sheet. The details' bar and their hosts'
+/// bars show it.
+struct MakeShareImageButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) { Label("Make share image", image: "tab.share") }
+            .help("Make a share image with this book")
+    }
+}
+
+extension UndoManager {
+    /// Registers `revert` as the undo of a style change, named `name`, such as "Change Color",
+    /// with `redo` as its redo, so **Edit > Undo** and **Redo**, or shaking the iPhone, alternate
+    /// between them. Each runs in a task of its own, and a failure shows a toast. Every style
+    /// change targets `AppModel.shared`, so `removeAllActions(withTarget:)` with it clears them.
+    func registerStyleChange(
+        _ name: String, revert: @escaping @MainActor () async throws -> Void,
+        redo: @escaping @MainActor () async throws -> Void
+    ) {
+        // Weak, so the registered action doesn't keep its manager alive.
+        registerUndo(withTarget: AppModel.shared) { [weak self] model in
+            Task {
+                do {
+                    try await revert()
+                } catch {
+                    model.toasts.show(.failure("Couldn't change the style back"))
+                }
+            }
+            self?.registerStyleChange(name, revert: redo, redo: revert)
+        }
+        setActionName(name)
     }
 }

@@ -201,6 +201,24 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(DetailCard.journal(of: book(3, "Unrecorded")), [])
     }
 
+    func testYourReadingPutsTheDatesOnTheDateDueCard() throws {
+        let started = Date(timeIntervalSince1970: 1_700_000_000)
+        let finished = started.addingTimeInterval(86_400 * 9)
+        let parts = DetailCard.journalParts([
+            .status(progress: nil), .started(started), .finished(finished, reads: 2),
+            .readingTime("9 days"), .format("Ebook", length: nil), .review("A keeper."),
+        ])
+        XCTAssertEqual(
+            parts.record,
+            [.started(started), .finished(finished, reads: 2), .readingTime("9 days")])
+        XCTAssertEqual(parts.review, "A keeper.")
+        XCTAssertEqual(parts.others, [.status(progress: nil), .format("Ebook", length: nil)])
+        let none = DetailCard.journalParts([])
+        XCTAssertEqual(none.record, [])
+        XCTAssertNil(none.review)
+        XCTAssertEqual(none.others, [])
+    }
+
     func testCardRowsPairHalfCardsWithoutHoles() {
         let about = DetailCard.about("A keeper tends the last lantern.")
         let rating = DetailCard.rating(average: 4, count: 10, counts: nil, yours: nil)

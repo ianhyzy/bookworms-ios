@@ -7,23 +7,52 @@ import SwiftUI
 #endif
 
 /// Lets the reader choose `book`'s cover from the covers of its Hardcover editions, or return to
-/// the default cover.
+/// the default cover. The covers lie like editions on the walnut table, each with a soft shadow,
+/// and a ribbon marks the current one.
 ///
 /// The choice is saved to iCloud as a `CoverChoiceV1` record, and every view, share image, and
-/// generation run then uses it. Finding covers needs this iPhone's Hardcover sign-in; signed
-/// out or with a rejected login, the sheet explains that and offers to connect or reconnect.
+/// generation run then uses it; the choice registers its undo with `undoManager`. Finding covers
+/// needs this device's Hardcover sign-in; signed out or with a rejected login, the sheet explains
+/// that and offers to connect or reconnect, which closes the picker for the account sheet.
+///
+/// For a series that shares a design, `book` is the book the design comes from, and the sheet
+/// says so: it is titled **Series cover**, names that book, and says the cover is used for every
+/// book in the series.
 struct CoverPickerView: View {
+    /// Whose spine the cover sets: the book's own, or its whole series'.
+    enum Scope {
+        case book
+        /// The series, named when its memberships name it.
+        case series(name: String?)
+
+        /// `book`'s series when it shares a design, else the book alone.
+        @MainActor
+        init(of book: CloudBook, in model: AppModel) {
+            guard model.sharesSeriesDesign(book) else {
+                self = .book
+                return
+            }
+            let id = SeriesDesigns.styleSeries(of: book, link: book.seriesLink)?.id
+            self = .series(
+                name: book.seriesMemberships?.first { $0.seriesID == id }?.name
+                    ?? (id != nil && id == book.seriesID ? book.seriesName : nil))
+        }
+    }
+
     let book: CloudBook
+    let scope: Scope
+    let undoManager: UndoManager?
     /// Called after the book's cover changes.
     let onChange: () -> Void
+    /// Called to sign in or reconnect, after which the presenter shows the account sheet in
+    /// place of this one.
+    let signIn: () -> Void
 
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.colorScheme) private var colorScheme
     @State private var covers: Result<[EditionCover], any Error>?
     @State private var isSaving = false
     @State private var saveError: String?
-    @State private var showsAccount = false
     /// Grows with Dynamic Type, up to a width that keeps two columns on an iPhone.
     @ScaledMetric private var cellWidth: CGFloat = 104
 
@@ -38,7 +67,9 @@ struct CoverPickerView: View {
         NavigationStack {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .navigationTitle("Change cover")
+                .background { WalnutWall().ignoresSafeArea() }
+                .navigationTitle(isSeries ? "Series cover" : "Change cover")
+                .navigationSubtitle(isSeries ? book.title : "")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
@@ -46,15 +77,14 @@ struct CoverPickerView: View {
                     }
                 }
         }
+        // The walnut room's controls take the lamp's light, so the prominent buttons, whose
+        // white label the pale light would wash out, take dark ink.
+        .tint(ShelfPalette.lamp)
         // A sign-in or reconnect changes the library revision, even when it finishes after the
         // account sheet closes, so covers load again. A grid already shown stays.
         .task(id: model.account.libraryRevision) {
             if case .success = covers { return }
             await load()
-        }
-        // Inherits this sheet's color scheme, as this sheet inherits the shelf's.
-        .sheet(isPresented: $showsAccount) {
-            HardcoverAccountView().preferredColorScheme(colorScheme)
         }
         .alert(
             "The cover was not changed",
@@ -77,8 +107,9 @@ struct CoverPickerView: View {
                     "Bookworms finds other covers in the editions Hardcover lists for this book. Connect your Hardcover account to choose one."
                 )
             ) {
-                Button("Connect Hardcover") { showsAccount = true }
-                    .buttonStyle(.bordered)
+                Button("Connect Hardcover", action: signIn)
+                    .buttonStyle(.glassProminent)
+                    .foregroundStyle(Stationery.ink)
             }
         } else {
             switch covers {
@@ -95,9 +126,10 @@ struct CoverPickerView: View {
                 ) {
                     Button("Reconnect Hardcover") {
                         model.account.startSignIn()
-                        showsAccount = true
+                        signIn()
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.glassProminent)
+                    .foregroundStyle(Stationery.ink)
                 }
             case .failure(let error):
                 unavailable(
@@ -145,12 +177,20 @@ struct CoverPickerView: View {
                         "No other covers", systemImage: "photo.on.rectangle",
                         description: Text("Hardcover lists no other covers for this book."))
                 }
+                if case .series(let name) = scope {
+                    Text(
+                        name.map { "Used for every book in \($0)." }
+                            ?? "Used for every book in this series."
+                    )
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                }
                 LazyVGrid(
                     columns: [
                         GridItem(
-                            .adaptive(minimum: min(cellWidth, 160)), spacing: 12, alignment: .top)
+                            .adaptive(minimum: min(cellWidth, 160)), spacing: 16, alignment: .top)
                     ],
-                    spacing: 16
+                    spacing: 24
                 ) {
                     ForEach(covers) { cover in
                         CoverCell(book: book, cover: cover, isCurrent: cover.url == current) {
@@ -195,16 +235,38 @@ struct CoverPickerView: View {
         #endif
     }
 
-    /// Saves `cover`, or the default cover for `nil`, and closes the sheet once it is saved.
+    private var isSeries: Bool {
+        if case .series = scope { true } else { false }
+    }
+
+    /// Saves `cover`, or the default cover for `nil`, registers its undo, and closes the sheet
+    /// once it is saved. The undo needs the previous cover's edition, so a chosen cover that
+    /// Hardcover no longer lists can't be restored by an undo.
     private func choose(_ cover: EditionCover?) {
         guard !isSaving else { return }
         let unchanged =
             cover.map { $0.url == book.coverCandidates.first } ?? (book.chosenCoverURL == nil)
         guard !unchanged else { return dismiss() }
+        let listed = (try? covers?.get()) ?? []
+        // `nil` restores the default cover.
+        let previous: EditionCover?? =
+            if let url = book.chosenCoverURL {
+                listed.first { $0.url == url }.map { .some($0) }
+            } else {
+                .some(nil)
+            }
         isSaving = true
-        Task {
+        Task { [model, book, undoManager] in
             do {
                 try await model.chooseCover(cover, for: book)
+                if let previous {
+                    undoManager?
+                        .registerStyleChange("Change Cover") {
+                            try await model.chooseCover(previous, for: book)
+                        } redo: {
+                            try await model.chooseCover(cover, for: book)
+                        }
+                }
                 onChange()
                 dismiss()
             } catch {
@@ -227,10 +289,11 @@ private struct CoverCell: View {
     @State private var failed = false
 
     var body: some View {
-        let format = ShelfLabels.format(cover.format)
+        // "Hardcover" would read as the service's name.
+        let format = ShelfLabels.format(cover.format).map { $0 == "Hardcover" ? "Hardback" : $0 }
         let year = cover.year.map { String($0) }
         Button(action: choose) {
-            VStack(spacing: 6) {
+            VStack(spacing: 6 + Self.ribbonReach) {
                 thumbnail
                 Text([format, year].compactMap(\.self).joined(separator: " · "))
                     .font(.caption)
@@ -264,6 +327,8 @@ private struct CoverCell: View {
         }
     }
 
+    /// The cover lying on the table with a soft shadow, and for the current cover, a ribbon
+    /// that comes out from under its foot, as a bookmark does.
     private var thumbnail: some View {
         Color.clear
             .aspectRatio(2 / 3, contentMode: .fit)
@@ -279,25 +344,28 @@ private struct CoverCell: View {
                 }
             }
             .background(.quaternary)
-            .clipShape(.rect(cornerRadius: 6))
+            .clipShape(.rect(cornerRadius: 3))
             .overlay {
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: 3)
                     .strokeBorder(
-                        isCurrent ? AnyShapeStyle(.tint) : AnyShapeStyle(.clear), lineWidth: 3)
+                        isCurrent ? AnyShapeStyle(.tint) : AnyShapeStyle(.clear), lineWidth: 2)
             }
-            .overlay(alignment: .topTrailing) {
-                if isCurrent {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.title2)
-                        // Larger, the badge would hide the art it marks; the tint border and
-                        // VoiceOver's selected trait also mark the current cover.
-                        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(.black, .tint)
-                        .padding(6)
+            // The ribbon lies under the cover, so only the end that comes out shows.
+            .background(alignment: .bottomTrailing) {
+                ZStack(alignment: .bottomTrailing) {
+                    SoftShadow(cornerRadius: 3)
+                    if isCurrent {
+                        Ribbon()
+                            .frame(width: 13, height: 30)
+                            .padding(.trailing, 14)
+                            .offset(y: Self.ribbonReach)
+                    }
                 }
             }
     }
+
+    /// How far the current cover's ribbon comes out past its foot.
+    static let ribbonReach: CGFloat = 16
 }
 
 #if DEBUG

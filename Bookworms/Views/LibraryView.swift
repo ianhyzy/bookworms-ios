@@ -281,7 +281,7 @@ private struct LibraryBar: ViewModifier {
                         Button("Back", systemImage: "chevron.backward") { pullOut.putBack() }
                     }
                     ToolbarItem(placement: .primaryAction) {
-                        Button("Share", systemImage: "square.and.arrow.up") {
+                        MakeShareImageButton {
                             pullOut.keepsForShare = true
                             model.share(book)
                         }
