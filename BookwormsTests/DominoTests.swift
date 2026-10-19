@@ -947,6 +947,41 @@ final class DominoTests: XCTestCase {
         XCTAssertEqual(wide, CGRect(x: 196.875, y: 0, width: 506.25, height: 900))
     }
 
+    func testARecordingPansAfterItsSubjectWithoutOvershooting() {
+        // A frame 450 points wide in a view 1,200 wide, centered to start with.
+        let range: ClosedRange<CGFloat> = 0...750
+        let step = 1.0 / 60
+        var pan = DominoPan(left: 375)
+        var lefts: [CGFloat] = []
+        // The subject sweeps right at 300 points a second for a second, then stops.
+        for frame in 1...180 {
+            let goal = 375 + 300 * CGFloat(min(frame, 60)) * step
+            pan.step(toward: goal, within: range, by: step)
+            XCTAssertLessThanOrEqual(pan.left, goal, "frame \(frame)")
+            if frame == 60 {
+                // It trails a steady sweep by about 2 / rate seconds.
+                XCTAssertEqual(goal - pan.left, 300 * 2 / DominoPan.rate, accuracy: 10)
+            }
+            lefts.append(pan.left)
+        }
+        XCTAssertEqual(lefts.last ?? 0, 675, accuracy: 1)
+        // It moves one way only, never faster than the subject.
+        for (before, after) in zip(lefts, lefts.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(after, before)
+            XCTAssertLessThanOrEqual(after - before, 300 * step + 1e-9)
+        }
+        // A subject past the view's edge holds the frame at the edge.
+        for _ in 0..<120 { pan.step(toward: 1_100, within: range, by: step) }
+        XCTAssertLessThanOrEqual(pan.left, 750)
+        XCTAssertEqual(pan.left, 750, accuracy: 1)
+        pan.step(toward: -200, within: range, by: .infinity)
+        XCTAssertEqual(pan.left, 0)
+        // A frame as wide as the view, as on an iPhone, stays put.
+        var phone = DominoPan(left: 0)
+        phone.step(toward: 120, within: 0...0, by: 1)
+        XCTAssertEqual(phone.left, 0)
+    }
+
     /// Whether two standing books' footprints overlap, taking each as wide as its height allows,
     /// by the separating axis test.
     private func overlap(_ a: DominoSlot, _ b: DominoSlot) -> Bool {

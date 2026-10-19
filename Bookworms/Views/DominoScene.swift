@@ -1984,13 +1984,34 @@ final class DominoScene {
         updateHand(by: deltaTime)
         updateFinale(by: deltaTime)
         recorder.advance(
-            by: deltaTime, phase: status.phase, progress: runProgress, paused: flying != nil)
+            by: deltaTime, phase: status.phase, progress: runProgress, paused: flying != nil,
+            subject: recordingSubject)
     }
 
     /// How far the chain has fallen along the path, from 0 at the first book to 1 at the last.
     private var runProgress: Float {
         guard let length = slots.last?.distance, length > 0 else { return 1 }
         return min(1, frontDistance / length)
+    }
+
+    /// Where a recording's frame centers across the view, as a share of its width, or `nil`
+    /// to leave it where it is (see `DominoRecorder`): between the pointing hand and the book
+    /// it points at until the push, the falling front while the chain runs (`action`), where
+    /// the last book lands until the books start to gather (`landing`), and then the point the
+    /// spread's view looks at, where the last book springs up in the middle of the view once
+    /// the camera rests.
+    private var recordingSubject: CGFloat? {
+        let point: SIMD3<Float>?
+        if let ending, !ending.flights.isEmpty {
+            point = ending.camera.target
+        } else if next >= books.count {
+            point = landing
+        } else if started {
+            point = action
+        } else {
+            point = marker.isEnabled ? (marker.position + hand.position(relativeTo: root)) / 2 : nil
+        }
+        return point.flatMap { screenPoint(of: $0, in: CGSize(width: 1, height: 1))?.x }
     }
 
     /// How far along the path the chain's front has come: the next book's place, and as much
@@ -2335,15 +2356,20 @@ final class DominoScene {
         let moves = follows && cameraMove == nil
         handoff = nil
         cameraMove = nil
-        // The last book's middle as it lies, half its height past its place. The overview shows
-        // it with the rest of the chain, so the move does not turn to it.
-        let last = slots[slots.count - 1]
-        let landing = last.position + last.heading * last.size.y / 2
+        // The overview shows the last book with the rest of the chain, so the move does not
+        // turn to it.
         ending = Ending(
             start: camera.transform, motion: moves ? motion : Motion(),
-            focus: moves && mode == .follow ? [landing.x, last.size.z / 2, landing.y] : nil,
-            slots: placed.slots, camera: placed.camera)
+            focus: moves && mode == .follow ? landing : nil, slots: placed.slots,
+            camera: placed.camera)
         if !reducesMotion, let book = placed.slots.last?.book { sharpenCover(of: book) }
+    }
+
+    /// The last book's middle as it lies once it has fallen, half its height past its place.
+    private var landing: SIMD3<Float>? {
+        guard let last = slots.last else { return nil }
+        let point = last.position + last.heading * last.size.y / 2
+        return [point.x, last.size.z / 2, point.y]
     }
 
     /// Gives `book`, the spread's last, a cover of `DominoFinale.snapCoverPixels` before its
