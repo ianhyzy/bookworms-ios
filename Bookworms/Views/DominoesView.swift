@@ -213,11 +213,11 @@ struct DominoesView: View {
             // The hand holds still before the first push, so the tip points at it once the
             // camera has come to rest. A camera move or a lifted book's details take the tip
             // down, and it points at the hand again once they end.
-            .task(id: waitsForPush) {
+            .task(id: waitsForPush && scene.isCameraSettled) {
                 PushTip.chainWaits = false
                 desk.pushTipPoint = nil
-                guard waitsForPush else { return }
-                try? await Task.sleep(for: .seconds(scene.settleRemaining + 0.2))
+                guard waitsForPush, scene.isCameraSettled else { return }
+                try? await Task.sleep(for: .seconds(0.2))
                 guard !Task.isCancelled, let size = viewport?.size else { return }
                 desk.pushTipPoint = scene.handPoint(in: size)
                 PushTip.chainWaits = desk.pushTipPoint != nil

@@ -1771,18 +1771,11 @@ final class DominoScene {
     /// the books gather.
     private var canLift: Bool { isReady && !isGathering && root.scene != nil }
 
-    /// How long until the camera's blend from one view to another ends, in seconds, or 0 when
-    /// no blend runs.
-    var blendRemaining: TimeInterval {
-        handoff.map { TimeInterval(max($0.duration - $0.time, 0)) } ?? 0
-    }
-
-    /// How long until the camera comes to rest before the first push: the blend, and in Follow
-    /// the establishing move that ends on the first book. 0 once it rests.
-    var settleRemaining: TimeInterval {
-        let establishing = follows ? TimeInterval(rig?.establishRemaining ?? 0) : 0
-        return max(blendRemaining, establishing)
-    }
+    /// Whether the camera rests for the push tip: no blend runs and, in Follow, the camera rig
+    /// exists and its establishing move has ended on the first book. The scene's updates set
+    /// it, only when it changes, so it stays put while updates pause and views that read it
+    /// don't redraw each frame.
+    private(set) var isCameraSettled = false
 
     /// Where the pointing hand shows, in points in a view of `size`, or `nil` while no hand
     /// shows: where the push tip points (`PushTip`).
@@ -1953,6 +1946,8 @@ final class DominoScene {
             updateCamera(Float(deltaTime))
             updateFlight(deltaTime)
             updateLamp(by: Float(deltaTime))
+            let settled = handoff == nil && (!follows || rig?.isEstablished == true)
+            if settled != isCameraSettled { isCameraSettled = settled }
         }
         enter(by: deltaTime)
         arrange(by: deltaTime)
