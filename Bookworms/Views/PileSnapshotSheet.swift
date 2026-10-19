@@ -103,6 +103,8 @@ struct PileSnapshotSheet: View {
                     Toggle("Show profile link", isOn: $showsProfileLink)
                         .accessibilityHint("Letters your Hardcover profile link on the image.")
                         .fixedSize()
+                        // The image being prepared already letters the link, or doesn't.
+                        .disabled(isPreparing)
                 }
             }
             .padding()
@@ -192,6 +194,9 @@ struct PileSnapshotSheet: View {
     private func share(_ image: ShareImage) async {
         isPreparing = true
         defer { isPreparing = false }
+        // The text names the same profile as the image, whatever the toggle says by the time
+        // the files are ready.
+        let username = username
         do {
             files = try await SharedFiles.images([image])
             files?.text = HardcoverInvite.readingText(books: image.books, username: username)

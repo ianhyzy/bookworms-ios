@@ -432,6 +432,7 @@ struct ShareStudioView: View {
                         // Keeps the size picker's width where the template has one style.
                         .opacity(template.hasCoverStyle ? 1 : 0)
                         .accessibilityHidden(!template.hasCoverStyle)
+                        .disabled(!template.hasCoverStyle)
                 }
                 .frame(maxWidth: 460)
             #endif
@@ -559,17 +560,17 @@ struct ShareStudioView: View {
     /// A comparison's text invites its viewers to compare on Hardcover. A **My reading** image's
     /// text links its books and the sharer's profile (`HardcoverInvite.readingText`).
     private func share() async {
-        guard let image else { return }
+        // The request this image was drawn for, before a new render can replace it.
+        guard let image, let request = renderedRequest else { return }
         isPreparing = true
         defer { isPreparing = false }
         do {
             var shared = try await SharedFiles.images([image])
             // A **My reading** image's text links the profile only when the image letters it.
             shared.text =
-                renderedRequest?.readerID != nil
+                request.readerID != nil
                 ? (model.social.owner?.username).map(HardcoverInvite.shareText)
-                : HardcoverInvite.readingText(
-                    books: image.books, username: renderedRequest?.username)
+                : HardcoverInvite.readingText(books: image.books, username: request.username)
             files = shared
         } catch {
             model.toasts.show(.failure("Couldn't prepare the image"))
