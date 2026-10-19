@@ -24,7 +24,9 @@ import UniformTypeIdentifiers
 /// the shown reader's.
 ///
 /// The app saves the mode, template, size, time frame, and **Show profile link**, so the tab
-/// opens as it was left.
+/// opens as it was left, except that it never opens on Desk: a Desk image takes seconds of
+/// RealityKit work, which a launch should not start before the reader asks for it. Choosing
+/// Desk leaves the template chosen before it saved.
 ///
 /// Without a library, the tab shows `NoLibraryView` instead, which can open the Hardcover sheet.
 struct ShareStudioView: View {
@@ -37,7 +39,7 @@ struct ShareStudioView: View {
 
     @Environment(AppModel.self) private var model
     @AppStorage(Self.modeKey) private var mode = ShareMode.mine
-    @AppStorage(Self.templateKey) private var template = ShareTemplate.topFive
+    @State private var template = Self.savedTemplate
     /// The reader chosen under **Compare with**: `nil`, or a reader no longer listed, is the
     /// best match.
     @State private var readerID: Int?
@@ -103,6 +105,7 @@ struct ShareStudioView: View {
     init() {
         #if DEBUG
             ShareDebug.saveLaunchChoices()
+            _template = State(initialValue: Self.savedTemplate)
             let defaults = UserDefaults.standard
             guard defaults.string(forKey: "BookwormsShareTemplate") != nil else { return }
             _bookID = State(
@@ -117,6 +120,12 @@ struct ShareStudioView: View {
                 initialValue: defaults.string(forKey: "BookwormsShareSeed").flatMap { UInt64($0) }
                     ?? 0)
         #endif
+    }
+
+    /// The template last chosen other than Desk, which a launch opens on.
+    private static var savedTemplate: ShareTemplate {
+        UserDefaults.standard.string(forKey: templateKey).flatMap(ShareTemplate.init(rawValue:))
+            ?? .topFive
     }
 
     /// The chosen time frame: `nil`, or a frame without finished books, is the newest year.
@@ -255,6 +264,10 @@ struct ShareStudioView: View {
         }
         .onChange(of: model.books, initial: true) { _, books in
             periods = TimeFrame.periods(in: books)
+        }
+        .onChange(of: template) { _, template in
+            guard template != .pile else { return }
+            UserDefaults.standard.set(template.rawValue, forKey: Self.templateKey)
         }
         .onChange(of: mode) { oldMode, mode in
             if mode == .mine, oldMode.templates.contains(template) {
