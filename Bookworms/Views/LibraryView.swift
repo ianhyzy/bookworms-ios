@@ -84,11 +84,13 @@ struct LibraryView: View {
         // What the menu bar's **Library** and **View** commands act on (`LibraryCommands`).
         .focusedSceneValue(
             \.libraryActions,
-            options.map { options in
-                LibraryActions(
-                    years: options.years, find: { findsBook = true }, open: open,
-                    changeCover: { coverBook = $0 })
-            }, in: .library
+            // Pushed details hide the stack, so its centered book takes no commands then.
+            path.isEmpty
+                ? options.map { options in
+                    LibraryActions(
+                        years: options.years, find: { findsBook = true }, open: open,
+                        changeCover: { coverBook = $0 })
+                } : nil, in: .library
         )
         // Outside the dark scheme and tint, so the account sheet follows the system appearance.
         // Kept on the stack, so the sheet stays open when the library it brings replaces the
@@ -237,7 +239,11 @@ struct LibraryView: View {
             centeredID = book.id
             Task {
                 try? await Task.sleep(for: .seconds(SpineCarousel.glide))
-                if mode == .stack { pullOut.pull(book, upright: false) }
+                // A scroll, a new sort or time, or a library update during the glide can move
+                // the book away, so it comes out only if it is still the centered one.
+                guard mode == .stack, centeredID == book.id, path.isEmpty, pullOut.book == nil
+                else { return }
+                pullOut.pull(book, upright: false)
             }
         } else {
             pullOut.pull(book, upright: mode == .shelf)
