@@ -193,7 +193,7 @@ final class ShelfPullOut {
 /// 1. The book slides out of its place, straight toward the reader, which shows as its spine
 ///    growing. On **Stack**, it comes out along the way its spine faces (`slide`), so a turned
 ///    book also moves a little to that side, and a flat one down the screen, so it stays clear
-///    of the book above, while the books above and below make a little room (`StackRoom`). The
+///    of the book above, while the books above make a little room (`StackRoom`). The
 ///    stack draws this part itself, over the books around it (`Rest.slidesInStack`). The book
 ///    casts a shadow on the shelf, and the faces' shading fades in.
 /// 2. As the slide ends, the book starts to float to the stage, growing or shrinking to the
