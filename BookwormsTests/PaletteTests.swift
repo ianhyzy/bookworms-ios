@@ -41,7 +41,7 @@ final class PaletteTests: XCTestCase {
     /// prominent buttons and filled toggles draw them: 4.5:1 for light appearance's labels, 7:1
     /// under Increase Contrast, and 3:1, the large text and icon minimum, in dark appearance, as
     /// the system's dark blue does. A dark accent light enough for 7:1 text would drop white
-    /// labels below 3:1, so dark Increase Contrast keeps the dark accent and its 4.5:1 text.
+    /// labels below 3:1, so dark Increase Contrast keeps nearly the dark accent and 4.5:1 text.
     func testAccentReadsOnPaperAndSystemGrounds() throws {
         for look in Look.allCases {
             let accent = try color("AccentColor", look)
@@ -58,6 +58,9 @@ final class PaletteTests: XCTestCase {
                 XCTAssertGreaterThanOrEqual(accent.contrast(with: paper), 4.5, "\(look)")
             }
         }
+        // A High Contrast variant identical to the standard one makes the system brighten the
+        // accent itself under Increase Contrast, past these limits.
+        XCTAssertNotEqual(try color("AccentColor", .darkHigh), try color("AccentColor", .dark))
     }
 
     func testTextOnPaperKeepsBodyContrast() throws {
