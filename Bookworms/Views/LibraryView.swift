@@ -561,19 +561,6 @@ struct RatingStars: View {
     }
 }
 
-/// The shelf's walnut palette, from the Apple TV's dark wood shelf.
-enum ShelfPalette {
-    /// The wall's lighter end, at its top.
-    static let wallLight = ColorValue(red: 51, green: 37, blue: 27)
-    static let wall = LinearGradient(
-        colors: [wallLight.color, Color(red: 0.11, green: 0.078, blue: 0.055)],
-        startPoint: .top, endPoint: .bottom)
-    static let board = Color(red: 0.32, green: 0.21, blue: 0.135)
-    static let lamp = Color(red: 1, green: 0.8, blue: 0.56)
-    static let paper = Color(red: 0.95, green: 0.9, blue: 0.82)
-    static let gold = Color(red: 0.98, green: 0.76, blue: 0.36)
-}
-
 /// How the shelf orders books.
 enum ShelfSort: String, CaseIterable, Identifiable {
     case finished, title, author, rating
