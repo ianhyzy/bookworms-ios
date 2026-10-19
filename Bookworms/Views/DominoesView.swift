@@ -86,6 +86,12 @@ struct DominoesView: View {
 
     private var scene: DominoScene { desk.dominoes }
 
+    /// Whether the chain stands waiting for its first push, with nothing moving the camera or
+    /// covering the chain, when the push tip can point at the hand.
+    private var waitsForPush: Bool {
+        scene.status.phase == .standing && !movesCamera && details.lift == nil
+    }
+
     var body: some View {
         // A SwiftUI layer over the desk's view takes the touches: gestures on the hosted view
         // would not fire.
@@ -206,11 +212,12 @@ struct DominoesView: View {
             }
             .onChange(of: movesCamera) { if !movesCamera { scene.endCameraMove() } }
             // The hand holds still before the first push, so the tip points at it once the
-            // camera has come to rest.
-            .task(id: scene.status.phase == .standing) {
+            // camera has come to rest. A camera move or a lifted book's details take the tip
+            // down, and it points at the hand again once they end.
+            .task(id: waitsForPush) {
                 PushTip.chainWaits = false
                 handPoint = nil
-                guard scene.status.phase == .standing else { return }
+                guard waitsForPush else { return }
                 try? await Task.sleep(for: .seconds(scene.blendRemaining + 0.2))
                 guard !Task.isCancelled, let size = viewport?.size else { return }
                 handPoint = scene.handPoint(in: size)
