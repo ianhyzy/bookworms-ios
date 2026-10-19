@@ -1538,7 +1538,8 @@ final class DominoScene {
                 .framing(
                     points, in: frameRect(in: viewport), of: viewport.size, zoomRange: 0.05...2.5)
         }
-        blend(from: .still(shown))
+        // Twice as fast as a switch of camera, keeping pace with the setup.
+        blend(from: .still(shown), pace: 2)
         let reach =
             points.map { simd_length(SIMD2($0.x, $0.z) - SIMD2(view.target.x, view.target.z)) }
             .max() ?? poolRadius
@@ -2671,8 +2672,9 @@ final class DominoScene {
     }
 
     /// Blends the view from `source` to the camera in effect, taking long enough that the
-    /// blend turns and travels no faster than `handoffTurnRate` and `handoffSpeed` on average.
-    private func blend(from source: Shot) {
+    /// blend turns and travels no faster than `handoffTurnRate` and `handoffSpeed` on average,
+    /// or than `pace` times those.
+    private func blend(from source: Shot, pace: Float = 1) {
         guard !reducesMotion else {
             handoff = nil
             return
@@ -2684,7 +2686,8 @@ final class DominoScene {
             turn / Self.handoffTurnRate,
             simd_distance(from.translation, to.translation) / Self.handoffSpeed)
         handoff = (
-            source, 0, min(max(duration, Self.handoffTime.lowerBound), Self.handoffTime.upperBound)
+            source, 0,
+            min(max(duration, Self.handoffTime.lowerBound), Self.handoffTime.upperBound) / pace
         )
     }
 
