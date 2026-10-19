@@ -149,7 +149,9 @@ extension PileCamera {
 /// It is a trapezoid, symmetric about x = `centerX`, that the default camera sees between the
 /// bars that cover the view's edges: the navigation bar and the tab bar, and on the Mac the
 /// sidebar beside the view. Perspective makes its far edge, at the top of the screen, wider
-/// than its near edge.
+/// than its near edge. A tray fitted to a turned view, as **Back to desk** fits one to the
+/// dominoes' turned overview, turns with it about the table's middle by `turn`; its other
+/// measures are those of the tray before it turns.
 struct PileTray: Equatable {
     var farZ: Float
     var nearZ: Float
@@ -158,10 +160,23 @@ struct PileTray: Equatable {
     /// Where the tray's middle lies across the table. A sidebar over one side of the view moves
     /// it toward the other.
     var centerX: Float = 0
+    /// How far the tray turns about the vertical axis through the table's middle, in radians,
+    /// as `PileCamera.yaw` turns a view.
+    var turn: Float = 0
 
-    /// Half the tray's width at `z`, measured from `centerX`.
+    /// Half the tray's width at `z`, measured from `centerX`, before the tray turns.
     func halfWidth(at z: Float) -> Float {
         farHalfWidth + (nearHalfWidth - farHalfWidth) * (z - farZ) / (nearZ - farZ)
+    }
+
+    /// `point`, given on the tray before it turns, turned with the tray.
+    func turned(_ point: SIMD3<Float>) -> SIMD3<Float> {
+        simd_quatf(angle: turn, axis: [0, 1, 0]).act(point)
+    }
+
+    /// `point` turned back to where it lies on the tray before it turns.
+    func unturned(_ point: SIMD3<Float>) -> SIMD3<Float> {
+        simd_quatf(angle: -turn, axis: [0, 1, 0]).act(point)
     }
 
     /// The corners on the table, clockwise from the far left as seen from above.
@@ -170,21 +185,23 @@ struct PileTray: Equatable {
             [centerX - farHalfWidth, 0, farZ], [centerX + farHalfWidth, 0, farZ],
             [centerX + nearHalfWidth, 0, nearZ], [centerX - nearHalfWidth, 0, nearZ],
         ]
+        .map(turned)
     }
 
     /// `point` moved inside the tray, at least `margin` from its edges, at the same height.
     func clamp(_ point: SIMD3<Float>, margin: Float) -> SIMD3<Float> {
+        let point = unturned(point)
         let z = min(max(point.z, farZ + margin), nearZ - margin)
         let half = max(0, halfWidth(at: z) - margin)
-        return [min(max(point.x, centerX - half), centerX + half), point.y, z]
+        return turned([min(max(point.x, centerX - half), centerX + half), point.y, z])
     }
 }
 
 extension PileTray {
     /// Fits the tray to what `camera` sees between `safeTop` and `safeBottom`, given as
     /// normalized device y coordinates, and between `safeLeading` and `safeTrailing` in x, in a
-    /// view of width-to-height `aspect`. The camera must look at the table's center without
-    /// turning, as the default camera and a zoomed one do.
+    /// view of width-to-height `aspect`. For a turned camera, the tray turns with it: it fits
+    /// the view of the camera turned back, then turns by the camera's `yaw`.
     ///
     /// The far and side walls stand where the view's edges meet a pile `pileHeight` high, by
     /// default the tallest pile (`tallestPile`), so a pile up to that high stays on screen.
@@ -202,6 +219,14 @@ extension PileTray {
         safeTrailing: Float = 1, pileHeight: Float = tallestPile,
         camera: PileCamera = PileCamera()
     ) {
+        // The camera turned back to look straight across the table, and moved across it to
+        // look at the table's middle line, x = 0; the tray moves back by as much.
+        var camera = camera
+        camera.target = simd_quatf(angle: -camera.yaw, axis: [0, 1, 0]).act(camera.target)
+        let across = camera.target.x
+        let turn = camera.yaw
+        camera.target.x = 0
+        camera.yaw = 0
         let top = camera.ray(ndc: [1, safeTop], aspect: aspect)
         let bottom = camera.ray(ndc: [1, safeBottom], aspect: aspect)
         guard safeLeading < safeTrailing, let far = PileCamera.intersect(top, height: pileHeight),
@@ -221,7 +246,8 @@ extension PileTray {
             farZ: farZ, nearZ: nearZ,
             farHalfWidth: min(center - safeLeading * farEdge, safeTrailing * farEdge - center)
                 - margin,
-            nearHalfWidth: (safeTrailing - safeLeading) / 2 * nearEdge - margin, centerX: center)
+            nearHalfWidth: (safeTrailing - safeLeading) / 2 * nearEdge - margin,
+            centerX: center + across, turn: turn)
     }
 
     /// Fits the tray between the bars that cover `viewport`'s edges, as `camera` sees it.
@@ -280,7 +306,7 @@ extension PileTray {
         return PileTray(
             farZ: middle + (farZ - middle) * factor, nearZ: middle + (nearZ - middle) * factor,
             farHalfWidth: farHalfWidth * factor, nearHalfWidth: nearHalfWidth * factor,
-            centerX: centerX)
+            centerX: centerX, turn: turn)
     }
 
     /// The tray grown about its middle, if needed, until its depth and its narrower near edge
@@ -447,7 +473,7 @@ enum PileLayout {
                 return PileSlot(
                     book: book,
                     transform: Transform(
-                        rotation: yaw * tumble * lyingFlat, translation: [x, y, z]),
+                        rotation: yaw * tumble * lyingFlat, translation: tray.turned([x, y, z])),
                     spin: (SIMD3(random(8), random(9), random(10)) - 0.5) * [4, 6, 4])
             }
         for start in stride(from: 0, to: slots.count, by: waveSize) {
@@ -936,7 +962,7 @@ final class BookPileScene {
     /// puts walls along its edges.
     private func build(_ tray: PileTray) {
         let middle = (tray.farZ + tray.nearZ) / 2
-        let pool: SIMD3<Float> = [tray.centerX, 0, middle]
+        let pool = tray.turned([tray.centerX, 0, middle])
         let radius =
             simd_length(SIMD2(max(tray.farHalfWidth, tray.nearHalfWidth), tray.nearZ - middle))
             * 1.05
@@ -988,7 +1014,8 @@ final class BookPileScene {
             .generateBox(
                 width: 2 * max(tray.farHalfWidth, tray.nearHalfWidth) + 8, height: 2,
                 depth: tray.nearZ - tray.farZ + 8),
-            at: [tray.centerX, ceiling + 1, (tray.farZ + tray.nearZ) / 2])
+            at: tray.turned([tray.centerX, ceiling + 1, (tray.farZ + tray.nearZ) / 2]),
+            yaw: tray.turn)
         return walls
     }
 
@@ -1503,13 +1530,14 @@ final class BookPileScene {
         if tilt != .box { view.yaw = move.start.yaw - Float(rotation.radians) }
         // Keeps the focus point in place while zooming. Zoomed out to the home view, the
         // camera returns to its target, and zoomed in it may move only as far as the tray
-        // reaches.
-        let target = move.focus + (move.start.target - move.focus) * move.start.zoom / view.zoom
+        // reaches, measured along the tray before it turns.
+        let target = tray.unturned(
+            move.focus + (move.start.target - move.focus) * move.start.zoom / view.zoom)
         let reach = max(0, 1 - home.zoom / view.zoom)
-        let middle = home.target
+        let middle = tray.unturned(home.target)
         let left = tray.centerX - tray.farHalfWidth
         let right = tray.centerX + tray.farHalfWidth
-        view.target = [
+        view.target = tray.turned([
             min(
                 max(target.x, middle.x + (left - middle.x) * reach),
                 middle.x + (right - middle.x) * reach),
@@ -1517,7 +1545,7 @@ final class BookPileScene {
             min(
                 max(target.z, middle.z + (tray.farZ - middle.z) * reach),
                 middle.z + (tray.nearZ - middle.z) * reach),
-        ]
+        ])
         camera.transform = view.transform
     }
 
@@ -1602,10 +1630,10 @@ final class BookPileScene {
 
     /// Takes the books of `handover` back from the dominoes as the desk's arrangement, wherever
     /// they lie: they stay where they are, moving as they moved, in tidy stacks' stillness when
-    /// `tidy`. Walls go up along what the view shows, and around any book outside it, and the
-    /// camera takes the handover's view, which stays its home, the view it zooms out to, until
-    /// the next drop. The box of **Phone is the box** stays open meanwhile, since it fits only
-    /// the default view.
+    /// `tidy`. Walls go up along what the view shows between the bars, turned with it, and
+    /// around any book outside it, and the camera takes the handover's view, which stays its
+    /// home, the view it zooms out to, until the next drop. The box of **Phone is the box**
+    /// stays open meanwhile, since it fits only the default view.
     ///
     /// The pile's key becomes the one `planDrop` gives for `books`, `tidy`, `periods`, and
     /// `generation`, so the view's next drop request keeps these books rather than dropping
@@ -1631,27 +1659,32 @@ final class BookPileScene {
         planKey = PlanKey(
             ids: books.map(\.id), tidy: tidy, periods: tidy ? nil : periods, generation: generation)
         let camera = PileCamera(matching: handover.camera)
-        // What the handed-over view shows between the bars, which the walls fit for a view that
-        // looks along the table's middle without turning, as the overview and the spread's do.
-        var centered = camera
-        centered.target.x = 0
-        let seen =
-            abs(camera.yaw) < 0.05 && abs(camera.target.x) < 1
-            ? PileTray(viewport: viewport, camera: centered) : nil
-        let room = seen ?? fitted
+        // What the handed-over view shows between the bars, or, for a view that does not look
+        // down onto the table, the default view's tray.
+        let room = PileTray(viewport: viewport, camera: camera) ?? fitted
         // Walls along what the view shows, and around the books, a little past them, should
-        // any lie outside it.
+        // any lie outside it, measured along the tray before it turns.
         var walls = room
-        if !shelf.children.isEmpty {
-            let bounds = shelf.visualBounds(relativeTo: root)
-            let side =
-                max(abs(bounds.min.x - room.centerX), abs(bounds.max.x - room.centerX))
-                + PileLayout.reach
+        var low = SIMD2<Float>(repeating: .infinity)
+        var high = -low
+        for book in shelf.children {
+            let bounds = book.visualBounds(relativeTo: root)
+            for x in [bounds.min.x, bounds.max.x] {
+                for z in [bounds.min.z, bounds.max.z] {
+                    let corner = room.unturned([x, 0, z])
+                    low = pointwiseMin(low, [corner.x, corner.z])
+                    high = pointwiseMax(high, [corner.x, corner.z])
+                }
+            }
+        }
+        if low.x <= high.x {
+            let side = max(abs(low.x - room.centerX), abs(high.x - room.centerX)) + PileLayout.reach
             walls = PileTray(
-                farZ: min(room.farZ, bounds.min.z - PileLayout.reach),
-                nearZ: max(room.nearZ, bounds.max.z + PileLayout.reach),
+                farZ: min(room.farZ, low.y - PileLayout.reach),
+                nearZ: max(room.nearZ, high.y + PileLayout.reach),
                 farHalfWidth: max(room.farHalfWidth, side),
-                nearHalfWidth: max(room.nearHalfWidth, side), centerX: room.centerX)
+                nearHalfWidth: max(room.nearHalfWidth, side), centerX: room.centerX,
+                turn: room.turn)
         }
         build(walls)
         look(through: camera)
