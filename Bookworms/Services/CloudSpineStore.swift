@@ -9,6 +9,9 @@ import Foundation
 actor CloudSpineStore: SpineStore {
     private let container = CKContainer(identifier: CloudContract.containerID)
     private var database: CKDatabase { container.privateCloudDatabase }
+    /// The last recolor save, which the next one waits for. The actor admits another save while
+    /// one waits on CloudKit, so without this a retried older save could land after a newer one.
+    private var recolorTail: Task<Void, Never>?
     /// The account and sync date of the phone library that the last `loadWork` returned, so a
     /// run that designs it stops once the reader signs out.
     private var phoneWork: (accountID: String, syncedAt: Date)?
@@ -105,14 +108,28 @@ actor CloudSpineStore: SpineStore {
 
     func saveRecolored(_ design: SpineDesignV1) async throws {
         guard let colors = design.colors else { throw CompanionError.invalidDesign }
-        try await write(design) { existing in
-            guard let existing, existing.isSameDesign(as: design) else {
-                throw CompanionError.designChanged
+        try await inRecolorOrder {
+            try await self.write(design) { existing in
+                guard let existing, existing.isSameDesign(as: design) else {
+                    throw CompanionError.designChanged
+                }
+                // Only the colors change in the stored record.
+                let recolored = existing.recolored(colors)
+                return recolored == existing ? nil : recolored
             }
-            // Only the colors change in the stored record.
-            let recolored = existing.recolored(colors)
-            return recolored == existing ? nil : recolored
         }
+    }
+
+    /// Runs `save` after every earlier recolor save has finished, so recolors reach CloudKit in
+    /// the order the reader made them. A failed save doesn't hold up the next one.
+    private func inRecolorOrder(_ save: @escaping @Sendable () async throws -> Void) async throws {
+        let previous = recolorTail
+        let current = Task {
+            await previous?.value
+            try await save()
+        }
+        recolorTail = Task { _ = try? await current.value }
+        try await current.value
     }
 
     /// Writes the design that `update` returns, given the record's valid design if any, to the
@@ -247,15 +264,18 @@ actor CloudSpineStore: SpineStore {
 
     func saveRecolored(_ look: SeriesLookV1) async throws {
         try look.validate()
-        try await write(
-            JSONEncoder().encode(look), recordType: "SeriesLookV1",
-            recordName: CloudContract.seriesLookRecordName(
-                accountID: look.accountID, key: look.key)
-        ) { record in
-            guard let saved = Self.payload(SeriesLookV1.self, in: record),
-                saved.isSameLook(as: look)
-            else { throw CompanionError.designChanged }
-            return saved == look
+        let payload = try JSONEncoder().encode(look)
+        try await inRecolorOrder {
+            try await self.write(
+                payload, recordType: "SeriesLookV1",
+                recordName: CloudContract.seriesLookRecordName(
+                    accountID: look.accountID, key: look.key)
+            ) { record in
+                guard let saved = Self.payload(SeriesLookV1.self, in: record),
+                    saved.isSameLook(as: look)
+                else { throw CompanionError.designChanged }
+                return saved == look
+            }
         }
     }
 
