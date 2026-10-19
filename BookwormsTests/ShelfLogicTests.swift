@@ -392,6 +392,23 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertGreaterThan(distance, size.height)
     }
 
+    func testStackBoardRecedesAsThePinholeCameraSeesIt() {
+        // A board 250 points deep whose front edge lies on the spines' plane, 1,000 points from
+        // the camera and 20 points below the eye. Its back edge, 1,250 points away, projects onto
+        // that plane 16 points below the eye, so 4 points of its top show.
+        let (distance, depth, drop): (CGFloat, CGFloat, CGFloat) = (1_000, 250, 20)
+        let back = drop * distance / (distance + depth)
+        let surface = StackCamera.surface(depth: depth, drop: drop, distance: distance)
+        XCTAssertEqual(surface, drop - back, accuracy: 1e-9)
+        XCTAssertEqual(surface, 4, accuracy: 1e-9)
+        // Twice as far below the eye, twice as much shows; at or above it, none does.
+        XCTAssertEqual(
+            StackCamera.surface(depth: depth, drop: 2 * drop, distance: distance), 2 * surface,
+            accuracy: 1e-9)
+        XCTAssertEqual(StackCamera.surface(depth: depth, drop: 0, distance: distance), 0)
+        XCTAssertEqual(StackCamera.surface(depth: depth, drop: -drop, distance: distance), 0)
+    }
+
     func testOneEyeShowsTopsBelowItAndUndersidesAboveIt() {
         // A book lying on its back, seen as the stack draws it: upright in the model, with its
         // front cover toward +x, which the stack's turn makes the screen's up.
