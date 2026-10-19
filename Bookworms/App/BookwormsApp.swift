@@ -1,5 +1,7 @@
 import CloudKit
 import SwiftUI
+import TipKit
+import os
 
 #if canImport(UIKit)
     import UIKit
@@ -40,6 +42,29 @@ private func finishLaunching(registerForPushes: () -> Void) {
             AppModel.shared.selectedTab = .share
         }
     #endif
+}
+
+/// Configures TipKit once per launch, before any view shows a tip, so each area only adds its
+/// tips. The tips' display state lives in TipKit's default datastore in the app's container.
+///
+/// Debug builds accept `-BookwormsTips <show|hide|reset>`: `show` shows every tip whatever its
+/// rules, `hide` hides them all for screenshots, and `reset` forgets which tips were shown.
+private func configureTips() {
+    #if DEBUG
+        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        switch arguments["BookwormsTips"] as? String {
+        case "show": Tips.showAllTipsForTesting()
+        case "hide": Tips.hideAllTipsForTesting()
+        case "reset": try? Tips.resetDatastore()
+        default: break
+        }
+    #endif
+    do {
+        try Tips.configure()
+    } catch {
+        Logger(subsystem: "gay.ian.Bookworms.iOS", category: "tips")
+            .error("TipKit setup failed: \(error.localizedDescription, privacy: .public)")
+    }
 }
 
 /// Whether a remote notification is the Apple TV's worklist change alert.
@@ -105,6 +130,8 @@ struct BookwormsApp: App {
     #endif
     @State private var model = AppModel.shared
     @State private var generation = GenerationController.shared
+
+    init() { configureTips() }
 
     var body: some Scene {
         #if os(macOS)
