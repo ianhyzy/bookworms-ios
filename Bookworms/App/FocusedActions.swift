@@ -26,6 +26,8 @@ extension FocusedValues {
     @Entry var shareImage: ShareImage?
     /// Opens the Hardcover account sheet over the key window.
     @Entry var showAccount: SceneAction?
+    /// What the **Library** and **View** menus act on while Library shows its books.
+    @Entry var libraryActions: LibraryActions?
 }
 
 /// An action that a view publishes for a menu command, such as closing the details it shows.

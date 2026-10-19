@@ -77,6 +77,15 @@ struct LibraryView: View {
             CoverPickerView(book: model.designSource(for: book)) {}
                 .preferredColorScheme(.dark)
         }
+        // What the menu bar's **Library** and **View** commands act on (`LibraryCommands`).
+        .focusedSceneValue(
+            \.libraryActions,
+            options.map { options in
+                LibraryActions(
+                    years: options.years, find: { findsBook = true }, open: open,
+                    changeCover: { coverBook = $0 })
+            }, in: .library
+        )
         // Outside the dark scheme and tint, so the account sheet follows the system appearance.
         // Kept on the stack, so the sheet stays open when the library it brings replaces the
         // empty state.
@@ -655,6 +664,19 @@ private struct LibraryOptionsMenu: View {
             }
         }
     }
+}
+
+/// What the menu bar's **Library** and **View** commands act on while Library shows its books
+/// (`LibraryCommands`).
+struct LibraryActions {
+    /// The years with read books, newest first, for the **Time** menu's years.
+    let years: [Int]
+    /// Finds a book: focuses the toolbar's search field.
+    let find: @MainActor () -> Void
+    /// Opens a book's details, as a click does.
+    let open: @MainActor (CloudBook) -> Void
+    /// Opens **Change Cover** for a book.
+    let changeCover: @MainActor (CloudBook) -> Void
 }
 
 /// Finds a book in the shown books, as find rather than a filter: the carousel glides to the

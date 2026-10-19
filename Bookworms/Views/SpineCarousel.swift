@@ -113,6 +113,9 @@ struct SpineCarousel: View {
         }
         // A book can only return to the place it left, which the other style draws differently.
         .onChange(of: style) { pullOut.close() }
+        #if os(macOS)
+            .modifier(SettledBook(books: books, centeredID: $centeredID, pullOut: pullOut))
+        #endif
         .overlay(alignment: .top) {
             // On the iPhone, Stack runs up under the status bar. A wash of the wall's color, dense
             // enough to hide spine lettering behind the time and battery, covers the bar and
@@ -583,6 +586,33 @@ private struct SpineButton<Label: View>: View {
                     != nil
             }
             if let match { centeredID = match.id }
+        }
+    }
+
+    /// Publishes the centered book for the menu bar's **Library** commands
+    /// (`FocusedValues.centeredBook`) once scrolling settles, rather than as each book passes the
+    /// center, and none while a book is out.
+    private struct SettledBook: ViewModifier {
+        let books: [CloudBook]
+        @Binding var centeredID: Int?
+        let pullOut: ShelfPullOut
+
+        @State private var settledID: Int?
+        @State private var isScrolling = false
+
+        func body(content: Content) -> some View {
+            content
+                .onScrollPhaseChange { _, phase in
+                    isScrolling = phase.isScrolling
+                    if !phase.isScrolling { settledID = centeredID }
+                }
+                // A change that does not scroll, such as the first centered book.
+                .onChange(of: centeredID, initial: true) {
+                    if !isScrolling { settledID = centeredID }
+                }
+                .focusedSceneValue(
+                    \.centeredBook,
+                    pullOut.book == nil ? books.first { $0.id == settledID } : nil, in: .library)
         }
     }
 #endif

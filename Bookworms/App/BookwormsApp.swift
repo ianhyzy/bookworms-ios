@@ -44,6 +44,22 @@ private func finishLaunching(registerForPushes: () -> Void) {
     #endif
 }
 
+/// Whether a Debug launch argument chose the first tab (`finishLaunching`), which the window's
+/// saved tab then leaves alone.
+private let launchChoosesTab: Bool = {
+    #if DEBUG
+        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        let keys = [
+            "BookwormsShelfMode", "BookwormsTab", "BookwormsShowSpines",
+            "BookwormsGenerateOnLaunch",
+            "BookwormsShareTemplate",
+        ]
+        return keys.contains { arguments[$0] != nil }
+    #else
+        return false
+    #endif
+}()
+
 /// Configures TipKit once per launch, before any view shows a tip, so each area only adds its
 /// tips. The tips' display state lives in TipKit's default datastore in the app's container.
 ///
@@ -74,8 +90,9 @@ private func isWorklistChange(_ userInfo: [AnyHashable: Any]) -> Bool {
 }
 
 #if os(macOS)
-    /// Registers for CloudKit change alerts, routes them to the generator, and keeps the app
-    /// running in the menu bar after its last window closes.
+    /// Registers for CloudKit change alerts, routes them to the generator, keeps the app
+    /// running in the menu bar after its last window closes, and gives the Dock icon a menu
+    /// with **Generate Now** or **Stop Generating** and **Sync Library**.
     final class AppDelegate: NSObject, NSApplicationDelegate {
         func applicationDidFinishLaunching(_ notification: Notification) {
             MainActor.assumeIsolated {
@@ -87,6 +104,34 @@ private func isWorklistChange(_ userInfo: [AnyHashable: Any]) -> Bool {
 
         func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
             false
+        }
+
+        /// Built each time the Dock asks, so it names the run's current state. AppKit asks on the
+        /// main thread.
+        @MainActor func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+            let menu = NSMenu()
+            let generating = GenerationController.shared.isGenerating
+            menu.addItem(
+                withTitle: generating ? "Stop Generating" : "Generate Now",
+                action: #selector(toggleGeneration), keyEquivalent: ""
+            )
+            .target = self
+            menu.addItem(
+                withTitle: "Sync Library", action: #selector(syncLibrary), keyEquivalent: ""
+            )
+            .target = self
+            return menu
+        }
+
+        @objc private func toggleGeneration() {
+            MainActor.assumeIsolated {
+                let generation = GenerationController.shared
+                if generation.isGenerating { generation.stop() } else { generation.generateNow() }
+            }
+        }
+
+        @objc private func syncLibrary() {
+            Task { @MainActor in await AppModel.shared.syncLibrary() }
         }
 
         func application(
@@ -130,6 +175,9 @@ struct BookwormsApp: App {
     #endif
     @State private var model = AppModel.shared
     @State private var generation = GenerationController.shared
+    #if os(macOS)
+        @AppStorage(MenuBarExtraToggle.key) private var showsMenuBarExtra = true
+    #endif
 
     init() { configureTips() }
 
@@ -146,7 +194,9 @@ struct BookwormsApp: App {
             .defaultSize(width: 1180, height: 820)
             // Each area's menu commands, one line each (see `FocusedActions.swift`).
             .commands {
-                BookwormsCommands(model: model, generation: generation)
+                SidebarCommands()
+                BookwormsCommands(model: model)
+                LibraryCommands(model: model, generation: generation)
             }
             // A book's details, opened from Library in a window of their own.
             WindowGroup("Book", id: BookWindow.id, for: Int.self) { $id in
@@ -160,7 +210,7 @@ struct BookwormsApp: App {
                     .environment(model)
                     .environment(generation)
             }
-            MenuBarExtra("Bookworms", image: "menubar.bookworm") {
+            MenuBarExtra("Bookworms", image: "menubar.bookworm", isInserted: $showsMenuBarExtra) {
                 BookwormsMenu()
                     .environment(model)
                     .environment(generation)
@@ -188,6 +238,8 @@ struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(GenerationController.self) private var generation
     @Environment(\.scenePhase) private var scenePhase
+    /// The window's section when it last closed, which it reopens on; Share at first launch.
+    @SceneStorage("BookwormsTab") private var savedTab = AppTab.share
     @State private var showsAccount = false
     /// The share image shown full size over every tab and bar, while the Share tab's preview is
     /// held.
@@ -232,10 +284,27 @@ struct RootView: View {
         .onChange(of: model.account.needsReconnect) { _, broken in
             if broken && !model.isPreview { showsAccount = true }
         }
+        // **Library > Hardcover Account…** on the Mac.
+        .focusedSceneValue(\.showAccount, SceneAction { showsAccount = true })
+        .modifier(RestoresTab(savedTab: $savedTab))
         .task { await model.reload() }
         .onChange(of: scenePhase) { _, phase in
             generation.scenePhaseChanged(to: phase)
             if phase == .active { Task { await model.reloadIfStale() } }
         }
+    }
+}
+
+/// Reopens the window on the section it last showed, unless a Debug launch argument chose one,
+/// and saves each new section. A modifier of its own, so a tab switch updates only it, not the
+/// root view.
+private struct RestoresTab: ViewModifier {
+    @Binding var savedTab: AppTab
+    @Environment(AppModel.self) private var model
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear { if !launchChoosesTab { model.selectedTab = savedTab } }
+            .onChange(of: model.selectedTab) { _, tab in savedTab = tab }
     }
 }
