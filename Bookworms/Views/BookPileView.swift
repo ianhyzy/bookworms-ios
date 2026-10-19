@@ -6,6 +6,14 @@ import TipKit
 struct PileViewport: Equatable {
     var size: CGSize
     var insets: EdgeInsets
+
+    /// The part of the view that the bars leave clear, in the view's points.
+    var clear: CGRect {
+        CGRect(
+            x: insets.leading, y: insets.top,
+            width: size.width - insets.leading - insets.trailing,
+            height: size.height - insets.top - insets.bottom)
+    }
 }
 
 /// The Desk scene: the library as a physics toy. The first books, up to `maximumBooks` of them
@@ -293,6 +301,7 @@ struct BookPileView: View {
             }
             .sheet(isPresented: $sharesPile) { PileSnapshotSheet(books: books, title: title) }
             #if os(macOS)
+                .focusedSceneValue(\.deskSheetShows, sharesPile || coverBook != nil)
                 // As a book's details open it: a series that shares a design takes its spine
                 // from its source's cover, and the sheet matches the room's dark scheme.
                 .sheet(item: $coverBook) { book in
@@ -468,20 +477,10 @@ struct BookPileView: View {
         /// leave clear, and returns whether it did; scrolls elsewhere, such as over the
         /// sidebar, or while details or a sheet cover the desk, go on to the views under them.
         private func scroll(_ event: NSEvent, at point: CGPoint) -> Bool {
-            guard isShown, details.lift == nil, !sharesPile, coverBook == nil, let viewport
+            guard isShown, details.lift == nil, !sharesPile, coverBook == nil,
+                viewport?.clear.contains(point) == true
             else { return false }
-            let insets = viewport.insets
-            let clear = CGRect(
-                x: insets.leading, y: insets.top,
-                width: viewport.size.width - insets.leading - insets.trailing,
-                height: viewport.size.height - insets.top - insets.bottom)
-            guard clear.contains(point) else { return false }
-            // As the device moved, whichever way the reader's scrolling setting turns it.
-            let sign: CGFloat = event.isDirectionInvertedFromDevice ? -1 : 1
-            let move = PilePointer.move(
-                deltaX: event.scrollingDeltaX * sign, deltaY: event.scrollingDeltaY * sign,
-                precise: event.hasPreciseScrollingDeltas,
-                shift: event.modifierFlags.contains(.shift))
+            let move = PilePointer.move(for: event)
             desk.moveCamera(
                 magnification: move.magnification, rotation: move.rotation, focus: point)
             DeskTips.cameraMoved()

@@ -176,13 +176,15 @@ final class DeskScenes {
     }
 
     /// Moves the Desk scene's camera in one step, for the Mac's scroll wheel and **View** menu:
-    /// zooms by `magnification` toward the table under `focus`, or under the view's middle,
-    /// and turns by `rotation`. Wakes a paused desk, which then shows the new view once its
-    /// view has drawn.
+    /// zooms by `magnification` toward the table under `focus`, or under the middle of what
+    /// the bars leave clear, and turns by `rotation`. Wakes a paused desk, which then shows the
+    /// new view once its view has drawn.
     func moveCamera(magnification: CGFloat, rotation: Angle = .zero, focus: CGPoint? = nil) {
-        guard mode == .desk, let size = viewport?.size else { return }
+        guard mode == .desk, let viewport else { return }
+        let focus = focus ?? CGPoint(x: viewport.clear.midX, y: viewport.clear.midY)
         wake()
-        pile.moveCamera(magnification: magnification, rotation: rotation, focus: focus, in: size)
+        pile.moveCamera(
+            magnification: magnification, rotation: rotation, focus: focus, in: viewport.size)
         pile.endCameraMove()
     }
 

@@ -106,6 +106,18 @@ enum PilePointer {
         )
     }
 
+    #if os(macOS)
+        /// The camera move for the scroll `event`, as the device moved, whichever way the
+        /// reader's scrolling setting turns it.
+        static func move(for event: NSEvent) -> (magnification: CGFloat, rotation: Angle) {
+            let sign: CGFloat = event.isDirectionInvertedFromDevice ? -1 : 1
+            return move(
+                deltaX: event.scrollingDeltaX * sign, deltaY: event.scrollingDeltaY * sign,
+                precise: event.hasPreciseScrollingDeltas,
+                shift: event.modifierFlags.contains(.shift))
+        }
+    #endif
+
     /// How far along the ray from `origin` in unit `direction` it first meets the box of `size`
     /// centered on `transform`'s position and turned by its rotation, or `nil` if it misses or
     /// the box lies behind the ray's start: the slab test in the box's own axes.

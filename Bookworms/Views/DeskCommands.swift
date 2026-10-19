@@ -15,18 +15,23 @@
 
     extension FocusedValues {
         @Entry var deskCommands: DeskCommandTarget?
+        /// Whether a sheet covers the Desk scene, such as the **Share desk** sheet.
+        @Entry var deskSheetShows: Bool?
     }
 
     /// The menu bar's Desk commands: **Zoom In**, **Zoom Out**, and **Actual Size** in the
     /// **View** menu for the Desk scene, and the switch to the dominoes and back in the **Desk**
-    /// menu. They are unavailable while another section shows or details cover the scene.
+    /// menu. They are unavailable while another section shows, or while details or a sheet
+    /// cover the scene.
     struct DeskCommands: Commands {
         /// How much each **Zoom In** zooms, and each **Zoom Out** undoes.
         private static let zoomStep: CGFloat = 1.25
 
-        @FocusedValue(\.deskCommands) private var target
+        @FocusedValue(\.deskCommands) private var shown
+        @FocusedValue(\.deskSheetShows) private var sheetShows
 
         var body: some Commands {
+            let target = sheetShows == true ? nil : shown
             CommandGroup(after: .toolbar) {
                 let pile = target.flatMap { $0.isDominoes ? nil : $0.desk }
                 Section {
