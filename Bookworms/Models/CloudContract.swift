@@ -265,8 +265,12 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
     /// existed leave it out; such a book's look follows `seriesID`.
     var seriesMemberships: [SeriesMembership]? = nil
     var pages: Int? = nil
-    /// The finish date as `yyyy-MM-dd`.
+    /// The finish date as `yyyy-MM-dd`: the newest finish, the first of `finishedDates`.
     var finished: String? = nil
+    /// Every finished read's date, newest first, in the format of `finished`. Archives and
+    /// caches saved before rereads were fetched leave it out, and then `finished` is the only
+    /// read known; an empty list means the same.
+    var finishedDates: [String]? = nil
     /// The reader's rating, 0...5 in half steps.
     var rating: Double? = nil
     var isReading: Bool? = nil
@@ -314,9 +318,49 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
     }
 
     /// The finish date, parsed from `finished` at noon UTC so it lands on the same calendar day.
-    var finishedDate: Date? {
-        guard let finished, finished.count >= 10 else { return nil }
-        return try? Date(String(finished.prefix(10)) + "T12:00:00Z", strategy: .iso8601)
+    var finishedDate: Date? { Self.day(finished) }
+
+    /// Every finish date as stored, newest first: `finishedDates`, else `finished` alone. An
+    /// empty `finishedDates` counts as absent, so a book with `finished` always has a finish.
+    var finishes: [String] {
+        if let finishedDates, !finishedDates.isEmpty { return finishedDates }
+        return finished.map { [$0] } ?? []
+    }
+
+    /// How many times the reader finished the book.
+    var readCount: Int { finishes.count }
+
+    /// The first valid finish as stored. Unlike `finished`, which a time frame sets to the read
+    /// within it, no frame changes it, so a book keeps its shape and page color in every frame.
+    var firstFinish: String? { finishes.filter { Self.day($0) != nil }.min() }
+
+    /// The book as of its newest finish that `isIncluded` accepts, with `finished` set to that
+    /// finish, or `nil` when it accepts none. A time frame shows a reread by its read within the
+    /// frame, so its order and labels use that read. The copy is for display only: its
+    /// `finished` may no longer equal `finishedDates.first`, so never save or upload it.
+    func asFinished(where isIncluded: (Date) -> Bool) -> CloudBook? {
+        guard let finish = finishes.filter({ Self.day($0).map(isIncluded) == true }).max() else {
+            return nil
+        }
+        var book = self
+        book.finished = finish
+        return book
+    }
+
+    /// The books of `library` with a finish that `isIncluded` accepts, each as of its newest
+    /// such finish (`asFinished(where:)`), most recently finished first. Ties keep `library`'s
+    /// order.
+    static func finished(in library: [CloudBook], where isIncluded: (Date) -> Bool)
+        -> [CloudBook]
+    {
+        library.compactMap { $0.asFinished(where: isIncluded) }
+            .sorted { ($0.finished ?? "") > ($1.finished ?? "") }
+    }
+
+    /// A `yyyy-MM-dd`-prefixed date at noon UTC, or `nil` when it isn't one.
+    static func day(_ text: String?) -> Date? {
+        guard let text, text.count >= 10 else { return nil }
+        return try? Date(String(text.prefix(10)) + "T12:00:00Z", strategy: .iso8601)
     }
 }
 

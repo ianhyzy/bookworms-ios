@@ -3,8 +3,8 @@ import SwiftUI
 /// A book's details: a 3D model to turn with a drag and its title, over three tabs that switch
 /// only the content below them: **Details** (the book's description and facts on a grid of
 /// cards), **Journal** (the reader's reading dates, progress, format, and review, on the same
-/// cards), and **Style** (**Change cover**, then the spine's design: its series, colors, and
-/// **Redesign spine**).
+/// cards, and for a finished book **Pin to Top Five**), and **Style** (**Change cover**, then the
+/// spine's design: its series, colors, and **Redesign spine**).
 ///
 /// A book that shares its series' spine design changes the series under **Style**: the series
 /// look's or source's colors, and the cover and design of the source book
@@ -187,6 +187,8 @@ struct BookDetailView: View {
                 .foregroundStyle(cardNote)
                 .multilineTextAlignment(.center)
             }
+            // Top Five draws finished books only.
+            if book.finishedDate != nil { TopFivePinButton(bookID: book.id) }
         }
     }
 
@@ -229,7 +231,8 @@ enum DetailCard: Hashable {
     /// A current read, with the fraction read when known.
     case status(progress: Double?)
     case started(Date)
-    case finished(Date)
+    /// The newest finish, and how many times the reader finished the book.
+    case finished(Date, reads: Int)
     case readingTime(String)
     /// How the reader read the book, such as "Audiobook", with that format's length.
     case format(String, length: String?)
@@ -284,7 +287,7 @@ enum DetailCard: Hashable {
         let cards: [DetailCard?] = [
             book.isReading == true ? .status(progress: book.progress) : nil,
             started.map(DetailCard.started),
-            finished.map(DetailCard.finished),
+            finished.map { .finished($0, reads: book.readCount) },
             ShelfLabels.readingTime(from: started, to: finished).map(DetailCard.readingTime),
             ShelfLabels.format(book.format)
                 .map { .format($0, length: ShelfLabels.length(of: book)) },
@@ -671,10 +674,11 @@ private struct DetailCardView: View {
             FactCard(
                 title: "Started", systemImage: "calendar",
                 value: date.formatted(ShelfLabels.finishedFormat))
-        case .finished(let date):
+        case .finished(let date, let reads):
             FactCard(
                 title: "Finished", systemImage: "checkmark.circle",
-                value: date.formatted(ShelfLabels.finishedFormat))
+                value: date.formatted(ShelfLabels.finishedFormat),
+                detail: ShelfLabels.reads(reads))
         case .readingTime(let time):
             FactCard(title: "Reading time", systemImage: "hourglass", value: time)
         case .format(let format, let length):
@@ -1207,6 +1211,33 @@ private struct SeriesRows: View {
                 model.toasts.show(.failure("Couldn't save the series choice"))
             }
             if saving == new { saving = nil }
+        }
+    }
+}
+
+/// Pins the book to lead Top Five share images, or unpins it (`TopFivePins`). While five other
+/// books are pinned, it is disabled and says where to unpin one.
+private struct TopFivePinButton: View {
+    let bookID: Int
+    @AppStorage(TopFivePins.key) private var pins = TopFivePins()
+
+    var body: some View {
+        let isPinned = pins.contains(bookID)
+        VStack(spacing: 8) {
+            Button(
+                isPinned ? "Unpin from Top Five" : "Pin to Top Five",
+                systemImage: isPinned ? "pin.slash" : "pin"
+            ) {
+                pins.toggle(bookID)
+            }
+            .buttonStyle(.bordered)
+            .disabled(!isPinned && pins.isFull)
+            if !isPinned && pins.isFull {
+                Text("Five books are pinned. Unpin one under Share > Top Five to pin this one.")
+                    .font(.footnote)
+                    .foregroundStyle(cardNote)
+                    .multilineTextAlignment(.center)
+            }
         }
     }
 }

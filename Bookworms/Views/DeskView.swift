@@ -133,8 +133,9 @@ struct DeskView: View {
 
     /// The years `books` were finished in, such as "2019–2026", for a scene of every book.
     private static func years(of books: [CloudBook]) -> String {
-        let years = books.compactMap(\.finishedYear)
-        guard let first = years.min(), let last = years.max() else { return "My books" }
+        // Every finish counts, so a reread's earlier reads widen the span.
+        let years = TimeFrame.periods(in: books).years
+        guard let last = years.first, let first = years.last else { return "My books" }
         return first == last ? String(first) : "\(first)–\(last)"
     }
 
@@ -156,8 +157,10 @@ struct DeskView: View {
     private func shownBooks(frame: TimeFrame?) -> [CloudBook] {
         // The read books, as in Library, and current reads, which **All books** marks with
         // ribbons. Want to Read and other unread shelves stay off.
-        var books = sort.sorted(model.books.filter { $0.hasBeenRead || $0.isReading == true })
-        if let frame { books = books.filter(frame.contains) }
+        var books = model.books.filter { $0.hasBeenRead || $0.isReading == true }
+        // A reread shows by its finish in the frame, which can change its place.
+        if let frame { books = frame.books(in: books) }
+        books = sort.sorted(books)
         #if DEBUG
             // `-BookwormsShareSamples <n>` also marks current reads here, for the pile's ribbons.
             books = ShareDebug.samples(books)

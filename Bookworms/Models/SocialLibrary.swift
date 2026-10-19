@@ -239,10 +239,14 @@ extension Comparable {
     }
 }
 
-/// The invitation that social share images and their share text carry, kept in one place so
-/// the wording and link change together. It points to the sharer's Hardcover profile.
+/// The links that share images and their share text carry, kept in one place so the wording
+/// and links change together: the sharer's Hardcover profile, and books' permanent pages.
 enum HardcoverInvite {
     static let line = "Compare takes with me on Hardcover"
+
+    /// The most books whose links a **My reading** image's share text lists. An image of more,
+    /// such as a year's Desk, sends only the profile link.
+    static let linkedBooks = 5
 
     /// `https://hardcover.app/@username`, or `nil` when `username` cannot be one.
     static func profileURL(_ username: String) -> URL? {
@@ -256,6 +260,28 @@ enum HardcoverInvite {
     /// The text the share sheet sends with a social image.
     static func shareText(_ username: String) -> String {
         profileURL(username).map { "\(line): \($0.absoluteString)" } ?? line
+    }
+
+    /// A book's permanent Hardcover page, `https://hardcover.app/id/books/<id>`, which keeps
+    /// working when the book's slug changes or it merges, or `nil` for an ID Hardcover can't
+    /// have.
+    static func bookURL(_ id: Int) -> URL? {
+        id > 0 ? URL(string: "https://hardcover.app/id/books/\(id)") : nil
+    }
+
+    /// The text the share sheet sends with a **My reading** image: a line with each book's title
+    /// and permanent page when the image draws at most `linkedBooks`, then the sharer's profile
+    /// link when `username` is known. `nil` when there is neither.
+    static func readingText(books: [CloudBook], username: String?) -> String? {
+        var lines =
+            books.count <= linkedBooks
+            ? books.compactMap { book in
+                bookURL(book.id).map { "\(book.title): \($0.absoluteString)" }
+            } : []
+        if let profile = username.flatMap(profileURL) {
+            lines.append("My reading on Hardcover: \(profile.absoluteString)")
+        }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 }
 

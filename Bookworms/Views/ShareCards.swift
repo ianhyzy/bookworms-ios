@@ -18,13 +18,13 @@ struct FeaturedBookCard: View {
         let theme = input.theme
         let edge = theme.backdropDark.color
         let lines = ShareStyle.details(book, isReading: input.template == .currentlyReading)
-        // A story's content reaches into its bottom strip (`ShareAspect.reach`). Each gap between
+        // A story's content reaches into its bottom strip (`ShareInput.reach`). Each gap between
         // the details' groups takes a quarter of that height and the gap under the hero takes the
         // rest, so the details still read as one caption and the hero keeps the size it has
         // within `ShareAspect.insets`.
-        let groupGap = aspect.reach / 4
+        let groupGap = input.reach / 4
         let groupGaps = (showsMeter(book) ? 1 : 0) + (lines.isEmpty ? 0 : 1)
-        let heroGap = aspect.reach - groupGap * CGFloat(groupGaps)
+        let heroGap = input.reach - groupGap * CGFloat(groupGaps)
         return ZStack {
             // A glow behind the book that fades to the dark field.
             RadialGradient(
@@ -58,7 +58,7 @@ struct FeaturedBookCard: View {
                     }
                 }
             }
-            .padding(aspect.reachingInsets)
+            .padding(input.reachingInsets)
         }
     }
 
@@ -202,17 +202,17 @@ struct TopFiveCard: View {
                     }
                 }
             }
-            .padding(aspect.reachingInsets)
+            .padding(input.reachingInsets)
         }
     }
 
     /// The gaps around the fan and between the ranked rows, in pixels.
     ///
-    /// A story's content reaches into its bottom strip (`ShareAspect.reach`), and the two gaps
+    /// A story's content reaches into its bottom strip (`ShareInput.reach`), and the two gaps
     /// around the fan and the one between each pair of rows share that height evenly, so the fan
     /// and the titles keep the sizes they have within `ShareAspect.insets`.
     private var gaps: (section: CGFloat, row: CGFloat) {
-        let extra = input.aspect.reach / CGFloat(input.books.count + 1)
+        let extra = input.reach / CGFloat(input.books.count + 1)
         return input.aspect == .story ? (48 + extra, 22 + extra) : (32, 14)
     }
 

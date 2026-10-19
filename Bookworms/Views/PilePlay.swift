@@ -230,7 +230,7 @@ extension PileLayout {
     /// order. A year drops by month, a month by week, and every book by year. Books that
     /// `frame` leaves out, such as unfinished books under **All books**, drop last.
     static func periods(_ books: [CloudBook], frame: TimeFrame) -> [PilePeriod] {
-        let finished = books.filter(frame.contains)
+        let finished = frame.books(in: books)
             .sorted { ($0.finished ?? "", $0.id) < ($1.finished ?? "", $1.id) }
         let columns = YearInBooks.columns(for: frame, books: finished).filter { !$0.books.isEmpty }
         var periods = columns.enumerated()

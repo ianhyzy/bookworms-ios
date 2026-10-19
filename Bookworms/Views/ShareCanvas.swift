@@ -71,7 +71,7 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
             return library.filter { $0.isReading == true }
                 .sorted { ($0.started ?? "") > ($1.started ?? "") }
         }
-        let pool = self == .review && frame == .lifetime ? library : library.filter(frame.contains)
+        let pool = self == .review && frame == .lifetime ? library : frame.books(in: library)
         let sorted = pool.sorted { ($0.finished ?? "", $0.id) > ($1.finished ?? "", $1.id) }
         return self == .review ? sorted.filter { $0.reviewText != nil } : sorted
     }
@@ -82,15 +82,16 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
     /// first choice. Just Finished also draws a chosen book from outside the frame, so a book
     /// shared from its details always shows. Year in Books draws the books finished in `frame`,
     /// oldest first. Pile draws them newest first, as the shelf lists them, so the newest books
-    /// land on top. Top Five draws up to five of them, highest rated first, then most recently
-    /// finished. Hot Takes draws up to three whose rating
+    /// land on top. Top Five draws up to five of them: the `pinned` ones among them, in pin
+    /// order (`TopFivePins`), then the highest rated, then the most recently finished. Hot Takes
+    /// draws up to three whose rating
     /// differs most from Hardcover's average in `direction`, or with a `match`, from the other
     /// reader's rating (`TasteMatch.hotTakes(in:direction:)`). Taste Match draws the match's
     /// agreements and fights when it has a score, and Book Swap its picks for each reader;
     /// without a `match`, they draw nothing.
     func books(
         from library: [CloudBook], in frame: TimeFrame, bookID: Int? = nil,
-        direction: HotTakeDirection = .lovedMore, match: TasteMatch? = nil
+        direction: HotTakeDirection = .lovedMore, match: TasteMatch? = nil, pinned: [Int] = []
     ) -> [CloudBook] {
         switch self {
         case .hotTakes where match != nil:
@@ -105,16 +106,20 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         }
         if isSingleBook {
             let choices = choices(from: library, in: frame)
-            let chosen = (self == .justFinished ? library : choices).first { $0.id == bookID }
+            // A chosen reread in the frame keeps its finish there.
+            let chosen =
+                choices.first { $0.id == bookID }
+                ?? (self == .justFinished ? library.first { $0.id == bookID } : nil)
             return [chosen ?? choices.first].compactMap(\.self)
         }
-        let finished = library.filter(frame.contains)
+        let finished = frame.books(in: library)
             .sorted { ($0.finished ?? "", $0.id) < ($1.finished ?? "", $1.id) }
         switch self {
         case .pile:
             return finished.reversed()
         case .topFive:
-            return Array(finished.sorted(by: Self.isRankedHigher).prefix(5))
+            return Array(
+                Self.pinnedFirst(pinned, finished.sorted(by: Self.isRankedHigher)).prefix(5))
         case .hotTakes:
             let sign: Double = direction == .lovedMore ? 1 : -1
             return
@@ -126,6 +131,13 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         default:
             return finished
         }
+    }
+
+    /// The books of `books` whose IDs are in `pinned`, in that order, then the rest in their own
+    /// order.
+    static func pinnedFirst(_ pinned: [Int], _ books: [CloudBook]) -> [CloudBook] {
+        pinned.compactMap { id in books.first { $0.id == id } }
+            + books.filter { !pinned.contains($0.id) }
     }
 
     /// Orders by rating, unrated last, then by the most recent finish.
@@ -231,18 +243,12 @@ enum ShareAspect: String, CaseIterable, Identifiable {
 
     /// How far a story card's content may reach below `insets` into the bottom strip, in pixels:
     /// to y 1770, which leaves the bottom 150 pixels to the platforms' reply bar and the credit.
+    /// A card that letters a profile link reaches less (`ShareInput.reach`).
     ///
-    /// A card that pads with `reachingInsets` widens its gaps by exactly this height in all, so
-    /// its covers and text keep the sizes that `insets` gives them. Portrait and Square reach no
-    /// further than `insets`.
+    /// A card that pads with `ShareInput.reachingInsets` widens its gaps by exactly its reach in
+    /// all, so its covers and text keep the sizes that `insets` gives them. Portrait and Square
+    /// reach no further than `insets`.
     var reach: CGFloat { self == .story ? 100 : 0 }
-
-    /// `insets` with `reach` taken off the bottom margin.
-    var reachingInsets: EdgeInsets {
-        var insets = insets
-        insets.bottom -= reach
-        return insets
-    }
 }
 
 /// Everything a share card draws, resolved before rendering.
@@ -267,6 +273,22 @@ struct ShareInput {
     var social: ShareSocial?
     /// Varies tilts, offsets, and lengths.
     var seed: UInt64 = 0
+    /// The sharer's Hardcover username, which a **My reading** image letters as a profile link
+    /// in its bottom margin (`ShareProfileLink`), or `nil` for none.
+    var username: String?
+
+    /// How far the card's content may reach into a story's bottom strip (`ShareAspect.reach`),
+    /// less the room that the profile link takes there.
+    var reach: CGFloat {
+        username == nil ? aspect.reach : max(0, aspect.reach - ShareProfileLink.storyHeight)
+    }
+
+    /// `aspect.insets` with `reach` taken off the bottom margin.
+    var reachingInsets: EdgeInsets {
+        var insets = aspect.insets
+        insets.bottom -= reach
+        return insets
+    }
 
     func look(for book: CloudBook) -> SpineLook {
         looks[book.id] ?? SpineLook(book: book, design: nil, face: nil)
@@ -279,8 +301,9 @@ struct ShareInput {
     /// span, such as "2019–2026".
     var period: String {
         guard frame == .lifetime else { return frame.title }
-        let years = books.compactMap(\.finishedYear)
-        guard let first = years.min(), let last = years.max() else { return "" }
+        // Every finish counts, so a reread's earlier reads widen the span.
+        let years = TimeFrame.periods(in: books).years
+        guard let last = years.first, let first = years.last else { return "" }
         return first == last ? String(first) : "\(first)–\(last)"
     }
 
@@ -319,6 +342,11 @@ struct ShareCanvas: View {
             }
         }
         .frame(width: input.aspect.size.width, height: input.aspect.size.height)
+        .overlay(alignment: .bottom) {
+            if let username = input.username {
+                ShareProfileLink(username: username, aspect: input.aspect)
+            }
+        }
         .clipped()
         // Exports keep one appearance whatever the system setting.
         .environment(\.colorScheme, .dark)
@@ -341,6 +369,37 @@ struct ShareCredit: View {
             .foregroundStyle(ShareStyle.cream.color.opacity(0.5))
             .shadow(color: .black.opacity(0.35), radius: 3)
             .padding(.bottom, 10)
+    }
+}
+
+/// The sharer's Hardcover profile link, such as "hardcover.app/@sam", that **My reading** and
+/// **Share desk** images letter in their bottom margin, a little brighter and larger than the
+/// credit.
+///
+/// On a story, the link sits above the bottom 150 pixels, which the platforms' reply bar may
+/// cover, in the `storyHeight` that cards reaching into the bottom strip leave it
+/// (`ShareInput.reach`). On Portrait and Square, it sits just above the credit's strip.
+struct ShareProfileLink: View {
+    /// The room the link takes above a story's bottom 150 pixels, in pixels.
+    nonisolated static let storyHeight: CGFloat = 80
+    static let fontSize: CGFloat = 26
+    /// How far a long link shrinks to fit the width. The longest username, 40 wide letters,
+    /// fits at about 80 percent.
+    static let minimumScale: CGFloat = 0.7
+
+    let username: String
+    let aspect: ShareAspect
+
+    var body: some View {
+        Text(HardcoverInvite.link(username))
+            .font(.system(size: Self.fontSize, weight: .semibold))
+            .foregroundStyle(ShareStyle.cream.color.opacity(0.85))
+            .lineLimit(1)
+            .minimumScaleFactor(Self.minimumScale)
+            .shadow(color: .black.opacity(0.35), radius: 3)
+            .padding(.horizontal, aspect.insets.leading)
+            // On a story, 8 pixels above the bottom 150.
+            .padding(.bottom, aspect == .story ? 150 + 8 : ShareCredit.height + 4)
     }
 }
 

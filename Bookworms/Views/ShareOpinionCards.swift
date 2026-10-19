@@ -126,7 +126,7 @@ struct HotTakesCard: View {
             } else {
                 takes
                     .foregroundStyle(ShareStyle.cream.color)
-                    .padding(input.aspect.reachingInsets)
+                    .padding(input.reachingInsets)
             }
         }
     }
@@ -176,7 +176,7 @@ struct HotTakesCard: View {
     }
 
     /// The height each gap adds on a story, whose content reaches into the bottom strip
-    /// (`ShareAspect.reach`), so the covers keep the sizes they have within `ShareAspect.insets`.
+    /// (`ShareInput.reach`), so the covers keep the sizes they have within `ShareAspect.insets`.
     /// The gaps under the heading and between the rows share it evenly, or for a single take,
     /// the four gaps under the heading, under the cover, and above the difference and the
     /// ratings.
@@ -185,7 +185,7 @@ struct HotTakesCard: View {
     /// nothing, so its invitation and profile link sit where Taste Match and Book Swap put theirs.
     private var extra: CGFloat {
         guard input.social == nil else { return 0 }
-        return input.aspect.reach
+        return input.reach
             / CGFloat(input.books.count == 1 ? 4 : max(1, input.books.count))
     }
 

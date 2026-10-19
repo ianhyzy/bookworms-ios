@@ -38,6 +38,7 @@ struct ShareStudioView: View {
     @State private var direction = HotTakeDirection.lovedMore
     @State private var showsRatings = true
     @State private var seed: UInt64 = 0
+    @AppStorage(TopFivePins.key) private var pins = TopFivePins()
     /// The years and months with finished books, kept with the library so the body need not
     /// recompute them.
     @State private var periods: (years: [Int], months: [TimeFrame]) = ([], [])
@@ -124,14 +125,16 @@ struct ShareStudioView: View {
             ?? readers.first
     }
 
-    /// The books `template` draws. With friends, they come from the comparison with `reader`,
-    /// and there are none before the reader's library downloads.
+    /// The books `template` draws, with Top Five's `pins`. With friends, they come from the
+    /// comparison with `reader`, and there are none before the reader's library downloads.
     private func books(
-        _ template: ShareTemplate, frame: TimeFrame, bookID: Int?, reader: SocialModel.Reader?
+        _ template: ShareTemplate, frame: TimeFrame, bookID: Int?, reader: SocialModel.Reader?,
+        pins: [Int]
     ) -> [CloudBook] {
         if mode == .friends && reader?.match == nil { return [] }
         return template.books(
-            from: library, in: frame, bookID: bookID, direction: direction, match: reader?.match)
+            from: library, in: frame, bookID: bookID, direction: direction, match: reader?.match,
+            pinned: pins)
     }
 
     /// The image the current options and library call for.
@@ -139,7 +142,8 @@ struct ShareStudioView: View {
         let frame = shownFrame
         let bookID = template.isSingleBook ? bookID : nil
         let reader = shownReader
-        var books = books(template, frame: frame, bookID: bookID, reader: reader)
+        let pins = template == .topFive ? self.pins.ids : []
+        var books = books(template, frame: frame, bookID: bookID, reader: reader, pins: pins)
         if template == .pile { books = Array(books.prefix(PileSnapshotRenderer.maximumBooks)) }
         // Only the drawn books' designs, so a design saved for another book changes nothing.
         let designs = books.map { model.design(for: $0) }
@@ -151,7 +155,9 @@ struct ShareStudioView: View {
         return RenderRequest(
             template: template, aspect: aspect, frame: frame, bookID: bookID,
             coverStyle: coverStyle, direction: direction, showsRatings: showsRatings, seed: seed,
-            syncedAt: model.library?.syncedAt, readerID: reader?.id,
+            pins: pins, syncedAt: model.library?.syncedAt, readerID: reader?.id,
+            // A comparison letters the username in its invitation instead.
+            username: mode == .mine ? model.social.owner?.username : nil,
             socialRevision: mode == .friends ? model.social.revision : 0,
             hasScore: template == .tasteMatch && reader?.match?.score != nil,
             covers: books.map(\.coverCandidates.first), designs: designs, loadedFaces: loadedFaces)
@@ -353,6 +359,22 @@ struct ShareStudioView: View {
         if template.usesTimeFrame && !periods.years.isEmpty {
             Section("Time frame") { frameControls }
         }
+        if template == .topFive && !periods.years.isEmpty {
+            Section {
+                NavigationLink {
+                    TopFivePinPicker(library: library)
+                } label: {
+                    LabeledContent(
+                        "Pinned books",
+                        value: pins.ids.isEmpty
+                            ? "None" : "\(pins.ids.count) of \(TopFivePins.limit)")
+                }
+            } footer: {
+                Text(
+                    "Pinned books lead Top Five in the order you pinned them, in each time frame "
+                        + "you finished them in.")
+            }
+        }
         if template.isSingleBook {
             Section("Book") { bookRow }
         }
@@ -362,16 +384,20 @@ struct ShareStudioView: View {
     }
 
     /// Opens the share sheet with the image. Only the shared file carries the credit.
+    ///
+    /// A comparison's text invites its viewers to compare on Hardcover. A **My reading** image's
+    /// text links its books and the sharer's profile (`HardcoverInvite.readingText`).
     private func share() async {
         guard let image else { return }
         isPreparing = true
         defer { isPreparing = false }
         do {
+            let username = model.social.owner?.username
             var shared = try await SharedFiles.images([image])
-            // A comparison invites its viewers to compare on Hardcover.
-            if renderedRequest?.readerID != nil, let owner = model.social.owner {
-                shared.text = HardcoverInvite.shareText(owner.username)
-            }
+            shared.text =
+                renderedRequest?.readerID != nil
+                ? username.map(HardcoverInvite.shareText)
+                : HardcoverInvite.readingText(books: image.books, username: username)
             files = shared
         } catch {
             model.toasts.show(.failure("Couldn't prepare the image"))
@@ -827,11 +853,12 @@ struct ShareStudioView: View {
         let template = request.template
         let reader = request.readerID.flatMap(model.social.reader)
         let books = books(
-            template, frame: request.frame, bookID: request.bookID, reader: reader)
+            template, frame: request.frame, bookID: request.bookID, reader: reader,
+            pins: request.pins)
         var input = ShareInput(
             template: template, aspect: request.aspect, books: books, frame: request.frame,
             coverStyle: request.coverStyle, direction: request.direction,
-            showsRatings: request.showsRatings, seed: request.seed)
+            showsRatings: request.showsRatings, seed: request.seed, username: request.username)
         if let reader, let match = reader.match, let owner = model.social.owner {
             input.social = ShareSocial(owner: owner, reader: reader.profile, match: match)
             input.social?.avatars = await loadAvatars([owner, reader.profile])
@@ -844,7 +871,7 @@ struct ShareStudioView: View {
             do {
                 let pile = try await PileSnapshotRenderer.render(
                     books: books, title: input.period, aspect: request.aspect,
-                    seed: request.seed, model: model)
+                    seed: request.seed, username: request.username, model: model)
                 // A render cancelled after its last check still returns; a newer one is coming.
                 try Task.checkCancellation()
                 rendered = pile
@@ -872,7 +899,7 @@ struct ShareStudioView: View {
         var name = template.title
         if template.usesTimeFrame && !template.isSingleBook { name += " " + input.period }
         if let reader = input.social?.reader { name += " with \(reader.shortName)" }
-        image = rendered.map { ShareImage(image: $0, name: name) }
+        image = rendered.map { ShareImage(image: $0, name: name, books: books) }
         failed = !request.isEmpty && rendered == nil
         renderedRequest = request
         #if DEBUG
@@ -921,9 +948,13 @@ private struct RenderRequest: Equatable {
     var direction: HotTakeDirection
     var showsRatings: Bool
     var seed: UInt64
+    /// Top Five's pinned books (`TopFivePins`), empty for other templates.
+    var pins: [Int]
     var syncedAt: Date?
     /// The reader a comparison draws with, or `nil` outside **With friends**.
     var readerID: Int?
+    /// The username a **My reading** image letters as a profile link (`ShareInput.username`).
+    var username: String?
     /// `SocialModel.revision` for a comparison, so new ratings redraw it.
     var socialRevision: Int
     /// Whether a Taste Match has a score, which it draws even without books to show.
@@ -985,6 +1016,8 @@ struct FullSizeShareImage: View {
 struct ShareImage: Transferable {
     let image: UIImage
     let name: String
+    /// The books the image draws, which its share text can link.
+    var books: [CloudBook] = []
 
     static var transferRepresentation: some TransferRepresentation {
         DataRepresentation(exportedContentType: .png) { item in
@@ -1035,6 +1068,76 @@ private struct ShareBookPicker: View {
         return books.filter {
             $0.title.localizedStandardContains(query) || $0.author.localizedStandardContains(query)
         }
+    }
+}
+
+/// A searchable list of the books Top Five can draw from `library`, the finished ones: pinned
+/// books first in pin order, then the rest highest rated first. Each book's button pins or
+/// unpins it (`TopFivePins`).
+///
+/// Opening the list unpins books Top Five can no longer draw, so a book that left the library
+/// cannot hold a pin the reader can't see.
+private struct TopFivePinPicker: View {
+    let library: [CloudBook]
+    @AppStorage(TopFivePins.key) private var pins = TopFivePins()
+    @State private var query = ""
+    /// The finished books, highest rated first, ranked when the library changes so a search
+    /// edit only filters them.
+    @State private var books: [CloudBook] = []
+
+    var body: some View {
+        let shown =
+            query.isEmpty
+            ? books
+            : books.filter {
+                $0.title.localizedStandardContains(query)
+                    || $0.author.localizedStandardContains(query)
+            }
+        let pinned = pins.ids.compactMap { id in shown.first { $0.id == id } }
+        List {
+            if !pinned.isEmpty {
+                Section("Pinned") { ForEach(pinned, content: row) }
+            }
+            Section {
+                ForEach(shown.filter { !pins.contains($0.id) }, content: row)
+            } header: {
+                Text("Books")
+            } footer: {
+                if pins.isFull { Text("Unpin a book to pin another.") }
+            }
+        }
+        .searchable(text: $query)
+        .navigationTitle("Pin to Top Five")
+        .onChange(of: library, initial: true) { _, library in
+            books = library.filter(TimeFrame.lifetime.contains)
+                .sorted(by: ShareTemplate.isRankedHigher)
+            pins.keep(only: Set(books.map(\.id)))
+        }
+    }
+
+    private func row(_ book: CloudBook) -> some View {
+        let isPinned = pins.contains(book.id)
+        return Button {
+            pins.toggle(book.id)
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    BookText(book.title, of: book).lineLimit(2)
+                    Text(book.author).font(.subheadline).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: isPinned ? "pin.fill" : "pin")
+                    .foregroundStyle(isPinned ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                    // The row's value says whether the book is pinned.
+                    .accessibilityHidden(true)
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .disabled(!isPinned && pins.isFull)
+        .accessibilityValue(isPinned ? "Pinned" : "")
+        .accessibilityHint(isPinned ? "Unpins it from Top Five." : "Pins it to lead Top Five.")
     }
 }
 

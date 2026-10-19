@@ -14,6 +14,8 @@ enum HardcoverError: LocalizedError, Equatable {
     case deviceFlowDenied
     case deviceFlowExpired
     case credentialNotSaved
+    /// The Keychain refused to read the saved login, which stays saved.
+    case credentialUnreadable
 
     var errorDescription: String? {
         switch self {
@@ -33,7 +35,19 @@ enum HardcoverError: LocalizedError, Equatable {
         case .deviceFlowExpired: "The code expired before it was approved. Get a new code."
         case .credentialNotSaved:
             "Bookworms could not save your Hardcover login on this \(ThisDevice.name)."
+        case .credentialUnreadable:
+            "Bookworms could not read your Hardcover login from the keychain. \(Self.keychainAdvice)"
         }
+    }
+
+    /// What lets the Keychain read the login again: on a Mac, allowing its prompt; elsewhere,
+    /// the first unlock after a restart.
+    private static var keychainAdvice: String {
+        #if os(macOS)
+            "Allow access when the Mac asks, then try again."
+        #else
+            "Unlock this \(ThisDevice.name), then try again."
+        #endif
     }
 }
 
@@ -69,7 +83,36 @@ enum DevicePollResult: Equatable, Sendable {
     case slowDown
     case expired
     case accessDenied
-    case success(token: String)
+    case success(HardcoverCredential)
+}
+
+/// A Hardcover OAuth login: the access token that requests carry and, when Hardcover issued
+/// one, the refresh token that renews it.
+///
+/// Hardcover's access tokens last a week. Its refresh tokens last six months and rotate: each
+/// renewal returns a new pair, and spending a refresh token a second time makes Hardcover
+/// revoke the whole login. A login saved before Bookworms kept refresh tokens has neither
+/// `refreshToken` nor `expiresAt` and works until Hardcover rejects it.
+struct HardcoverCredential: Codable, Equatable, Sendable {
+    let accessToken: String
+    var refreshToken: String? = nil
+    /// When the access token expires, from the token reply's `expires_in`.
+    var expiresAt: Date? = nil
+}
+
+extension HardcoverCredential {
+    /// Reads a login as the Keychain holds it: JSON, or a bare access token, as earlier builds
+    /// saved it.
+    init(stored: String) {
+        self =
+            (try? JSONDecoder().decode(Self.self, from: Data(stored.utf8)))
+            ?? Self(accessToken: stored)
+    }
+
+    /// The login as the Keychain holds it.
+    func stored() throws -> String {
+        String(decoding: try JSONEncoder().encode(self), as: UTF8.self)
+    }
 }
 
 /// The signed-in Hardcover account.
@@ -124,25 +167,17 @@ actor HardcoverClient {
 
     func pollToken(deviceCode: String) async throws -> DevicePollResult {
         let (data, status) = try await postForm(
-            "https://hardcover.app/oauth2/token",
+            Self.tokenEndpoint,
             [
                 ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
                 ("device_code", deviceCode), ("client_id", Self.clientID),
             ])
-        struct Reply: Decodable {
-            let accessToken: String?
-            let error: String?
-            enum CodingKeys: String, CodingKey {
-                case accessToken = "access_token"
-                case error
-            }
-        }
-        let reply = try? JSONDecoder().decode(Reply.self, from: data)
+        let reply = try? JSONDecoder().decode(TokenReply.self, from: data)
         if status == 200 {
-            guard let token = reply?.accessToken.flatMap(Self.validToken) else {
+            guard let credential = reply?.credential(receivedAt: .now) else {
                 throw HardcoverError.rejected
             }
-            return .success(token: token)
+            return .success(credential)
         }
         switch reply?.error {
         case "authorization_pending": return .pending
@@ -156,7 +191,7 @@ actor HardcoverClient {
     }
 
     /// Polls until Hardcover approves, denies, or expires `authorization`, and returns the
-    /// access token.
+    /// login.
     ///
     /// Waits the code's interval (5 seconds when Hardcover gives none) before each poll, and 5
     /// seconds longer after each `slow_down`, as RFC 8628 requires, or after each HTTP 429.
@@ -166,7 +201,7 @@ actor HardcoverClient {
         of authorization: DeviceAuthorization,
         poll: @Sendable () async throws -> DevicePollResult,
         sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
-    ) async throws -> String {
+    ) async throws -> HardcoverCredential {
         var interval = max(authorization.interval ?? 5, 1)
         var waited = 0
         while waited < authorization.expiresIn {
@@ -188,10 +223,39 @@ actor HardcoverClient {
             case .slowDown: interval += 5
             case .expired: throw HardcoverError.deviceFlowExpired
             case .accessDenied: throw HardcoverError.deviceFlowDenied
-            case .success(let token): return token
+            case .success(let credential): return credential
             }
         }
         throw HardcoverError.deviceFlowExpired
+    }
+
+    /// Spends `refreshToken` once for a new login (RFC 6749, section 6).
+    ///
+    /// The request is never retried, because Hardcover revokes the whole login when a refresh
+    /// token it already spent comes back, as a retry of a request that reached it would. The
+    /// new login keeps `refreshToken` only if Hardcover sends no new one. Throws
+    /// `HardcoverError.invalidToken` for any HTTP 4xx reply other than 408 or 429: Hardcover
+    /// answers 400 or 401 once the token expired, was revoked, or was spent, and a token
+    /// endpoint that refuses the request in another way can't renew the login either.
+    func renew(refreshToken: String) async throws -> HardcoverCredential {
+        let (data, status) = try await postForm(
+            Self.tokenEndpoint,
+            [
+                ("grant_type", "refresh_token"), ("refresh_token", refreshToken),
+                ("client_id", Self.clientID),
+            ])
+        switch status {
+        case 200:
+            guard
+                var credential = (try? JSONDecoder().decode(TokenReply.self, from: data))?
+                    .credential(receivedAt: .now)
+            else { throw HardcoverError.rejected }
+            if credential.refreshToken == nil { credential.refreshToken = refreshToken }
+            return credential
+        case 408, 429: throw HardcoverError.http(status)
+        case 400..<500: throw HardcoverError.invalidToken
+        default: throw HardcoverError.http(status)
+        }
     }
 
     /// Returns the token's account. Signing in checks it before saving the token.
@@ -436,6 +500,32 @@ actor HardcoverClient {
 
     // MARK: - Requests
 
+    private static let tokenEndpoint = "https://hardcover.app/oauth2/token"
+
+    /// A reply from the token endpoint (RFC 6749, section 5): a login, or an error code.
+    private struct TokenReply: Decodable {
+        let accessToken: String?
+        let refreshToken: String?
+        let expiresIn: Double?
+        let error: String?
+
+        enum CodingKeys: String, CodingKey {
+            case accessToken = "access_token"
+            case refreshToken = "refresh_token"
+            case expiresIn = "expires_in"
+            case error
+        }
+
+        /// The login the reply carries, with its expiry counted from `date`, or `nil` without a
+        /// usable access token.
+        func credential(receivedAt date: Date) -> HardcoverCredential? {
+            guard let token = accessToken.flatMap(HardcoverClient.validToken) else { return nil }
+            return HardcoverCredential(
+                accessToken: token, refreshToken: refreshToken.flatMap(HardcoverClient.validToken),
+                expiresAt: expiresIn.map { date.addingTimeInterval($0) })
+        }
+    }
+
     private func postForm(_ endpoint: String, _ fields: [(String, String)]) async throws -> (
         Data, Int
     ) {
@@ -579,7 +669,7 @@ actor HardcoverClient {
             }
             edition { pages audio_seconds image { url width height } reading_format { format } language { code2 } }
             user_book_reads(where: {finished_at: {_is_null: false}},
-              order_by: [{finished_at: desc}, {id: desc}], limit: 1) {
+              order_by: [{finished_at: desc}, {id: desc}]) {
               finished_at edition { pages audio_seconds image { url width height } reading_format { format } language { code2 } }
             }
             current_read: user_book_reads(where: {finished_at: {_is_null: true}},
@@ -679,7 +769,8 @@ actor HardcoverClient {
     }
 
     /// Converts rows to books the way the Apple TV app does, keeping one row per book: the most
-    /// recently finished. `previous` holds the account's books from its last sync, by ID, whose
+    /// recently finished. A book keeps every finished read's date in `finishedDates`, and its
+    /// newest read's edition. `previous` holds the account's books from its last sync, by ID, whose
     /// covers stay fixed unless an upgrade applies
     /// (`coverURLs(edition:book:otherEditions:editionIsInLanguage:previous:)`).
     private static func normalize(_ rows: [LibraryPage.Row], previous: [Int: CloudBook] = [:])
@@ -689,6 +780,7 @@ actor HardcoverClient {
         for row in rows {
             let source = row.book
             let read = row.finishedReads?.first
+            let finishes = (row.finishedReads ?? []).compactMap(\.finishedAt)
             let edition = read?.edition ?? row.edition
             let author = (source.cachedContributors ?? [])
                 .filter { $0.contribution == nil || $0.contribution == "Author" }
@@ -732,10 +824,11 @@ actor HardcoverClient {
                 seriesName: seriesName?.isEmpty == false ? seriesName : nil,
                 seriesMemberships: memberships,
                 pages: edition?.pages ?? source.pages,
-                finished: read?.finishedAt ?? row.lastReadDate,
+                finished: finishes.first ?? row.lastReadDate,
+                finishedDates: finishes.isEmpty ? nil : finishes,
                 rating: row.rating, isReading: isReading ? true : nil,
                 // As the Apple TV marks read books: on the Read shelf, or finished at some point.
-                isRead: (row.statusID == readStatus || read?.finishedAt != nil
+                isRead: (row.statusID == readStatus || !finishes.isEmpty
                     || row.lastReadDate != nil) ? true : nil,
                 progress: isReading
                     ? progress(

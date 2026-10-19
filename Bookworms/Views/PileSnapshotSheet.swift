@@ -45,6 +45,8 @@ struct PileSnapshotSheet: View {
         /// The books and heading, so a new library never leaves an image of the old one.
         var ids: [Int]
         var title: String
+        /// The profile link the image letters (`ShareProfileLink`).
+        var username: String?
 
         /// The options without the books, which restart a render in progress when they change.
         var restartKey: Options {
@@ -76,7 +78,9 @@ struct PileSnapshotSheet: View {
     }
 
     var body: some View {
-        let options = Options(aspect: aspect, seed: seed, ids: books.map(\.id), title: title)
+        let options = Options(
+            aspect: aspect, seed: seed, ids: books.map(\.id), title: title,
+            username: model.social.owner?.username)
         let isPending = rendered != options
         NavigationStack {
             VStack(spacing: 20) {
@@ -153,12 +157,16 @@ struct PileSnapshotSheet: View {
         .frame(maxHeight: .infinity)
     }
 
-    /// Opens the share sheet with the image and its credit, which the preview leaves out.
+    /// Opens the share sheet with the image and its credit, which the preview leaves out, and
+    /// with the books' and the sharer's Hardcover links in the text
+    /// (`HardcoverInvite.readingText`).
     private func share(_ image: ShareImage) async {
         isPreparing = true
         defer { isPreparing = false }
         do {
             files = try await SharedFiles.images([image])
+            files?.text = HardcoverInvite.readingText(
+                books: image.books, username: model.social.owner?.username)
         } catch {
             model.toasts.show(.failure("Couldn't prepare the image"))
         }
@@ -170,7 +178,9 @@ struct PileSnapshotSheet: View {
         defer { drawing -= 1 }
         while !Task.isCancelled {
             let books = latest
-            let options = Options(aspect: aspect, seed: seed, ids: books.map(\.id), title: title)
+            let options = Options(
+                aspect: aspect, seed: seed, ids: books.map(\.id), title: title,
+                username: model.social.owner?.username)
             guard rendered != options else { return }
             await render(books, options)
         }
@@ -180,10 +190,10 @@ struct PileSnapshotSheet: View {
         do {
             let drawn = try await PileSnapshotRenderer.render(
                 books: books, title: options.title, aspect: options.aspect, seed: options.seed,
-                model: model)
+                username: options.username, model: model)
             // A render cancelled after its last check still returns; a newer one is on its way.
             try Task.checkCancellation()
-            image = ShareImage(image: drawn, name: "Desk \(title)")
+            image = ShareImage(image: drawn, name: "Desk \(title)", books: books)
             failed = false
             #if DEBUG
                 PileSnapshotDebug.write(drawn)
