@@ -45,7 +45,7 @@ enum StackStyle: String {
     /// Nothing fades: the book shows every face throughout. The book slides out inside the
     /// stack (`Rest.slidesInStack`), over the books around it and the stacks beside it, as a book
     /// that comes out in front of them. The flight then draws it in front of the stack. The books
-    /// around it make a little room while it is out (`StackRoom`).
+    /// above it make a little room while it is out (`StackRoom`).
     func rest(of book: CloudBook) -> PullOutPath.Rest {
         PullOutPath.Rest(
             pitch: StackArrangement.twist(of: book, maximum: maximumTwist),
@@ -207,7 +207,7 @@ struct SpineCarousel: View {
         let eye = CGPoint(x: size.width / 2, y: top + size.height / 2)
         let stops = StackArrangement.maskStops(
             height: top + size.height + bleed, top: band, bottom: track.maxThickness / 2 + rise)
-        // The pulled book's index, which the books of its stack make room for.
+        // The pulled book's index, which the books above it in its stack make room for.
         let pulled = pullOut.roomID.flatMap { track.ids.firstIndex(of: $0) }
         // The book that is out, which the stack draws over the books around it.
         let out = pullOut.book?.id
@@ -862,12 +862,13 @@ private struct StackSlide: ViewModifier, Animatable {
     }
 }
 
-/// Makes room for a pulled book: moves a stacked book up while it lies above the pulled book and
-/// down while it lies below, by a few points, then snaps it back once the book is back.
+/// Makes room for a pulled book: moves a stacked book up by a few points while it lies above the
+/// pulled book, then snaps it back once the book is back. A book below the pulled book keeps its
+/// place, since it rests on the board (`StackBoard`), which a book moving down would sink into.
 ///
-/// Both motions spread outward from the pulled book like a nudge along a Newton's cradle: each
+/// Both motions spread upward from the pulled book like a nudge along a Newton's cradle: each
 /// book starts `stagger` seconds after the book nearer the pulled one. The books open over the
-/// opening (`room`) and settle with a little overshoot (`opening`). The nearest books move `near`
+/// opening (`room`) and settle with a little overshoot (`opening`). The nearest book moves `near`
 /// points and farther books a little more, up to `far`. They hold the room while the book is
 /// out, so the returning book never touches them. Once it is back in its place, they snap shut
 /// (`closing`) and rebound a fraction of a point before they settle, without ever overlapping
@@ -885,8 +886,8 @@ struct StackRoom: GeometryEffect {
     var room: Double
     /// `ShelfPullOut.closing`.
     var closing: Double
-    /// The book's index less the pulled book's: negative above it, and 0 for the pulled book
-    /// or while no book is pulled.
+    /// The book's index less the pulled book's: negative above it, positive below it, and 0 for
+    /// the pulled book or while no book is pulled.
     let distance: Int
 
     nonisolated var animatableData: AnimatablePair<Double, Double> {
@@ -901,17 +902,16 @@ struct StackRoom: GeometryEffect {
                 y: Self.offset(distance: distance, room: room, closing: closing)))
     }
 
-    /// How far a book `distance` places from the pulled book has moved, down the screen for a
-    /// positive distance and up for a negative one.
+    /// How far down the screen a book `distance` places from the pulled book has moved: up, as a
+    /// negative offset, for a book above it, and not at all for the books below it.
     static func offset(distance: Int, room: Double, closing: Double) -> CGFloat {
-        guard distance != 0, closing < 1 else { return 0 }
+        guard distance < 0, closing < 1 else { return 0 }
         let places = abs(distance)
         let delay = Double(places - 1) * stagger
         let opened = value(of: opening, at: room * ShelfPullOut.openingDuration - delay)
         // The snap's overshoot shows as a rebound away from the book, not a dip into it.
         let shut = value(of: snap, at: closing * closingDuration - delay)
-        let reach = (far - (far - near) / CGFloat(places)) * CGFloat(opened * abs(1 - shut))
-        return distance < 0 ? -reach : reach
+        return -(far - (far - near) / CGFloat(places)) * CGFloat(opened * abs(1 - shut))
     }
 
     private static func value(of spring: Spring, at time: Double) -> Double {
