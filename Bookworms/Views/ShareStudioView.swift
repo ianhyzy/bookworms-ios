@@ -22,17 +22,25 @@ import UniformTypeIdentifiers
 /// (`ShareReaderSection`). Comparisons come prepared from `SocialModel`; the body only picks
 /// the shown reader's.
 ///
+/// The app saves the mode, template, size, and time frame, so the tab opens as it was left.
+///
 /// Without a library, the tab shows `NoLibraryView` instead, which can open the Hardcover sheet.
 struct ShareStudioView: View {
+    /// The `UserDefaults` keys of the saved choices.
+    static let modeKey = "BookwormsStudioMode"
+    static let templateKey = "BookwormsStudioTemplate"
+    static let aspectKey = "BookwormsStudioSize"
+    /// The saved time frame, as `TimeFrame.setting` writes it, or empty for the newest year.
+    static let frameKey = "BookwormsStudioFrame"
+
     @Environment(AppModel.self) private var model
-    @State private var mode = ShareMode.mine
-    @State private var template = ShareTemplate.topFive
+    @AppStorage(Self.modeKey) private var mode = ShareMode.mine
+    @AppStorage(Self.templateKey) private var template = ShareTemplate.topFive
     /// The reader chosen under **Compare with**: `nil`, or a reader no longer listed, is the
     /// best match.
     @State private var readerID: Int?
-    @State private var aspect = ShareAspect.story
-    /// The chosen time frame: `nil`, or a frame without finished books, is the newest year.
-    @State private var frame: TimeFrame?
+    @AppStorage(Self.aspectKey) private var aspect = ShareAspect.story
+    @AppStorage(Self.frameKey) private var frameSetting = ""
     /// The featured book of a single-book template: `nil` is its newest choice.
     @State private var bookID: Int?
     @State private var coverStyle = ShareCoverStyle.threeD
@@ -79,18 +87,9 @@ struct ShareStudioView: View {
 
     init() {
         #if DEBUG
+            ShareDebug.saveLaunchChoices()
             let defaults = UserDefaults.standard
-            guard let raw = defaults.string(forKey: "BookwormsShareTemplate") else { return }
-            _template = State(initialValue: ShareTemplate(rawValue: raw) ?? .topFive)
-            _mode = State(
-                initialValue: defaults.string(forKey: "BookwormsShareMode")
-                    .flatMap(ShareMode.init(rawValue:))
-                    ?? (ShareTemplate(rawValue: raw)?.isSocial == true ? .friends : .mine))
-            _aspect = State(
-                initialValue: defaults.string(forKey: "BookwormsShareAspect")
-                    .flatMap(ShareAspect.init(rawValue:)) ?? .story)
-            _frame = State(
-                initialValue: ShareDebug.frame(defaults.string(forKey: "BookwormsShareFrame")))
+            guard defaults.string(forKey: "BookwormsShareTemplate") != nil else { return }
             _bookID = State(
                 initialValue: defaults.string(forKey: "BookwormsShareBook").flatMap { Int($0) })
             _coverStyle = State(
@@ -103,6 +102,12 @@ struct ShareStudioView: View {
                 initialValue: defaults.string(forKey: "BookwormsShareSeed").flatMap { UInt64($0) }
                     ?? 0)
         #endif
+    }
+
+    /// The chosen time frame: `nil`, or a frame without finished books, is the newest year.
+    private var frame: TimeFrame? {
+        get { TimeFrame(setting: frameSetting) }
+        nonmutating set { frameSetting = newValue?.setting ?? "" }
     }
 
     /// The books the studio draws from. Debug builds can add fictional reviews and current reads
@@ -473,7 +478,7 @@ struct ShareStudioView: View {
                 let parts = entry.split(separator: ",").map(String.init) + ["", "", "", ""]
                 template = ShareTemplate(rawValue: parts[0]) ?? template
                 aspect = ShareAspect(rawValue: parts[1]) ?? aspect
-                frame = ShareDebug.frame(parts[2])
+                frame = TimeFrame(setting: parts[2])
                 coverStyle = ShareCoverStyle(rawValue: parts[3]) ?? .threeD
                 // A fifth part names a reader to compare with, which also chooses With friends.
                 let reader = parts.count > 4 ? parts[4] : ""
@@ -1286,17 +1291,28 @@ private struct TopFivePinPicker: View {
             }
         }
 
-        /// Parses `year:2025`, `month:2025-08`, or `lifetime`.
-        static func frame(_ text: String?) -> TimeFrame? {
-            guard let text else { return nil }
-            if text == "lifetime" { return .lifetime }
-            let parts = text.split(separator: ":")
-            let numbers = parts.last?.split(separator: "-").compactMap { Int($0) } ?? []
-            switch (parts.first, numbers.count) {
-            case ("year", 1): return .year(numbers[0])
-            case ("month", 2): return .month(year: numbers[0], month: numbers[1])
-            default: return nil
-            }
+        @MainActor private static var savedLaunchChoices = false
+
+        /// Saves `-BookwormsShareTemplate`'s template and the mode, size, and time frame that
+        /// the other arguments name as the studio's choices, once per launch, so the studio
+        /// opens on them and the reader can still change them.
+        @MainActor static func saveLaunchChoices() {
+            guard !savedLaunchChoices else { return }
+            savedLaunchChoices = true
+            let defaults = UserDefaults.standard
+            guard let raw = defaults.string(forKey: "BookwormsShareTemplate") else { return }
+            let template = ShareTemplate(rawValue: raw) ?? .topFive
+            let mode =
+                defaults.string(forKey: "BookwormsShareMode").flatMap(ShareMode.init(rawValue:))
+                ?? (template.isSocial ? .friends : .mine)
+            let aspect = defaults.string(forKey: "BookwormsShareAspect")
+                .flatMap(ShareAspect.init(rawValue:))
+            let frame = defaults.string(forKey: "BookwormsShareFrame")
+                .flatMap(TimeFrame.init(setting:))
+            defaults.set(template.rawValue, forKey: ShareStudioView.templateKey)
+            defaults.set(mode.rawValue, forKey: ShareStudioView.modeKey)
+            defaults.set((aspect ?? .story).rawValue, forKey: ShareStudioView.aspectKey)
+            defaults.set(frame?.setting ?? "", forKey: ShareStudioView.frameKey)
         }
 
         /// Fictional review text, from a short line to one long enough to need an excerpt.
