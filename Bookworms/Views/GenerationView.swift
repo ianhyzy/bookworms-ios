@@ -216,7 +216,7 @@ struct GenerationView: View {
                 }
             }
             #if os(macOS)
-                Button("Backup Model…") {
+                Button("Backup model…") {
                     settingsPane = .backupModel
                     openSettings()
                 }

@@ -7,8 +7,9 @@ import SwiftUI
 ///
 /// A field saves when it loses focus, on Return, and when the screen or window closes, so typing
 /// neither reads the Keychain nor rechecks the model for each character. Keys go straight to this
-/// device's Keychain and never show again; the field only replaces or removes the saved key. A
-/// saved key shows a "Key saved" toast, and a key the Keychain refuses says so under the field.
+/// device's Keychain and never show again; the row of a saved key says **Saved** and only removes
+/// it. On the iPhone, saving a key also shows a "Key saved" toast; the Mac's Settings window has
+/// no toasts. A key the Keychain refuses says so under the field.
 struct SpineDesignerSettings: View {
     @Environment(AppModel.self) private var model
     @Environment(GenerationController.self) private var generation
@@ -43,10 +44,13 @@ struct SpineDesignerSettings: View {
                 }
                 if hasKey {
                     LabeledContent("API key") {
-                        Button("Remove Key", role: .destructive) {
-                            designer.provider.key.delete()
-                            hasKey = false
-                            settingsChanged()
+                        HStack {
+                            Text("Saved").foregroundStyle(.secondary)
+                            Button("Remove Key", role: .destructive) {
+                                designer.provider.key.delete()
+                                hasKey = false
+                                settingsChanged()
+                            }
                         }
                     }
                 } else {
@@ -112,7 +116,9 @@ struct SpineDesignerSettings: View {
         newKey = ""
         keyError = nil
         hasKey = true
-        model.toasts.show(Toast(message: "Key saved", systemImage: "key.fill"))
+        #if os(iOS)
+            model.toasts.show(Toast(message: "Key saved", systemImage: "key.fill"))
+        #endif
         settingsChanged()
     }
 

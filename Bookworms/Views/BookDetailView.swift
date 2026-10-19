@@ -329,7 +329,7 @@ enum DetailTab: String, CaseIterable, Identifiable {
     }
 }
 
-/// One card of the **Details** or **Journal** grid, with what it shows.
+/// One card of the **Details** or **Your reading** grid, with what it shows.
 enum DetailCard: Hashable {
     /// The description as plain text.
     case about(String)
@@ -390,7 +390,7 @@ enum DetailCard: Hashable {
         return cards.compactMap(\.self)
     }
 
-    /// The **Journal** cards: the reader's own record of the book, from their reading service.
+    /// The **Your reading** cards: the reader's own record of the book, from their reading service.
     /// The format card gives the length of the format read: listening time for an audiobook when
     /// known, pages otherwise.
     static func journal(of book: CloudBook) -> [DetailCard] {
