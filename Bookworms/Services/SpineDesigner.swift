@@ -54,11 +54,11 @@ struct SpineDesigner: Hashable, Sendable {
         /// The Keychain item that holds this provider's API key.
         var key: KeychainSecret { KeychainSecret(service: Self.keyService, account: rawValue) }
 
-        /// Unit tests keep keys of their own, so a Mac test run, whose host app shares the
-        /// reader's Keychain items, never reads or prompts for the reader's keys.
+        /// Unit tests keep keys of their own, so a test run never reads the keys that the app
+        /// saved on the same device.
         private static let keyService =
-            ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
-            ? "gay.ian.Bookworms.ai-provider" : "gay.ian.Bookworms.ai-provider.tests"
+            SpineDesigner.isUnitTest
+            ? "gay.ian.Bookworms.ai-provider.tests" : "gay.ian.Bookworms.ai-provider"
     }
 
     /// No backup model.
@@ -74,8 +74,8 @@ struct SpineDesigner: Hashable, Sendable {
     private static let rejectionKey = "SpineDesignerRejection"
 
     /// The user defaults that hold the choice and the remembered rejection. Unit tests keep a
-    /// suite of their own, as they keep their own keys, so a Mac test run, whose host app shares
-    /// the reader's container, never reads or changes the reader's choice.
+    /// suite of their own, as they keep their own keys, so a test run never reads or changes the
+    /// choice that the app saved on the same device.
     private static var defaults: UserDefaults {
         isUnitTest ? UserDefaults(suiteName: "gay.ian.Bookworms.tests")! : .standard
     }
