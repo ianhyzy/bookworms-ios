@@ -80,7 +80,7 @@ struct BookDetailView: View {
             viewport = $1
         }
         .background {
-            if hostedBook == nil { ShelfPalette.wall.ignoresSafeArea() }
+            if hostedBook == nil { WalnutWall().ignoresSafeArea() }
         }
         .toolbar {
             // A host shows its own bar, which outlasts these details as they leave.

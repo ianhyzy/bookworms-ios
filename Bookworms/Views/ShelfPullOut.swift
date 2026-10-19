@@ -573,7 +573,7 @@ private struct PullOutFlight: View, Animatable {
             .opacity(pose.lift)
         }
         // The pushed details' backdrop, which covers the shelf once the book lands.
-        .background { ShelfPalette.wall.ignoresSafeArea().opacity(pose.lift) }
+        .background { WalnutWall(opacity: pose.lift).ignoresSafeArea() }
         .overlay {
             if let lamp {
                 ShelfLamp()

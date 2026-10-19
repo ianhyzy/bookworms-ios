@@ -40,7 +40,7 @@ struct DeskView: View {
         NavigationStack(path: $path) {
             content(shelf, frame: frame)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background { ShelfPalette.wall.ignoresSafeArea() }
+                .background { WalnutWall().ignoresSafeArea() }
                 .modifier(
                     DeskBar(
                         liftedDetails: liftedDetails, desk: desk, chip: shelf.chip, frame: frame,

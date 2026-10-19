@@ -34,7 +34,7 @@ struct LibraryView: View {
         NavigationStack(path: $path) {
             content(read: read, books: books, options: options)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background { ShelfPalette.wall.ignoresSafeArea() }
+                .background { WalnutWall().ignoresSafeArea() }
                 .modifier(LibraryBar(pullOut: pullOut, options: options))
                 .navigationDestination(for: Int.self) { id in
                     PushedBookDetail(id: id)
