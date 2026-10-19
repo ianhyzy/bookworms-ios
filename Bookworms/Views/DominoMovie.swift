@@ -68,14 +68,20 @@ struct DominoFinaleCard: View {
 /// callback passes the frame on to the screen with a blit, and, for each frame the recording
 /// keeps, `FrameComposer` draws on the GPU the part of the view that a 9:16 frame shows
 /// (`crop(in:)`) over the wall's gradient, which shows around the scene, with the heading and
-/// the credit, into a pixel buffer from the encoder's pool. Once the GPU is done, the frame
-/// goes to the hardware encoder on the main actor, which expects frames in real time; frames
-/// the encoder has no room for wait for it in order, up to `backlogLimit`, past which every
-/// other one is dropped. The heading is `DominoFinaleCard`, where the live view shows it, and
-/// it fades in as the live one does. `DominoMovieTiming` picks the frames on each scene update,
-/// so a long run plays faster than live and the video stays within 30 seconds, and times the
-/// hits that `ImpactFeedback` recorded, which are mixed into the soundtrack once the recording
-/// ends (`ImpactMix`).
+/// the credit, into a pixel buffer from the encoder's pool. In a view wider than 9:16, such as
+/// a Mac's window, the frame shows the view's full height and pans across it after the run's
+/// subject, which the scene passes on each update: where the Follow camera keeps the falling
+/// front, or the chain just ahead of the front with another view, then the finale
+/// (`DominoPan`). The video opens on the subject, at the hand and the first book. Each frame
+/// request carries the frame's place, and its size stays fixed, so the heading and the credit
+/// stay put in the video, and the PNG shows the last frame's place. Once the GPU is done, the
+/// frame goes to the hardware encoder on the main actor, which expects frames in real time;
+/// frames the encoder has no room for wait for it in order, up to `backlogLimit`, past which
+/// every other one is dropped. The heading is `DominoFinaleCard`, where the live view shows it,
+/// and it fades in as the live one does. `DominoMovieTiming` picks the frames on each scene
+/// update, so a long run plays faster than live and the video stays within 30 seconds, and
+/// times the hits that `ImpactFeedback` recorded, which are mixed into the soundtrack once the
+/// recording ends (`ImpactMix`).
 ///
 /// The recording arms once the chain stands, so its costs fall before the push (`arm()`). The
 /// writer is made and started, and Core Image compiles the frames' kernels, away from the main
@@ -85,7 +91,7 @@ struct DominoFinaleCard: View {
 /// view, with the main actor idle. A push that comes while the recording arms starts it once
 /// it is armed, so the video then starts that much after the push. The callback comes off
 /// when the recording ends. While a book is out at its details, the recording pauses
-/// (`advance(by:phase:progress:paused:)`), so the video cuts from the lift to the book's
+/// (`advance(by:phase:progress:paused:subject:)`), so the video cuts from the lift to the book's
 /// return. Leaving the scene before the books have gathered discards the recording; once they
 /// have gathered, leaving ends it early and keeps it. A new chain deletes the clip.
 @MainActor
@@ -136,6 +142,10 @@ final class DominoRecorder {
         let name: String
         /// The frames' timing from the push on.
         var timing: DominoMovieTiming?
+        /// Where the frames show the view, which follows the run's subject across a wide view,
+        /// and whether it has aimed at one yet.
+        var pan: DominoPan
+        private var hasAimed = false
         /// The live time each frame shows, by frame number.
         var times: [Double] = []
         /// When the books lay gathered, in live seconds since the push.
@@ -154,17 +164,32 @@ final class DominoRecorder {
             self.writer = writer
             self.folder = folder
             self.name = name
+            pan = DominoPan(left: tap.crop.minX)
+        }
+
+        /// Moves the frame `deltaTime` seconds toward `subject`, a share of the view's width
+        /// from its left edge, keeping it within the view (see `DominoPan`). The first aim
+        /// goes straight to the subject, so the video opens on it, also after a push that came
+        /// while the recording armed.
+        func aim(at subject: CGFloat, by deltaTime: TimeInterval) {
+            pan.step(
+                toward: subject * tap.width - tap.crop.width / 2,
+                within: 0...max(tap.width - tap.crop.width, 0),
+                by: hasAimed ? deltaTime : .infinity)
+            hasAimed = true
         }
     }
 
     /// What RealityKit's render thread needs to draw a recording's frames, and the requests
     /// that pass between it and the main actor, behind a lock.
     private final class Tap: Sendable {
-        /// Frames to draw from the next frame the view draws, and the heading's opacity in
-        /// them; no frames for a frame that only warms Core Image up.
+        /// Frames to draw from the next frame the view draws, the heading's opacity in them,
+        /// and the left edge of the part of the view they show, in points; no frames for a
+        /// frame that only warms Core Image up.
         struct Request {
             var frames: ClosedRange<Int>?
             var heading: CGFloat
+            var left: CGFloat
         }
 
         struct State {
@@ -180,7 +205,8 @@ final class DominoRecorder {
         let state = Mutex(State())
         let composer: FrameComposer
         let pool: CVMutablePixelBuffer.Pool
-        /// The frame's size in pixels, and the part of the view it shows, in points.
+        /// The frame's size in pixels, and the part of the view it shows, in points, before
+        /// each request moves it across the view (`Request.left`).
         let size: CGSize
         let crop: CGRect
         /// The view's width in points.
@@ -227,7 +253,7 @@ final class DominoRecorder {
                     if request.frames != nil { state.drawing += 1 }
                     return request
                 }
-                return state.isWarm ? nil : Request(heading: 0)
+                return state.isWarm ? nil : Request(heading: 0, left: crop.minX)
             }
             guard let request else { return }
             let source = context.sourceColorTexture
@@ -237,7 +263,8 @@ final class DominoRecorder {
                 }
                 let picture = CVReadOnlyPixelBuffer(try pool.makeMutablePixelBuffer())
                 try composer.render(
-                    frame(of: render, heading: request.heading), into: picture, on: commands)
+                    frame(of: render, heading: request.heading, left: request.left),
+                    into: picture, on: commands)
                 guard let frames = request.frames else {
                     return DominoRecorder.log.notice(
                         "Recording from a \(source.width) × \(source.height) render in pixel format \(source.pixelFormat.rawValue)"
@@ -270,17 +297,21 @@ final class DominoRecorder {
                 let commands = device.makeCommandQueue()?.makeCommandBuffer()
             else { throw PileSnapshotError.drawingFailed }
             let picture = CVReadOnlyPixelBuffer(try pool.makeMutablePixelBuffer())
-            try composer.render(frame(of: render, heading: 0), into: picture, on: commands)
+            try composer.render(
+                frame(of: render, heading: 0, left: crop.minX), into: picture, on: commands)
             commands.commit()
             commands.waitUntilCompleted()
         }
 
-        /// The recording's frame of `render`, a render of the view at any scale, with the
-        /// heading at `heading` opacity.
-        private func frame(of render: CIImage, heading opacity: CGFloat) -> CIImage {
+        /// The recording's frame of `render`, a render of the view at any scale, showing the
+        /// part of the view from `left`, in points, with the heading at `heading` opacity.
+        private func frame(of render: CIImage, heading opacity: CGFloat, left: CGFloat)
+            -> CIImage
+        {
             let scale = render.extent.width / width
+            let shown = CGRect(origin: CGPoint(x: left, y: crop.minY), size: crop.size)
             return composer.frame(
-                of: render, crop: crop.applying(.init(scaleX: scale, y: scale)), size: size,
+                of: render, crop: shown.applying(.init(scaleX: scale, y: scale)), size: size,
                 background: wall, overlays: [(heading, opacity), (credit, 1)])
         }
     }
@@ -297,10 +328,14 @@ final class DominoRecorder {
     }
 
     /// Moves a recording on by `deltaTime` live seconds, in which the chain reached `phase`,
-    /// with `progress` of the run done (see `DominoMovieTiming.advance(by:progress:)`), or
-    /// leaves them out while `paused`, as while a book is out at its details. Arms a recording
-    /// once the chain stands.
-    func advance(by deltaTime: TimeInterval, phase: DominoPhase, progress: Float, paused: Bool) {
+    /// with `progress` of the run done (see `DominoMovieTiming.advance(by:progress:)`), and
+    /// pans its frame toward `subject`, where the run's action shows across the view, as a
+    /// share of its width; or leaves them out while `paused`, as while a book is out at its
+    /// details. Arms a recording once the chain stands.
+    func advance(
+        by deltaTime: TimeInterval, phase: DominoPhase, progress: Float, paused: Bool,
+        subject: CGFloat?
+    ) {
         guard let run else {
             if phase == .standing, !cannotRecord { arm() }
             return
@@ -308,6 +343,7 @@ final class DominoRecorder {
         guard var timing = run.timing, !run.isEnding else { return }
         defer { run.timing = timing }
         guard !paused else { return timing.skip(deltaTime) }
+        if let subject { run.aim(at: subject, by: deltaTime) }
         let ended = phase == .done || phase.hasEnded
         let due = timing.advance(by: deltaTime, progress: ended ? nil : Double(progress))
         if phase == .finished, run.finishedAt == nil { run.finishedAt = timing.live }
@@ -318,7 +354,8 @@ final class DominoRecorder {
             run.tap.state.withLock { state in
                 let lower = state.request?.frames?.lowerBound ?? frames.lowerBound
                 state.request = Tap.Request(
-                    frames: lower...frames.upperBound, heading: CGFloat(shown * shown))
+                    frames: lower...frames.upperBound, heading: CGFloat(shown * shown),
+                    left: run.pan.left)
             }
         }
         if timing.isFull
@@ -328,6 +365,16 @@ final class DominoRecorder {
             endIfDrawn(run)
         }
     }
+
+    #if DEBUG
+        /// The part of the view's width that the recording's frames show, from the push until
+        /// the recording ends, as shares of the width, for the camera log.
+        var shownSpan: ClosedRange<CGFloat>? {
+            guard let run, run.timing != nil, run.tap.width > 0 else { return nil }
+            let left = run.pan.left / run.tap.width
+            return left...(left + run.tap.crop.width / run.tap.width)
+        }
+    #endif
 
     /// Starts recording an armed chain `length` units long at its push, and the hits with it.
     func start(length: Float) {
@@ -370,7 +417,8 @@ final class DominoRecorder {
     /// The part of a view of `viewport` that a 9:16 recording shows, in points. It spans the
     /// view's width and puts the heading at a story's top margin, where the share images put
     /// theirs, unless that would leave out the bottom of the scene above the tab bar. A view
-    /// wider than 9:16 shows its full height, centered.
+    /// wider than 9:16 shows its full height, centered, which a recording pans across the view
+    /// (`DominoPan`).
     nonisolated static func crop(in viewport: PileViewport) -> CGRect {
         let size = viewport.size
         let story = ShareAspect.story.size
@@ -673,6 +721,46 @@ final class DominoRecorder {
         let url = folder.appending(path: Self.fileName("Dominoes \(layout.title)") + ".png")
         try await PileSnapshotRenderer.writeStill(picture, identifier: nil, to: url)
         return url
+    }
+}
+
+/// The left edge of a recording's 9:16 frame, in points, as it pans across a wider view after
+/// the run's subject (see `DominoRecorder`).
+///
+/// Two first-order lags in series ease the edge toward its goal. Together they respond as a
+/// critically damped spring: the frame sets off and settles smoothly, and never overshoots.
+/// Each step moves each lag part of the way toward a value it has had, so the edge only takes
+/// values between its first and the goals it has had, which `step` holds within the view. It
+/// follows a subject that moves at a steady speed `lag` seconds behind, so the scene aims that
+/// far ahead along the chain.
+struct DominoPan {
+    /// How fast each lag closes on its goal, per second. With the scene's subject led by
+    /// `lag`, it sets how quickly the frame turns with the chain at a row's end, within about
+    /// half a second, which keeps the fastest fronts measured across a Mac window's overview, a
+    /// year's and a month's, near the frame's middle.
+    static let rate: Double = 10
+
+    /// How long the frame trails a subject that moves at a steady speed, in seconds.
+    static var lag: TimeInterval { 2 / rate }
+
+    /// The frame's left edge, and the first lag's.
+    private(set) var left: CGFloat
+    private var lead: CGFloat
+
+    init(left: CGFloat) {
+        self.left = left
+        lead = left
+    }
+
+    /// Moves `deltaTime` seconds toward `goal`, held within `range`. An infinite step jumps
+    /// to the goal.
+    mutating func step(
+        toward goal: CGFloat, within range: ClosedRange<CGFloat>, by deltaTime: TimeInterval
+    ) {
+        let goal = min(max(goal, range.lowerBound), range.upperBound)
+        let share = CGFloat(1 - exp(-Self.rate * max(deltaTime, 0)))
+        lead += (goal - lead) * share
+        left += (lead - left) * share
     }
 }
 

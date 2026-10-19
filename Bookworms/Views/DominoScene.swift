@@ -1984,13 +1984,69 @@ final class DominoScene {
         updateHand(by: deltaTime)
         updateFinale(by: deltaTime)
         recorder.advance(
-            by: deltaTime, phase: status.phase, progress: runProgress, paused: flying != nil)
+            by: deltaTime, phase: status.phase, progress: runProgress, paused: flying != nil,
+            subject: recordingSubject)
     }
 
     /// How far the chain has fallen along the path, from 0 at the first book to 1 at the last.
     private var runProgress: Float {
         guard let length = slots.last?.distance, length > 0 else { return 1 }
         return min(1, frontDistance / length)
+    }
+
+    /// Where a recording's frame centers across the view, as a share of its width, or `nil`
+    /// to leave it where it is (see `DominoRecorder`).
+    ///
+    /// While the Follow camera films, it is where that camera composes the front, so the frame
+    /// holds still while the camera keeps the front there. While another view shows, it is
+    /// the chain just ahead of the falling front, by as far as the front moves in the time the
+    /// frame trails a steady subject (`DominoPan.lag`), so the front shows near the frame's
+    /// middle, with room for the standing books it falls toward. It starts at the first book,
+    /// where the hand pushes it. A blend between the cameras moves from one to the other.
+    /// Once the last book falls, it is where that book lands (`landing`).
+    ///
+    /// In the finale, it moves from there to the middle of the view, where the camera aims as
+    /// it moves to the spread's view and where the last book springs up once it rests. It
+    /// sets off at once and slows to arrive as the books lift, so the frame leaves the chain's
+    /// end, where it can show bare table beyond the last book, as soon as the last book falls,
+    /// and then holds still while the camera's move carries the books; the frame's own easing
+    /// smooths the start.
+    private var recordingSubject: CGFloat? {
+        func across(_ point: SIMD3<Float>) -> CGFloat? {
+            screenPoint(of: point, in: CGSize(width: 1, height: 1))?.x
+        }
+        if let ending, let landing {
+            let rest = CGFloat(1 - min(ending.clock / DominoFinale.gatherDelay, 1))
+            return across(landing).map { $0 + (0.5 - $0) * (1 - rest * rest * rest) }
+        }
+        // Until the Follow camera has made its establishing move, the front is the subject, so
+        // a push during that move still opens the video on the first book and the hand.
+        let follow = rig?.isEstablished == true ? followShare : 0
+        let composed = area.map {
+            CGFloat($0.low.x + ($0.high.x - $0.low.x) * DominoCameraRig.composition.x + 1) / 2
+        }
+        let point: SIMD3<Float>?
+        if next >= books.count {
+            point = landing
+        } else if follow < 1, started, let rig {
+            let ahead = rig.point(
+                at: rig.estimate - DominoCameraRig.focusBack + rig.pace * Float(DominoPan.lag))
+            point = [ahead.x, rig.tallest * DominoCameraRig.typicalHeight / 2, ahead.y]
+        } else {
+            point = nil
+        }
+        guard let composed, follow > 0 else { return point.flatMap(across) }
+        guard follow < 1 else { return composed }
+        return point.flatMap(across).map { $0 + (composed - $0) * CGFloat(follow) }
+    }
+
+    /// How much the Follow camera films, from 0 to 1: 1 while it films, 0 while another view
+    /// shows, and the share of a blend's time gone while it hands over between them.
+    private var followShare: Float {
+        let to: Float = follows && cameraMove == nil && mode == .follow ? 1 : 0
+        guard let handoff else { return to }
+        let from: Float = if case .live(.follow) = handoff.from { 1 } else { 0 }
+        return from + (to - from) * min(handoff.time / handoff.duration, 1)
     }
 
     /// How far along the path the chain's front has come: the next book's place, and as much
@@ -2335,15 +2391,20 @@ final class DominoScene {
         let moves = follows && cameraMove == nil
         handoff = nil
         cameraMove = nil
-        // The last book's middle as it lies, half its height past its place. The overview shows
-        // it with the rest of the chain, so the move does not turn to it.
-        let last = slots[slots.count - 1]
-        let landing = last.position + last.heading * last.size.y / 2
+        // The overview shows the last book with the rest of the chain, so the move does not
+        // turn to it.
         ending = Ending(
             start: camera.transform, motion: moves ? motion : Motion(),
-            focus: moves && mode == .follow ? [landing.x, last.size.z / 2, landing.y] : nil,
-            slots: placed.slots, camera: placed.camera)
+            focus: moves && mode == .follow ? landing : nil, slots: placed.slots,
+            camera: placed.camera)
         if !reducesMotion, let book = placed.slots.last?.book { sharpenCover(of: book) }
+    }
+
+    /// The last book's middle as it lies once it has fallen, half its height past its place.
+    private var landing: SIMD3<Float>? {
+        guard let last = slots.last else { return nil }
+        let point = last.position + last.heading * last.size.y / 2
+        return [point.x, last.size.z / 2, point.y]
     }
 
     /// Gives `book`, the spread's last, a cover of `DominoFinale.snapCoverPixels` before its
@@ -2810,27 +2871,37 @@ final class DominoScene {
         /// Whether `-BookwormsDominoCameraLog YES` asks for the camera log, read once.
         private static let logsCamera = UserDefaults.standard.bool(
             forKey: "BookwormsDominoCameraLog")
-        /// The most lines the camera log keeps: two minutes at 60 frames a second.
-        private static let cameraLogLimit = 7200
+        /// The most lines the camera log keeps: two minutes at 120 frames a second.
+        private static let cameraLogLimit = 14_400
 
         /// Simulator hook: with `-BookwormsDominoCameraLog YES`, logs each frame's time step,
         /// the front, the camera's position, direction, and roll, whether every book has
         /// fallen (`done` once the chain has also settled, `fallen` as soon as the last book
-        /// tips), the seconds since the finale started (`finale`, -1 before then), and how
-        /// upright the last book stands, from 1 standing to 0 lying flat, once every book
-        /// stands. It writes the log to `Library/Caches/Bookworms/domino-camera.csv` every 60
-        /// frames. The log ends once the books lie gathered and the camera has stopped
-        /// (`moved`), or at `cameraLogLimit` lines.
+        /// tips), the seconds since the finale started (`finale`, -1 before then), how
+        /// upright the last book stands, from 1 standing to 0 lying flat, where the front's
+        /// book shows across the view (`frontx`), and the left and right edges of the part of
+        /// the view that a recording's frames show (`shownl` and `shownr`, -1 while none
+        /// records), as shares of the view's width, once every book stands. It writes the log
+        /// to `Library/Caches/Bookworms/domino-camera.csv` every 60 frames. The log ends once
+        /// the books lie gathered and the camera has stopped (`moved`), or at `cameraLogLimit`
+        /// lines.
         private func logCamera(_ deltaTime: Float, moved: Bool) {
             guard Self.logsCamera, isReady, !cameraLogEnded else { return }
             let eye = camera.transform.translation
             let forward = camera.transform.rotation.act([0, 0, -1])
             let right = camera.transform.rotation.act([1, 0, 0])
+            let front = books.indices.contains(next) ? books[next] : books.last
+            let frontX = front.flatMap {
+                screenPoint(of: $0.position(relativeTo: root), in: CGSize(width: 1, height: 1))
+            }
+            let shown = recorder.shownSpan
             let values: [Float] = [
                 deltaTime, frontDistance, rig?.estimate ?? 0, eye.x, eye.y, eye.z, forward.x,
                 forward.y, forward.z, status.phase == .done ? 1 : 0,
                 asin(min(max(right.y, -1), 1)), next >= books.count ? 1 : 0, ending?.clock ?? -1,
                 books.last.map { $0.transform.rotation.act([0, 1, 0]).y } ?? 1,
+                Float(frontX?.x ?? -1), Float(shown?.lowerBound ?? -1),
+                Float(shown?.upperBound ?? -1),
             ]
             cameraLog.append(values.map { String(format: "%.5f", $0) }.joined(separator: ","))
             cameraLogEnded =
@@ -2839,7 +2910,9 @@ final class DominoScene {
             let url = URL.cachesDirectory.appending(path: "Bookworms/domino-camera.csv")
             try? FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? (["dt,front,estimate,x,y,z,fx,fy,fz,done,roll,fallen,finale,last"] + cameraLog)
+            let header =
+                "dt,front,estimate,x,y,z,fx,fy,fz,done,roll,fallen,finale,last,frontx,shownl,shownr"
+            try? ([header] + cameraLog)
                 .joined(separator: "\n")
                 .write(to: url, atomically: true, encoding: .utf8)
         }

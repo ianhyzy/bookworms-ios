@@ -308,8 +308,9 @@ struct GenerationView: View {
                     ? "Your OpenAI-compatible endpoint designs each new spine, with one request for each design. Books in a series often reuse a design without a request."
                     : "\(designer.provider.name) designs each new spine with your API key. Each design is one request, billed to your API account. Books in a series often reuse a design without a request."
             #else
+                let billing = designer.provider == .custom ? "" : ", billed to your API account"
                 note =
-                    "Private Cloud Compute isn't available, so your provider designs. Each new design uses one request to this provider, billed to your API account. Books in a series often reuse a design without a request. When Private Cloud Compute becomes available, runs redesign the spines a weaker model made."
+                    "Private Cloud Compute isn't available, so your provider designs. Each new design uses one request to this provider\(billing). Books in a series often reuse a design without a request. When Private Cloud Compute becomes available, runs redesign the spines a weaker model made."
             #endif
         case .onDevice:
             #if NO_PCC
