@@ -1084,8 +1084,9 @@ struct ShareStudioView: View {
         mode == .mine && model.social.owner?.username != nil
     }
 
-    /// Whether the seed changes the image. It varies Year in Books' spine stacks, the Top Five
-    /// fan, a pile's arrangement, and the angle of 3D books; flat single covers ignore it.
+    /// Whether the seed changes the image. It varies Year in Books' spine stacks, how far Top
+    /// Five's books turn, a pile's arrangement, and the angle of 3D books; flat single covers
+    /// ignore it.
     private var showsShuffle: Bool {
         switch template {
         case .yearInBooks, .topFive, .pile: true
