@@ -492,15 +492,27 @@ private struct ShelfCaption: View {
             let finished = book.finishedDate.map {
                 Text("Finished \($0, format: ShelfLabels.finishedFormat)")
             }
+            let reads = ShelfLabels.reads(book.readCount).map(ReadCountBadge.init)
             let stars = book.rating.flatMap { $0 > 0 ? RatingStars(rating: $0) : nil }
-            // Stacks the date over the stars when large text leaves no room for both.
+            // Stacks the date over the badge and stars when large text leaves no room for all,
+            // so the date keeps a line to itself, and gives each its own line when the badge and
+            // stars don't fit side by side either.
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 10) {
                     finished
+                    reads
                     stars
                 }
                 VStack(spacing: 4) {
                     finished
+                    HStack(spacing: 8) {
+                        reads
+                        stars
+                    }
+                }
+                VStack(spacing: 4) {
+                    finished
+                    reads
                     stars
                 }
             }
@@ -514,6 +526,22 @@ private struct ShelfCaption: View {
         .frame(maxWidth: .infinity)
         .frame(height: height, alignment: .bottom)
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// How many times the reader finished a reread, such as "Read 3 times", in a small capsule.
+struct ReadCountBadge: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            // Brighter than the caption's secondary text, so it keeps above 4.5:1 contrast on
+            // the lighter capsule.
+            .foregroundStyle(ShelfPalette.paper.opacity(0.7))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(ShelfPalette.paper.opacity(0.12), in: .capsule)
     }
 }
 
@@ -614,6 +642,9 @@ enum ShelfLabels {
         default: "book.closed"
         }
     }
+
+    /// "Read 3 times" for a book finished more than once, else `nil`.
+    static func reads(_ count: Int) -> String? { count > 1 ? "Read \(count) times" : nil }
 
     /// How long the reader took, counting both the start and finish days, such as "12 days".
     /// Returns `nil` without both dates or when they are out of order.

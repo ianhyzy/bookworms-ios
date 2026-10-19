@@ -455,9 +455,14 @@ final class HardcoverAccount {
         var archiveWasRead = false
         if let cloud, checksCloud {
             let revision = libraryRevision
-            var copy: CloudSourceSnapshot?
+            var adopted: PhoneLibrary?
             do {
-                copy = try await cloud.archivedLibrary(accountID: accountID)
+                if let copy = try await cloud.archivedLibrary(accountID: accountID),
+                    copy.syncedAt > newest ?? .distantPast
+                {
+                    adopted = await Self.adopting(
+                        copy, username: summary?.username, cachedAt: libraryURL)
+                }
                 archiveWasRead = true
             } catch {}
             guard !isSyncing else { return }
@@ -465,21 +470,26 @@ final class HardcoverAccount {
             // Only a read that finished for the current library counts, so a failed read, or one
             // a sign-in overtook, doesn't delay the next check by `cloudCheckInterval`.
             if archiveWasRead { lastCloudCheck = .now }
-            if let copy, copy.syncedAt > newest ?? .distantPast {
-                let library = PhoneLibrary(copy, username: summary?.username)
-                if (try? library.save(to: libraryURL)) != nil {
-                    save(
-                        Summary(
-                            accountID: accountID, username: library.username,
-                            syncedAt: library.syncedAt))
-                    newest = library.syncedAt
-                    libraryChanged()
-                }
+            if let library = adopted, (try? library.save(to: libraryURL)) != nil {
+                save(
+                    Summary(
+                        accountID: accountID, username: library.username,
+                        syncedAt: library.syncedAt))
+                newest = library.syncedAt
+                libraryChanged()
             }
         }
         guard !needsReconnect, newest.map({ isOlder($0, than: Self.providerInterval) }) ?? true
         else { return }
         await sync(readsArchive: !archiveWasRead)
+    }
+
+    /// The cache's copy of `copy` (`PhoneLibrary.init(_:username:keepingReadsOf:)`), built off
+    /// the main actor because it decodes the library cached at `url`.
+    @concurrent nonisolated private static func adopting(
+        _ copy: CloudSourceSnapshot, username: String?, cachedAt url: URL
+    ) async -> PhoneLibrary {
+        PhoneLibrary(copy, username: username, keepingReadsOf: PhoneLibrary.load(from: url))
     }
 
     private func isOlder(_ date: Date, than interval: TimeInterval) -> Bool {
@@ -581,10 +591,28 @@ struct PhoneLibrary: Codable, Equatable, Sendable {
 
 extension PhoneLibrary {
     /// The account's snapshot from the iCloud archive, as this device caches it.
-    init(_ copy: CloudSourceSnapshot, username: String?) {
+    ///
+    /// A book of `copy` without `finishedDates`, as an Apple TV build that predates the list
+    /// saves it, or with an empty list, which counts as absent, keeps the list from `cached`, this device's copy of the same account, when its
+    /// newest finish there is the copy's `finished`. Otherwise such a book shows one read until
+    /// this device downloads the library again.
+    init(_ copy: CloudSourceSnapshot, username: String?, keepingReadsOf cached: PhoneLibrary? = nil)
+    {
+        let reads = Dictionary(
+            (cached?.accountID == copy.accountID ? cached?.books ?? [] : [])
+                .compactMap { book in book.finishedDates.map { (book.id, $0) } },
+            uniquingKeysWith: { first, _ in first })
+        let books = copy.books.map { book in
+            guard book.finishedDates?.isEmpty ?? true, let kept = reads[book.id],
+                kept.first == book.finished
+            else { return book }
+            var book = book
+            book.finishedDates = kept
+            return book
+        }
         self.init(
             accountID: copy.accountID, username: username, syncedAt: copy.syncedAt,
-            books: copy.books, series: copy.series)
+            books: books, series: copy.series)
     }
 }
 

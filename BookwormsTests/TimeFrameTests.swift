@@ -34,6 +34,30 @@ final class TimeFrameTests: XCTestCase {
             ])
     }
 
+    func testRereadsBelongToEveryFrameTheyWereFinishedIn() {
+        var reread = book(1, "2026-04-01")
+        reread.finishedDates = ["2026-04-01", "2024-08-15", "not a date"]
+        XCTAssertTrue(TimeFrame.year(2024).contains(reread))
+        XCTAssertTrue(TimeFrame.month(year: 2026, month: 4).contains(reread))
+        XCTAssertFalse(TimeFrame.year(2025).contains(reread))
+        XCTAssertEqual(TimeFrame.year(2024).books(in: [reread]).first?.finished, "2024-08-15")
+        XCTAssertEqual(TimeFrame.lifetime.books(in: [reread]).first?.finished, "2026-04-01")
+        let periods = TimeFrame.periods(in: [reread])
+        XCTAssertEqual(periods.years, [2026, 2024])
+        XCTAssertEqual(
+            periods.months, [.month(year: 2026, month: 4), .month(year: 2024, month: 8)])
+        // The first read dates the reader's copy, whatever frame shows it.
+        XCTAssertEqual(reread.firstFinish, "2024-08-15")
+        XCTAssertEqual(reread.readCount, 3)
+        XCTAssertEqual(book(2, "2025-01-01").readCount, 1)
+        XCTAssertEqual(book(3, nil).readCount, 0)
+        // An empty list counts as absent, so `finished` still places the book.
+        var empty = book(4, "2025-03-01")
+        empty.finishedDates = []
+        XCTAssertTrue(TimeFrame.year(2025).contains(empty))
+        XCTAssertEqual(empty.readCount, 1)
+    }
+
     func testTitles() {
         XCTAssertEqual(TimeFrame.year(2025).title, "2025")
         XCTAssertEqual(TimeFrame.lifetime.title, "Lifetime")

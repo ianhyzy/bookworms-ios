@@ -231,7 +231,8 @@ enum DetailCard: Hashable {
     /// A current read, with the fraction read when known.
     case status(progress: Double?)
     case started(Date)
-    case finished(Date)
+    /// The newest finish, and how many times the reader finished the book.
+    case finished(Date, reads: Int)
     case readingTime(String)
     /// How the reader read the book, such as "Audiobook", with that format's length.
     case format(String, length: String?)
@@ -286,7 +287,7 @@ enum DetailCard: Hashable {
         let cards: [DetailCard?] = [
             book.isReading == true ? .status(progress: book.progress) : nil,
             started.map(DetailCard.started),
-            finished.map(DetailCard.finished),
+            finished.map { .finished($0, reads: book.readCount) },
             ShelfLabels.readingTime(from: started, to: finished).map(DetailCard.readingTime),
             ShelfLabels.format(book.format)
                 .map { .format($0, length: ShelfLabels.length(of: book)) },
@@ -673,10 +674,11 @@ private struct DetailCardView: View {
             FactCard(
                 title: "Started", systemImage: "calendar",
                 value: date.formatted(ShelfLabels.finishedFormat))
-        case .finished(let date):
+        case .finished(let date, let reads):
             FactCard(
                 title: "Finished", systemImage: "checkmark.circle",
-                value: date.formatted(ShelfLabels.finishedFormat))
+                value: date.formatted(ShelfLabels.finishedFormat),
+                detail: ShelfLabels.reads(reads))
         case .readingTime(let time):
             FactCard(title: "Reading time", systemImage: "hourglass", value: time)
         case .format(let format, let length):

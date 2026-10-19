@@ -233,6 +233,14 @@ final class ShareRenderTests: XCTestCase {
             let input = ShareInput(template: pile, aspect: .story, books: books, frame: frame)
             XCTAssertEqual(input.period, frame == .lifetime ? "2024–2025" : frame.title)
         }
+        // A reread's earlier finishes widen the lifetime span.
+        var reread = CloudBook(
+            id: 9, title: "Again", author: "Author", coverURL: nil, detailCoverURL: nil,
+            finished: "2025-01-01")
+        reread.finishedDates = ["2025-01-01", "2015-06-01"]
+        XCTAssertEqual(
+            ShareInput(template: pile, aspect: .story, books: [reread], frame: .lifetime).period,
+            "2015–2025")
     }
 
     /// A pile render marks itself until it ends, even when cancelled, so the live pile stays off

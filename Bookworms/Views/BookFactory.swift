@@ -498,12 +498,12 @@ enum PageEdges {
     static func isSprayed(_ book: CloudBook) -> Bool { (book.rating ?? 0) >= 5 }
 
     /// A five-star book's edges are sprayed in the spine's `accent` color. Other books' edges
-    /// yellow with the time since the reader finished them: quickly at first, then more slowly,
-    /// until they are fully aged after `yellowingYears`. Ages round to eighths, so books share
-    /// page materials. Unfinished books have fresh pages.
+    /// yellow with the time since the reader first finished them: quickly at first, then more
+    /// slowly, until they are fully aged after `yellowingYears`. Ages round to eighths, so books
+    /// share page materials. Unfinished books have fresh pages.
     static func color(of book: CloudBook, accent: ColorValue, now: Date = .now) -> ColorValue {
         if isSprayed(book) { return accent.mixed(with: fresh, 0.12) }
-        guard let finished = book.finishedDate else { return fresh }
+        guard let finished = CloudBook.day(book.firstFinish) else { return fresh }
         let years = max(0, now.timeIntervalSince(finished) / (365.25 * 86_400))
         let age = (min(1, years / yellowingYears).squareRoot() * 8).rounded() / 8
         return fresh.mixed(with: aged, age)
