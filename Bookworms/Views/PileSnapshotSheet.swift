@@ -20,6 +20,7 @@ struct PileSnapshotSheet: View {
 
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @AppStorage(ShareProfileLink.settingKey) private var showsProfileLink = true
     @State private var aspect = ShareAspect.story
     @State private var seed: UInt64 = 0
     /// `books` as last passed in, which the render loop reads between renders.
@@ -79,8 +80,7 @@ struct PileSnapshotSheet: View {
 
     var body: some View {
         let options = Options(
-            aspect: aspect, seed: seed, ids: books.map(\.id), title: title,
-            username: model.social.owner?.username)
+            aspect: aspect, seed: seed, ids: books.map(\.id), title: title, username: username)
         let isPending = rendered != options
         NavigationStack {
             VStack(spacing: 20) {
@@ -92,6 +92,12 @@ struct PileSnapshotSheet: View {
                 HStack(spacing: 24) {
                     Button("Shuffle", systemImage: "shuffle") { seed = .random(in: 1 ... .max) }
                     Button("Video", systemImage: "video") { filmsPile = true }
+                }
+                // Shown once the app has read the username the link names.
+                if model.social.owner?.username != nil {
+                    Toggle("Show profile link", isOn: $showsProfileLink)
+                        .accessibilityHint("Letters your Hardcover profile link on the image.")
+                        .fixedSize()
                 }
             }
             .padding()
@@ -165,12 +171,14 @@ struct PileSnapshotSheet: View {
         defer { isPreparing = false }
         do {
             files = try await SharedFiles.images([image])
-            files?.text = HardcoverInvite.readingText(
-                books: image.books, username: model.social.owner?.username)
+            files?.text = HardcoverInvite.readingText(books: image.books, username: username)
         } catch {
             model.toasts.show(.failure("Couldn't prepare the image"))
         }
     }
+
+    /// The username the image and its text link, unless **Show profile link** is off.
+    private var username: String? { showsProfileLink ? model.social.owner?.username : nil }
 
     /// Renders until the image shows the latest books.
     private func render() async {
@@ -180,7 +188,7 @@ struct PileSnapshotSheet: View {
             let books = latest
             let options = Options(
                 aspect: aspect, seed: seed, ids: books.map(\.id), title: title,
-                username: model.social.owner?.username)
+                username: username)
             guard rendered != options else { return }
             await render(books, options)
         }

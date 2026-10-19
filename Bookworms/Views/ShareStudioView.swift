@@ -22,7 +22,8 @@ import UniformTypeIdentifiers
 /// (`ShareReaderSection`). Comparisons come prepared from `SocialModel`; the body only picks
 /// the shown reader's.
 ///
-/// The app saves the mode, template, size, and time frame, so the tab opens as it was left.
+/// The app saves the mode, template, size, time frame, and **Show profile link**, so the tab
+/// opens as it was left.
 ///
 /// Without a library, the tab shows `NoLibraryView` instead, which can open the Hardcover sheet.
 struct ShareStudioView: View {
@@ -41,6 +42,7 @@ struct ShareStudioView: View {
     @State private var readerID: Int?
     @AppStorage(Self.aspectKey) private var aspect = ShareAspect.story
     @AppStorage(Self.frameKey) private var frameSetting = ""
+    @AppStorage(ShareProfileLink.settingKey) private var showsProfileLink = true
     /// The featured book of a single-book template: `nil` is its newest choice.
     @State private var bookID: Int?
     @State private var coverStyle = ShareCoverStyle.threeD
@@ -172,7 +174,7 @@ struct ShareStudioView: View {
             coverStyle: coverStyle, direction: direction, showsRatings: showsRatings, seed: seed,
             pins: pins, syncedAt: model.library?.syncedAt, readerID: reader?.id,
             // A comparison letters the username in its invitation instead.
-            username: mode == .mine ? model.social.owner?.username : nil,
+            username: mode == .mine && showsProfileLink ? model.social.owner?.username : nil,
             socialRevision: mode == .friends ? model.social.revision : 0,
             hasScore: template == .tasteMatch && reader?.match?.score != nil,
             covers: books.map(\.coverCandidates.first), designs: designs, loadedFaces: loadedFaces)
@@ -439,7 +441,9 @@ struct ShareStudioView: View {
         if template.isSingleBook {
             Section("Book") { bookRow }
         }
-        if template == .hotTakes || template.hasRatingOption || showsShuffle {
+        if template == .hotTakes || template.hasRatingOption || showsShuffle
+            || offersProfileLink
+        {
             Section("Options") { options(hasNoBooks: hasNoBooks) }
         }
     }
@@ -453,12 +457,13 @@ struct ShareStudioView: View {
         isPreparing = true
         defer { isPreparing = false }
         do {
-            let username = model.social.owner?.username
             var shared = try await SharedFiles.images([image])
+            // A **My reading** image's text links the profile only when the image letters it.
             shared.text =
                 renderedRequest?.readerID != nil
-                ? username.map(HardcoverInvite.shareText)
-                : HardcoverInvite.readingText(books: image.books, username: username)
+                ? (model.social.owner?.username).map(HardcoverInvite.shareText)
+                : HardcoverInvite.readingText(
+                    books: image.books, username: renderedRequest?.username)
             files = shared
         } catch {
             model.toasts.show(.failure("Couldn't prepare the image"))
@@ -891,6 +896,10 @@ struct ShareStudioView: View {
         if template.hasRatingOption {
             Toggle("Show ratings", isOn: $showsRatings)
         }
+        if offersProfileLink {
+            Toggle("Show profile link", isOn: $showsProfileLink)
+                .accessibilityHint("Letters your Hardcover profile link on the image.")
+        }
         if showsShuffle {
             Button("Shuffle", systemImage: "shuffle") { seed = .random(in: 1 ... .max) }
         }
@@ -907,6 +916,12 @@ struct ShareStudioView: View {
             }
             .disabled(hasNoBooks)
         }
+    }
+
+    /// Whether **My reading** images can letter the sharer's profile link, which needs the
+    /// username that the friends' data reads. A comparison letters it in its invitation instead.
+    private var offersProfileLink: Bool {
+        mode == .mine && model.social.owner?.username != nil
     }
 
     /// Whether the seed changes the image. It varies Year in Books' spine stacks, the Top Five
