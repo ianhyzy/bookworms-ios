@@ -15,7 +15,8 @@ enum ShelfPalette {
     /// The wall's lighter end, at its top, for contrast math; `ShelfWallTop` holds the same
     /// color for drawing, and `PaletteTests` keeps the two equal.
     static let wallLight = ColorValue(red: 51, green: 37, blue: 27)
-    /// The wall's color alone, for small stand-ins and renders. Screens draw `WalnutWall`.
+    /// The wall's color alone, for small stand-ins, renders, and Desk, whose scene covers the
+    /// wall. Other screens draw `WalnutWall`.
     static let wall = LinearGradient(
         colors: [Color(.shelfWallTop), Color(.shelfWallBottom)], startPoint: .top,
         endPoint: .bottom)
@@ -27,7 +28,7 @@ enum ShelfPalette {
     static let gold = Color(.shelfGold)
 }
 
-/// The walnut wall behind Library, Desk, and book details: `ShelfPalette.wall` with a faint wood
+/// The walnut wall behind Library and book details: `ShelfPalette.wall` with a faint wood
 /// grain and a seam every 180 points, so it reads as tall panels. Increase Contrast leaves out
 /// the grain and seams.
 ///

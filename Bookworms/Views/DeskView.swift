@@ -40,7 +40,9 @@ struct DeskView: View {
         NavigationStack(path: $path) {
             content(shelf, frame: frame)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background { WalnutWall().ignoresSafeArea() }
+                // The scene's table covers the wall, so the wall's grain and seams would only
+                // blend under every RealityKit frame.
+                .background { ShelfPalette.wall.ignoresSafeArea() }
                 .modifier(
                     DeskBar(
                         liftedDetails: liftedDetails, desk: desk, chip: shelf.chip, frame: frame,
