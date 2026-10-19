@@ -141,8 +141,8 @@ struct PileVideoSheet: View {
     /// credit, which the app leaves out: the preview is `ShareCredit.height` shorter than the
     /// clip at the bottom, and as much at the top, above the heading, and fills its width, so
     /// the credit falls outside it. The clip has no system controls, whose full-screen view
-    /// would show the whole frame: a tap pauses or plays it, and **Play** shows while it is
-    /// paused.
+    /// would show the whole frame: a tap pauses or plays it, and on an iPhone, **Play** shows
+    /// over it while it is paused.
     private var preview: some View {
         ZStack {
             // Fills the video's shape before there is one.
@@ -160,14 +160,17 @@ struct PileVideoSheet: View {
                     Image(decorative: frame, scale: 1).resizable().scaledToFill()
                 }
             }
-            if player != nil, !isPlaying {
-                Button("Play", systemImage: "play.fill") { play(true) }
-                    .labelStyle(.iconOnly)
-                    .font(.title)
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.circle)
-                    .controlSize(.large)
-            }
+            #if os(iOS)
+                // A Mac's row under the clip holds the one **Play** button.
+                if player != nil, !isPlaying {
+                    Button("Play", systemImage: "play.fill") { play(true) }
+                        .labelStyle(.iconOnly)
+                        .font(.title)
+                        .buttonStyle(.glass)
+                        .buttonBorderShape(.circle)
+                        .controlSize(.large)
+                }
+            #endif
             if failed {
                 ContentUnavailableView(
                     "Couldn't film the desk", systemImage: "exclamationmark.triangle",
