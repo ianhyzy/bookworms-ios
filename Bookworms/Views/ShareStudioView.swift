@@ -86,6 +86,17 @@ struct ShareStudioView: View {
     @Environment(\.fullSizeShareImage) private var fullSizeImage
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.horizontalSizeClass) private var sizeClass
+    #if os(iOS)
+        @Environment(\.verticalSizeClass) private var verticalSizeClass
+        /// The studio's height, which sizes the pinned preview.
+        @State private var studioHeight: CGFloat = 0
+    #else
+        /// Whether the settings inspector shows.
+        @State private var showsInspector = true
+        /// Whether the book or pin popover shows.
+        @State private var picksBook = false
+        @State private var picksPins = false
+    #endif
 
     init() {
         #if DEBUG
@@ -191,10 +202,12 @@ struct ShareStudioView: View {
             if model.library == nil {
                 NoLibraryView(showsAccount: $showsAccount)
                     .navigationTitle("Share")
+                    // The title keeps its place when the library arrives.
+                    .navigationBarTitleDisplayMode(.inline)
             } else {
                 // The request lists one cover candidate per drawn book, so it shows emptiness
                 // at once, before the debounced render catches up.
-                form(isPending: isPending, hasNoBooks: request.isEmpty)
+                studio(isPending: isPending, hasNoBooks: request.isEmpty)
             }
         }
         .shareSheet($files)
@@ -273,44 +286,44 @@ struct ShareStudioView: View {
         #endif
     }
 
-    /// The preview above the settings in a compact width; in a regular width, such as on the
-    /// Mac, the preview fills the window beside a column of settings. The image's size and cover
-    /// style sit right below the preview, then **My reading** / **With friends**, which chooses
-    /// the templates listed below it.
+    /// The studio: the preview and the settings.
+    ///
+    /// On an iPhone in portrait, the preview stays pinned under the navigation bar while the
+    /// settings scroll beneath it, so each change shows in the image. In landscape, the preview
+    /// fills the space beside a column of settings. On a Mac, the settings sit in an inspector,
+    /// which the toolbar's **Inspector** button and **View > Show Inspector** hide and show, and
+    /// the size and **3D books** stay under the preview.
     @ViewBuilder
-    private func form(isPending: Bool, hasNoBooks: Bool) -> some View {
+    private func studio(isPending: Bool, hasNoBooks: Bool) -> some View {
         Group {
-            if sizeClass == .regular {
-                HStack(spacing: 0) {
-                    VStack(spacing: 16) {
-                        preview(isPending: isPending, hasNoBooks: hasNoBooks, maxHeight: .infinity)
-                        imageRow.frame(maxWidth: 420)
-                        modePicker.frame(maxWidth: 420)
+            #if os(macOS)
+                stage(isPending: isPending, hasNoBooks: hasNoBooks)
+                    .inspector(isPresented: $showsInspector) {
+                        Form { settings(hasNoBooks: hasNoBooks) }
+                            .inspectorColumnWidth(min: 320, ideal: 400, max: 480)
                     }
-                    .padding(24)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    Form { settings(hasNoBooks: hasNoBooks) }
-                        // One background behind the preview and the settings, under one
-                        // toolbar.
-                        .scrollContentBackground(.hidden)
-                        .frame(width: 400)
-                }
-            } else {
-                Form {
-                    Section {
-                        preview(isPending: isPending, hasNoBooks: hasNoBooks, maxHeight: 380)
-                        imageRow
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
-                        modePicker
-                            .listRowBackground(Color.clear)
-                            .listRowSeparator(.hidden)
+            #else
+                if isPinned {
+                    settingsForm(hasNoBooks: hasNoBooks)
+                        // The form scrolls beneath the preview, which keeps its size, below a
+                        // hard edge, as under an opaque bar.
+                        .scrollEdgeEffectStyle(.hard, for: .top)
+                        .safeAreaBar(edge: .top) {
+                            stage(isPending: isPending, hasNoBooks: hasNoBooks)
+                                .frame(height: stageHeight)
+                        }
+                        .onGeometryChange(for: CGFloat.self) {
+                            $0.size.height
+                        } action: {
+                            studioHeight = $0
+                        }
+                } else {
+                    HStack(spacing: 0) {
+                        stage(isPending: isPending, hasNoBooks: hasNoBooks)
+                        settingsForm(hasNoBooks: hasNoBooks).frame(width: 400)
                     }
-                    settings(hasNoBooks: hasNoBooks)
                 }
-                // The preview starts just below the bar instead of a section's height lower.
-                .contentMargins(.top, 4, for: .scrollContent)
-            }
+            #endif
         }
         .navigationTitle("Share")
         // An inline title, as Library and Desk use, leaves the preview the height a large
@@ -334,8 +347,33 @@ struct ShareStudioView: View {
                     .disabled(isPending || isPreparing)
                 }
             }
+            #if os(macOS)
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Inspector", systemImage: "sidebar.trailing") {
+                        showsInspector.toggle()
+                    }
+                    .help(showsInspector ? "Hide the settings" : "Show the settings")
+                }
+            #endif
         }
     }
+
+    #if os(iOS)
+        /// Whether the preview stays pinned above the settings: in portrait, where the settings
+        /// fit only below it.
+        private var isPinned: Bool { sizeClass == .compact && verticalSizeClass != .compact }
+
+        /// The pinned preview's height: just under half the studio's, up to 380 points, and a
+        /// little less at accessibility text sizes, which need more room for the settings.
+        private var stageHeight: CGFloat {
+            let share = dynamicTypeSize.isAccessibilitySize ? 0.38 : 0.46
+            return min(380, max(220, studioHeight * share))
+        }
+
+        private func settingsForm(hasNoBooks: Bool) -> some View {
+            Form { settings(hasNoBooks: hasNoBooks) }
+        }
+    #endif
 
     #if os(macOS)
         /// Shows the image with its credit in Quick Look, from a file of its own, so a share in
@@ -350,88 +388,92 @@ struct ShareStudioView: View {
         }
     #endif
 
+    /// The preview, and on a Mac, the image's size and cover style under it.
+    private func stage(isPending: Bool, hasNoBooks: Bool) -> some View {
+        VStack(spacing: 16) {
+            preview(isPending: isPending, hasNoBooks: hasNoBooks)
+            #if os(macOS)
+                HStack(spacing: 16) {
+                    sizePicker.labelsHidden()
+                    coverToggle
+                        // Keeps the size picker's width where the template has one style.
+                        .opacity(template.hasCoverStyle ? 1 : 0)
+                        .accessibilityHidden(!template.hasCoverStyle)
+                        .help(coverStyleNote ?? "Draws covers as 3D books")
+                }
+                .frame(maxWidth: 460)
+            #endif
+        }
+        #if os(macOS)
+            .padding(24)
+        #else
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        #endif
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background { Rectangle().fill(.background).ignoresSafeArea() }
+    }
+
+    /// **My reading** / **With friends**, which chooses the templates listed below it.
     private var modePicker: some View {
         Picker("Templates for", selection: $mode) {
             ForEach(ShareMode.allCases) { Text($0.title).tag($0) }
         }
         .pickerStyle(.segmented)
+        .labelsHidden()
     }
 
-    /// The image's size, and beside it whether covers draw as 3D books or flat. At accessibility
-    /// text sizes the button moves below the picker, which then keeps the row's whole width.
-    private var imageRow: some View {
-        let layout =
-            dynamicTypeSize.isAccessibilitySize
-            ? AnyLayout(VStackLayout(spacing: 12)) : AnyLayout(HStackLayout(spacing: 12))
-        return layout {
-            Picker("Size", selection: $aspect) {
-                ForEach(ShareAspect.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            coverToggle
+    private var sizePicker: some View {
+        Picker("Size", selection: $aspect) {
+            ForEach(ShareAspect.allCases) { Text($0.title).tag($0) }
         }
+        .pickerStyle(.segmented)
     }
 
-    /// Draws covers as 3D books when on and flat when off: a round glass button with a cube,
-    /// filled and tinted while on. It is disabled where the template has one style: Desk's books
-    /// are always 3D, and Year in Books on Square shows no covers.
+    /// Draws covers as 3D books when on and flat when off. Year in Books on Square shows no
+    /// covers, so it disables the switch, and Desk, whose books are always 3D, has none.
     private var coverToggle: some View {
-        let isOn = Binding {
-            template == .pile || coverStyle == .threeD
-        } set: {
-            coverStyle = $0 ? .threeD : .flat
-        }
-        // Year in Books draws covers only for its records, which appear when they fit.
-        let help =
-            template == .yearInBooks
-            ? "Draws the records' covers as 3D books when they fit" : "Draws covers as 3D books"
-        return Toggle(isOn: isOn) {
-            Label("3D books", systemImage: isOn.wrappedValue ? "cube.fill" : "cube")
-                // Grows the circle to the 44-point touch target.
-                .padding(4)
-        }
-        .toggleStyle(.button)
-        .labelStyle(.iconOnly)
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
-        .help(help)
-        .accessibilityHint(help)
-        .disabled(!template.hasCoverStyle || (template == .yearInBooks && aspect == .square))
+        Toggle(
+            "3D books",
+            isOn: Binding {
+                coverStyle == .threeD
+            } set: {
+                coverStyle = $0 ? .threeD : .flat
+            }
+        )
+        .disabled(template == .yearInBooks && aspect == .square)
     }
 
+    /// Why the cover style does less than it says, or `nil` when it does what it says.
+    private var coverStyleNote: String? {
+        switch template {
+        case .pile: "Desk books are always 3D."
+        case .yearInBooks where aspect == .square: "Year in Books shows no covers on Square."
+        case .yearInBooks:
+            "Year in Books draws covers only for its records, which show when they fit."
+        default: nil
+        }
+    }
+
+    /// The settings, choice of template first: **My reading** / **With friends** and the
+    /// templates they offer, then what chooses the books (the reader, the time frame, the pins,
+    /// or the book), then on an iPhone the image's size and cover style, then the options.
     @ViewBuilder
     private func settings(hasNoBooks: Bool) -> some View {
+        Section("Template") {
+            modePicker
+            templatePicker
+        }
         if mode == .friends {
             ShareReaderSection(
                 reader: shownReader, selection: $readerID, showsAccount: $showsAccount)
-        }
-        Section("Template") {
-            if dynamicTypeSize >= .xLarge {
-                // Names in a grid truncate above the default text size.
-                Picker("Template", selection: $template) {
-                    ForEach(mode.templates) { option in
-                        Label(option.title, systemImage: option.systemImage).tag(option)
-                    }
-                }
-                .pickerStyle(.inline)
-                .labelsHidden()
-            } else {
-                templateGrid
-            }
         }
         if template.usesTimeFrame && !periods.years.isEmpty {
             Section("Time frame") { frameControls }
         }
         if template == .topFive && !periods.years.isEmpty {
             Section {
-                NavigationLink {
-                    TopFivePinPicker(library: library)
-                } label: {
-                    LabeledContent(
-                        "Pinned books",
-                        value: pins.ids.isEmpty
-                            ? "None" : "\(pins.ids.count) of \(TopFivePins.limit)")
-                }
+                pinsRow
             } footer: {
                 Text(
                     "Pinned books lead Top Five in the order you pinned them, in each time frame "
@@ -441,6 +483,16 @@ struct ShareStudioView: View {
         if template.isSingleBook {
             Section("Book") { bookRow }
         }
+        #if os(iOS)
+            Section {
+                sizePicker
+                if template.hasCoverStyle { coverToggle }
+            } header: {
+                Text("Image")
+            } footer: {
+                if let coverStyleNote { Text(coverStyleNote) }
+            }
+        #endif
         if template == .hotTakes || template.hasRatingOption || showsShuffle
             || offersProfileLink
         {
@@ -506,42 +558,46 @@ struct ShareStudioView: View {
         }
     #endif
 
+    /// The image, or why there is none. A message scrolls when it is taller than the pinned
+    /// preview, as it can be at large text sizes.
     @ViewBuilder
-    private func preview(isPending: Bool, hasNoBooks: Bool, maxHeight: CGFloat) -> some View {
-        // Messages sit outside the image's box, which would clip them at large text sizes.
+    private func preview(isPending: Bool, hasNoBooks: Bool) -> some View {
         if image == nil && hasNoBooks && !model.isLoading {
             let empty = emptyState
-            ContentUnavailableView {
-                Label(empty.title, systemImage: template.systemImage)
-            } description: {
-                Text(empty.message)
-            } actions: {
-                // The iCloud library may carry no reviews and never carries friends; the device's
-                // own Hardcover sign-in adds both.
-                let needsHardcover =
-                    mode == .friends ? !model.canCompare : template == .review && !usesHardcover
-                if needsHardcover && !model.isPreview {
-                    Button("Connect Hardcover") { showsAccount = true }
-                        .buttonStyle(.bordered)
+            ScrollView {
+                ContentUnavailableView {
+                    Label(empty.title, systemImage: template.systemImage)
+                } description: {
+                    Text(empty.message)
+                } actions: {
+                    // The iCloud library may carry no reviews and never carries friends; the
+                    // device's own Hardcover sign-in adds both.
+                    let needsHardcover =
+                        mode == .friends
+                        ? !model.canCompare : template == .review && !usesHardcover
+                    if needsHardcover && !model.isPreview {
+                        Button("Connect Hardcover") { showsAccount = true }
+                            .buttonStyle(.glassProminent)
+                    }
                 }
             }
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
+            .scrollBounceBehavior(.basedOnSize)
+            .defaultScrollAnchor(.center)
         } else if image == nil && failed && !isPending {
-            ContentUnavailableView(
-                "Couldn't draw the image", systemImage: "exclamationmark.triangle",
-                // A pile's arrangement varies with the seed, so Shuffle can succeed where it
-                // failed.
-                description: Text(
-                    template == .pile
-                        ? "Try Shuffle or another size." : "Try another size or template.")
-            )
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
+            ScrollView {
+                ContentUnavailableView(
+                    "Couldn't draw the image", systemImage: "exclamationmark.triangle",
+                    // A pile's arrangement varies with the seed, so Shuffle can succeed where
+                    // it failed.
+                    description: Text(
+                        template == .pile
+                            ? "Try Shuffle or another size." : "Try another size or template.")
+                )
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .defaultScrollAnchor(.center)
         } else {
-            box(isPending: isPending, maxHeight: maxHeight)
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
+            box(isPending: isPending)
         }
     }
 
@@ -554,7 +610,7 @@ struct ShareStudioView: View {
     /// On a Mac, the image drags out as a PNG file with its credit, and once clicked, it takes
     /// keyboard focus: Space shows it in Quick Look and Command-C copies it. VoiceOver's **Show
     /// full size** opens Quick Look.
-    private func box(isPending: Bool, maxHeight: CGFloat) -> some View {
+    private func box(isPending: Bool) -> some View {
         let size = aspect.size
         return ZStack {
             // Sizes the box as the image does, before there is one.
@@ -617,7 +673,7 @@ struct ShareStudioView: View {
         .aspectRatio(size.width / size.height, contentMode: .fit)
         .background(.quaternary)
         .clipShape(.rect(cornerRadius: 12))
-        .frame(maxWidth: .infinity, maxHeight: maxHeight)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// Whether this iPhone's Hardcover sign-in provides the library, which preview mode ignores.
@@ -751,43 +807,86 @@ struct ShareStudioView: View {
         }
     }
 
+    /// The templates the mode offers: a row of tiles under the pinned preview, a grid in a
+    /// column of settings, and above the default text size a list, since tiles truncate names.
+    @ViewBuilder
+    private var templatePicker: some View {
+        if dynamicTypeSize >= .xLarge {
+            Picker("Template", selection: $template) {
+                ForEach(mode.templates) { option in
+                    Label(option.title, systemImage: option.systemImage).tag(option)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } else {
+            #if os(iOS)
+                if isPinned { templateRow } else { templateGrid }
+            #else
+                templateGrid
+            #endif
+        }
+    }
+
+    #if os(iOS)
+        /// The templates in one row that scrolls sideways, which opens on the chosen one.
+        private var templateRow: some View {
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal) {
+                    HStack(alignment: .top, spacing: 4) {
+                        ForEach(mode.templates) { templateTile($0).frame(width: 84) }
+                    }
+                }
+                .scrollIndicators(.hidden)
+                .contentMargins(.horizontal, 12, for: .scrollContent)
+                .onAppear { proxy.scrollTo(template, anchor: .center) }
+            }
+            .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
+        }
+    #endif
+
     private var templateGrid: some View {
         // Rows of three, or of four where three would leave a template alone on the last row.
         let columns = mode.templates.count % 3 == 1 ? 4 : 3
         return LazyVGrid(
             columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: columns),
-            spacing: 6
+            alignment: .center, spacing: 6
         ) {
-            ForEach(mode.templates) { option in
-                let isSelected = option == template
-                Button {
-                    template = option
-                } label: {
-                    VStack(spacing: 6) {
-                        Image(systemName: option.systemImage)
-                            .font(.title3)
-                            .frame(height: 28)
-                            // VoiceOver reads the template's name alone.
-                            .accessibilityHidden(true)
-                        Text(option.title)
-                            .font(.caption)
-                            .multilineTextAlignment(.center)
-                            .lineLimit(2)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .foregroundStyle(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
-                    .background(
-                        isSelected ? AnyShapeStyle(.tint.opacity(0.15)) : AnyShapeStyle(.clear),
-                        in: .rect(cornerRadius: 10)
-                    )
-                    .contentShape(.rect)
-                }
-                // A plain style keeps each button's tap separate inside one form row.
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
-            }
+            ForEach(mode.templates) { templateTile($0) }
         }
+    }
+
+    /// A template's tile. Every name reserves two lines, so the tiles line up whichever names
+    /// wrap.
+    private func templateTile(_ option: ShareTemplate) -> some View {
+        let isSelected = option == template
+        return Button {
+            template = option
+        } label: {
+            VStack(spacing: 6) {
+                Image(systemName: option.systemImage)
+                    .font(.title3)
+                    .frame(height: 28)
+                    // VoiceOver reads the template's name alone.
+                    .accessibilityHidden(true)
+                Text(option.title)
+                    .font(.caption)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2, reservesSpace: true)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .foregroundStyle(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+            .background(
+                isSelected ? AnyShapeStyle(.tint.opacity(0.15)) : AnyShapeStyle(.clear),
+                in: .rect(cornerRadius: 10)
+            )
+            .contentShape(.rect)
+        }
+        // A plain style keeps each button's tap separate inside one form row.
+        .buttonStyle(.plain)
+        .id(option)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     // MARK: - Time frame
@@ -814,6 +913,8 @@ struct ShareStudioView: View {
             ForEach(FrameKind.allCases) { Text($0.title).tag($0) }
         }
         .pickerStyle(.segmented)
+        // The section's header names it.
+        .labelsHidden()
         let selection = Binding {
             shownFrame
         } set: {
@@ -870,19 +971,56 @@ struct ShareStudioView: View {
 
     // MARK: - Book and options
 
-    /// The featured book, which opens a list of the template's choices.
+    /// The featured book, which opens a list of the template's choices: pushed on an iPhone,
+    /// and on a Mac in a popover beside the inspector, so the image stays in view.
     private var bookRow: some View {
         let choices = template.choices(from: library, in: shownFrame)
         // The same choice the render makes, so the row names the book the image shows.
         let shown = template.books(from: library, in: shownFrame, bookID: bookID).first
-        return NavigationLink {
-            ShareBookPicker(books: choices, current: shown?.id, selection: $bookID)
-        } label: {
-            LabeledContent("Book") {
-                if let shown { BookText(shown.spineTitle, of: shown) } else { Text("None") }
-            }
+        let picker = ShareBookPicker(books: choices, current: shown?.id, selection: $bookID)
+        let title = Group {
+            if let shown { BookText(shown.spineTitle, of: shown) } else { Text("None") }
         }
-        .disabled(choices.isEmpty)
+        #if os(macOS)
+            return LabeledContent("Book") {
+                Button {
+                    picksBook = true
+                } label: {
+                    title.lineLimit(1)
+                }
+                .popover(isPresented: $picksBook, arrowEdge: .leading) {
+                    picker.frame(width: 340, height: 440)
+                }
+            }
+            .disabled(choices.isEmpty)
+        #else
+            return NavigationLink {
+                picker
+            } label: {
+                LabeledContent("Book") { title }
+            }
+            .disabled(choices.isEmpty)
+        #endif
+    }
+
+    /// Top Five's pins, which opens `TopFivePinPicker` as the book row opens its list.
+    private var pinsRow: some View {
+        let count =
+            pins.ids.isEmpty ? "None" : "\(pins.ids.count) of \(TopFivePins.limit)"
+        #if os(macOS)
+            return LabeledContent("Pinned books") {
+                Button(count) { picksPins = true }
+                    .popover(isPresented: $picksPins, arrowEdge: .leading) {
+                        TopFivePinPicker(library: library).frame(width: 340, height: 480)
+                    }
+            }
+        #else
+            return NavigationLink {
+                TopFivePinPicker(library: library)
+            } label: {
+                LabeledContent("Pinned books", value: count)
+            }
+        #endif
     }
 
     @ViewBuilder
@@ -1176,7 +1314,7 @@ private struct ShareBookPicker: View {
             }
             .buttonStyle(.plain)
         }
-        .searchable(text: $query)
+        .pickerSearch($query)
         .navigationTitle("Book")
     }
 
@@ -1223,7 +1361,7 @@ private struct TopFivePinPicker: View {
                 if pins.isFull { Text("Unpin a book to pin another.") }
             }
         }
-        .searchable(text: $query)
+        .pickerSearch($query)
         .navigationTitle("Pin to Top Five")
         .onChange(of: library, initial: true) { _, library in
             books = library.filter(TimeFrame.lifetime.contains)

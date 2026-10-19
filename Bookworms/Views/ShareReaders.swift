@@ -7,7 +7,9 @@ import SwiftUI
 #endif
 
 /// The Share tab's **Compare with** section: the reader the friends' templates compare with,
-/// which opens `ShareReaderPicker`, and a link to that reader's Hardcover profile.
+/// which opens `ShareReaderPicker`, and a link to that reader's Hardcover profile. The picker is
+/// pushed on an iPhone, and on a Mac it opens in a popover beside the inspector, which has no
+/// navigation stack, so the image stays in view.
 ///
 /// Without this iPhone's Hardcover sign-in, it offers **Connect Hardcover** instead. Its
 /// footer reports a refresh in progress or the last failure.
@@ -19,21 +21,38 @@ struct ShareReaderSection: View {
     /// The reader chosen in the picker.
     @Binding var selection: Int?
     @Binding var showsAccount: Bool
+    #if os(macOS)
+        @State private var picksReader = false
+    #endif
 
     var body: some View {
         let social = model.social
         Section {
             if model.canCompare {
-                NavigationLink {
-                    ShareReaderPicker(selection: $selection, shown: reader?.id)
-                } label: {
-                    if let reader {
-                        ShareReaderLabel(
-                            reader: reader, isLoading: social.loadingReaders.contains(reader.id))
-                    } else {
-                        Label("Choose someone", systemImage: "person.crop.circle.badge.plus")
+                #if os(macOS)
+                    Button {
+                        picksReader = true
+                    } label: {
+                        HStack {
+                            readerLabel
+                            Image(systemName: "chevron.up.chevron.down")
+                                .foregroundStyle(.secondary)
+                                .accessibilityHidden(true)
+                        }
+                        .contentShape(.rect)
                     }
-                }
+                    .buttonStyle(.plain)
+                    .popover(isPresented: $picksReader, arrowEdge: .leading) {
+                        ShareReaderPicker(selection: $selection, shown: reader?.id)
+                            .frame(width: 360, height: 480)
+                    }
+                #else
+                    NavigationLink {
+                        ShareReaderPicker(selection: $selection, shown: reader?.id)
+                    } label: {
+                        readerLabel
+                    }
+                #endif
                 if let reader, let url = reader.profile.profileURL {
                     Button {
                         openURL(url)
@@ -59,6 +78,32 @@ struct ShareReaderSection: View {
                 Text(failure)
             }
         }
+    }
+
+    @ViewBuilder private var readerLabel: some View {
+        if let reader {
+            ShareReaderLabel(
+                reader: reader, isLoading: model.social.loadingReaders.contains(reader.id))
+        } else {
+            Label("Choose someone", systemImage: "person.crop.circle.badge.plus")
+        }
+    }
+}
+
+extension View {
+    /// Filters a picker's list by `text`: with the navigation bar's search field on an iPhone,
+    /// and on a Mac, where the pickers open in popovers without a bar, with a field above the
+    /// list.
+    func pickerSearch(_ text: Binding<String>, prompt: String = "Search") -> some View {
+        #if os(macOS)
+            safeAreaInset(edge: .top, spacing: 0) {
+                TextField(prompt, text: text)
+                    .textFieldStyle(.roundedBorder)
+                    .padding(10)
+            }
+        #else
+            searchable(text: text, prompt: Text(prompt))
+        #endif
     }
 }
 
@@ -151,7 +196,8 @@ struct ReaderAvatarView: View {
 /// public readers looked up by username, each with a link to their Hardcover profile.
 ///
 /// The search field filters the list by name or username. A query that names no listed reader
-/// offers to look up that username on Hardcover. Pulling down refreshes the list.
+/// offers to look up that username on Hardcover. Pulling down refreshes the list on an iPhone,
+/// and **Refresh** below the list does on a Mac, which has no pull to refresh.
 struct ShareReaderPicker: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -186,8 +232,21 @@ struct ShareReaderPicker: View {
                             : "Follow readers on Hardcover, or search for a public username."))
             }
         }
-        .searchable(text: $query, prompt: "Name or Hardcover username")
+        .pickerSearch($query, prompt: "Name or Hardcover username")
         .refreshable { await model.syncSocial(force: true) }
+        #if os(macOS)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                HStack {
+                    if model.social.isSyncing { ProgressView().controlSize(.small) }
+                    Spacer()
+                    Button("Refresh", systemImage: "arrow.clockwise") {
+                        Task { await model.syncSocial(force: true) }
+                    }
+                    .disabled(model.social.isSyncing)
+                }
+                .padding(10)
+            }
+        #endif
         .onChange(of: query) { lookupError = nil }
         .navigationTitle("Compare with")
     }
