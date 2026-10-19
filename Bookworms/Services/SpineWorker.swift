@@ -17,8 +17,8 @@ enum RunMode: Sendable {
 ///
 /// The counts cover the whole run, across the passes that start again when the work changes, so
 /// `completed + failed + queue` is the run's work as known, which changes only when a later pass
-/// finds more or fewer books. The last run's outcome is saved across launches, because the charging task
-/// usually runs in a process that iOS ends before the user opens the app.
+/// finds more or fewer books. The last run's outcome is saved across launches, because the
+/// charging task usually runs in a process that iOS ends before the user opens the app.
 struct WorkerSnapshot: Sendable, Codable {
     var isRunning = false
     var phase = "Not run yet"
