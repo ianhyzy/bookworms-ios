@@ -89,12 +89,17 @@ enum ShareOutcome: Equatable {
         }
     #endif
 
-    /// The toast that reports the outcome, or `nil` for a cancel.
+    /// The toast that reports the outcome, or `nil` for a cancel, and on a Mac for a share,
+    /// since the sharing service shows its own progress and result.
     var toast: Toast? {
         switch self {
         case .savedToPhotos: Toast(message: "Saved to Photos", systemImage: "checkmark.circle.fill")
         case .copied: Toast(message: "Copied", systemImage: "checkmark.circle.fill")
-        case .shared: Toast(message: "Shared", systemImage: "checkmark.circle.fill")
+        #if os(macOS)
+            case .shared: nil
+        #else
+            case .shared: Toast(message: "Shared", systemImage: "checkmark.circle.fill")
+        #endif
         case .cancelled: nil
         case .failed(let message): .failure(message)
         }

@@ -191,10 +191,18 @@ struct RootView: View {
         @Bindable var model = model
         TabView(selection: $model.selectedTab) {
             // The custom symbols' sources are in `script/custom-symbols.py`.
-            Tab("Share", image: "tab.share", value: .share) { ShareStudioView() }
-            Tab("Library", systemImage: "books.vertical", value: .library) { LibraryView() }
-            Tab("Desk", systemImage: "lamp.desk", value: .desk) { DeskView() }
-            Tab("Spines", image: "tab.spines", value: .spines) { GenerationView() }
+            Tab("Share", image: "tab.share", value: .share) {
+                ShareStudioView().toastOverlay(model.toasts)
+            }
+            Tab("Library", systemImage: "books.vertical", value: .library) {
+                LibraryView().toastOverlay(model.toasts)
+            }
+            Tab("Desk", systemImage: "lamp.desk", value: .desk) {
+                DeskView().toastOverlay(model.toasts)
+            }
+            Tab("Spines", image: "tab.spines", value: .spines) {
+                GenerationView().toastOverlay(model.toasts)
+            }
         }
         #if os(macOS)
             // A Mac app lists its sections in a Liquid Glass sidebar rather than a tab bar. The
@@ -214,8 +222,6 @@ struct RootView: View {
         #if os(macOS)
             // Grouped forms match the iPhone's inset sections instead of the Mac's columns.
             .formStyle(.grouped)
-            // Mac sheets are windows of their own, so the main window's toasts sit in it.
-            .overlay { ToastOverlay(toasts: model.toasts).allowsHitTesting(false) }
         #else
             .background(ToastWindow(toasts: model.toasts))
         #endif
