@@ -208,7 +208,8 @@ enum ImpactMix {
 /// fails the movie without waiting any further.
 @MainActor
 final class PileMovieWriter {
-    /// How long the frames may take to finish, and the movie to be written from them.
+    /// How long the frames may take to finish, including any held last frame
+    /// (`hold(_:for:before:)`), and the movie to be written from them.
     static let finishTimeout = Duration.seconds(30)
 
     /// The MP4 that `finish(hits:livePhoto:before:)` writes.
@@ -346,6 +347,23 @@ final class PileMovieWriter {
         frameCount = max(frameCount, frame + 1)
         encodedCount += 1
         return true
+    }
+
+    /// Adds `picture` again as every frame of the next `seconds`, waiting for the encoder to
+    /// take each, so the movie ends on it held still. The frames are real ones, each a
+    /// thirtieth of a second, because some players and social apps that assume a steady frame
+    /// rate mishandle one long last frame.
+    ///
+    /// - Throws: `PileSnapshotError` when the writer fails or does not take a frame by
+    ///   `deadline`.
+    func hold(
+        _ picture: CVReadOnlyPixelBuffer, for seconds: Double,
+        before deadline: ContinuousClock.Instant
+    ) async throws {
+        let count = Int((seconds * Double(PileMovieTiming.framesPerSecond)).rounded())
+        for frame in frameCount..<frameCount + count {
+            try await append(picture, at: frame, before: deadline)
+        }
     }
 
     /// Offers `what` to one of `writer`'s inputs with `append` until the input takes it, 4
