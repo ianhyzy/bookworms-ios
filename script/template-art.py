@@ -3,8 +3,9 @@
 
 Each tile is a small dark card, as every share image is dark, in the shape of a Portrait image
 (4:5), with the template's layout in cream and gold: `template.<ShareTemplate raw value>`. The
-books follow the workspace's realism rules: they stand on a ledge or lie flat, keep book
-proportions, and never tilt in the card's plane unless they lie flat on the Desk's table.
+books keep book proportions and stand upright or lie flat. They tilt in the card's plane only
+where the card tilts them: fanned like a hand of cards in Top Five, or lying turned on the
+Desk's table.
 
 Each tile is drawn on a 120-by-150 grid and sized to the 56 by 70 points that `ShareStudioView`
 shows it at, without its vector data. The asset catalog then draws its bitmaps at build time,
@@ -123,14 +124,23 @@ def year_in_books():
 
 def top_five():
     parts = [heading(64)]
-    # Five books standing side by side on a ledge, the first-ranked in the middle.
-    sizes = [(17, 31), (19, 35), (22, 41), (19, 34), (17, 30)]
-    colors = [BOOKS[3], BOOKS[2], BOOKS[0], BOOKS[1], BOOKS[4]]
-    x = 9
-    for (w, h), color in zip(sizes, colors):
-        parts.append(book(x, 73 - h, w, h, color))
-        x += w + 2
-    parts += [rect(7, 73, 106, 2.5, "#8E6342"), rect(7, 75.5, 106, 2.5, "#5A3B26")]
+    # Five books fanned like a hand of cards, as the card fans them: the first-ranked in the
+    # middle and in front, each book further out smaller, turned further, and lower on the arc.
+    lead = 42
+    colors = [BOOKS[0], BOOKS[2], BOOKS[1], BOOKS[3], BOOKS[4]]
+    for rank in reversed(range(5)):
+        slot = [0, -1, 1, -2, 2][rank]
+        h = lead * (1 if rank == 0 else 0.82)
+        w = h * 0.66
+        cx = 60 + slot * 18.5
+        cy = 48 + (slot * slot * 0.026 + (0 if rank == 0 else 0.06)) * lead
+        turn = slot * 7.5
+        parts.append(
+            f'<g transform="rotate({turn:g} {cx:g} {cy:g})">'
+            + rect(cx - w / 2 + 0.8, cy - h / 2 + 1.4, w, h, "#000000", 1, 0.35)
+            + book(cx - w / 2, cy - h / 2, w, h, colors[rank])
+            + "</g>"
+        )
     for rank in range(5):
         y = 86 + rank * 11.5
         parts += [
