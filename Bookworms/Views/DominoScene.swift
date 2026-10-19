@@ -2836,27 +2836,37 @@ final class DominoScene {
         /// Whether `-BookwormsDominoCameraLog YES` asks for the camera log, read once.
         private static let logsCamera = UserDefaults.standard.bool(
             forKey: "BookwormsDominoCameraLog")
-        /// The most lines the camera log keeps: two minutes at 60 frames a second.
-        private static let cameraLogLimit = 7200
+        /// The most lines the camera log keeps: two minutes at 120 frames a second.
+        private static let cameraLogLimit = 14_400
 
         /// Simulator hook: with `-BookwormsDominoCameraLog YES`, logs each frame's time step,
         /// the front, the camera's position, direction, and roll, whether every book has
         /// fallen (`done` once the chain has also settled, `fallen` as soon as the last book
-        /// tips), the seconds since the finale started (`finale`, -1 before then), and how
-        /// upright the last book stands, from 1 standing to 0 lying flat, once every book
-        /// stands. It writes the log to `Library/Caches/Bookworms/domino-camera.csv` every 60
-        /// frames. The log ends once the books lie gathered and the camera has stopped
-        /// (`moved`), or at `cameraLogLimit` lines.
+        /// tips), the seconds since the finale started (`finale`, -1 before then), how
+        /// upright the last book stands, from 1 standing to 0 lying flat, where the front's
+        /// book shows across the view (`frontx`), and the left and right edges of the part of
+        /// the view that a recording's frames show (`shownl` and `shownr`, -1 while none
+        /// records), as shares of the view's width, once every book stands. It writes the log
+        /// to `Library/Caches/Bookworms/domino-camera.csv` every 60 frames. The log ends once
+        /// the books lie gathered and the camera has stopped (`moved`), or at `cameraLogLimit`
+        /// lines.
         private func logCamera(_ deltaTime: Float, moved: Bool) {
             guard Self.logsCamera, isReady, !cameraLogEnded else { return }
             let eye = camera.transform.translation
             let forward = camera.transform.rotation.act([0, 0, -1])
             let right = camera.transform.rotation.act([1, 0, 0])
+            let front = books.indices.contains(next) ? books[next] : books.last
+            let frontX = front.flatMap {
+                screenPoint(of: $0.position(relativeTo: root), in: CGSize(width: 1, height: 1))
+            }
+            let shown = recorder.shownSpan
             let values: [Float] = [
                 deltaTime, frontDistance, rig?.estimate ?? 0, eye.x, eye.y, eye.z, forward.x,
                 forward.y, forward.z, status.phase == .done ? 1 : 0,
                 asin(min(max(right.y, -1), 1)), next >= books.count ? 1 : 0, ending?.clock ?? -1,
                 books.last.map { $0.transform.rotation.act([0, 1, 0]).y } ?? 1,
+                Float(frontX?.x ?? -1), Float(shown?.lowerBound ?? -1),
+                Float(shown?.upperBound ?? -1),
             ]
             cameraLog.append(values.map { String(format: "%.5f", $0) }.joined(separator: ","))
             cameraLogEnded =
@@ -2865,7 +2875,9 @@ final class DominoScene {
             let url = URL.cachesDirectory.appending(path: "Bookworms/domino-camera.csv")
             try? FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? (["dt,front,estimate,x,y,z,fx,fy,fz,done,roll,fallen,finale,last"] + cameraLog)
+            let header =
+                "dt,front,estimate,x,y,z,fx,fy,fz,done,roll,fallen,finale,last,frontx,shownl,shownr"
+            try? ([header] + cameraLog)
                 .joined(separator: "\n")
                 .write(to: url, atomically: true, encoding: .utf8)
         }

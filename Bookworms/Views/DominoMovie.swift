@@ -364,6 +364,16 @@ final class DominoRecorder {
         }
     }
 
+    #if DEBUG
+        /// The part of the view's width that the recording's frames show, from the push until
+        /// the recording ends, as shares of the width, for the camera log.
+        var shownSpan: ClosedRange<CGFloat>? {
+            guard let run, run.timing != nil, run.tap.width > 0 else { return nil }
+            let left = run.pan.left / run.tap.width
+            return left...(left + run.tap.crop.width / run.tap.width)
+        }
+    #endif
+
     /// Starts recording an armed chain `length` units long at its push, and the hits with it.
     func start(length: Float) {
         guard let run else {
