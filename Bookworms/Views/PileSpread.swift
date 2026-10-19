@@ -188,8 +188,8 @@ struct PileSpread: Sendable {
     }
 
     /// The part of the table that the default camera shows in `rect` of an image of `size`,
-    /// taken as centered across the image. The framing then moves the books to wherever `rect`
-    /// lies, such as clear of a Mac's sidebar.
+    /// taken as centered across the image. The framing (`frame(_:in:of:)`) then slides the
+    /// camera so the books show in `rect` wherever it lies, such as clear of a Mac's sidebar.
     static func region(_ rect: CGRect, of size: CGSize) -> PileTray {
         let camera = PileCamera()
         let aspect = Float(size.width / size.height)
