@@ -23,9 +23,13 @@ struct LibraryView: View {
     /// The book that Stack or Shelf pulled out to show its details over the shelf.
     @State private var pullOut = ShelfPullOut()
     @State private var showsAccount = false
-    /// Set to find a book: the iPhone opens its finder, and the Mac focuses the toolbar's search
-    /// field (`LibrarySearch`).
+    /// Set to find a book: the iPhone opens its finder (`BookFinder`), and the Mac focuses the
+    /// toolbar's search field (`LibrarySearch`).
     @State private var findsBook = false
+    #if os(iOS)
+        /// The book that Return in the finder chose, which opens once the finder closes.
+        @State private var foundBook: CloudBook?
+    #endif
     /// The book whose **Change Cover** a context menu or the **Library** menu chose.
     @State private var coverBook: CloudBook?
     /// How far the status bar and the Dynamic Island reach down from the screen's top edge.
@@ -90,6 +94,15 @@ struct LibraryView: View {
         // Kept on the stack, so the sheet stays open when the library it brings replaces the
         // empty state.
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
+        #if os(iOS)
+            // Also outside them, so the finder follows the system appearance, as a search does.
+            .sheet(isPresented: $findsBook, onDismiss: openFoundBook) {
+                BookFinder(books: books) { book, opens in
+                    centeredID = book.id
+                    if opens { foundBook = book }
+                }
+            }
+        #endif
         .onChange(of: sort) { recenter() }
         .onChange(of: time) { recenter() }
         // The shelf's controls return as a pulled-out book flies back, and a book can only
@@ -194,6 +207,13 @@ struct LibraryView: View {
                 .padding(.bottom, 20)
             #endif
     }
+
+    #if os(iOS)
+        private func openFoundBook() {
+            if let foundBook { open(foundBook) }
+            foundBook = nil
+        }
+    #endif
 
     /// Opens `book`'s details, from a click or tap, the keyboard, a search, or a menu. Does
     /// nothing while other details show.
@@ -721,8 +741,9 @@ struct LibraryActions {
 /// On the Mac, a search field in the toolbar (**Library > Find Book**, Command-F) glides to the
 /// best match as you type, and its suggestions list the matches; choosing one fills in its title.
 /// On the iPhone, **Find a book** in the footer opens a list of the books that a search field
-/// narrows; choosing one glides to it. Searching ignores keystrokes while a book's details show,
-/// so the stack never moves behind them.
+/// narrows (`BookFinder`, which `LibraryView` presents outside its dark scheme); choosing one
+/// glides to it. Searching ignores keystrokes while a book's details show, so the stack never
+/// moves behind them.
 ///
 /// A modifier of its own, with the search text as its own state, so typing updates only it, not
 /// the library's body, which sorts the library.
@@ -737,9 +758,6 @@ private struct LibrarySearch: ViewModifier {
     @State private var text = ""
     #if os(macOS)
         @FocusState private var isFocused: Bool
-    #else
-        /// The book that Return in the finder chose, which opens once the finder closes.
-        @State private var opening: CloudBook?
     #endif
 
     func body(content: Content) -> some View {
@@ -775,12 +793,6 @@ private struct LibrarySearch: ViewModifier {
                 #endif
         #else
             content
-                .sheet(isPresented: $findsBook, onDismiss: openChosenBook) {
-                    BookFinder(books: books) { book, opens in
-                        centeredID = book.id
-                        if opens { opening = book }
-                    }
-                }
                 #if DEBUG
                     .onAppear { if Self.debugQuery != nil { findsBook = true } }
                 #endif
@@ -791,13 +803,6 @@ private struct LibrarySearch: ViewModifier {
         /// Simulator hook: `-BookwormsFindBook <text>` searches for that text when Library
         /// appears, in the Mac's search field or the iPhone's finder.
         static var debugQuery: String? { UserDefaults.standard.string(forKey: "BookwormsFindBook") }
-    #endif
-
-    #if os(iOS)
-        private func openChosenBook() {
-            if let opening { open(opening) }
-            opening = nil
-        }
     #endif
 }
 
