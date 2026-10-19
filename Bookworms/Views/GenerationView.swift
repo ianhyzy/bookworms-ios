@@ -16,6 +16,9 @@ struct GenerationView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var showsAccount = false
     @State private var showsModelInfo = false
+    /// How many books have no cover and draw no design (`AppModel.defaultStyledBookCount()`),
+    /// counted when the library or its designs change.
+    @State private var coverless = 0
     @State private var path = NavigationPath()
     #if os(macOS)
         @Environment(\.openSettings) private var openSettings
@@ -70,6 +73,9 @@ struct GenerationView: View {
             }
             .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
             .task { await generation.refreshModelStatus() }
+            .onChange(of: model.designRevision, initial: true) {
+                coverless = model.defaultStyledBookCount()
+            }
             #if os(iOS)
                 .task { backgroundRefresh = UIApplication.shared.backgroundRefreshStatus }
                 .onChange(of: scenePhase) { _, phase in
@@ -165,6 +171,7 @@ struct GenerationView: View {
             Text("Generation").bookHeading()
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
+                if let note = Self.coverlessNote(coverless) { Text(note) }
                 // Says why **Generate now** is dimmed.
                 if status.isRunning, !generation.isGenerating {
                     Text("A background run is in progress.")
@@ -251,6 +258,16 @@ struct GenerationView: View {
     private static var choiceName: String {
         let provider = SpineDesigner.current.provider
         return provider == .apple ? "Apple on-device" : provider.name
+    }
+
+    /// The Generation section's note about books without a cover, which draw the default cover
+    /// and spine; `nil` when every book has one.
+    static func coverlessNote(_ count: Int) -> String? {
+        switch count {
+        case ..<1: nil
+        case 1: "1 book had no cover, so its cover and spine use a default style."
+        default: "\(count) books had no cover, so their covers and spines use a default style."
+        }
     }
 
     /// What a design costs at `tier`, whose model is `name`, and why the better tiers are
