@@ -87,6 +87,7 @@ struct SpineCarousel: View {
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("BookwormsStackStyle") private var style = StackStyle.flat
+    @State private var scrolling = CarouselScrolling()
     #if os(macOS)
         /// Whether the carousel has keyboard focus, which warms the lamp's light rather than
         /// drawing a focus ring.
@@ -113,6 +114,7 @@ struct SpineCarousel: View {
         }
         // A book can only return to the place it left, which the other style draws differently.
         .onChange(of: style) { pullOut.close() }
+        .onScrollPhaseChange { _, phase in scrolling.isScrolling = phase.isScrolling }
         #if os(macOS)
             .modifier(SettledBook(books: books, centeredID: $centeredID, pullOut: pullOut))
         #endif
@@ -396,8 +398,16 @@ struct SpineCarousel: View {
         _ book: CloudBook, @ViewBuilder label: @escaping (_ nudged: Bool) -> some View
     ) -> some View {
         SpineButton(
-            book: book, namespace: namespace, open: open, changeCover: changeCover, label: label)
+            book: book, namespace: namespace, scrolling: scrolling, open: open,
+            changeCover: changeCover, label: label)
     }
+}
+
+/// Whether the carousel is scrolling, which a book reads as the pointer enters it. A reference
+/// that nothing observes, so a change of scroll phase updates no view.
+@MainActor
+private final class CarouselScrolling {
+    var isScrolling = false
 }
 
 /// A book's button in **Stack** or **Shelf**, which opens it.
@@ -405,11 +415,13 @@ struct SpineCarousel: View {
 /// With a pointer, the book eases a little way out of its place while the pointer rests on it,
 /// straight toward the reader along the way its spine faces, with no tilt (`PullOutPath.nudge`),
 /// and its tooltip names it. The hover is the button's own state, so a pointer moving over the
-/// books updates only the books it enters and leaves. Reduce Motion keeps the book still. On the
-/// Mac, its context menu offers what its details do (`BookMenu`).
+/// books updates only the books it enters and leaves. Books that scroll under a resting pointer
+/// stay in place, so a fling doesn't ripple. Reduce Motion keeps the book still. On the Mac, its
+/// context menu offers what its details do (`BookMenu`).
 private struct SpineButton<Label: View>: View {
     let book: CloudBook
     let namespace: Namespace.ID
+    let scrolling: CarouselScrolling
     let open: (CloudBook) -> Void
     let changeCover: (CloudBook) -> Void
     /// The book, eased out of its place while `nudged`.
@@ -435,7 +447,7 @@ private struct SpineButton<Label: View>: View {
         .accessibilityHint("Opens the book's details.")
         .help("\(book.title) — \(book.author)")
         .onHover { inside in
-            guard !reduceMotion || !inside else { return }
+            guard !inside || !(reduceMotion || scrolling.isScrolling) else { return }
             withAnimation(.smooth(duration: 0.2)) { hovered = inside }
         }
         #if os(macOS)
