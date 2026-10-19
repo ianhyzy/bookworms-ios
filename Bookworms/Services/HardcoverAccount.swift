@@ -390,10 +390,12 @@ final class HardcoverAccount {
         guard isSignedIn, !isSyncing, let accountID = summary?.accountID else { return }
         isSyncing = true
         syncError = nil
+        downloadProgress = nil
         let revision = libraryRevision
         let cached = PhoneLibrary.load(from: libraryURL)
         let username = summary?.username
-        let task = Task { [client, cloud] in
+        // The account lives as long as the app, so the download holds it strongly.
+        let task = Task { [self, client, cloud] in
             var previous = cached
             var publishes = true
             if readsArchive, let cloud {
@@ -411,8 +413,10 @@ final class HardcoverAccount {
             // Only a first download leaves the screens without a library while it runs.
             var progress: (@MainActor @Sendable (Int, Int?) -> Void)?
             if newest == nil {
-                progress = { [weak self] books, total in
-                    self?.downloadProgress = DownloadProgress(books: books, total: total)
+                progress = { books, total in
+                    // A page that finishes as sign-out cancels the download reports nothing.
+                    guard !Task.isCancelled else { return }
+                    self.downloadProgress = DownloadProgress(books: books, total: total)
                 }
             }
             let report = progress
