@@ -71,6 +71,9 @@ struct DominoesView: View {
     /// Where the current touch started, for a touch and hold, which `LongPressGesture` does not
     /// locate.
     @GestureState private var touch: CGPoint?
+    /// Where the pointing hand shows while the chain waits for its first push, for the push
+    /// tip.
+    @State private var handPoint: CGPoint?
 
     private struct SetUpRequest: Equatable {
         let ids: [Int]
@@ -93,6 +96,8 @@ struct DominoesView: View {
                     }
             )
             .simultaneousGesture(moveCamera)
+            // In the scene's own points, which reach under the bars as the scene does.
+            .overlay { TipAnchor(tip: PushTip(), point: handPoint) }
             .allowsHitTesting(details.lift == nil)
             .onGeometryChange(for: CGRect.self) {
                 $0.frame(in: .global)
@@ -104,7 +109,7 @@ struct DominoesView: View {
             .accessibilityLabel("Dominoes of \(count)")
             .accessibilityValue("\(title). \(cobwebs)\(status)")
             .accessibilityHint(
-                "Tap a book for its details. To go through books one at a time, open Library."
+                "\(DeskTips.tap) a book for its details. To go through books one at a time, open Library."
             )
             .accessibilityActions {
                 if scene.status.phase.waitsForPush {
@@ -154,6 +159,7 @@ struct DominoesView: View {
             }
             .onDisappear {
                 isShown = false
+                PushTip.chainWaits = false
                 scene.endCameraMove()
                 scene.recorder.interrupt()
                 // `onChange(of: playsFeedback)` does not run for a view that is being removed.
@@ -190,7 +196,19 @@ struct DominoesView: View {
                 scene.setCameraMode(new, blends: old != new)
             }
             .onChange(of: movesCamera) { if !movesCamera { scene.endCameraMove() } }
+            // The hand holds still before the first push, so the tip points at it once the
+            // camera has come to rest.
+            .task(id: scene.status.phase == .standing) {
+                PushTip.chainWaits = false
+                handPoint = nil
+                guard scene.status.phase == .standing else { return }
+                try? await Task.sleep(for: .seconds(scene.blendRemaining + 0.2))
+                guard !Task.isCancelled, let size = viewport?.size else { return }
+                handPoint = scene.handPoint(in: size)
+                PushTip.chainWaits = handPoint != nil
+            }
             .onChange(of: scene.status.phase) {
+                if scene.status.phase == .running { DeskTips.pushed() }
                 // Physics runs on under details, which VoiceOver reads instead.
                 guard isShown, details.lift == nil else { return }
                 switch scene.status.phase {

@@ -865,6 +865,39 @@ final class BookPileScene {
         return hit
     }
 
+    /// The ID of the book under `point`, in a view of `size`, or `nil` for the table: the
+    /// nearest book whose box the ray meets, as `book(at:in:)` finds it. It reads only the
+    /// books' poses, not the view's scene, so it works while the desk pauses and its view is
+    /// gone, which lets the Mac's pointer find books without waking the desk.
+    func bookID(under point: CGPoint, in size: CGSize) -> Int? {
+        guard let ray = ray(through: point, in: size) else { return nil }
+        var nearest: (distance: Float, id: Int)?
+        for book in shelf.children {
+            guard let id = bookIDs[book.id], let shape = factory.parts[id]?.shape,
+                let distance = PilePointer.hit(
+                    origin: ray.origin, direction: ray.direction, transform: book.transform,
+                    size: shape.size),
+                distance < nearest?.distance ?? .infinity
+            else { continue }
+            nearest = (distance, id)
+        }
+        return nearest?.id
+    }
+
+    /// Where the book nearest the middle of a view of `size` shows, in points, or `nil` while
+    /// the pile has no books: where the Desk scene's tips point.
+    func middleBookPoint(in size: CGSize) -> CGPoint? {
+        guard size.width > 0, size.height > 0 else { return nil }
+        let points = shelf.children.filter { bookIDs[$0.id] != nil }
+            .map { view.project($0.transform.translation, aspect: aspect) }
+        guard let nearest = points.min(by: { simd_length($0) < simd_length($1) }) else {
+            return nil
+        }
+        return CGPoint(
+            x: CGFloat(nearest.x + 1) / 2 * size.width,
+            y: CGFloat(1 - nearest.y) / 2 * size.height)
+    }
+
     /// Where `point` shows from left to right on screen, as a stereo position from -0.8 to 0.8,
     /// so no hit plays from one side alone.
     private func pan(_ point: SIMD3<Float>) -> Float {
@@ -1489,6 +1522,15 @@ final class BookPileScene {
     }
 
     func endCameraMove() { cameraMove = nil }
+
+    /// **Actual Size**: returns the camera to its home view's zoom and place, keeping its turn.
+    /// Does nothing while a finger holds a book or moves the camera.
+    func zoomToActualSize() {
+        guard carry == nil, cameraMove == nil else { return }
+        view.zoom = home.zoom
+        view.target = home.target
+        camera.transform = view.transform
+    }
 
     /// Eases a turned view back to the nearest whole turn, where the box of **Phone is the
     /// box** fits it: its glass parallel to the screen and its sides along the screen's edges.

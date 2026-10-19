@@ -1771,6 +1771,19 @@ final class DominoScene {
     /// the books gather.
     private var canLift: Bool { isReady && !isGathering && root.scene != nil }
 
+    /// How long until the camera's blend from one view to another ends, in seconds, or 0 when
+    /// no blend runs.
+    var blendRemaining: TimeInterval {
+        handoff.map { TimeInterval(max($0.duration - $0.time, 0)) } ?? 0
+    }
+
+    /// Where the pointing hand shows, in points in a view of `size`, or `nil` while no hand
+    /// shows: where the push tip points (`PushTip`).
+    func handPoint(in size: CGSize) -> CGPoint? {
+        guard marker.isEnabled else { return nil }
+        return screenPoint(of: hand.position(relativeTo: root), in: size)
+    }
+
     /// How far `point`, in a view of `size`, lies outside the pointing hand as it shows, in
     /// points, or `nil` while no hand shows. The hand counts as a circle around its middle as
     /// wide as the hand shows, and at least `handTouch` across.

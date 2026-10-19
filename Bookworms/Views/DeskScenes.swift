@@ -151,7 +151,8 @@ final class DeskScenes {
     /// Brings the view back, or keeps it, once the pile no longer rests.
     private func resume() {
         restRequest += 1
-        isPaused = false
+        // Each scroll and touch wakes the desk; only a change should update the views.
+        if isPaused { isPaused = false }
     }
 
     /// Wakes a paused desk, or keeps a live one from pausing for another `restDelay`, for a
@@ -172,6 +173,24 @@ final class DeskScenes {
         while still != nil, !isPaused, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(16))
         }
+    }
+
+    /// Moves the Desk scene's camera in one step, for the Mac's scroll wheel and **View** menu:
+    /// zooms by `magnification` toward the table under `focus`, or under the view's middle,
+    /// and turns by `rotation`. Wakes a paused desk, which then shows the new view once its
+    /// view has drawn.
+    func moveCamera(magnification: CGFloat, rotation: Angle = .zero, focus: CGPoint? = nil) {
+        guard mode == .desk, let size = viewport?.size else { return }
+        wake()
+        pile.moveCamera(magnification: magnification, rotation: rotation, focus: focus, in: size)
+        pile.endCameraMove()
+    }
+
+    /// **Actual Size**: returns the Desk scene's camera to its home zoom.
+    func zoomToActualSize() {
+        guard mode == .desk else { return }
+        wake()
+        pile.zoomToActualSize()
     }
 
     /// Frees the Desk scene's books and textures, and its still, while Desk is out of sight.

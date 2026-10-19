@@ -34,8 +34,18 @@ enum PileCarry {
     /// How long a finger rests on a book before it picks the book up. A finger that lifts
     /// sooner taps the book instead.
     static let holdDelay = Duration.milliseconds(250)
-    /// How far, in points, a finger can move before the hold and still pick up or tap.
+    /// How far, in points, a finger can move before the hold and still pick up or tap. On the
+    /// Mac, a drag past it picks the book up at once (`picksUpOnDrag`).
     static let slop: CGFloat = 10
+    /// Whether a drag, rather than a hold, picks up a book: on the Mac, where a pointer rests
+    /// still more easily than a finger, so a hold would read as a click that does nothing.
+    static var picksUpOnDrag: Bool {
+        #if os(macOS)
+            true
+        #else
+            false
+        #endif
+    }
     /// How high a held book rides over what lies under it: 8 cm at the scene's scale.
     static let lift: Float = 0.8
     /// The fastest a thrown book flies across the desk, in units a second: 3 m/s at the scene's
@@ -67,6 +77,59 @@ enum PileCarry {
         let sine = simd_length(change.imag)
         guard sine > 1e-6 else { return change.imag * 2 }
         return change.imag / sine * 2 * atan2(sine, change.real)
+    }
+}
+
+/// How the Mac's pointer works the desk: its scroll wheel moves the camera, and its hover finds
+/// the book under it.
+enum PilePointer {
+    /// The zoom for each line a wheel scrolls, and for each point a trackpad does.
+    static let zoomPerLine: CGFloat = 0.1
+    static let zoomPerPoint: CGFloat = 0.004
+    /// The turn, in radians, for each line or point scrolled sideways.
+    static let turnPerLine: CGFloat = 0.09
+    static let turnPerPoint: CGFloat = 0.005
+
+    /// The camera move for a scroll of `deltaX` and `deltaY`, in lines for a wheel or in points
+    /// for a `precise` trackpad, given as the device moved, with positive y away from the
+    /// reader. Scrolling away zooms in, toward the pointer. Scrolling sideways turns the view
+    /// about the pile, and so does a wheel with Shift held, which macOS reports as sideways
+    /// scrolling for most mice and as up and down for some.
+    static func move(deltaX: CGFloat, deltaY: CGFloat, precise: Bool, shift: Bool) -> (
+        magnification: CGFloat, rotation: Angle
+    ) {
+        let zoom = precise ? zoomPerPoint : zoomPerLine
+        let turn = precise ? turnPerPoint : turnPerLine
+        let sideways = shift && deltaX == 0 ? deltaY : deltaX
+        return (
+            shift ? 1 : exp(deltaY * zoom), .radians(Double(sideways * turn))
+        )
+    }
+
+    /// How far along the ray from `origin` in unit `direction` it first meets the box of `size`
+    /// centered on `transform`'s position and turned by its rotation, or `nil` if it misses or
+    /// the box lies behind the ray's start: the slab test in the box's own axes.
+    static func hit(
+        origin: SIMD3<Float>, direction: SIMD3<Float>, transform: Transform, size: SIMD3<Float>
+    ) -> Float? {
+        let turn = transform.rotation.inverse
+        let start = turn.act(origin - transform.translation)
+        let heading = turn.act(direction)
+        let half = size / 2
+        var near = -Float.infinity
+        var far = Float.infinity
+        for axis in 0..<3 {
+            if abs(heading[axis]) < 1e-6 {
+                guard abs(start[axis]) <= half[axis] else { return nil }
+                continue
+            }
+            let a = (-half[axis] - start[axis]) / heading[axis]
+            let b = (half[axis] - start[axis]) / heading[axis]
+            near = max(near, min(a, b))
+            far = min(far, max(a, b))
+        }
+        guard near <= far, far >= 0 else { return nil }
+        return max(near, 0)
     }
 }
 
