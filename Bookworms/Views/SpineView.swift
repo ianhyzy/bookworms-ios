@@ -204,8 +204,22 @@ private struct SpineLettering: Layout {
     let authorShare: CGFloat
     let authorCap: CGFloat
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let (title, author) = widths(proposal, subviews)
+    /// The widths the title and the author need whatever the row's width, measured once for
+    /// both layout passes rather than in each.
+    struct Needs {
+        var title: CGFloat
+        var author: CGFloat
+    }
+
+    func makeCache(subviews: Subviews) -> Needs {
+        Needs(
+            title: subviews[0].sizeThatFits(.unspecified).width,
+            author: subviews[1].sizeThatFits(ProposedViewSize(width: authorCap, height: nil)).width)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Needs) -> CGSize
+    {
+        let (title, author) = widths(proposal, subviews, cache)
         let height = max(
             subviews[0].sizeThatFits(ProposedViewSize(width: title, height: proposal.height))
                 .height,
@@ -215,9 +229,9 @@ private struct SpineLettering: Layout {
     }
 
     func placeSubviews(
-        in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+        in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Needs
     ) {
-        let (title, author) = widths(ProposedViewSize(bounds.size), subviews)
+        let (title, author) = widths(ProposedViewSize(bounds.size), subviews, cache)
         subviews[0]
             .place(
                 at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading,
@@ -229,14 +243,13 @@ private struct SpineLettering: Layout {
     }
 
     /// The title's and the author's widths in a row `proposal.width` wide.
-    private func widths(_ proposal: ProposedViewSize, _ subviews: Subviews) -> (CGFloat, CGFloat) {
-        let title = subviews[0]
+    private func widths(_ proposal: ProposedViewSize, _ subviews: Subviews, _ needs: Needs)
+        -> (CGFloat, CGFloat)
+    {
         let author = subviews[1]
-        let titleNeeds = title.sizeThatFits(.unspecified).width
-        let authorNeeds = author.sizeThatFits(ProposedViewSize(width: authorCap, height: nil)).width
-        guard let width = proposal.width else { return (titleNeeds, authorNeeds) }
+        guard let width = proposal.width else { return (needs.title, needs.author) }
         let free = max(0, width - spacing)
-        let offered = min(authorNeeds, max(min(authorShare, free), free - titleNeeds))
+        let offered = min(needs.author, max(min(authorShare, free), free - needs.title))
         // The name's shorter forms can need less than the width offered; the title keeps it.
         let used = min(
             offered,
