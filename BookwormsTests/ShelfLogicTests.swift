@@ -259,36 +259,36 @@ final class ShelfLogicTests: XCTestCase {
     }
 
     func testSpineAuthorsFallBackToTheirSurnames() {
-        XCTAssertEqual(SpineView.surname("David Foster Wallace"), "Wallace")
-        XCTAssertEqual(SpineView.surname("Ursula K. Le Guin"), "Le Guin")
-        XCTAssertEqual(SpineView.surname("Daphne du Maurier"), "du Maurier")
-        XCTAssertEqual(SpineView.surname("Martin Luther King Jr."), "King Jr.")
-        XCTAssertEqual(SpineView.surname("Terry Pratchett et al."), "Pratchett et al.")
-        XCTAssertEqual(SpineView.surname("Neil Gaiman, Terry Pratchett"), "Gaiman, Pratchett")
-        XCTAssertNil(SpineView.surname("Plato"))
-        XCTAssertEqual(SpineView.twoLines("Robert Jackson Bennett"), "Robert Jackson\nBennett")
+        XCTAssertEqual(SpineView.surname("Mara Quill Ashby"), "Ashby")
+        XCTAssertEqual(SpineView.surname("Odile R. Le Brun"), "Le Brun")
+        XCTAssertEqual(SpineView.surname("Celeste du Ravel"), "du Ravel")
+        XCTAssertEqual(SpineView.surname("Thomas Avery Holt Jr."), "Holt Jr.")
+        XCTAssertEqual(SpineView.surname("Wren Calloway et al."), "Calloway et al.")
+        XCTAssertEqual(SpineView.surname("Ivo Marsh, Wren Calloway"), "Marsh, Calloway")
+        XCTAssertNil(SpineView.surname("Halcyon"))
+        XCTAssertEqual(SpineView.twoLines("Felix Andrew Morrow"), "Felix Andrew\nMorrow")
         XCTAssertEqual(
-            SpineView.twoLines("Neil Gaiman, Terry Pratchett"), "Neil Gaiman,\nTerry Pratchett")
-        XCTAssertEqual(SpineView.twoLines("Ursula K. Le Guin"), "Ursula K.\nLe Guin")
-        XCTAssertNil(SpineView.twoLines("Plato"))
+            SpineView.twoLines("Ivo Marsh, Wren Calloway"), "Ivo Marsh,\nWren Calloway")
+        XCTAssertEqual(SpineView.twoLines("Odile R. Le Brun"), "Odile R.\nLe Brun")
+        XCTAssertNil(SpineView.twoLines("Halcyon"))
     }
 
     func testFindingPutsTitlesThatStartWithTheTextFirst() {
         let books = [
-            book(1, "Children of Dune", by: "Frank Herbert"),
-            book(2, "Piranesi", by: "Susanna Clarke"),
-            book(3, "Dune", by: "Frank Herbert"),
-            book(4, "Émile", by: "Dune Writer"),
+            book(1, "Heirs of Tidewater", by: "Rowan Pike"),
+            book(2, "Glasshouse Hours", by: "Ines Marlowe"),
+            book(3, "Tidewater", by: "Rowan Pike"),
+            book(4, "Émile", by: "Tidewater Scribe"),
         ]
-        XCTAssertEqual(BookFinding.matches("dune", in: books).map(\.id), [3, 1, 4])
+        XCTAssertEqual(BookFinding.matches("tidewater", in: books).map(\.id), [3, 1, 4])
         XCTAssertEqual(BookFinding.matches(" emile ", in: books).map(\.id), [4])
-        XCTAssertEqual(BookFinding.matches("clarke", in: books).map(\.id), [2])
+        XCTAssertEqual(BookFinding.matches("marlowe", in: books).map(\.id), [2])
         XCTAssertEqual(BookFinding.matches("", in: books).map(\.id), [])
         // A chosen suggestion fills in its title, which finds that book before a longer title.
         let series = [
-            book(1, "Dune Messiah", by: "Frank Herbert"), book(2, "Dune", by: "Frank Herbert"),
+            book(1, "Tidewater Rising", by: "Rowan Pike"), book(2, "Tidewater", by: "Rowan Pike"),
         ]
-        XCTAssertEqual(BookFinding.matches("Dune", in: series).map(\.id), [2, 1])
+        XCTAssertEqual(BookFinding.matches("Tidewater", in: series).map(\.id), [2, 1])
     }
 
     func testSyncStatusNamesTheDayAndTimeThisYearAndEarlierDates() {
