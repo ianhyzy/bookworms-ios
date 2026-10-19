@@ -53,6 +53,9 @@ enum TimeFrame: Hashable, Sendable {
         }
     }
 
+    /// The span's name in title case, such as "All Time", for menu items, as the HIG asks.
+    var menuTitle: String { title.capitalized }
+
     /// The years and months that have finished books, newest first.
     static func periods(in books: [CloudBook]) -> (years: [Int], months: [TimeFrame]) {
         var months = Set<TimeFrame>()

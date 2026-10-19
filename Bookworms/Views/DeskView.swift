@@ -347,7 +347,7 @@ struct FrameChip: View {
         .accessibilityValue("\(title), \(Self.books(shown, of: total))")
     }
 
-    /// **All time**, and the years and months with finished books, newest first. Choosing one
+    /// **All Time**, and the years and months with finished books, newest first. Choosing one
     /// shows that period's books, which the Pile drops in a new pile.
     @ViewBuilder private var options: some View {
         // Reading finish dates parses them, so the chosen frame resolves once, not for each
@@ -360,7 +360,7 @@ struct FrameChip: View {
             setting = $0?.setting ?? ""
         }
         Picker("Books", selection: frame) {
-            Text(TimeFrame.lifetime.title).tag(TimeFrame?.none)
+            Text(TimeFrame.lifetime.menuTitle).tag(TimeFrame?.none)
         }
         if !periods.years.isEmpty {
             Picker("Year", selection: frame) {

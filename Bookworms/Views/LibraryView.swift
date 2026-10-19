@@ -414,7 +414,7 @@ private struct LibraryOptions: View {
             }
         }
         Picker("Time", selection: $time) {
-            ForEach(LibraryTime.spans, id: \.self) { Text($0.title).tag($0) }
+            ForEach(LibraryTime.spans, id: \.self) { Text($0.menuTitle).tag($0) }
         }
         .pickerStyle(.inline)
         if !years.isEmpty {
