@@ -390,6 +390,10 @@ struct FrameChip: View {
             .font(.subheadline.weight(.semibold))
             .monospacedDigit()
             .lineLimit(1)
+            // The last, shortest size shrinks rather than truncates when even it does not fit,
+            // as a long span can at the largest text size on the narrowest iPhone. The sizes
+            // before it show only where they fit, so they never shrink.
+            .minimumScaleFactor(0.75)
             #if os(macOS)
                 .padding(.horizontal, 6)
             #endif
