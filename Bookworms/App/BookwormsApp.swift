@@ -44,21 +44,24 @@ private func finishLaunching(registerForPushes: () -> Void) {
     #endif
 }
 
-/// Whether a Debug launch argument chose the first tab (`finishLaunching`), which the window's
-/// saved tab then leaves alone.
-private let launchChoosesTab: Bool = {
-    #if DEBUG
-        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
-        let keys = [
-            "BookwormsShelfMode", "BookwormsTab", "BookwormsShowSpines",
-            "BookwormsGenerateOnLaunch",
-            "BookwormsShareTemplate",
-        ]
-        return keys.contains { arguments[$0] != nil }
-    #else
-        return false
-    #endif
-}()
+#if os(macOS)
+    /// Whether a Debug launch argument chose the first tab (`finishLaunching`), which the window's
+    /// saved tab then leaves alone.
+    private let launchChoosesTab: Bool = {
+        #if DEBUG
+            let arguments = UserDefaults.standard.volatileDomain(
+                forName: UserDefaults.argumentDomain)
+            let keys = [
+                "BookwormsShelfMode", "BookwormsTab", "BookwormsShowSpines",
+                "BookwormsGenerateOnLaunch",
+                "BookwormsShareTemplate",
+            ]
+            return keys.contains { arguments[$0] != nil }
+        #else
+            return false
+        #endif
+    }()
+#endif
 
 /// Configures TipKit once per launch, before any view shows a tip, so each area only adds its
 /// tips. The tips' display state lives in TipKit's default datastore in the app's container.
@@ -238,8 +241,10 @@ struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(GenerationController.self) private var generation
     @Environment(\.scenePhase) private var scenePhase
-    /// The window's section when it last closed, which it reopens on; Share at first launch.
-    @SceneStorage("BookwormsTab") private var savedTab = AppTab.share
+    #if os(macOS)
+        /// The window's section when it last closed, which it reopens on; Share at first launch.
+        @SceneStorage("BookwormsTab") private var savedTab = AppTab.share
+    #endif
     @State private var showsAccount = false
     /// The share image shown full size over every tab and bar, while the Share tab's preview is
     /// held.
@@ -286,7 +291,9 @@ struct RootView: View {
         }
         // **Library > Hardcover Account…** on the Mac.
         .focusedSceneValue(\.showAccount, SceneAction { showsAccount = true })
-        .modifier(RestoresTab(savedTab: $savedTab))
+        #if os(macOS)
+            .modifier(RestoresTab(savedTab: $savedTab))
+        #endif
         .task { await model.reload() }
         .onChange(of: scenePhase) { _, phase in
             generation.scenePhaseChanged(to: phase)
@@ -295,24 +302,30 @@ struct RootView: View {
     }
 }
 
-/// Reopens the window on the section it last showed, once per launch and unless a Debug launch
-/// argument chose one, and saves each new section. A window reopened later in the same launch,
-/// such as from the menu bar item, keeps the section that shows. A modifier of its own, so a tab
-/// switch updates only it, not the root view.
-private struct RestoresTab: ViewModifier {
-    /// Whether a window has restored its section in this launch.
-    private static var restored = false
+#if os(macOS)
+    /// Reopens the Mac's main window on the section it last showed, once per launch, and saves
+    /// each new section. A Debug launch argument's section wins, and so does a share that a book
+    /// window requested before the main window opened, which `BookWindow` opens the main window
+    /// for. A window reopened later in the same launch, such as from the menu bar item, keeps the
+    /// section that shows. A modifier of its own, so a tab switch updates only it, not the root
+    /// view.
+    private struct RestoresTab: ViewModifier {
+        /// Whether a window has restored its section in this launch.
+        private static var restored = false
 
-    @Binding var savedTab: AppTab
-    @Environment(AppModel.self) private var model
+        @Binding var savedTab: AppTab
+        @Environment(AppModel.self) private var model
 
-    func body(content: Content) -> some View {
-        content
-            .onAppear {
-                guard !Self.restored else { return }
-                Self.restored = true
-                if !launchChoosesTab { model.selectedTab = savedTab }
-            }
-            .onChange(of: model.selectedTab) { _, tab in savedTab = tab }
+        func body(content: Content) -> some View {
+            content
+                .onAppear {
+                    guard !Self.restored else { return }
+                    Self.restored = true
+                    if !launchChoosesTab && model.shareBookID == nil {
+                        model.selectedTab = savedTab
+                    }
+                }
+                .onChange(of: model.selectedTab) { _, tab in savedTab = tab }
+        }
     }
-}
+#endif
