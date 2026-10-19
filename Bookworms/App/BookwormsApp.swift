@@ -133,8 +133,6 @@ struct BookwormsApp: App {
     @State private var model = AppModel.shared
     @State private var generation = GenerationController.shared
 
-    init() { configureTips() }
-
     var body: some Scene {
         #if os(macOS)
             // One main window; the menu bar item reopens it and keeps generation reachable
