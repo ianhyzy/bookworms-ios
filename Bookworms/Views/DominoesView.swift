@@ -124,6 +124,7 @@ struct DominoesView: View {
                 }
                 Button("Set up again") { desk.setUpDominoesAgain() }
             }
+            .overlay { shareFrame }
             .overlay { heading }
             // Until the heading takes its place over the gathered books.
             .overlay(alignment: .top) {
@@ -287,6 +288,32 @@ struct DominoesView: View {
             .transition(.opacity.animation(.easeIn(duration: 0.6)))
             // VoiceOver reads the same totals as the scene's value.
             .accessibilityHidden(true)
+        }
+    }
+
+    /// In a view wider than 9:16, such as a Mac's window, darkens the view on either side of the
+    /// spread's area (`DominoFinale.area(in:)`) from when the books lift to gather, or appear
+    /// with Reduce Motion on, so the window shows the 9:16 frame that the video and **Image**
+    /// show. It fades in as the video's frame arrives there, and stays until **Set up again**.
+    /// A view that the area fills, such as an iPhone's, shows none.
+    @ViewBuilder private var shareFrame: some View {
+        if scene.status.phase.hasEnded, details.lift == nil,
+            let viewport = scene.plannedViewport
+        {
+            let area = DominoFinale.area(in: viewport)
+            if area.width < viewport.size.width {
+                HStack(spacing: 0) {
+                    Rectangle().frame(width: area.minX)
+                    Color.clear.frame(width: area.width)
+                    Rectangle()
+                }
+                .foregroundStyle(.black.opacity(0.5))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+                .transition(.opacity.animation(.easeInOut(duration: 0.6)))
+                .accessibilityHidden(true)
+            }
         }
     }
 
