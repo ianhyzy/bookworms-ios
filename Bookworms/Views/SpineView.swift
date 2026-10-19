@@ -97,20 +97,31 @@ struct SpineView: View {
     private func lettering(length: CGFloat, thickness: CGFloat) -> some View {
         let inset = max(14, length * 0.035) + max(2, thickness * 0.07) + thickness * 0.18
         let titleSize = thickness * 0.5
+        let author = Self.shortAuthor(book.author)
+        // Thick spines have the room the title's second line takes.
+        let twoLines = thickness >= 64
         return HStack(spacing: thickness * 0.3) {
             BookText(look.text(book.spineTitle), of: book, on: look)
                 .font(look.font(size: titleSize))
-                .lineLimit(thickness >= 64 ? 2 : 1)
+                .lineLimit(twoLines ? 2 : 1)
                 .minimumScaleFactor(0.3)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            // A fixed share keeps the author visible however long the title is. The size stops
-            // growing with thickness at a share of the length, so a thick spine fits the same
-            // name a thinner one does.
-            Text(Self.shortAuthor(book.author))
-                .font(look.font(size: min(length * 0.04, max(7, titleSize * 0.55))))
-                .lineLimit(1)
-                .minimumScaleFactor(0.5)
-                .frame(width: length * 0.24, alignment: .trailing)
+            // The author takes the width its name needs, up to 40% of the length, before the
+            // title takes the rest. A name too long for that wraps onto two lines on a thick
+            // spine, then falls back to the surname, and shrinks only as a last resort. The
+            // size stops growing with thickness at a share of the length, so a thick spine
+            // fits the same name a thinner one does.
+            WidthCap(cap: length * 0.4) {
+                ViewThatFits(in: .horizontal) {
+                    Text(author).lineLimit(1)
+                    if twoLines, let split = Self.twoLines(author) { Text(split).lineLimit(2) }
+                    if let surname = Self.surname(author) { Text(surname).lineLimit(1) }
+                    Text(author).lineLimit(1).minimumScaleFactor(0.5)
+                }
+            }
+            .font(look.font(size: min(length * 0.04, max(7, titleSize * 0.55))))
+            .multilineTextAlignment(.trailing)
+            .layoutPriority(1)
         }
         .foregroundStyle(look.foreground.color)
         .padding(.horizontal, inset)
@@ -123,6 +134,82 @@ struct SpineView: View {
         guard names.count > 2 || (names.count == 2 && author.count > 32), let first = names.first
         else { return author }
         return first + " et al."
+    }
+
+    /// Words that belong to the surname that follows them, such as "Le" in "Ursula K. Le Guin".
+    private static let surnameParticles: Set<String> = [
+        "al", "bin", "da", "de", "del", "della", "der", "di", "du", "el", "la", "le", "st.",
+        "ten", "ter", "van", "von",
+    ]
+    /// Words that follow a surname, such as "Jr." in "Walter M. Miller Jr.".
+    private static let nameSuffixes: Set<String> = ["jr.", "jr", "sr.", "sr", "ii", "iii", "iv"]
+
+    /// `author` with each name shortened to its surname, such as "Le Guin" for "Ursula K. Le
+    /// Guin" or "Gaiman, Pratchett" for "Neil Gaiman, Terry Pratchett", keeping the "et al."
+    /// that `shortAuthor(_:)` adds. Returns `nil` when no name has a shorter form.
+    static func surname(_ author: String) -> String? {
+        let (names, others) = names(of: author)
+        let surnames = names.map(lastName)
+        guard surnames != names else { return nil }
+        return surnames.joined(separator: ", ") + others
+    }
+
+    /// `author` on two lines: a pair of names one over the other, or one name broken before
+    /// its surname, such as "David Foster" over "Wallace". Returns `nil` for anything else.
+    static func twoLines(_ author: String) -> String? {
+        let (names, others) = names(of: author)
+        if names.count == 2 { return names[0] + ",\n" + names[1] + others }
+        guard let name = names.first, names.count == 1 else { return nil }
+        let surname = lastName(name)
+        guard name.hasSuffix(surname) else { return nil }
+        let given = name.dropLast(surname.count).trimmingCharacters(in: .whitespaces)
+        return given.isEmpty ? nil : given + "\n" + surname + others
+    }
+
+    /// The names in `author`, and " et al." when `shortAuthor(_:)` ended it with that.
+    private static func names(of author: String) -> (names: [String], others: String) {
+        let others = " et al."
+        let hasOthers = author.hasSuffix(others)
+        let names = author.dropLast(hasOthers ? others.count : 0).split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        return (names, hasOthers ? others : "")
+    }
+
+    /// One name's surname, with the particles before it and any suffix after it, or the whole
+    /// name when it is a single word.
+    private static func lastName(_ name: String) -> String {
+        var words = name.split(separator: " ").map(String.init)
+        guard words.count > 1 else { return name }
+        var surname = [words.removeLast()]
+        if nameSuffixes.contains(surname[0].lowercased()), words.count > 1 {
+            surname.insert(words.removeLast(), at: 0)
+        }
+        while words.count > 1, let word = words.last, surnameParticles.contains(word.lowercased()) {
+            surname.insert(words.removeLast(), at: 0)
+        }
+        return surname.joined(separator: " ")
+    }
+}
+
+/// Offers its one subview at most `cap` points of width and takes the width the subview
+/// chooses, at the trailing end of the space it is given. A `frame(maxWidth:)` would take the
+/// whole `cap` even for a short name, which the title beside it needs.
+private struct WidthCap: Layout {
+    let cap: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = min(proposal.width ?? cap, cap)
+        return subviews.first?.sizeThatFits(ProposedViewSize(width: width, height: proposal.height))
+            ?? .zero
+    }
+
+    func placeSubviews(
+        in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+    ) {
+        subviews.first?
+            .place(
+                at: CGPoint(x: bounds.maxX, y: bounds.midY), anchor: .trailing,
+                proposal: ProposedViewSize(bounds.size))
     }
 }
 

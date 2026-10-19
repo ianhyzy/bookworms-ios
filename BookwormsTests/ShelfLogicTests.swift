@@ -240,6 +240,21 @@ final class ShelfLogicTests: XCTestCase {
         )
     }
 
+    func testSpineAuthorsFallBackToTheirSurnames() {
+        XCTAssertEqual(SpineView.surname("David Foster Wallace"), "Wallace")
+        XCTAssertEqual(SpineView.surname("Ursula K. Le Guin"), "Le Guin")
+        XCTAssertEqual(SpineView.surname("Daphne du Maurier"), "du Maurier")
+        XCTAssertEqual(SpineView.surname("Martin Luther King Jr."), "King Jr.")
+        XCTAssertEqual(SpineView.surname("Terry Pratchett et al."), "Pratchett et al.")
+        XCTAssertEqual(SpineView.surname("Neil Gaiman, Terry Pratchett"), "Gaiman, Pratchett")
+        XCTAssertNil(SpineView.surname("Plato"))
+        XCTAssertEqual(SpineView.twoLines("Robert Jackson Bennett"), "Robert Jackson\nBennett")
+        XCTAssertEqual(
+            SpineView.twoLines("Neil Gaiman, Terry Pratchett"), "Neil Gaiman,\nTerry Pratchett")
+        XCTAssertEqual(SpineView.twoLines("Ursula K. Le Guin"), "Ursula K.\nLe Guin")
+        XCTAssertNil(SpineView.twoLines("Plato"))
+    }
+
     func testSlabThicknessStaysInTheComfortableRange() {
         XCTAssertEqual(book(1, "Short", pages: 40).slabThickness, 44, accuracy: 0.001)
         XCTAssertEqual(book(2, "Long", pages: 2_000).slabThickness, 96, accuracy: 0.001)
