@@ -4,7 +4,7 @@
 
     /// The menu bar item's menu on the Mac: generation status and controls, the main window,
     /// and launch at login. It keeps the app reachable while it designs spines with every
-    /// window closed. **Show in menu bar** in Settings hides it (`MenuBarExtraToggle`).
+    /// window closed. **Bookworms > Show in Menu Bar** hides it (`MenuBarExtraToggle`).
     struct BookwormsMenu: View {
         static let windowID = "main"
 
@@ -54,8 +54,10 @@
         }
     }
 
-    /// **Show in Menu Bar**, which shows or hides the menu bar item (`BookwormsMenu`). It is on
-    /// by default; with it off, the Dock icon's menu and the main window still reach generation.
+    /// **Show in Menu Bar**, which shows or hides the menu bar item (`BookwormsMenu`), in the
+    /// **Bookworms** menu after **Settings…** (`BookwormsCommands`), which stays reachable from
+    /// the Dock with the item hidden. It is on by default; with it off, the Dock icon's menu and
+    /// the main window still reach generation.
     struct MenuBarExtraToggle: View {
         /// The setting, which `BookwormsApp` reads for the menu bar item.
         static let key = "BookwormsShowsMenuBarExtra"
@@ -124,15 +126,17 @@
         }
     }
 
-    /// Menu bar commands for the main window: a **Go** menu that closes a book's details with
-    /// **Back** (Command-[) and switches sections with Command-1 through Command-4. The app has no help book, so the **Help** menu holds only the
-    /// system's search. Other areas add their
-    /// own `Commands`, such as `LibraryCommands` (see `FocusedActions.swift`).
+    /// Menu bar commands for the main window: **Show in Menu Bar** in the **Bookworms** menu
+    /// (`MenuBarExtraToggle`), and a **Go** menu that closes a book's details with **Back**
+    /// (Command-[) and switches sections with Command-1 through Command-4. The app has no help
+    /// book, so the **Help** menu holds only the system's search. Other areas add their own
+    /// `Commands`, such as `LibraryCommands` (see `FocusedActions.swift`).
     struct BookwormsCommands: Commands {
         let model: AppModel
         @FocusedValue(\.goBack) private var goBack
 
         var body: some Commands {
+            CommandGroup(after: .appSettings) { MenuBarExtraToggle() }
             CommandMenu("Go") {
                 Button("Back") { goBack?() }
                     .keyboardShortcut("[")
