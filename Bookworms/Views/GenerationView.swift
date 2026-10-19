@@ -181,11 +181,12 @@ struct GenerationView: View {
     }
 
     /// The run's model tier: Private Cloud Compute with its daily limit, or, when it isn't
-    /// available, the backup model, the on-device model, or local defaults. A backup model the
-    /// reader chose but didn't set up, or whose provider rejected its settings, says why beside
-    /// **Backup model**. The info button explains what a design costs at this tier and why the
-    /// better tiers are unavailable. The reasons come from the cached status, so the body reads
-    /// no Keychain item.
+    /// available, the reader's model with an API key, the on-device model, or local defaults.
+    /// **Choose model** opens the model settings. A provider the reader chose but didn't set up,
+    /// or that rejected its settings, says why beside it. The info button explains what
+    /// a design costs at this tier and, in builds with Private Cloud Compute, why it is
+    /// unavailable. Builds without it (`NO_PCC`) never name it. The reasons come from the cached
+    /// status, so the body reads no Keychain item.
     private var designModel: some View {
         let status = generation.status.model
         // Until the first status arrives, the best tier this build could use names the model.
@@ -201,7 +202,7 @@ struct GenerationView: View {
                     .labelStyle(.iconOnly)
                     .buttonStyle(.borderless)
                     .popover(isPresented: $showsModelInfo) {
-                        modelInfo(status: status, tier: tier)
+                        modelInfo(status: status, tier: tier, name: name)
                             .presentationCompactAdaptation(.popover)
                     }
                 }
@@ -216,50 +217,78 @@ struct GenerationView: View {
                 }
             }
             #if os(macOS)
-                Button("Backup model…") {
+                Button("Choose model…") {
                     settingsPane = .backupModel
                     openSettings()
+                }
+                if let reason = status?.backupUnavailableReason {
+                    LabeledContent("Chosen model") { Text(reason) }
                 }
             #else
                 NavigationLink {
                     Form { SpineDesignerSettings() }
-                        .navigationTitle("Backup model")
+                        .navigationTitle("Design model")
                         .navigationBarTitleDisplayMode(.inline)
                 } label: {
-                    LabeledContent("Backup model") {
-                        Text(status?.backupUnavailableReason ?? SpineDesigner.current.provider.name)
+                    LabeledContent("Choose model") {
+                        Text(status?.backupUnavailableReason ?? Self.choiceName)
                     }
-                }
-            #endif
-            #if os(macOS)
-                if let reason = status?.backupUnavailableReason {
-                    LabeledContent("Backup model") { Text(reason) }
                 }
             #endif
         } header: {
             Text("Design model").bookHeading()
+        } footer: {
+            #if NO_PCC
+                Text(
+                    "Apple's on-device model designs spines by default, on this \(ThisDevice.name) and at no cost. For better results, you can use a model such as Google Gemini, Claude, or OpenAI's with your own API key."
+                )
+            #endif
         }
     }
 
-    /// What a design costs at `tier`, and why the better tiers are unavailable.
-    private func modelInfo(status: ModelStatus?, tier: ModelTier) -> some View {
-        let note =
-            switch tier {
-            case .privateCloudCompute:
+    /// The saved model choice, as **Choose model** shows it: Apple's on-device model or the
+    /// provider's name.
+    private static var choiceName: String {
+        let provider = SpineDesigner.current.provider
+        return provider == .apple ? "Apple on-device" : provider.name
+    }
+
+    /// What a design costs at `tier`, whose model is `name`, and why the better tiers are
+    /// unavailable.
+    private func modelInfo(status: ModelStatus?, tier: ModelTier, name: String) -> some View {
+        let note: String
+        switch tier {
+        case .privateCloudCompute:
+            note =
                 "Each new design uses one request from your daily limit. Books in a series often reuse a design without a request."
-            case .backup:
-                "Private Cloud Compute isn't available, so your backup model designs. Each new design uses one request to this provider, billed to your API account. Books in a series often reuse a design without a request. \(Self.upgradeNote)"
-            case .onDevice:
-                "Private Cloud Compute isn't available, so each new design runs on this \(ThisDevice.name), with no daily limit. Books in a series often reuse a design. \(Self.upgradeNote)"
-            case .local:
-                "No model is available on this \(ThisDevice.name), so each new design comes from the cover's colors and lettering and the book's genres, with no model requests. \(Self.upgradeNote)"
-            }
+        case .backup:
+            #if NO_PCC
+                note =
+                    "\(name) designs each new spine. Each design is one request, billed to your API account. Books in a series often reuse a design without a request."
+            #else
+                note =
+                    "Private Cloud Compute isn't available, so your backup model designs. Each new design uses one request to this provider, billed to your API account. Books in a series often reuse a design without a request. When Private Cloud Compute becomes available, runs redesign the spines a weaker model made."
+            #endif
+        case .onDevice:
+            #if NO_PCC
+                note =
+                    "Apple's on-device model designs each new spine on this \(ThisDevice.name), at no cost and with no daily limit. Books in a series often reuse a design. A model with your own API key can give better results. \(Self.upgradeNote)"
+            #else
+                note =
+                    "Private Cloud Compute isn't available, so each new design runs on this \(ThisDevice.name), with no daily limit. Books in a series often reuse a design. \(Self.upgradeNote)"
+            #endif
+        case .local:
+            note =
+                "No model is available on this \(ThisDevice.name), so new spines use a default style from the cover's colors and lettering and the book's genres. \(Self.upgradeNote)"
+        }
         return ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 Text(note)
-                if let reason = status?.pccUnavailableReason {
-                    LabeledContent("Private Cloud Compute") { Text(reason) }
-                }
+                #if !NO_PCC
+                    if let reason = status?.pccUnavailableReason {
+                        LabeledContent("Private Cloud Compute") { Text(reason) }
+                    }
+                #endif
                 if let reason = status?.onDeviceUnavailableReason {
                     LabeledContent("Apple on-device model") { Text(reason) }
                 }
@@ -272,7 +301,7 @@ struct GenerationView: View {
     }
 
     private static let upgradeNote =
-        "Once a better model is available, runs redesign the spines a weaker model made."
+        "When a better model becomes available, such as one you add with an API key, runs redesign the spines a weaker model made."
 
     /// The best tier this build could use: Private Cloud Compute, or in `NO_PCC` builds the saved
     /// backup model or the on-device model. It reads no Keychain item, so it doesn't know whether

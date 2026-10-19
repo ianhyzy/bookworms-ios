@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// Chooses the backup model that designs spines when Private Cloud Compute isn't available: none,
-/// a preset provider with its own API key, or any OpenAI-compatible endpoint. Apple's Private
-/// Cloud Compute designs whenever it is available. Without it, the backup designs, then Apple's
-/// on-device model, then local defaults (`ModelTier`).
+/// Chooses the model that designs spines: Apple's on-device model, the default, or a preset
+/// provider or any OpenAI-compatible endpoint with the reader's own API key. Builds with Private
+/// Cloud Compute design with it whenever it is available. Otherwise the chosen provider designs,
+/// then Apple's on-device model, then local defaults (`ModelTier`).
 ///
 /// A field saves when it loses focus, on Return, and when the screen or window closes, so typing
 /// neither reads the Keychain nor rechecks the model for each character. Keys go straight to this
@@ -25,11 +25,11 @@ struct SpineDesignerSettings: View {
 
     var body: some View {
         Section {
-            Picker("Backup model", selection: $designer.provider) {
+            Picker("Model", selection: $designer.provider) {
                 ForEach(SpineDesigner.Provider.allCases) { Text($0.name).tag($0) }
             }
             if designer.provider != .apple {
-                TextField("Model", text: $designer.model, prompt: Text("Model name"))
+                TextField("Model name", text: $designer.model, prompt: Text("Model name"))
                     .plainEntry()
                     .focused($focus, equals: .model)
                     .onSubmit(commit)
@@ -64,7 +64,9 @@ struct SpineDesignerSettings: View {
                 }
             }
         } footer: {
-            Text(designer.provider == .apple ? Self.appleNote : Self.providerNote)
+            Text(
+                designer.provider == .apple
+                    ? Self.appleNote : Self.providerNote(designer.provider))
         }
         .onChange(of: designer.provider) { _, provider in
             designer.model = provider.defaultModel
@@ -86,21 +88,32 @@ struct SpineDesignerSettings: View {
         }
     }
 
+    /// The footer for Apple's on-device model.
     #if NO_PCC
         private static let appleNote =
-            "This test build leaves out Private Cloud Compute until Apple grants the entitlement. Without a backup model, Apple's on-device model designs spines on this \(ThisDevice.name), with no daily limit. \(localNote)"
-        private static let providerNote =
-            "This test build leaves out Private Cloud Compute, so this model designs spines, before Apple's on-device model. \(providerDetails)"
+            "Apple's on-device model designs spines on this \(ThisDevice.name) at no cost, and covers never leave it. For better results, choose a provider and add your own API key. \(localNote)"
     #else
         private static let appleNote =
-            "Private Cloud Compute designs spines within its daily limit. When it isn't available, Apple's on-device model designs on this \(ThisDevice.name), unless you choose a backup model. \(localNote)"
-        private static let providerNote =
-            "This model designs spines only when Private Cloud Compute isn't available, before Apple's on-device model. \(providerDetails)"
+            "Private Cloud Compute designs spines within its daily limit. When it isn't available, Apple's on-device model designs on this \(ThisDevice.name), unless you choose a provider. \(localNote)"
     #endif
     private static let localNote =
-        "With no model available, spines come from the cover's colors and lettering and the book's genres."
-    private static let providerDetails =
-        "If the provider rejects the key or model name, or the account has no credit, Apple's on-device model or local defaults design until you change these settings or start Generate now. The provider receives each cover, its title and author, and the colors and font families to choose from. Requests are billed to your API account. The key stays in this device's Keychain."
+        "When no model is available, spines use a default style from the cover's colors and lettering and the book's genres."
+
+    /// The footer for a third-party `provider`.
+    private static func providerNote(_ provider: SpineDesigner.Provider) -> String {
+        #if NO_PCC
+            #if os(macOS)
+                let press = "click"
+            #else
+                let press = "tap"
+            #endif
+            return
+                "\(provider.name) designs spines with your API key, which can give better results than Apple's on-device model. Each new design is one request, billed to your API account. The provider receives each cover, its title and author, and the colors and fonts to choose from. If it rejects the key or model name, or your account runs out of credit, Apple's on-device model designs until you change these settings or \(press) Generate now. The key stays in this \(ThisDevice.name)'s Keychain."
+        #else
+            return
+                "This model designs spines only when Private Cloud Compute isn't available, before Apple's on-device model. If the provider rejects the key or model name, or the account has no credit, Apple's on-device model or local defaults design until you change these settings or start Generate now. The provider receives each cover, its title and author, and the colors and font families to choose from. Requests are billed to your API account. The key stays in this device's Keychain."
+        #endif
+    }
 
     /// Saves a typed key in the Keychain, then the settings.
     private func saveKey() {

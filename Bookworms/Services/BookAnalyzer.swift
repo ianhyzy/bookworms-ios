@@ -39,14 +39,14 @@ enum ModelTier: Int, Codable, Comparable, Sendable {
         }
     }
 
-    /// The tier's name as the Spines tab shows it, naming `designer`'s provider for the backup
-    /// model.
+    /// The tier's name as the Spines tab's **Model** row shows it, naming `designer`'s provider
+    /// for the backup model, such as "Google Gemini with your API key".
     func name(backup designer: SpineDesigner) -> String {
         switch self {
         case .privateCloudCompute: "Private Cloud Compute"
-        case .backup: "\(designer.provider.name) backup model"
+        case .backup: "\(designer.provider.name) with your API key"
         case .onDevice: "Apple on-device model"
-        case .local: "Local defaults"
+        case .local: "Default styling"
         }
     }
 }
@@ -161,11 +161,11 @@ actor BookAnalyzer {
         switch tier {
         case .privateCloudCompute:
             #if NO_PCC
-                // Builds without the managed entitlement must never create the model.
+                // Builds without the managed entitlement must never create the model. The
+                // Spines tab never shows this reason, and names no model the build leaves out.
                 return ModelStatus(
                     tier: .privateCloudCompute, isAvailable: false,
-                    unavailableReason:
-                        "This test build leaves out Private Cloud Compute until Apple grants the entitlement.",
+                    unavailableReason: "This build doesn't include this model.",
                     coverReader: .designModel)
             #else
                 return pccStatus()
@@ -233,33 +233,37 @@ actor BookAnalyzer {
             coverReader: model.capabilities.contains(.vision) ? .onDevice : .measurementsOnly)
     }
 
-    private func pccStatus() -> ModelStatus {
-        let model = pccModel()
-        let usage = model.quotaUsage
-        let quota: ModelStatus.Quota =
-            switch usage.status {
-            case .limitReached: .limitReached
-            case .belowLimit(let below): below.isApproachingLimit ? .approachingLimit : .belowLimit
-            @unknown default: usage.isLimitReached ? .limitReached : .belowLimit
-            }
-        // Without image input, Private Cloud Compute would answer no question about the cover,
-        // so a lower tier designs and records its own tier.
-        let readsCovers = model.capabilities.contains(.vision)
-        let blind = "Private Cloud Compute can't read covers on this \(ThisDevice.name)."
-        let reason: String? =
-            switch model.availability {
-            case .available: readsCovers ? nil : blind
-            case .unavailable(.deviceNotEligible):
-                "This \(ThisDevice.name) does not support Private Cloud Compute."
-            case .unavailable(.systemNotReady):
-                "Private Cloud Compute is not ready. Check that Apple Intelligence is on."
-            case .unavailable: "Private Cloud Compute is unavailable."
-            }
-        return ModelStatus(
-            tier: .privateCloudCompute, isAvailable: model.isAvailable && readsCovers,
-            unavailableReason: reason, coverReader: .designModel, quota: quota,
-            quotaResetDate: usage.resetDate, limitIncreaseSuggestion: usage.limitIncreaseSuggestion)
-    }
+    #if !NO_PCC
+        private func pccStatus() -> ModelStatus {
+            let model = pccModel()
+            let usage = model.quotaUsage
+            let quota: ModelStatus.Quota =
+                switch usage.status {
+                case .limitReached: .limitReached
+                case .belowLimit(let below):
+                    below.isApproachingLimit ? .approachingLimit : .belowLimit
+                @unknown default: usage.isLimitReached ? .limitReached : .belowLimit
+                }
+            // Without image input, Private Cloud Compute would answer no question about the cover,
+            // so a lower tier designs and records its own tier.
+            let readsCovers = model.capabilities.contains(.vision)
+            let blind = "Private Cloud Compute can't read covers on this \(ThisDevice.name)."
+            let reason: String? =
+                switch model.availability {
+                case .available: readsCovers ? nil : blind
+                case .unavailable(.deviceNotEligible):
+                    "This \(ThisDevice.name) does not support Private Cloud Compute."
+                case .unavailable(.systemNotReady):
+                    "Private Cloud Compute is not ready. Check that Apple Intelligence is on."
+                case .unavailable: "Private Cloud Compute is unavailable."
+                }
+            return ModelStatus(
+                tier: .privateCloudCompute, isAvailable: model.isAvailable && readsCovers,
+                unavailableReason: reason, coverReader: .designModel, quota: quota,
+                quotaResetDate: usage.resetDate,
+                limitIncreaseSuggestion: usage.limitIncreaseSuggestion)
+        }
+    #endif
 
     /// Designs a spine for `book` from its cover with `model`, the run's tier, which records
     /// itself in the design's `provenance` (`ModelStatus.provenance`).

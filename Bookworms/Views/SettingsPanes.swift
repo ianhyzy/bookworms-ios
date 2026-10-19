@@ -2,7 +2,7 @@
     import SwiftUI
 
     /// A pane of the Mac's Settings window. The choice is saved, so the window reopens on the
-    /// last pane, and the Spines tab's **Backup Model…** opens its pane.
+    /// last pane, and the Spines tab's **Choose model…** opens **Design Model**.
     enum SettingsPane: String {
         case general, backupModel, hardcover
 
@@ -10,7 +10,7 @@
     }
 
     /// The Settings window (**Bookworms > Settings…**), in three panes: **General** (background
-    /// generation and launch at login), **Backup Model** (`SpineDesignerSettings`), and
+    /// generation and launch at login), **Design Model** (`SpineDesignerSettings`), and
     /// **Hardcover**, which shows the account itself (`HardcoverAccountForm`) rather than opening
     /// a sheet over Settings. The window keeps the system background, and SwiftUI titles it after
     /// the pane.
@@ -22,7 +22,7 @@
                 Tab("General", systemImage: "gearshape", value: .general) {
                     GeneralSettings()
                 }
-                Tab("Backup Model", image: "tab.spines", value: .backupModel) {
+                Tab("Design Model", image: "tab.spines", value: .backupModel) {
                     Form { SpineDesignerSettings() }
                         .formStyle(.grouped)
                         .frame(width: 520)
