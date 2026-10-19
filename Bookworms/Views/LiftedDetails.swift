@@ -175,7 +175,7 @@ struct LiftedDetailsOverlay: ViewModifier {
                         Button("Back", systemImage: "chevron.backward") { details.close(scene) }
                     }
                     ToolbarItem(placement: .primaryAction) {
-                        Button("Share", systemImage: "square.and.arrow.up") {
+                        MakeShareImageButton {
                             keep()
                             model.share(lift.book)
                         }
