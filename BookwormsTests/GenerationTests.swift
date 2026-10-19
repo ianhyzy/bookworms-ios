@@ -735,13 +735,15 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(local.coverReader, .measurementsOnly)
         XCTAssertEqual(local.pccUnavailableReason, "privateCloudCompute unavailable")
         XCTAssertEqual(local.onDeviceUnavailableReason, "onDevice unavailable")
-        XCTAssertEqual(local.designerName, "Local defaults")
+        XCTAssertEqual(local.designerName, "Default styling")
         XCTAssertNil(SpineWorker.modelStop(local, mode: .background))
         let watched = await BookAnalyzer().status(of: .local, designer: .appleOnly)
         XCTAssertTrue(watched.isAvailable, "Local defaults never stop a run")
         XCTAssertNil(SpineWorker.modelStop(watched, mode: .background))
 
-        XCTAssertNotNil(SpineDesigner.appleOnly.problem, "No backup model is never set up")
+        XCTAssertEqual(
+            SpineDesigner.appleOnly.problem, "Choose a provider.",
+            "The on-device choice names no provider")
     }
 
     func testDesignsRecordTheirTierAsAModelToken() {
@@ -770,18 +772,23 @@ final class GenerationTests: XCTestCase {
                 tier: .backup, isAvailable: true, unavailableReason: nil, coverReader: .designModel,
                 designer: anthropic
             )
-            .designerName, "Anthropic backup model")
+            .designerName, "Anthropic with your API key")
+        XCTAssertEqual(
+            ModelTier.backup.name(
+                backup: SpineDesigner(
+                    provider: .custom, model: "local", baseURL: "http://localhost:1234/v1")),
+            "Your OpenAI-compatible endpoint", "A custom endpoint may need no key")
         XCTAssertEqual(
             SpineWorker.fallbackMessage(
                 rejection: "Anthropic: invalid x-api-key",
                 next: ModelStatus(
                     tier: .onDevice, isAvailable: true, unavailableReason: nil,
                     coverReader: .onDevice)),
-            "Anthropic: invalid x-api-key. Until you change the backup model, Bookworms uses Apple's on-device model. Generate now tries the backup model again."
+            "Anthropic: invalid x-api-key. Until you change the model settings, Bookworms uses Apple's on-device model. Generate now tries your model again."
         )
         XCTAssertEqual(
             SpineWorker.fallbackMessage(rejection: "Unknown model.", next: .local),
-            "Unknown model. Until you change the backup model, Bookworms uses local defaults. Generate now tries the backup model again."
+            "Unknown model. Until you change the model settings, Bookworms uses default styling. Generate now tries your model again."
         )
     }
 

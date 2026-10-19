@@ -590,10 +590,10 @@ actor SpineWorker {
             case .privateCloudCompute: "Private Cloud Compute"
             case .backup: next.designerName
             case .onDevice: "Apple's on-device model"
-            case .local: "local defaults"
+            case .local: "default styling"
             }
         return
-            "\(sentence) Until you change the backup model, Bookworms uses \(tier). Generate now tries the backup model again."
+            "\(sentence) Until you change the model settings, Bookworms uses \(tier). Generate now tries your model again."
     }
 
     /// Returns the series look `book` draws: its look group's saved look, unless its link keeps

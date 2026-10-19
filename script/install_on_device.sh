@@ -4,9 +4,9 @@
 #
 # Until Apple assigns the managed Private Cloud Compute entitlement to the team, a provisioning
 # profile cannot include it. This build signs with config/NoPCC.entitlements and compiles with
-# NO_PCC, so the app never creates the Private Cloud Compute model: the backup model chosen with
-# Choose Backup Model in the Spines tab designs spines, else Apple's on-device model, else local
-# defaults, and everything else works against iCloud. A development-signed build uses the CloudKit Development environment.
+# NO_PCC, so the app never creates the Private Cloud Compute model: the provider chosen with
+# Choose model in the Spines tab designs spines, else Apple's on-device model, else default
+# styling, and everything else works against iCloud. A development-signed build uses the CloudKit Development environment.
 set -euo pipefail
 
 BUNDLE_ID="gay.ian.Bookworms.iOS"

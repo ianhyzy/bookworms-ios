@@ -699,6 +699,30 @@ final class SpineColorsTests: XCTestCase {
     }
 
     @MainActor
+    func testOnlyCoverlessBooksWithoutADesignUseTheDefaultStyle() async throws {
+        // The series books have no cover, but book 1's design gives book 2 a design too. Book 3
+        // stands alone without a cover or a design, and book 4 has a cover.
+        let covered = CloudBook(
+            id: 4, title: "Fictional Volume", author: "Ann Author",
+            coverURL: URL(string: "https://example.com/cover.jpg"), detailCoverURL: nil)
+        let books = [
+            seriesBook(1, position: 1), seriesBook(2, position: 2), seriesBook(3, series: nil),
+            covered,
+        ]
+        let (model, _) = try await previewModel(books: books, designs: [design(for: 1)])
+        XCTAssertNotNil(model.design(for: books[1]))
+        XCTAssertEqual(model.defaultStyledBookCount(), 1)
+
+        XCTAssertNil(GenerationView.coverlessNote(0))
+        XCTAssertEqual(
+            GenerationView.coverlessNote(1),
+            "1 book had no cover, so its cover and spine use a default style.")
+        XCTAssertEqual(
+            GenerationView.coverlessNote(3),
+            "3 books had no cover, so their covers and spines use a default style.")
+    }
+
+    @MainActor
     func testRecoloringASeriesBookRecolorsTheSeriesLook() async throws {
         let first = seriesBook(1, position: 1)
         let second = seriesBook(2, position: 2)

@@ -137,6 +137,14 @@ final class AppModel {
         lookDesigns[book.id] ?? allowedDesigns[seriesSources[book.id] ?? book.id]
     }
 
+    /// How many books have no cover, neither Hardcover's nor one the reader chose, and draw no
+    /// design, so they show the default cover and spine. A run never designs such a book
+    /// (`SpineWorker.reconcile(mode:redesigning:)`), but one in a series can draw the series'
+    /// design. It walks every book, so views count when `designRevision` changes, not in a body.
+    func defaultStyledBookCount() -> Int {
+        books.count { $0.coverCandidates.isEmpty && design(for: $0) == nil }
+    }
+
     /// The stored design that `book` draws when it draws no series look: its series source's, or
     /// its own.
     private func savedDesign(for book: CloudBook) -> SpineDesignV1? {
