@@ -55,14 +55,14 @@ final class HardcoverTests: XCTestCase {
             XCTAssertEqual(request.httpMethod, "POST")
             let body = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
             XCTAssertTrue(body.contains("client_id=ca996be3-0df1-4cbf-819a-e17644fbcf38"))
-            if request.url?.absoluteString == "https://hardcover.app/oauth2/device" {
+            if request.url?.absoluteString == "https://api.hardcover.app/oauth2/device" {
                 XCTAssertTrue(body.contains("scope=read:me:content%20read:library"))
                 return Self.respond(
                     200,
                     #"{"device_code":"pending","user_code":"TEST-0001","verification_uri":"https://hardcover.app/link","verification_uri_complete":"https://hardcover.app/link?code=TEST-0001","expires_in":600,"interval":5}"#,
                     to: request)
             }
-            XCTAssertEqual(request.url?.absoluteString, "https://hardcover.app/oauth2/token")
+            XCTAssertEqual(request.url?.absoluteString, "https://api.hardcover.app/oauth2/token")
             XCTAssertTrue(body.contains("grant_type=urn:ietf:params:oauth:grant-type:device_code"))
             let replies = [
                 "device_code=pending": (400, #"{"error":"authorization_pending"}"#),
@@ -332,7 +332,7 @@ final class HardcoverTests: XCTestCase {
         let account = HardcoverAccount(
             tokens: tokens,
             client: HardcoverClient { request in
-                guard request.url?.absoluteString == "https://hardcover.app/oauth2/token" else {
+                guard request.url?.absoluteString == "https://api.hardcover.app/oauth2/token" else {
                     XCTFail("Only the renewal is requested")
                     return Self.respond(500, "", to: request)
                 }
@@ -426,11 +426,14 @@ final class HardcoverTests: XCTestCase {
                 defaults: defaults, libraryURL: library)
         }
 
-        // A server failure keeps the login for the next try.
-        let unavailable = account(renewalStatus: 503, body: "")
-        await unavailable.sync()
-        XCTAssertEqual(unavailable.syncError, HardcoverError.http(503).errorDescription)
-        XCTAssertFalse(unavailable.needsReconnect)
+        // A server failure, or a refusal that isn't an OAuth error, keeps the login for the next
+        // try.
+        for (status, body) in [(503, ""), (403, #"{"error":"access_denied"}"#), (400, "<html>")] {
+            let unavailable = account(renewalStatus: status, body: body)
+            await unavailable.sync()
+            XCTAssertEqual(unavailable.syncError, HardcoverError.http(status).errorDescription)
+            XCTAssertFalse(unavailable.needsReconnect, "HTTP \(status)")
+        }
 
         // A spent, expired, or revoked refresh token needs a new sign-in.
         let revoked = account(renewalStatus: 400, body: #"{"error":"invalid_grant"}"#)
@@ -440,6 +443,33 @@ final class HardcoverTests: XCTestCase {
         XCTAssertEqual(revoked.syncError, HardcoverError.invalidToken.errorDescription)
         XCTAssertEqual(tokens.secret, login)
         XCTAssertEqual(tokens.saves, [])
+    }
+
+    func testOnlyAnOAuthErrorWithHTTP400Or401RejectsTheRefreshToken() async {
+        let cases: [(status: Int, body: String, expected: HardcoverError)] = [
+            (400, #"{"error":"invalid_grant"}"#, .invalidToken),
+            (401, #"{"error":"invalid_client","error_description":"Unknown"}"#, .invalidToken),
+            (400, "<html>Bad request</html>", .http(400)),
+            (401, "", .http(401)),
+            (400, #"{"error":400}"#, .http(400)),
+            (403, #"{"error":"access_denied"}"#, .http(403)),
+            (408, #"{"error":"timeout"}"#, .http(408)),
+            (429, #"{"error":"slow_down"}"#, .http(429)),
+            (503, #"{"error":"temporarily_unavailable"}"#, .http(503)),
+        ]
+        for (status, body, expected) in cases {
+            let client = HardcoverClient { request in
+                XCTAssertEqual(
+                    request.url?.absoluteString, "https://api.hardcover.app/oauth2/token")
+                return Self.respond(status, body, to: request)
+            }
+            do {
+                _ = try await client.renew(refreshToken: "fictional-refresh")
+                XCTFail("Expected \(expected) for HTTP \(status) \(body)")
+            } catch {
+                XCTAssertEqual(error as? HardcoverError, expected, "HTTP \(status) \(body)")
+            }
+        }
     }
 
     @MainActor

@@ -157,8 +157,7 @@ actor HardcoverClient {
 
     func requestDeviceAuthorization() async throws -> DeviceAuthorization {
         let (data, status) = try await postForm(
-            "https://hardcover.app/oauth2/device",
-            [("client_id", Self.clientID), ("scope", Self.scopes)])
+            Self.deviceEndpoint, [("client_id", Self.clientID), ("scope", Self.scopes)])
         guard status == 200 else { throw HardcoverError.http(status) }
         guard let authorization = try? JSONDecoder().decode(DeviceAuthorization.self, from: data)
         else { throw HardcoverError.rejected }
@@ -233,10 +232,13 @@ actor HardcoverClient {
     ///
     /// The request is never retried, because Hardcover revokes the whole login when a refresh
     /// token it already spent comes back, as a retry of a request that reached it would. The
-    /// new login keeps `refreshToken` only if Hardcover sends no new one. Throws
-    /// `HardcoverError.invalidToken` for any HTTP 4xx reply other than 408 or 429: Hardcover
-    /// answers 400 or 401 once the token expired, was revoked, or was spent, and a token
-    /// endpoint that refuses the request in another way can't renew the login either.
+    /// new login keeps `refreshToken` only if Hardcover sends no new one.
+    ///
+    /// Throws `HardcoverError.invalidToken` only for an HTTP 400 or 401 reply with an OAuth
+    /// `error`, such as `invalid_grant` once the token expired, was revoked, or was spent; the
+    /// Apple TV and Android apps apply the same rule. Any other reply, such as a rate limit, a
+    /// server error, another 4xx status, or a body that isn't an OAuth error, throws
+    /// `HardcoverError.http(_:)`, so the caller keeps the login.
     func renew(refreshToken: String) async throws -> HardcoverCredential {
         let (data, status) = try await postForm(
             Self.tokenEndpoint,
@@ -244,18 +246,16 @@ actor HardcoverClient {
                 ("grant_type", "refresh_token"), ("refresh_token", refreshToken),
                 ("client_id", Self.clientID),
             ])
-        switch status {
-        case 200:
-            guard
-                var credential = (try? JSONDecoder().decode(TokenReply.self, from: data))?
-                    .credential(receivedAt: .now)
-            else { throw HardcoverError.rejected }
+        let reply = try? JSONDecoder().decode(TokenReply.self, from: data)
+        if status == 200 {
+            guard var credential = reply?.credential(receivedAt: .now) else {
+                throw HardcoverError.rejected
+            }
             if credential.refreshToken == nil { credential.refreshToken = refreshToken }
             return credential
-        case 408, 429: throw HardcoverError.http(status)
-        case 400..<500: throw HardcoverError.invalidToken
-        default: throw HardcoverError.http(status)
         }
+        if [400, 401].contains(status), reply?.error != nil { throw HardcoverError.invalidToken }
+        throw HardcoverError.http(status)
     }
 
     /// Returns the token's account. Signing in checks it before saving the token.
@@ -501,7 +501,10 @@ actor HardcoverClient {
 
     // MARK: - Requests
 
-    private static let tokenEndpoint = "https://hardcover.app/oauth2/token"
+    // Hardcover's documented OAuth endpoints, which the Apple TV and Android apps use too. The
+    // token endpoint serves device-code polling and renewal.
+    private static let deviceEndpoint = "https://api.hardcover.app/oauth2/device"
+    private static let tokenEndpoint = "https://api.hardcover.app/oauth2/token"
 
     /// A reply from the token endpoint (RFC 6749, section 5): a login, or an error code.
     private struct TokenReply: Decodable {
