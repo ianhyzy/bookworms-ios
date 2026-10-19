@@ -280,7 +280,14 @@ actor HardcoverClient {
     /// (`coverURLs(edition:book:otherEditions:editionIsInLanguage:previous:)`) only when it
     /// belongs to the token's account; a copy of another account is ignored. A failed series
     /// request leaves `series` `nil` and still returns the library.
-    func library(token: String, previous: PhoneLibrary? = nil) async throws -> PhoneLibrary {
+    ///
+    /// With `progress`, the download first asks how many books the account has, one request more,
+    /// and reports the books downloaded so far, with that total when Hardcover gave it, before
+    /// the first page and after each page.
+    func library(
+        token: String, previous: PhoneLibrary? = nil,
+        progress: (@MainActor @Sendable (_ books: Int, _ total: Int?) -> Void)? = nil
+    ) async throws -> PhoneLibrary {
         let user = try await account(token: token)
         let accountID = String(user.id)
         let previousBooks = Dictionary(
@@ -291,14 +298,20 @@ actor HardcoverClient {
             let offset: Int
             let language: String
         }
+        var total: Int?
+        if let progress {
+            total = try? await bookCount(user: user.id, token: token)
+            await progress(0, total)
+        }
         var rows: [LibraryPage.Row] = []
         for offset in stride(from: 0, to: 10_000, by: 100) {
-            if offset > 0 { try await Task.sleep(for: Self.pagePause) }
+            if offset > 0 || progress != nil { try await Task.sleep(for: Self.pagePause) }
             let page: LibraryPage = try await query(
                 Self.libraryQuery,
                 variables: Variables(user: user.id, offset: offset, language: Self.coverLanguage),
                 token: token)
             rows += page.userBooks
+            await progress?(rows.count, total)
             if page.userBooks.count < 100 {
                 let books = Self.normalize(rows, previous: previousBooks)
                 return PhoneLibrary(
@@ -307,6 +320,24 @@ actor HardcoverClient {
             }
         }
         throw HardcoverError.incomplete
+    }
+
+    /// The number of books on the account's shelves, which the library download pages through.
+    private func bookCount(user: Int, token: String) async throws -> Int? {
+        struct Reply: Decodable {
+            struct Books: Decodable {
+                struct Aggregate: Decodable { let count: Int }
+                let aggregate: Aggregate?
+            }
+            let books: Books
+            enum CodingKeys: String, CodingKey { case books = "user_books_aggregate" }
+        }
+        // The count only adds a total to the progress, so it gets one short try rather than
+        // holding up the first page with retries.
+        let reply: Reply = try await query(
+            Self.libraryCountQuery, variables: ["user": user], token: token, retries: 0,
+            timeout: 10)
+        return reply.books.aggregate?.count
     }
 
     /// Returns the names and main books of the series `ids`, 50 series per request, each request
@@ -549,20 +580,23 @@ actor HardcoverClient {
         return (data, http.statusCode)
     }
 
+    /// Sends a GraphQL query and decodes its data. `retries` and `timeout` apply to each attempt
+    /// (`send(_:retries:)`).
     private func query<Result: Decodable>(
-        _ document: String, variables: some Encodable, token: String
+        _ document: String, variables: some Encodable, token: String, retries: Int = 2,
+        timeout: TimeInterval = 30
     ) async throws -> Result {
         guard let token = Self.validToken(token) else { throw HardcoverError.invalidToken }
         var request = URLRequest(url: URL(string: "https://api.hardcover.app/v1/graphql")!)
         request.httpMethod = "POST"
-        request.timeoutInterval = 30
+        request.timeoutInterval = timeout
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
         request.httpBody = try JSONEncoder()
             .encode(
                 GraphQLRequest(query: document, variables: variables))
-        let (data, http) = try await send(request)
+        let (data, http) = try await send(request, retries: retries)
         switch http.statusCode {
         case 200: break
         case 401: throw HardcoverError.invalidToken
@@ -587,14 +621,16 @@ actor HardcoverClient {
         return result
     }
 
-    /// Sends a GraphQL request and returns Hardcover's reply, retrying up to twice when a failure
-    /// may pass.
+    /// Sends a GraphQL request and returns Hardcover's reply, retrying up to `retries` times
+    /// (twice by default) when a failure may pass.
     ///
     /// Server errors, timeouts, and dropped connections retry after about 2 and then 4 seconds,
     /// plus up to a second of jitter. A rate limit retries once its `Retry-After` passes if that
     /// is at most 30 seconds away; a longer or missing `Retry-After` returns the reply at once.
     /// Cancellation ends a wait with `CancellationError` and is never retried.
-    private func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+    private func send(_ request: URLRequest, retries maximum: Int = 2) async throws -> (
+        Data, HTTPURLResponse
+    ) {
         var retries = 0
         while true {
             let backoff = Double(2 << retries) + .random(in: 0...1)
@@ -604,16 +640,16 @@ actor HardcoverClient {
                 guard let http = response as? HTTPURLResponse else { throw HardcoverError.rejected }
                 let retryAfter = http.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init)
                 switch http.statusCode {
-                case 500...599 where retries < 2:
+                case 500...599 where retries < maximum:
                     wait = backoff
-                case 429 where retries < 2:
+                case 429 where retries < maximum:
                     guard let retryAfter, retryAfter <= 30 else { return (data, http) }
                     wait = max(retryAfter, 0)
                 default:
                     return (data, http)
                 }
             } catch let error as URLError
-                where retries < 2
+                where retries < maximum
                 && [.timedOut, .networkConnectionLost, .cannotConnectToHost, .badServerResponse]
                     .contains(error.code)
             {
@@ -658,6 +694,11 @@ actor HardcoverClient {
 
     // MARK: - Library normalization
 
+    private static let libraryCountQuery = """
+        query PhoneLibraryCount($user: Int!) {
+          user_books_aggregate(where: {user_id: {_eq: $user}}) { aggregate { count } }
+        }
+        """
     // Ported from the Apple TV app's library query, plus the reader's review. `review` is the
     // field the Apple TV's social client reads with the same client and scopes; Hardcover's
     // documentation also lists `review_raw`, which no Bookworms client has used yet.

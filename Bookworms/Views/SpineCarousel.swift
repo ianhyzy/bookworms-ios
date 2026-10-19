@@ -1408,7 +1408,7 @@ extension CloudBook {
 /// The proportions of the bookcase that Shelf draws in a scroll view `height` points tall: the
 /// front edge of the shelf above, the back panel, and the board the books stand on, whose top
 /// shows a little, as seen from just above it.
-private struct Bookcase {
+struct Bookcase {
     static let topEdge: CGFloat = 14
     static let surface: CGFloat = 12
     static let lip: CGFloat = 18
@@ -1457,7 +1457,7 @@ private struct Bookcase {
 /// only the bays on screen. Every bay is a whole tile, so the stack places the bays it has not
 /// built exactly, and the right side panel meets the last bay; the last bay is cut to the
 /// shelf's length.
-private struct BookcaseWood: View {
+struct BookcaseWood: View {
     let bookcase: Bookcase
     let start: CGFloat
     let length: CGFloat
@@ -1670,7 +1670,7 @@ private struct WoodGrain: View {
 }
 
 /// The soft shadow where a book of `width` points stands on the board.
-private struct ContactShadow: View {
+struct ContactShadow: View {
     let width: CGFloat
 
     var body: some View {

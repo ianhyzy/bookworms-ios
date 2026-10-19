@@ -178,7 +178,7 @@ struct LiftedDetailsOverlay: ViewModifier {
                             .keyboardShortcut(.cancelAction)
                     }
                     ToolbarItem(placement: .primaryAction) {
-                        Button("Share", systemImage: "square.and.arrow.up") {
+                        MakeShareImageButton {
                             keep()
                             model.share(lift.book)
                         }

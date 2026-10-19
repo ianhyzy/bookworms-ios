@@ -668,6 +668,53 @@ final class HardcoverTests: XCTestCase {
             ])
     }
 
+    /// A first download reports the books so far before the first page and after each, with
+    /// the account's total, or without one when the count request fails.
+    @MainActor
+    func testFirstDownloadReportsBooksSoFarAndTheTotal() async throws {
+        func page(_ ids: Range<Int>) -> String {
+            let rows = ids.map { #"{"book":{"id":\#($0),"title":"Book \#($0)"}}"# }
+            return #"{"data":{"user_books":[\#(rows.joined(separator: ","))]}}"#
+        }
+        let firstPage = page(1..<101)
+        let lastPage = page(101..<151)
+        struct Report: Equatable {
+            let books: Int
+            let total: Int?
+        }
+        @MainActor final class Reports { var list: [Report] = [] }
+
+        for countFails in [false, true] {
+            let client = HardcoverClient { request in
+                let body = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
+                if body.contains("query Account") { return Self.respond(200, Self.me, to: request) }
+                if body.contains("query PhoneLibraryCount") {
+                    return Self.respond(
+                        200,
+                        countFails
+                            ? #"{"errors":[{"message":"fictional failure"}]}"#
+                            : #"{"data":{"user_books_aggregate":{"aggregate":{"count":150}}}}"#,
+                        to: request)
+                }
+                let page = body.contains(#""offset":100"#) ? lastPage : firstPage
+                return Self.respond(200, page, to: request)
+            }
+            let reports = Reports()
+            let library = try await client.library(token: "fictional-token") { books, total in
+                reports.list.append(Report(books: books, total: total))
+            }
+            XCTAssertEqual(library.books.count, 150)
+            let total = countFails ? nil : 150
+            XCTAssertEqual(
+                reports.list,
+                [
+                    Report(books: 0, total: total), Report(books: 100, total: total),
+                    Report(books: 150, total: total),
+                ],
+                "count fails: \(countFails)")
+        }
+    }
+
     func testReviewTextBecomesPlainText() {
         let plain = HardcoverClient.plainText(from:)
         XCTAssertNil(plain(nil))

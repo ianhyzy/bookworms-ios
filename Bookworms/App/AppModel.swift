@@ -30,6 +30,9 @@ final class AppModel {
     /// The library's designs by book ID, in allowed upright faces (`SpineDesignV1.withAllowedFont`),
     /// so drawing reads them without remapping. Recomputed when the library's designs change.
     private var allowedDesigns: [Int: SpineDesignV1] = [:]
+    /// Counts changes to the library and to the designs its books draw, so a view that prepares
+    /// data from every book's design watches one number instead of comparing the designs.
+    private(set) var designRevision = 0
     private(set) var isLoading = false
     /// Why the last load from iCloud or the preview folder failed; a successful load clears it.
     /// A failed Hardcover download is `account.syncError`.
@@ -524,6 +527,7 @@ final class AppModel {
         persistTask?.cancel()
         persistTask = nil
         library = nil
+        designRevision += 1
         showsLoadedLibrary = false
         lookGroups = [:]
         allowedDesigns = [:]
@@ -537,6 +541,7 @@ final class AppModel {
         let previousBooks = library?.books
         let previousDesigns = library?.designs
         library = snapshot
+        designRevision += 1
         if previousBooks != snapshot.books {
             lookGroups = SeriesDesigns.rankedLookGroups(snapshot.books)
         }
@@ -592,8 +597,10 @@ final class AppModel {
                     ranked: unlooked, designs: library.designs, canLetter: canLetter(_:with:))
             ) { $1 }
         }
+        let changed = sources != seriesSources || drawn != lookDesigns
         if sources != seriesSources { seriesSources = sources }
         if drawn != lookDesigns { lookDesigns = drawn }
+        if changed { designRevision += 1 }
     }
 
     /// Returns whether the face that draws `design` has glyphs for `book`'s lettering, or `true`

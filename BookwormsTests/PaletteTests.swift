@@ -90,6 +90,15 @@ final class PaletteTests: XCTestCase {
         XCTAssertEqual(try color("ShelfWallTop", .dark), try color("ShelfWallTop", .light))
     }
 
+    /// Prominent buttons under the lamp's tint, in Library, Desk, and the cover picker, label in
+    /// dark ink, which keeps 7:1 on the lamp's light, also under Increase Contrast.
+    func testLampHoldsDarkInkLabels() throws {
+        for look in Look.allCases {
+            let contrast = try color("ShelfLamp", look).contrast(with: Stationery.inkValue)
+            XCTAssertGreaterThanOrEqual(contrast, 7, "\(look): \(contrast)")
+        }
+    }
+
     func testWallLightMatchesItsColorSet() throws {
         XCTAssertEqual(try color("ShelfWallTop", .light), ShelfPalette.wallLight)
     }

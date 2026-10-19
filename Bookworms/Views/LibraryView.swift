@@ -32,6 +32,9 @@ struct LibraryView: View {
     #endif
     /// The book whose **Change Cover** a context menu or the **Library** menu chose.
     @State private var coverBook: CloudBook?
+    /// Set when the cover picker asks to sign in; the account sheet opens once the picker closes.
+    @State private var signsInAfterCover = false
+    @Environment(\.undoManager) private var undoManager
     /// How far the status bar and the Dynamic Island reach down from the screen's top edge.
     @State private var statusBar: CGFloat = 0
     @Namespace private var namespace
@@ -75,11 +78,26 @@ struct LibraryView: View {
             .toolbarBackgroundVisibility(.visible, for: .tabBar)
         #endif
         .tint(ShelfPalette.lamp)
-        .sheet(item: $coverBook) { book in
+        .sheet(
+            item: $coverBook,
+            onDismiss: {
+                if signsInAfterCover {
+                    signsInAfterCover = false
+                    showsAccount = true
+                }
+            }
+        ) { book in
             // As the details' **Change cover** shows it: over the room, and for the book whose
             // cover sets the spine of a series that shares a design.
-            CoverPickerView(book: model.designSource(for: book)) {}
-                .preferredColorScheme(.dark)
+            CoverPickerView(
+                book: model.designSource(for: book), scope: .init(of: book, in: model),
+                undoManager: undoManager
+            ) {
+            } signIn: {
+                signsInAfterCover = true
+                coverBook = nil
+            }
+            .preferredColorScheme(.dark)
         }
         // What the menu bar's **Library** and **View** commands act on (`LibraryCommands`).
         .focusedSceneValue(
@@ -394,7 +412,7 @@ private struct LibraryBar: ViewModifier {
                             .keyboardShortcut(.cancelAction)
                     }
                     ToolbarItem(placement: .primaryAction) {
-                        Button("Share", systemImage: "square.and.arrow.up") {
+                        MakeShareImageButton {
                             pullOut.keepsForShare = true
                             model.share(book)
                         }
