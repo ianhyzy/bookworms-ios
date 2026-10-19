@@ -100,28 +100,27 @@ struct SpineView: View {
         let author = Self.shortAuthor(book.author)
         // Thick spines have the room the title's second line takes.
         let twoLines = thickness >= 64
-        return HStack(spacing: thickness * 0.3) {
+        // The title takes the width its name needs first. The author takes what is left, from
+        // the 24% share it always had up to 40% of the length, and never more than its name
+        // needs. A name too long for its width wraps onto two lines on a thick spine, then
+        // falls back to the surname, and shrinks only as a last resort. The author's size stops
+        // growing with thickness at a share of the length, so a thick spine fits the same name a
+        // thinner one does, and stays below the title's.
+        return SpineLettering(
+            spacing: thickness * 0.3, authorShare: length * 0.24, authorCap: length * 0.4
+        ) {
             BookText(look.text(book.spineTitle), of: book, on: look)
                 .font(look.font(size: titleSize))
                 .lineLimit(twoLines ? 2 : 1)
                 .minimumScaleFactor(0.3)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            // The author takes the width its name needs, up to 40% of the length, before the
-            // title takes the rest. A name too long for that wraps onto two lines on a thick
-            // spine, then falls back to the surname, and shrinks only as a last resort. The
-            // size stops growing with thickness at a share of the length, so a thick spine
-            // fits the same name a thinner one does.
-            WidthCap(cap: length * 0.4) {
-                ViewThatFits(in: .horizontal) {
-                    Text(author).lineLimit(1)
-                    if twoLines, let split = Self.twoLines(author) { Text(split).lineLimit(2) }
-                    if let surname = Self.surname(author) { Text(surname).lineLimit(1) }
-                    Text(author).lineLimit(1).minimumScaleFactor(0.5)
-                }
+            ViewThatFits(in: .horizontal) {
+                Text(author).lineLimit(1)
+                if twoLines, let split = Self.twoLines(author) { Text(split).lineLimit(2) }
+                if let surname = Self.surname(author) { Text(surname).lineLimit(1) }
+                Text(author).lineLimit(1).minimumScaleFactor(0.5)
             }
             .font(look.font(size: min(length * 0.04, max(7, titleSize * 0.55))))
             .multilineTextAlignment(.trailing)
-            .layoutPriority(1)
         }
         .foregroundStyle(look.foreground.color)
         .padding(.horizontal, inset)
@@ -193,25 +192,56 @@ struct SpineView: View {
     }
 }
 
-/// Offers its one subview at most `cap` points of width and takes the width the subview
-/// chooses, at the trailing end of the space it is given. A `frame(maxWidth:)` would take the
-/// whole `cap` even for a short name, which the title beside it needs.
-private struct WidthCap: Layout {
-    let cap: CGFloat
+/// Lays out a spine's title and author on one row, the title at the leading end and the author
+/// at the trailing end.
+///
+/// The title gets the width its one-line name needs first. The author gets the rest, at least
+/// `authorShare` and at most `authorCap`, but no more than it needs, and the title takes back
+/// what the author leaves. A long title therefore keeps the width it had beside a fixed author
+/// share, while a short title lends its spare cloth to a long name.
+private struct SpineLettering: Layout {
+    let spacing: CGFloat
+    let authorShare: CGFloat
+    let authorCap: CGFloat
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = min(proposal.width ?? cap, cap)
-        return subviews.first?.sizeThatFits(ProposedViewSize(width: width, height: proposal.height))
-            ?? .zero
+        let (title, author) = widths(proposal, subviews)
+        let height = max(
+            subviews[0].sizeThatFits(ProposedViewSize(width: title, height: proposal.height))
+                .height,
+            subviews[1].sizeThatFits(ProposedViewSize(width: author, height: proposal.height))
+                .height)
+        return CGSize(width: proposal.width ?? title + spacing + author, height: height)
     }
 
     func placeSubviews(
         in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
     ) {
-        subviews.first?
+        let (title, author) = widths(ProposedViewSize(bounds.size), subviews)
+        subviews[0]
+            .place(
+                at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading,
+                proposal: ProposedViewSize(width: title, height: bounds.height))
+        subviews[1]
             .place(
                 at: CGPoint(x: bounds.maxX, y: bounds.midY), anchor: .trailing,
-                proposal: ProposedViewSize(bounds.size))
+                proposal: ProposedViewSize(width: author, height: bounds.height))
+    }
+
+    /// The title's and the author's widths in a row `proposal.width` wide.
+    private func widths(_ proposal: ProposedViewSize, _ subviews: Subviews) -> (CGFloat, CGFloat) {
+        let title = subviews[0]
+        let author = subviews[1]
+        let titleNeeds = title.sizeThatFits(.unspecified).width
+        let authorNeeds = author.sizeThatFits(ProposedViewSize(width: authorCap, height: nil)).width
+        guard let width = proposal.width else { return (titleNeeds, authorNeeds) }
+        let free = max(0, width - spacing)
+        let offered = min(authorNeeds, max(min(authorShare, free), free - titleNeeds))
+        // The name's shorter forms can need less than the width offered; the title keeps it.
+        let used = min(
+            offered,
+            author.sizeThatFits(ProposedViewSize(width: offered, height: proposal.height)).width)
+        return (free - used, used)
     }
 }
 
