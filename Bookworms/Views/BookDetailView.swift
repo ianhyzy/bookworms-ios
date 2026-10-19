@@ -1129,7 +1129,7 @@ private struct GenresCard: View {
 /// the last change or when the card leaves (`AppModel.recolor(_:to:)`), so dragging in the
 /// picker neither redraws 3D textures nor writes to iCloud for each frame. Colors whose text and
 /// background contrast less than 4.5:1 show only here, with a note, and are never saved. Each
-/// save registers its undo.
+/// save registers its undo as the library shows the new colors.
 ///
 /// On the iPhone, the picker's sheet covers the lower half of the screen. While it shows, the
 /// card adds room below itself and scrolls its top to the top of the details, so the spine, the
@@ -1160,7 +1160,9 @@ private struct SpineDesignCard: View {
 
     private static let cardID = "spine-design-card"
 
-    private var saved: SpineColors {
+    private var saved: SpineColors { Self.colors(of: look) }
+
+    private static func colors(of look: SpineLook) -> SpineColors {
         SpineColors(background: look.background, foreground: look.foreground, accent: look.accent)
     }
 
@@ -1229,23 +1231,13 @@ private struct SpineDesignCard: View {
     private func saveAfterPause() async {
         guard let draft else { return }
         try? await Task.sleep(for: .seconds(1))
-        if !Task.isCancelled { await save(draft) }
+        if !Task.isCancelled { save(draft) }
     }
 
-    /// Saves a readable draft as the card leaves. The card cannot report a failure once it is
-    /// gone; the colors stay on screen until the next reload.
+    /// Saves a draft as the card leaves. The card cannot report a failure once it is gone; the
+    /// colors stay on screen until the next reload.
     private func saveOnLeaving() {
-        guard let draft, draft.isReadable else { return }
-        let before = saved
-        Task { [model, book, undoManager] in
-            guard (try? await model.recolor(book, to: draft)) != nil else { return }
-            undoManager?
-                .registerStyleChange("Change Color") {
-                    try await model.recolor(book, to: before)
-                } redo: {
-                    try await model.recolor(book, to: draft)
-                }
-        }
+        if let draft { save(draft) }
     }
 
     private func card(shown: SpineColors) -> some View {
@@ -1302,7 +1294,7 @@ private struct SpineDesignCard: View {
                 if let generated, shown != generated {
                     Button("Reset colors", systemImage: "arrow.uturn.backward") {
                         draft = generated
-                        Task { await save(generated, action: "Reset Colors") }
+                        save(generated, action: "Reset Colors")
                     }
                     .buttonStyle(.bordered)
                 }
@@ -1345,25 +1337,39 @@ private struct SpineDesignCard: View {
         Label(text, systemImage: systemImage).font(.footnote).foregroundStyle(cardNote)
     }
 
-    /// Shows and saves readable `colors`, registers the undo named `action`, then clears the
-    /// draft unless the reader has picked other colors since.
-    private func save(_ colors: SpineColors, action: String = "Change Color") async {
-        guard colors.isReadable else { return }
-        let before = saved
-        do {
-            try await model.recolor(book, to: colors)
+    /// Shows and saves readable `colors`, then clears the draft unless the reader has picked
+    /// other colors since.
+    ///
+    /// The library shows the colors at once (`AppModel.recolor(_:to:)`), so the undo named
+    /// `action` registers then, with the colors shown before, rather than when iCloud's save
+    /// returns. The save runs in a task of its own, so a later pick or the card's leaving never
+    /// cancels it. Colors the library already shows save again only after a failed save, and
+    /// register no second undo.
+    private func save(_ colors: SpineColors, action: String = "Change Color") {
+        let before = Self.colors(of: model.look(for: book))
+        guard colors.isReadable, colors != before || saveError != nil else { return }
+        if colors != before {
             undoManager?
                 .registerStyleChange(action) { [model, book] in
                     try await model.recolor(book, to: before)
                 } redo: { [model, book] in
                     try await model.recolor(book, to: colors)
                 }
-            saveError = nil
-            if draft == colors { draft = nil }
-        } catch is CancellationError {
-            // A newer draft replaced these colors.
-        } catch {
-            saveError = error.localizedDescription
+        }
+        Task.immediate {
+            do {
+                try await model.recolor(book, to: colors)
+                saveError = nil
+                if draft == colors { draft = nil }
+            } catch {
+                saveError = error.localizedDescription
+                // A save that failed before the library showed the colors, or that reloaded the
+                // library for another device's design, leaves the style undo history naming
+                // colors the library no longer shows.
+                if Self.colors(of: model.look(for: book)) != colors {
+                    undoManager?.removeAllActions(withTarget: AppModel.shared)
+                }
+            }
         }
     }
 
@@ -1755,10 +1761,10 @@ struct MakeShareImageButton: View {
 }
 
 extension UndoManager {
-    /// Registers `revert` as the undo of a style change just saved, named `name`, such as
-    /// "Change Color", with `redo` as its redo, so **Edit > Undo** and **Redo**, or shaking the
-    /// iPhone, alternate between them. Each runs in a task of its own, and a failure shows a
-    /// toast.
+    /// Registers `revert` as the undo of a style change, named `name`, such as "Change Color",
+    /// with `redo` as its redo, so **Edit > Undo** and **Redo**, or shaking the iPhone, alternate
+    /// between them. Each runs in a task of its own, and a failure shows a toast. Every style
+    /// change targets `AppModel.shared`, so `removeAllActions(withTarget:)` with it clears them.
     func registerStyleChange(
         _ name: String, revert: @escaping @MainActor () async throws -> Void,
         redo: @escaping @MainActor () async throws -> Void
