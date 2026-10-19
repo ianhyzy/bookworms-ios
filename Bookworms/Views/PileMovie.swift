@@ -209,7 +209,7 @@ enum ImpactMix {
 @MainActor
 final class PileMovieWriter {
     /// How long the frames may take to finish, including any held last frame
-    /// (`hold(_:for:before:)`), and the movie to be written from them.
+    /// (`repeatFrame(_:for:before:)`), and the movie to be written from them.
     static let finishTimeout = Duration.seconds(30)
 
     /// The MP4 that `finish(hits:livePhoto:before:)` writes.
@@ -356,7 +356,7 @@ final class PileMovieWriter {
     ///
     /// - Throws: `PileSnapshotError` when the writer fails or does not take a frame by
     ///   `deadline`.
-    func hold(
+    func repeatFrame(
         _ picture: CVReadOnlyPixelBuffer, for seconds: Double,
         before deadline: ContinuousClock.Instant
     ) async throws {

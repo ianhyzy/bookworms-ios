@@ -653,7 +653,7 @@ final class DominoRecorder {
                 async let written: Void = PileSnapshotRenderer.writeStill(
                     poster, identifier: nil, to: still)
                 let deadline = ContinuousClock.now + PileMovieWriter.finishTimeout
-                try await run.writer.hold(
+                try await run.writer.repeatFrame(
                     last, for: DominoMovieTiming.lastFrameHold, before: deadline)
                 try await run.writer.finish(hits: hits, before: deadline)
                 try await written

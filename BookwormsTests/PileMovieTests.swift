@@ -165,7 +165,7 @@ final class PileMovieTests: XCTestCase {
         let picture = CVReadOnlyPixelBuffer(try writer.framePool().makeMutablePixelBuffer())
         let deadline = ContinuousClock.now + PileMovieWriter.finishTimeout
         for frame in 0..<3 { try await writer.append(picture, at: frame, before: deadline) }
-        try await writer.hold(picture, for: 1, before: deadline)
+        try await writer.repeatFrame(picture, for: 1, before: deadline)
         XCTAssertEqual(writer.frameCount, 33)
         try await writer.finish(hits: [], before: deadline)
 
