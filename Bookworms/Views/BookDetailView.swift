@@ -40,8 +40,15 @@ struct BookDetailView: View {
     /// takes milliseconds, so it happens off the main actor when the description changes.
     @State private var about: String?
     /// Whether the details are wide enough to stand the book beside the text, on the Mac. It
-    /// changes only when the width crosses `twoColumnWidth`.
-    @State private var isWide = false
+    /// changes only when the width crosses `twoColumnWidth`. The Mac's default window is wide
+    /// enough, so its details start wide. Crossing the width rebuilds the details' views: the
+    /// scroll position resets, an expanded description shrinks again, the book's drift and pose
+    /// restart, and a picked color saves.
+    #if os(macOS)
+        @State private var isWide = true
+    #else
+        @State private var isWide = false
+    #endif
     #if DEBUG
         /// Where `-BookwormsDetailScroll` scrolls the details.
         @State private var debugScroll = ScrollPosition()
@@ -49,7 +56,7 @@ struct BookDetailView: View {
 
     /// The narrowest details that put the book in a column of its own: its stage and a text
     /// column of about 440 points.
-    private static let twoColumnWidth: CGFloat = 820
+    nonisolated private static let twoColumnWidth: CGFloat = 820
 
     /// A sheet the details show. The account sheet replaces the cover picker, rather than
     /// opening over it, when the picker needs a sign-in.
