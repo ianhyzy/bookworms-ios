@@ -694,8 +694,10 @@ struct ShareStudioView: View {
                             if isClosed { focusesPreview = true }
                         }
                     #else
-                        // The representation adds the credit only once the image is dropped.
-                        .draggable(image)
+                        // The representation adds the credit only once the image is dropped. A
+                        // shown image older than the settings, such as one with the profile link
+                        // just turned off, doesn't drag out.
+                        .modifier(PreviewDrag(image: isPending ? nil : image))
                     #endif
                     .accessibilityLabel("\(image.name) preview")
                     .accessibilityFocused($focusesPreview)
@@ -729,7 +731,7 @@ struct ShareStudioView: View {
         #if os(macOS)
             // Outside the print's clip, which would cut off the focus ring.
             .focusable(image != nil)
-            .copyable(image.map { [$0] } ?? [])
+            .copyable(isPending ? [] : image.map { [$0] } ?? [])
             .onKeyPress(.space) {
                 guard image != nil else { return .ignored }
                 Task { await quickLook() }
@@ -1712,6 +1714,17 @@ private struct TopFivePinPicker: View {
                 }
                 return book
             }
+        }
+    }
+#endif
+
+#if os(macOS)
+    /// Lets the preview drag out `image` as a PNG file, and nothing while it's `nil`.
+    private struct PreviewDrag: ViewModifier {
+        let image: ShareImage?
+
+        func body(content: Content) -> some View {
+            if let image { content.draggable(image) } else { content }
         }
     }
 #endif
