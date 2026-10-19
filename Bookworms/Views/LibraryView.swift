@@ -407,8 +407,8 @@ private struct LibraryBar: ViewModifier {
     }
 }
 
-/// On the iPhone, the library's status, such as "Last 12 months · 39 books" over "Synced Oct 17,
-/// 2:41 PM", centered under the caption, between **View as** at the leading end and **Find a book**
+/// On the iPhone, the library's status, such as "Last 12 months · 39 books" over "Synced Oct 17
+/// at 2:41 PM", centered under the caption, between **View as** at the leading end and **Find a book**
 /// and **View options** in a glass capsule at the trailing end, as Mail shows a mailbox's status
 /// beside its filter button. A failed sync shows **Couldn't sync · Retry**, which syncs again.
 /// VoiceOver reads the status as the screen's heading, named "Library".
@@ -539,7 +539,7 @@ private struct ShelfModePicker: View {
     }
 }
 
-/// The library's sync status, such as "Synced Oct 17, 2:41 PM", "Syncing…", or "Couldn't
+/// The library's sync status, such as "Synced Oct 17 at 2:41 PM", "Syncing…", or "Couldn't
 /// sync", for the iPhone's footer and the Mac's subtitle. Read in the views that show it, so a
 /// sync updates only them.
 ///
@@ -559,7 +559,7 @@ struct LibrarySync {
         return "Synced " + Self.time(of: synced)
     }
 
-    /// The day and time, such as "Oct 17, 2:41 PM", for a time this year, and otherwise the
+    /// The day and time, such as "Oct 17 at 2:41 PM", for a time this year, and otherwise the
     /// date, such as "Oct 17, 2025".
     nonisolated static func time(
         of date: Date, now: Date = .now, calendar: Calendar = .current
