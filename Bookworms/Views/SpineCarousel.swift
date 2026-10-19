@@ -10,6 +10,7 @@ enum ShelfMode: String, CaseIterable, Identifiable {
 
     var id: Self { self }
     var title: String { self == .stack ? "Stack" : "Shelf" }
+    var symbol: String { self == .stack ? "square.stack.3d.up" : "books.vertical" }
 }
 
 /// How **Stack** draws its books. The raw values are what `BookwormsStackStyle` saves.

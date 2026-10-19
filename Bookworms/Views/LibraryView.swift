@@ -23,6 +23,9 @@ struct LibraryView: View {
     /// The book that Stack or Shelf pulled out to show its details over the shelf.
     @State private var pullOut = ShelfPullOut()
     @State private var showsAccount = false
+    /// Set to find a book: the iPhone opens its finder, and the Mac focuses the toolbar's search
+    /// field (`LibrarySearch`).
+    @State private var findsBook = false
     /// How far the status bar and the Dynamic Island reach down from the screen's top edge.
     @State private var statusBar: CGFloat = 0
     @Namespace private var namespace
@@ -35,7 +38,9 @@ struct LibraryView: View {
             content(read: read, books: books, options: options)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background { WalnutWall().ignoresSafeArea() }
-                .modifier(LibraryBar(pullOut: pullOut, options: options))
+                .modifier(
+                    LibraryBar(pullOut: pullOut, options: options, showsAccount: $showsAccount)
+                )
                 .navigationDestination(for: Int.self) { id in
                     PushedBookDetail(id: id, tab: .library)
                         #if os(iOS)
@@ -100,10 +105,16 @@ struct LibraryView: View {
                     carousel(books)
                 }
                 #if os(iOS)
-                    LibraryFooter(options: options, pullOut: pullOut)
+                    LibraryFooter(
+                        options: options, pullOut: pullOut, findsBook: $findsBook,
+                        showsAccount: $showsAccount)
                 #endif
             }
             .modifier(ShelfPullOutStage(pullOut: pullOut))
+            .modifier(
+                LibrarySearch(
+                    books: books, centeredID: $centeredID, findsBook: $findsBook,
+                    pullOut: pullOut, open: open))
         } else if model.library == nil {
             NoLibraryView(showsAccount: $showsAccount)
         } else {
@@ -116,7 +127,7 @@ struct LibraryView: View {
         // Scrolls so that at accessibility sizes the actions stay above the footer.
         ScrollView {
             ContentUnavailableView {
-                Label("No books in \(time.title)", systemImage: "calendar")
+                Label(noBooksTitle, systemImage: "calendar")
             } description: {
                 Text("Books you finish in this time appear here.")
             } actions: {
@@ -128,29 +139,23 @@ struct LibraryView: View {
         .defaultScrollAnchor(.center, for: .alignment)
     }
 
+    /// The empty time's title, such as "No books in the last 12 months", as a sentence.
+    private var noBooksTitle: String {
+        switch time {
+        case .last12Months: "No books in the last 12 months"
+        case .thisYear: "No books this year"
+        case .last5Years: "No books in the last 5 years"
+        case .allTime: "No books yet"
+        case .year(let year): "No books in \(String(year))"
+        }
+    }
+
     /// The carousel and its caption.
     @ViewBuilder private func carousel(_ books: [CloudBook]) -> some View {
         SpineCarousel(
             books: books, mode: mode, centeredID: $centeredID, namespace: namespace,
-            pullOut: pullOut, statusBar: statusBar
-        ) { book in
-            if reduceMotion {
-                path.append(book.id)
-            } else if mode == .stack, centeredID != book.id {
-                // The stack glides the book to the middle of the screen first, as it
-                // centers the book for the return (`centerPulledBook`), so the book
-                // slides out in full view, clear of the stack's ends, where the
-                // stack's faded copy would otherwise hand off to the flight's opaque
-                // one.
-                centeredID = book.id
-                Task {
-                    try? await Task.sleep(for: .seconds(SpineCarousel.glide))
-                    if mode == .stack { pullOut.pull(book, upright: false) }
-                }
-            } else {
-                pullOut.pull(book, upright: mode == .shelf)
-            }
-        }
+            pullOut: pullOut, statusBar: statusBar, open: open
+        )
         .modifier(ShelfPullOutWait(pullOut: pullOut))
         #if os(iOS)
             // The books run up under the status bar and the Dynamic Island to the
@@ -168,6 +173,27 @@ struct LibraryView: View {
                 // sits.
                 .padding(.bottom, 20)
             #endif
+    }
+
+    /// Opens `book`'s details, from a tap, a search, or the keyboard. Does nothing while other
+    /// details show.
+    private func open(_ book: CloudBook) {
+        guard pullOut.book == nil, path.isEmpty else { return }
+        if reduceMotion {
+            path.append(book.id)
+        } else if mode == .stack, centeredID != book.id {
+            // The stack glides the book to the middle of the screen first, as it centers the
+            // book for the return (`centerPulledBook`), so the book slides out in full view,
+            // clear of the stack's ends, where the stack's faded copy would otherwise hand off
+            // to the flight's opaque one.
+            centeredID = book.id
+            Task {
+                try? await Task.sleep(for: .seconds(SpineCarousel.glide))
+                if mode == .stack { pullOut.pull(book, upright: false) }
+            }
+        } else {
+            pullOut.pull(book, upright: mode == .shelf)
+        }
     }
 
     private func centerPulledBook() {
@@ -266,15 +292,17 @@ struct LibraryView: View {
 /// On the iPhone, the bar hides while `LibraryFooter` names the library under the books, which
 /// run up to the screen's top edge, and shows for a book's details and for the screens without
 /// a library or read books. A time without books keeps the footer, for **View options**. On the
-/// Mac, the toolbar keeps the title, with the time and the number of books as its subtitle and
-/// **View options** at its trailing end.
+/// Mac, the toolbar keeps the title, with the sync status as its subtitle, the time and the
+/// number of books in its middle (`LibraryTimeChip`), and **View as**, the search field
+/// (`LibrarySearch`), and **View options** at its trailing end.
 ///
-/// A modifier of its own, so a book's pull-out and return update only the bar, not the
-/// library's body, which sorts the library.
+/// A modifier of its own, so a book's pull-out and return, and a sync, update only the bar, not
+/// the library's body, which sorts the library.
 private struct LibraryBar: ViewModifier {
     let pullOut: ShelfPullOut
     /// **View options** and the status, or `nil` without a library or read books.
     let options: LibraryOptions?
+    @Binding var showsAccount: Bool
 
     @Environment(AppModel.self) private var model
 
@@ -285,7 +313,8 @@ private struct LibraryBar: ViewModifier {
                 // The window takes the name of the book whose details show, for the Window menu
                 // and Mission Control.
                 .navigationTitle(details?.title ?? "Library")
-                .navigationSubtitle(details?.author ?? options?.status ?? "")
+                .navigationSubtitle(
+                    details?.author ?? (options == nil ? "" : LibrarySync(model: model).status))
             #else
                 // Details over the shelf show no title, as pushed details do. Hidden, the title
                 // still names Library for the back button of details that push.
@@ -294,11 +323,10 @@ private struct LibraryBar: ViewModifier {
             .navigationBarTitleDisplayMode(.inline)
             #if os(iOS)
                 .toolbarVisibility(
-                    options != nil && !pullOut.showsDetails ? .hidden : .automatic,
-                    for: .navigationBar)
+                    options != nil && details == nil ? .hidden : .automatic, for: .navigationBar)
             #endif
             .focusedSceneValue(
-                \.goBack, pullOut.showsDetails ? SceneAction(perform: pullOut.putBack) : nil,
+                \.goBack, details == nil ? nil : SceneAction(perform: pullOut.putBack),
                 in: .library
             )
             .toolbar {
@@ -317,34 +345,46 @@ private struct LibraryBar: ViewModifier {
                     }
                 }
                 #if os(macOS)
-                    if let options, !pullOut.showsDetails {
-                        ToolbarItem(placement: .primaryAction) { options }
+                    if let options, details == nil {
+                        ToolbarItem(placement: .principal) { LibraryTimeChip(options: options) }
+                        ToolbarItem(placement: .primaryAction) {
+                            ShelfModePicker(mode: options.$mode)
+                        }
+                        ToolbarItem(placement: .primaryAction) {
+                            options.menu(showsAccount: $showsAccount)
+                        }
                     }
                 #endif
             }
     }
 }
 
-/// On the iPhone, the library's name and its status, such as "Last 12 months · 39 books",
-/// centered under the caption, with **View options** as a round glass button at the trailing
-/// end, as Mail shows a mailbox's status beside its filter button.
+/// On the iPhone, the library's status, such as "Last 12 months · 39 books" over "Synced 2:41
+/// PM", centered under the caption, between **View as** at the leading end and **Find a book**
+/// and **View options** in a glass capsule at the trailing end, as Mail shows a mailbox's status
+/// beside its filter button. A failed sync shows **Couldn't sync · Retry**, which syncs again.
+/// VoiceOver reads the status as the screen's heading, named "Library".
 ///
 /// It ignores touches while a book's details show, and takes them again as the book flies back;
 /// a choice from the menu then puts the book back at once.
 private struct LibraryFooter: View {
     let options: LibraryOptions
     let pullOut: ShelfPullOut
+    @Binding var findsBook: Bool
+    @Binding var showsAccount: Bool
+
+    @Environment(AppModel.self) private var model
+    @ScaledMetric(relativeTo: .body) private var button: CGFloat = 44
 
     var body: some View {
+        let sync = LibrarySync(model: model)
+        // The sides share the width the status leaves, so the status centers on the screen.
         HStack(spacing: 8) {
-            // Balances the menu, so the text centers on the screen.
-            button.hidden().accessibilityHidden(true)
+            ShelfModePicker(mode: options.$mode)
+                .frame(maxWidth: .infinity, alignment: .leading)
             // Smaller than the caption, so the footer reads as the screen's status, not as
             // more about the centered book.
             VStack(spacing: 1) {
-                Text("Library")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(ShelfPalette.paper)
                 // Breaks between the time and the count when the status does not fit on one line.
                 ViewThatFits(in: .horizontal) {
                     Text(options.status)
@@ -353,16 +393,38 @@ private struct LibraryFooter: View {
                         Text(options.books)
                     }
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(ShelfPalette.paper)
                 .monospacedDigit()
+                if sync.failed {
+                    Button(sync.status + " · Retry") { Task { await model.syncLibrary() } }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(sync.status)
+                        .accessibilityHint("Syncs the library again.")
+                } else {
+                    Text(sync.status)
+                }
             }
+            .font(.caption)
+            .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
+            .layoutPriority(1)
             .accessibilityElement(children: .combine)
+            .accessibilityLabel("Library")
             // Names the screen for VoiceOver's headings, as the hidden bar's title did.
             .accessibilityAddTraits(.isHeader)
-            button
+            HStack(spacing: 0) {
+                Button("Find a book", systemImage: "magnifyingglass") { findsBook = true }
+                    .frame(width: button, height: button)
+                options.menu(showsAccount: $showsAccount)
+                    .frame(width: button, height: button)
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.plain)
+            .foregroundStyle(.tint)
+            .contentShape(.capsule)
+            .padding(.horizontal, 2)
+            .glassEffect(.regular.interactive(), in: .capsule)
+            .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(.horizontal, 16)
         // A little more space above than between the caption's lines, so the footer reads as
@@ -373,20 +435,103 @@ private struct LibraryFooter: View {
         .dynamicTypeSize(...DynamicTypeSize.accessibility2)
         .allowsHitTesting(!pullOut.showsDetails)
     }
+}
 
-    private var button: some View {
-        options
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
+/// **View as**: a segmented control of **Stack** and **Shelf**, in the iPhone's footer and the
+/// Mac's toolbar.
+private struct ShelfModePicker: View {
+    @Binding var mode: ShelfMode
+
+    var body: some View {
+        Picker("View as", selection: $mode) {
+            ForEach(ShelfMode.allCases) { Label($0.title, systemImage: $0.symbol).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .labelStyle(.iconOnly)
+        .fixedSize()
+        #if os(iOS)
+            .labelsHidden()
             .controlSize(.large)
+        #else
+            .help("View as Stack or Shelf")
+        #endif
     }
 }
 
-/// The **View options** menu, which follows Photos: **View as**, **3D Books** for Stack,
-/// **Time**, **Sort by**, and **Remove Filters** while the time differs from its default. Its
-/// symbol fills meanwhile, as Mail's filter button does, and VoiceOver reads its value as
-/// "Filtered".
-private struct LibraryOptions: View {
+/// The library's sync status, such as "Synced 2:41 PM", "Syncing…", or "Couldn't sync", for
+/// the iPhone's footer and the Mac's subtitle. Read in the views that show it, so a sync
+/// updates only them.
+///
+/// It names the time of day for a sync today and the date for an earlier one, which stays true
+/// without updating as time passes.
+@MainActor
+struct LibrarySync {
+    let model: AppModel
+
+    /// Whether the last sync, or the last load of the library, failed.
+    var failed: Bool { !model.isSyncingLibrary && model.syncFailure != nil }
+
+    var status: String {
+        if model.isSyncingLibrary { return "Syncing…" }
+        if model.syncFailure != nil { return "Couldn't sync" }
+        guard let synced = model.library?.syncedAt else { return "Not synced yet" }
+        return "Synced " + Self.time(of: synced)
+    }
+
+    /// "2:41 PM" for a time today, and otherwise the date, such as "Oct 17, 2026".
+    static func time(of date: Date, now: Date = .now, calendar: Calendar = .current) -> String {
+        calendar.isDate(date, inSameDayAs: now)
+            ? date.formatted(date: .omitted, time: .shortened)
+            : date.formatted(date: .abbreviated, time: .omitted)
+    }
+}
+
+extension AppModel {
+    /// Syncs the library: downloads it from Hardcover when this device is signed in, and
+    /// otherwise loads the library in iCloud, or the preview folder, again.
+    func syncLibrary() async {
+        if account.isSignedIn && !isPreview { await account.sync() } else { await reload() }
+    }
+
+    /// Whether a sync or a load of the library is running.
+    var isSyncingLibrary: Bool { account.isSyncing || isLoading }
+
+    /// Why the last download from Hardcover or load of the library failed, if either did.
+    var syncFailure: String? {
+        (account.isSignedIn && !isPreview ? account.syncError : nil) ?? loadError
+    }
+}
+
+/// On the Mac, the toolbar's middle button, which names Library's time and the number of books
+/// it shows, such as "Last 12 Months" and "39", and chooses the time, as Desk's time frame button
+/// does for Desk.
+private struct LibraryTimeChip: View {
+    let options: LibraryOptions
+
+    var body: some View {
+        Menu {
+            options.timeChoices
+        } label: {
+            HStack(spacing: 10) {
+                Label(options.time.menuTitle, systemImage: "calendar")
+                Label(options.count.formatted(), systemImage: "books.vertical")
+            }
+            .labelStyle(.titleAndIcon)
+            .monospacedDigit()
+        }
+        .help("Choose the time Library shows")
+        .accessibilityLabel("Time")
+        .accessibilityValue(options.status)
+    }
+}
+
+/// **View options**, Library's options, and its status. The menu follows Photos: **3D Books**
+/// for Stack, **Time**, **Sort by**, and **Remove Filters** while the time differs from its
+/// default, then **Sync Now** and **Hardcover Account…**. Its symbol fills while the time
+/// differs from its default, as Mail's filter button does, and VoiceOver reads its value as
+/// "Filtered". **View as** has its own control (`ShelfModePicker`).
+@MainActor
+struct LibraryOptions {
     @Binding var mode: ShelfMode
     @Binding var sort: ShelfSort
     @Binding var time: LibraryTime
@@ -395,18 +540,43 @@ private struct LibraryOptions: View {
     /// The books shown.
     let count: Int
 
-    /// How **Stack** draws its books, which `SpineCarousel` reads.
-    @AppStorage("BookwormsStackStyle") private var stackStyle = StackStyle.flat
-
-    @ScaledMetric(relativeTo: .body) private var icon: CGFloat = 17
-
     /// The time and the number of books shown, such as "Last 12 months · 39 books".
     var status: String { "\(time.title) · \(books)" }
     /// The number of books shown, such as "39 books".
     var books: String { FrameChip.books(count, of: count) }
 
     /// Whether the time differs from its default.
-    private var isFiltered: Bool { time != .last12Months }
+    var isFiltered: Bool { time != .last12Months }
+
+    /// The **View options** menu.
+    func menu(showsAccount: Binding<Bool>) -> some View {
+        LibraryOptionsMenu(options: self, showsAccount: showsAccount)
+    }
+
+    /// The spans, and a **Year** menu of the years with read books.
+    @ViewBuilder var timeChoices: some View {
+        Picker("Time", selection: $time) {
+            ForEach(LibraryTime.spans, id: \.self) { Text($0.menuTitle).tag($0) }
+        }
+        .pickerStyle(.inline)
+        if !years.isEmpty {
+            Picker("Year", selection: $time) {
+                ForEach(years, id: \.self) { Text(String($0)).tag(LibraryTime.year($0)) }
+            }
+            .pickerStyle(.menu)
+        }
+    }
+}
+
+private struct LibraryOptionsMenu: View {
+    let options: LibraryOptions
+    @Binding var showsAccount: Bool
+
+    @Environment(AppModel.self) private var model
+    /// How **Stack** draws its books, which `SpineCarousel` reads.
+    @AppStorage("BookwormsStackStyle") private var stackStyle = StackStyle.flat
+
+    @ScaledMetric(relativeTo: .body) private var icon: CGFloat = 17
 
     var body: some View {
         Menu {
@@ -414,7 +584,7 @@ private struct LibraryOptions: View {
         } label: {
             Label(
                 "View options",
-                systemImage: isFiltered
+                systemImage: options.isFiltered
                     ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease"
             )
             #if os(iOS)
@@ -423,15 +593,11 @@ private struct LibraryOptions: View {
                 .frame(width: icon, height: icon)
             #endif
         }
-        .accessibilityValue(isFiltered ? "Filtered" : "")
+        .accessibilityValue(options.isFiltered ? "Filtered" : "")
     }
 
     @ViewBuilder private var menu: some View {
-        Picker("View as", selection: $mode) {
-            ForEach(ShelfMode.allCases) { Text($0.title).tag($0) }
-        }
-        .pickerStyle(.inline)
-        if mode == .stack {
+        if options.mode == .stack {
             Section {
                 Toggle(
                     "3D Books", systemImage: "cube",
@@ -442,33 +608,213 @@ private struct LibraryOptions: View {
                     })
             }
         }
-        Picker("Time", selection: $time) {
-            ForEach(LibraryTime.spans, id: \.self) { Text($0.menuTitle).tag($0) }
-        }
-        .pickerStyle(.inline)
-        if !years.isEmpty {
-            Section {
-                Picker("Year", selection: $time) {
-                    ForEach(years, id: \.self) { Text(String($0)).tag(LibraryTime.year($0)) }
-                }
-                .pickerStyle(.menu)
-            }
-        }
+        Section("Time") { options.timeChoices }
         Section {
             // A submenu, which names the order it holds, unlike an inline picker, and keeps
             // the menu short enough not to scroll.
-            Picker("Sort by", selection: $sort) {
-                ForEach(ShelfSort.allCases) { Text($0.title).tag($0) }
+            Picker(selection: options.$sort) {
+                ForEach(ShelfSort.allCases) { Text($0.menuTitle).tag($0) }
+            } label: {
+                Label("Sort by", systemImage: "arrow.up.arrow.down")
             }
             .pickerStyle(.menu)
         }
-        if isFiltered {
+        if options.isFiltered {
             Section {
-                Button("Remove Filters", systemImage: "xmark.circle") { time = .last12Months }
+                Button("Remove Filters", systemImage: "xmark.circle") {
+                    options.time = .last12Months
+                }
+            }
+        }
+        Section {
+            Button("Sync Now", systemImage: "arrow.clockwise") {
+                Task { await model.syncLibrary() }
+            }
+            .disabled(model.isSyncingLibrary)
+            Button("Hardcover Account…", systemImage: "person.crop.circle") {
+                showsAccount = true
             }
         }
     }
 }
+
+/// Finds a book in the shown books, as find rather than a filter: the carousel glides to the
+/// best match, the caption names it, and Return pulls it out.
+///
+/// On the Mac, a search field in the toolbar (**Library > Find Book**, Command-F) glides to the
+/// best match as you type, and its suggestions list the matches; choosing one fills in its title.
+/// On the iPhone, **Find a book** in the footer opens a list of the books that a search field
+/// narrows; choosing one glides to it. Searching ignores keystrokes while a book's details show,
+/// so the stack never moves behind them.
+///
+/// A modifier of its own, with the search text as its own state, so typing updates only it, not
+/// the library's body, which sorts the library.
+private struct LibrarySearch: ViewModifier {
+    let books: [CloudBook]
+    @Binding var centeredID: Int?
+    /// Set to find a book; the Mac focuses its search field and clears it.
+    @Binding var findsBook: Bool
+    let pullOut: ShelfPullOut
+    let open: (CloudBook) -> Void
+
+    @State private var text = ""
+    #if os(macOS)
+        @FocusState private var isFocused: Bool
+    #else
+        /// The book that Return in the finder chose, which opens once the finder closes.
+        @State private var opening: CloudBook?
+    #endif
+
+    func body(content: Content) -> some View {
+        #if os(macOS)
+            content
+                .searchable(text: $text, placement: .toolbar, prompt: "Find a book")
+                .searchSuggestions {
+                    ForEach(Self.matches(text, in: books).prefix(8)) { book in
+                        BookFinderRow(book: book).searchCompletion(book.title)
+                    }
+                }
+                .searchFocused($isFocused)
+                .onChange(of: text) {
+                    guard pullOut.book == nil, let book = Self.matches(text, in: books).first
+                    else { return }
+                    centeredID = book.id
+                }
+                .onSubmit(of: .search) {
+                    if let book = Self.matches(text, in: books).first { open(book) }
+                }
+                .onChange(of: findsBook) {
+                    guard findsBook else { return }
+                    findsBook = false
+                    isFocused = true
+                }
+                #if DEBUG
+                    .onAppear { if let query = Self.debugQuery { text = query } }
+                #endif
+        #else
+            content
+                .sheet(isPresented: $findsBook, onDismiss: openChosenBook) {
+                    BookFinder(books: books) { book, opens in
+                        centeredID = book.id
+                        if opens { opening = book }
+                    }
+                }
+                #if DEBUG
+                    .onAppear { if Self.debugQuery != nil { findsBook = true } }
+                #endif
+        #endif
+    }
+
+    #if DEBUG
+        /// Simulator hook: `-BookwormsFindBook <text>` searches for that text when Library
+        /// appears, in the Mac's search field or the iPhone's finder.
+        static var debugQuery: String? { UserDefaults.standard.string(forKey: "BookwormsFindBook") }
+    #endif
+
+    #if os(iOS)
+        private func openChosenBook() {
+            if let opening { open(opening) }
+            opening = nil
+        }
+    #endif
+
+    /// The books of `books` whose title or author contains `query`, ignoring case and accents,
+    /// in their shown order, those whose title starts with it first. Empty for an empty query.
+    static func matches(_ query: String, in books: [CloudBook]) -> [CloudBook] {
+        let query = query.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return [] }
+        let found = books.filter {
+            $0.title.localizedStandardContains(query) || $0.author.localizedStandardContains(query)
+        }
+        let starts = found.filter {
+            $0.title.range(
+                of: query, options: [.anchored, .caseInsensitive, .diacriticInsensitive])
+                != nil
+        }
+        let startIDs = Set(starts.map(\.id))
+        return starts + found.filter { !startIDs.contains($0.id) }
+    }
+}
+
+/// A book in the search's suggestions and the iPhone's finder: its title over its author and
+/// finish date.
+private struct BookFinderRow: View {
+    let book: CloudBook
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(book.title).lineLimit(2)
+            Text(details)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var details: String {
+        guard let finished = book.finishedDate else { return book.author }
+        return book.author + " · Finished "
+            + finished.formatted(ShelfLabels.finishedFormat)
+    }
+}
+
+#if os(iOS)
+    /// The iPhone's **Find a book** sheet: the shown books, which a search field narrows by title
+    /// or author. Choosing a book glides the shelf to it; Return chooses the best match and pulls
+    /// it out once the sheet closes.
+    private struct BookFinder: View {
+        let books: [CloudBook]
+        /// Glides to a book, and with `opens`, pulls it out.
+        let choose: (_ book: CloudBook, _ opens: Bool) -> Void
+
+        @Environment(\.dismiss) private var dismiss
+        @State private var text = ""
+        @FocusState private var isFocused: Bool
+
+        var body: some View {
+            let matches = text.isEmpty ? books : LibrarySearch.matches(text, in: books)
+            NavigationStack {
+                List(matches) { book in
+                    Button {
+                        choose(book, false)
+                        dismiss()
+                    } label: {
+                        BookFinderRow(book: book)
+                    }
+                    .foregroundStyle(.primary)
+                }
+                .overlay {
+                    if matches.isEmpty { ContentUnavailableView.search(text: text) }
+                }
+                .navigationTitle("Find a book")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel", systemImage: "xmark") { dismiss() }
+                    }
+                }
+                .searchable(
+                    text: $text, placement: .navigationBarDrawer(displayMode: .always),
+                    prompt: "Title or author"
+                )
+                .searchFocused($isFocused)
+                .onSubmit(of: .search) {
+                    guard let book = matches.first else { return }
+                    choose(book, true)
+                    dismiss()
+                }
+                .onAppear {
+                    isFocused = true
+                    #if DEBUG
+                        if let query = LibrarySearch.debugQuery { text = query }
+                    #endif
+                }
+            }
+            .presentationDetents([.medium, .large])
+        }
+    }
+#endif
 
 /// The details of the book with `id`, which Library and Desk push, or why they are missing.
 struct PushedBookDetail: View {
@@ -635,6 +981,9 @@ enum ShelfSort: String, CaseIterable, Identifiable {
         case .rating: "Your rating"
         }
     }
+
+    /// The order's name in title case, such as "Recently Finished", for menu items.
+    var menuTitle: String { title.capitalized }
 
     /// Orders `books`, which arrive most recently finished first. The sort is stable, so ties
     /// keep that order; unrated books follow rated ones.
