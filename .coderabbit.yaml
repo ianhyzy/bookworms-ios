@@ -96,5 +96,6 @@ knowledge_base:
       instructions: >-
         The Apple TV app. Its `SpineCloudStore.swift` and `CloudLibraryStore.swift`
         read the CloudKit JSON contract in `Bookworms/Models/CloudContract.swift`,
-        its `Bookworms/Models/SeriesDesigns.swift` must match this repository's
-        copy, and it shares the Hardcover token-renewal rule.
+        its `Bookworms/Models/SeriesDesigns.swift` follows the same series rules
+        and tables as this repository's copy, and it shares the Hardcover
+        token-renewal rule.
