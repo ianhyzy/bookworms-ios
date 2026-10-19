@@ -2019,15 +2019,15 @@ final class DominoScene {
     /// sets off at once and slows to arrive as the books lift, so the frame leaves the chain's
     /// end, where it can show bare table beyond the last book, as soon as the last book falls,
     /// and then holds still while the camera's move carries the books; the frame's own easing
-    /// smooths the start. With Reduce Motion on, it moves on the rest of the way as the books
-    /// appear in their places.
+    /// smooths the start. With Reduce Motion on, it is the area's middle from the start, so the
+    /// frame arrives there in the still second before the camera cuts to the spread
+    /// (`DominoFinale.stillWait`), and the books appear inside it.
     private var recordingSubject: CGFloat? {
         func across(_ point: SIMD3<Float>) -> CGFloat? {
             screenPoint(of: point, in: CGSize(width: 1, height: 1))?.x
         }
         if let ending {
-            let clock =
-                reducesMotion && status.phase == .finished ? DominoFinale.gatherDelay : ending.clock
+            let clock = reducesMotion ? DominoFinale.gatherDelay : ending.clock
             let rest = CGFloat(1 - min(clock / DominoFinale.gatherDelay, 1))
             let middle = ending.area.midX / max(ending.view.width, 1)
             guard let start = ending.subject else { return middle }
