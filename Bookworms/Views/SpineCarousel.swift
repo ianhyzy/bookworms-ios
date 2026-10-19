@@ -116,9 +116,9 @@ struct SpineCarousel: View {
         #endif
         .overlay(alignment: .top) {
             // On the iPhone, Stack runs up under the status bar. A wash of the wall's color, dense
-            // enough to hide spine lettering behind the time and battery, covers the bar and
-            // fades out over 8 points below it, so the books below stay sharp. The system's soft
-            // edge effect reaches about a spine farther and blurs that book too.
+            // enough to hide spine lettering behind the time and battery, covers the whole bar
+            // and fades out over 8 points below it, so the books below stay sharp. The system's
+            // soft edge effect reaches about a spine farther and blurs that book too.
             if mode == .stack, statusBar > 0 {
                 let height = statusBar + 8
                 LinearGradient(
@@ -126,7 +126,7 @@ struct SpineCarousel: View {
                         .init(color: Color(.shelfWallTop).opacity(0.85), location: 0),
                         .init(
                             color: Color(.shelfWallTop).opacity(0.85),
-                            location: statusBar * 0.75 / height),
+                            location: statusBar / height),
                         .init(color: .clear, location: 1),
                     ], startPoint: .top, endPoint: .bottom
                 )
@@ -493,10 +493,10 @@ private struct SpineButton<Label: View>: View {
     /// Browses the carousel with the keyboard while it has focus, which a click or Tab gives it
     /// and Library gives it when it appears: the arrow keys along the shelf step to the next or
     /// previous book, and in **Stack** Left and Right move to the stack beside it; Page Up and
-    /// Page Down move about a screenful; Home and End go to the first and last book; Return opens
-    /// the centered book, in a window of its own with Option; Space peeks, sliding the book
-    /// partway out and back; and typing a title's first letters goes to the first book whose
-    /// title starts with them.
+    /// Page Down move about a screenful; Home and End go to the first and last book of the
+    /// centered book's stack, or of the shelf; Return opens the centered book, in a window of its
+    /// own with Option; Space peeks, sliding the book partway out and back; and typing a title's
+    /// first letters goes to the first book whose title starts with them.
     ///
     /// Each key moves `centeredID`, which the carousel glides to (`CenterTracking`). The keys do
     /// nothing while a book's details show. The focus draws no ring; the lamp's light warms
