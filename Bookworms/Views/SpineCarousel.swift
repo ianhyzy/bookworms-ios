@@ -156,11 +156,12 @@ struct SpineCarousel: View {
         let track = arrangement.track(of: runs)
         // The middle of each stack across the carousel.
         let centers = runs.indices.map { room + (CGFloat($0) + 0.5) * arrangement.width }
+        let camera = style == .threeD ? StackCamera.distance(viewing: size) : nil
         return stackScroll(
-            track, arrangement: arrangement, inset: room,
-            camera: style == .threeD ? StackCamera.distance(viewing: size) : nil, in: size,
+            track, arrangement: arrangement, inset: room, camera: camera, in: size,
             board: StackBoard(
-                arrangement: arrangement, inset: room, bottoms: runs.compactMap(\.last))
+                arrangement: arrangement, inset: room, bottoms: runs.compactMap(\.last),
+                camera: camera)
         )
         // A pool of warm light behind the stack whose book the caption names, larger than the
         // carousel so its falloff never meets an edge. The shelf's lamp lights the bookcase
@@ -769,6 +770,14 @@ enum StackCamera {
     @MainActor static func reach(length: CGFloat, thickness: CGFloat, in size: CGSize) -> CGFloat {
         (size.height + thickness) / 2 * length * Book3DView.aspects.upperBound
             / distance(viewing: size)
+    }
+
+    /// How far up the screen a level surface `depth` points deep shows behind its front edge,
+    /// which lies on the spines' plane `drop` points below the eye, for a camera `distance`
+    /// points in front of the spines: `drop * depth / (distance + depth)`, as a book's top board
+    /// recedes. None shows at or above the eye's level.
+    static func surface(depth: CGFloat, drop: CGFloat, distance: CGFloat) -> CGFloat {
+        max(0, drop) * depth / (distance + depth)
     }
 }
 
@@ -1513,11 +1522,12 @@ private struct BookcaseBay: View {
     }
 }
 
-/// A walnut board seen from just above, one wood `tile` wide at most: its top, darker toward
-/// the back and light enough in front for the books' contact shadows to show, its front edge,
-/// lit along its top, and its shadow on the wall below.
+/// A walnut board seen from just above, one wood `tile` wide at most: its top, `surface` points
+/// deep on screen, darker toward the back and light enough in front for the books' contact
+/// shadows to show, its front edge, lit along its top, and its shadow on the wall below.
 private struct ShelfBoard: View {
     let tile: CGFloat
+    var surface = Bookcase.surface
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1525,7 +1535,7 @@ private struct ShelfBoard: View {
                 colors: [ShelfPalette.board.mix(with: .black, by: 0.35), ShelfPalette.board],
                 startPoint: .top, endPoint: .bottom
             )
-            .frame(height: Bookcase.surface)
+            .frame(height: surface)
             WoodGrain(tile: tile, shade: 0.4)
                 .overlay {
                     LinearGradient(
@@ -1541,11 +1551,16 @@ private struct ShelfBoard: View {
     }
 }
 
-/// The board under **Stack**, below the stacks' bottom books, so the stacks rest on it rather
-/// than over the empty wall. Side-by-side stacks share one board, since they rest on one line. It
-/// reaches a little past the longest book any stack could hold, and each stack's bottom book
-/// casts a contact shadow on it. The books lie a little back from its front edge, so its top
-/// shows below them.
+/// The board under **Stack**, so the stacks rest on it rather than over the empty wall.
+/// Side-by-side stacks share one board, since they rest on one line. It reaches a little past
+/// the longest book any stack could hold. Place its front edge on the bottom books' bottom edge.
+///
+/// The books stand at its front edge, as on the Apple TV's Book Wall, so its front face starts
+/// right below them and its top shows only beside and behind them, where the books cover it.
+/// Its top shows as the stack's camera (`StackCamera`) sees it once the stack has scrolled to
+/// its end, where the thinnest bottom book lies across the eye: a board as deep as the deepest
+/// book, receding from just below the eye, so only a sliver shows. Seen straight on, in 2D, none
+/// does. Each stack's bottom book casts a contact shadow on the top beside its ends.
 ///
 /// It scrolls with the books, as part of the scroll view's content, and holds no state, so it
 /// draws once. It draws one wood tile per stack, so the grain keeps one stack's scale however
@@ -1556,30 +1571,61 @@ private struct StackBoard: View {
     let inset: CGFloat
     /// Each stack's bottom book.
     let bottoms: [CloudBook]
+    /// The stack camera's distance in front of the spines in 3D, or `nil` in 2D.
+    let camera: CGFloat?
 
     var body: some View {
         let reach = CGFloat(BookShape.longest) * arrangement.scale + 2 * StackArrangement.margin
         let start = inset + max(0, (arrangement.width - reach) / 2)
         let width = CGFloat(bottoms.count) * arrangement.width - 2 * (start - inset)
         let tile = width / CGFloat(max(1, bottoms.count))
+        let surface = self.surface
         HStack(spacing: 0) {
-            ForEach(bottoms.indices, id: \.self) { _ in ShelfBoard(tile: tile).frame(width: tile) }
+            ForEach(bottoms.indices, id: \.self) { _ in
+                ShelfBoard(tile: tile, surface: surface).frame(width: tile)
+            }
         }
         .frame(width: width)
         .overlay(alignment: .topLeading) {
-            ForEach(bottoms.indices, id: \.self) { column in
-                let book = bottoms[column]
-                let length = arrangement.spine(of: book).width
-                ContactShadow(width: length)
+            // Each shadow darkens the top under its book, through the top's depth, and fades
+            // out `fade` points past the book's ends, where it shows.
+            let fade: CGFloat = 8
+            ZStack(alignment: .topLeading) {
+                ForEach(bottoms.indices, id: \.self) { column in
+                    let book = bottoms[column]
+                    let length = arrangement.spine(of: book).width
+                    let edge = fade / (length + 2 * fade)
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: 0),
+                            .init(color: .black.opacity(0.5), location: edge),
+                            .init(color: .black.opacity(0.5), location: 1 - edge),
+                            .init(color: .clear, location: 1),
+                        ], startPoint: .leading, endPoint: .trailing
+                    )
+                    .frame(width: length + 2 * fade, height: surface)
                     .position(
                         x: inset + CGFloat(column) * arrangement.width
                             + arrangement.leading(of: book) + length / 2 - start,
-                        y: 0)
+                        y: surface / 2)
+                }
             }
+            .frame(width: width, height: surface, alignment: .topLeading)
         }
         .padding(.leading, start)
+        // Behind the bottom books, so its front edge meets their bottom edges.
+        .offset(y: -surface)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+    }
+
+    /// How far up the screen the board's top shows behind its front edge.
+    private var surface: CGFloat {
+        guard let camera else { return 0 }
+        let deepest =
+            CGFloat(BookShape.longest) * arrangement.scale * Book3DView.aspects.upperBound
+        let thinnest = bottoms.map { arrangement.spine(of: $0).height }.min() ?? 0
+        return StackCamera.surface(depth: deepest, drop: thinnest / 2, distance: camera)
     }
 }
 
