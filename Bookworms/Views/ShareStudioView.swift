@@ -1,4 +1,5 @@
 import SwiftUI
+import TipKit
 import UniformTypeIdentifiers
 
 #if canImport(UIKit)
@@ -72,6 +73,7 @@ struct ShareStudioView: View {
     #if os(iOS)
         /// Whether a finger holds the preview, which then shows full size (`RootView`).
         @GestureState private var holdsPreview = false
+        private let holdTip = HoldPreviewTip()
     #else
         /// Whether **Save Image…** shows the save panel.
         @State private var savesImage = false
@@ -635,7 +637,9 @@ struct ShareStudioView: View {
                         // A render that finishes during the hold replaces the image shown.
                         .onChange(of: holdsPreview ? image.image : nil) { _, shown in
                             fullSizeImage.wrappedValue = shown
+                            if shown != nil { holdTip.invalidate(reason: .actionPerformed) }
                         }
+                        .popoverTip(holdTip, arrowEdge: .top)
                         .onChange(of: fullSizeImage.wrappedValue == nil) { _, isClosed in
                             if isClosed { focusesPreview = true }
                         }
@@ -654,6 +658,7 @@ struct ShareStudioView: View {
                     .accessibilityAction(named: "Show full size") {
                         #if os(iOS)
                             fullSizeImage.wrappedValue = image.image
+                            holdTip.invalidate(reason: .actionPerformed)
                         #else
                             Task { await quickLook() }
                         #endif
@@ -1148,6 +1153,9 @@ struct ShareStudioView: View {
         image = rendered.map { ShareImage(image: $0, name: name, books: books) }
         failed = !request.isEmpty && rendered == nil
         renderedRequest = request
+        #if os(iOS)
+            if rendered != nil { HoldPreviewTip.imageShown() }
+        #endif
         #if DEBUG
             ShareDebug.write(image)
             // `-BookwormsShareFullSize YES` shows each image full size, as holding the preview
@@ -1183,6 +1191,30 @@ struct ShareStudioView: View {
         }
     }
 }
+
+#if os(iOS)
+    /// Teaches the preview's touch and hold, which nothing on screen shows, once the studio has
+    /// drawn its second image in a launch, so the tip never covers the first image. Holding the
+    /// preview, or VoiceOver's **Show full size**, retires it.
+    ///
+    /// The count lives in memory and the rule's parameter is transient, so drawing an image never
+    /// writes to TipKit's store; only showing and retiring the tip do.
+    struct HoldPreviewTip: Tip {
+        @Parameter(.transient) static var isReady: Bool = false
+        @MainActor private static var shownImages = 0
+
+        var title: Text { Text("See it full size") }
+        var message: Text? { Text("Touch and hold the preview to see the image as it will look.") }
+        var image: Image? { Image(systemName: "hand.tap") }
+        var rules: [Rule] { #Rule(Self.$isReady) { $0 } }
+
+        /// Counts an image the preview shows, and makes the tip ready at the second.
+        @MainActor static func imageShown() {
+            shownImages += 1
+            if shownImages == 2 { isReady = true }
+        }
+    }
+#endif
 
 /// The options that change the rendered image, including library and font changes.
 private struct RenderRequest: Equatable {
