@@ -161,6 +161,87 @@ final class BookPileTests: XCTestCase {
         }
     }
 
+    func testTrayStaysClearOfTheMacSidebar() throws {
+        // A Mac window 1,180 points wide, with a 220-point sidebar over its leading edge.
+        let size = CGSize(width: 1180, height: 820)
+        let aspect = Float(size.width / size.height)
+        let open = PileViewport(
+            size: size, insets: .init(top: 52, leading: 220, bottom: 0, trailing: 0))
+        let tray = try XCTUnwrap(PileTray(viewport: open))
+        let leading: Float = -1 + 2 * 220 / 1180
+        // The tray moves off the sidebar, toward the view's other edge.
+        XCTAssertGreaterThan(tray.centerX, 0)
+        for corner in tray.corners {
+            for height in [0, 4.5] as [Float] {
+                let ndc = project(corner + [0, height, 0], aspect: aspect)
+                XCTAssertGreaterThanOrEqual(ndc.x, leading)
+                XCTAssertLessThanOrEqual(ndc.x, 1)
+            }
+        }
+        // Its near corners meet the sidebar's edge and the view's, a margin inside them.
+        let nearLeft = project(tray.corners[3], aspect: aspect).x
+        let nearRight = project(tray.corners[2], aspect: aspect).x
+        XCTAssertEqual(nearLeft - leading, 1 - nearRight, accuracy: 0.001)
+        XCTAssertLessThan(nearLeft - leading, 0.05)
+        // Clamping keeps a point off the sidebar too.
+        let clamped = tray.clamp([-40, 1, tray.nearZ - 1], margin: 1)
+        XCTAssertGreaterThan(project(clamped, aspect: aspect).x, leading)
+        // Without side insets, the tray is the symmetric one it always was.
+        let closed = PileViewport(
+            size: size, insets: .init(top: 52, leading: 0, bottom: 0, trailing: 0))
+        let symmetric = try XCTUnwrap(PileTray(viewport: closed))
+        XCTAssertEqual(symmetric.centerX, 0)
+        XCTAssertEqual(
+            symmetric,
+            PileTray(aspect: aspect, safeTop: 1 - 2 * 52.0 / 820, safeBottom: -1))
+        // Equal insets on both sides narrow the tray without moving it.
+        let both = PileViewport(
+            size: size, insets: .init(top: 52, leading: 100, bottom: 0, trailing: 100))
+        let narrowed = try XCTUnwrap(PileTray(viewport: both))
+        XCTAssertEqual(narrowed.centerX, 0, accuracy: 0.0001)
+        XCTAssertLessThan(narrowed.nearHalfWidth, symmetric.nearHalfWidth)
+        // A sidebar that leaves no room gives no tray.
+        XCTAssertNil(
+            PileTray(
+                viewport: PileViewport(
+                    size: size, insets: .init(top: 0, leading: 600, bottom: 0, trailing: 600))))
+    }
+
+    func testTrayTurnsWithATurnedView() throws {
+        // The dominoes' overview on an iPhone, turned 20 degrees, zoomed out, and looking at a
+        // point away from the table's middle, as **Back to desk** hands it over.
+        let size = CGSize(width: 402, height: 874)
+        let aspect = Float(size.width / size.height)
+        let viewport = PileViewport(
+            size: size, insets: .init(top: 116, leading: 0, bottom: 83, trailing: 0))
+        let camera = PileCamera(target: [3, 0, -2], yaw: 0.35, zoom: 0.6)
+        let tray = try XCTUnwrap(PileTray(viewport: viewport, camera: camera))
+        XCTAssertEqual(tray.turn, 0.35)
+        // Every corner, on the table and as high as the tallest pile, shows between the bars.
+        let top = 1 - 2 * Float(116.0 / 874)
+        let bottom = -1 + 2 * Float(83.0 / 874)
+        for corner in tray.corners {
+            for height in [0, PileTray.tallestPile] {
+                let ndc = camera.project(corner + [0, height, 0], aspect: aspect)
+                XCTAssertLessThanOrEqual(abs(ndc.x), 1.0001)
+                XCTAssertLessThanOrEqual(ndc.y, top + 0.0001)
+                XCTAssertGreaterThanOrEqual(ndc.y, bottom - 0.0001)
+            }
+        }
+        // Clamping keeps a point far off to one side in the view.
+        let clamped = tray.clamp([-40, 1, 0], margin: 1)
+        XCTAssertLessThan(abs(camera.project(clamped, aspect: aspect).x), 1)
+        // Without the turn, a view of a point off the middle gives the middle's tray, moved
+        // across with it.
+        let middle = try XCTUnwrap(
+            PileTray(viewport: viewport, camera: PileCamera(target: [0, 0, -2], zoom: 0.6)))
+        let moved = try XCTUnwrap(
+            PileTray(viewport: viewport, camera: PileCamera(target: [3, 0, -2], zoom: 0.6)))
+        XCTAssertEqual(moved.centerX, middle.centerX + 3, accuracy: 0.0001)
+        XCTAssertEqual(moved.farZ, middle.farZ, accuracy: 0.0001)
+        XCTAssertEqual(moved.turn, 0)
+    }
+
     func testTrayFitsThePlannedPile() throws {
         func book(_ id: Int, pages: Int) -> CloudBook {
             CloudBook(
@@ -295,6 +376,13 @@ final class BookPileTests: XCTestCase {
                 }
             }
         }
+        // A Mac window with its sidebar over the view's leading edge.
+        let sidebar = PileViewport(
+            size: CGSize(width: 1180, height: 820),
+            insets: .init(top: 52, leading: 220, bottom: 0, trailing: 0))
+        for tray in [PileTray(viewport: sidebar), PileTray(viewport: sidebar, books: [])] {
+            checkDropsStartOutOfView(over: try XCTUnwrap(tray), "sidebar")
+        }
         // The box closes only once a book from the ceiling has landed.
         let fall = stride(from: Float(0), to: 10, by: 0.01)
             .first { fallen(after: $0) > phoneCeiling }!
@@ -315,7 +403,7 @@ final class BookPileTests: XCTestCase {
         for zoom in [PileCamera.zoomRange.lowerBound, 1.6, PileCamera.zoomRange.upperBound] {
             // The targets a zoomed camera can move to (see `BookPileScene.moveCamera`).
             let reach = 1 - 1 / zoom
-            for x in [-tray.farHalfWidth, tray.farHalfWidth] {
+            for x in [tray.centerX - tray.farHalfWidth, tray.centerX + tray.farHalfWidth] {
                 for z in [tray.farZ, tray.nearZ] {
                     for step in 0..<16 {
                         let camera = PileCamera(

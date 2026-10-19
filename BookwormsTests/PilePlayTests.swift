@@ -1,3 +1,4 @@
+import RealityKit
 import XCTest
 import simd
 
@@ -206,5 +207,65 @@ final class PilePlayTests: XCTestCase {
         for _ in 0..<60 { hard.advance(acceleration: [0, 1e4], by: step) }
         XCTAssertLessThanOrEqual(hard.tilt.angle, PileSwing.maximumTilt + 1e-4)
         XCTAssertGreaterThan(hard.tilt.act([0, 1, 0]).z, 0)
+    }
+
+    func testScrollingZoomsAndShiftScrollingTurns() {
+        // A wheel scrolled away zooms in, toward the reader zooms out, by the same factor.
+        let away = PilePointer.move(deltaX: 0, deltaY: 1, precise: false, shift: false)
+        let toward = PilePointer.move(deltaX: 0, deltaY: -1, precise: false, shift: false)
+        XCTAssertGreaterThan(away.magnification, 1)
+        XCTAssertEqual(away.magnification * toward.magnification, 1, accuracy: 1e-9)
+        XCTAssertEqual(away.rotation.radians, 0)
+        // A trackpad's points zoom less each than a wheel's lines.
+        let point = PilePointer.move(deltaX: 0, deltaY: 1, precise: true, shift: false)
+        XCTAssertGreaterThan(point.magnification, 1)
+        XCTAssertLessThan(point.magnification, away.magnification)
+        // Sideways scrolling turns without zooming, so does Shift with a wheel, whether macOS
+        // reports it as sideways scrolling or not, and the two turn alike.
+        let sideways = PilePointer.move(deltaX: 2, deltaY: 0, precise: false, shift: false)
+        XCTAssertNotEqual(sideways.rotation.radians, 0)
+        let shifted = PilePointer.move(deltaX: 2, deltaY: 0, precise: false, shift: true)
+        let unswapped = PilePointer.move(deltaX: 0, deltaY: 2, precise: false, shift: true)
+        for move in [shifted, unswapped] {
+            XCTAssertEqual(move.magnification, 1)
+            XCTAssertEqual(move.rotation.radians, sideways.rotation.radians, accuracy: 1e-9)
+        }
+        // On the Mac a drag picks a book up; on the iPhone a hold does.
+        #if os(macOS)
+            XCTAssertTrue(PileCarry.picksUpOnDrag)
+        #else
+            XCTAssertFalse(PileCarry.picksUpOnDrag)
+        #endif
+    }
+
+    func testThePointerFindsTheNearestBoxItsRayMeets() throws {
+        // A book lying flat at the origin, 2 × 3 × 0.4 units, turned a quarter turn.
+        let book = Transform(
+            rotation: simd_quatf(angle: .pi / 2, axis: [0, 1, 0])
+                * simd_quatf(angle: -.pi / 2, axis: [1, 0, 0]),
+            translation: [0, 0.2, 0])
+        let size = SIMD3<Float>(2, 3, 0.4)
+        // Straight down onto its top cover, 0.4 units up.
+        let down = try XCTUnwrap(
+            PilePointer.hit(
+                origin: [0, 10, 0], direction: [0, -1, 0], transform: book, size: size))
+        XCTAssertEqual(down, 9.6, accuracy: 1e-4)
+        // Its length runs along x after the turn, so a ray 1.4 units along x still meets it and
+        // one 1.4 units along z misses.
+        XCTAssertNotNil(
+            PilePointer.hit(
+                origin: [1.4, 10, 0], direction: [0, -1, 0], transform: book, size: size))
+        XCTAssertNil(
+            PilePointer.hit(
+                origin: [0, 10, 1.4], direction: [0, -1, 0], transform: book, size: size))
+        // A ray that starts past the box, pointing away, misses it.
+        XCTAssertNil(
+            PilePointer.hit(origin: [0, 10, 0], direction: [0, 1, 0], transform: book, size: size))
+        // The camera's ray through the middle of the view meets a book at the table's middle.
+        let camera = PileCamera()
+        let ray = camera.ray(ndc: .zero, aspect: 0.5)
+        XCTAssertNotNil(
+            PilePointer.hit(
+                origin: ray.origin, direction: ray.direction, transform: book, size: size))
     }
 }

@@ -1,5 +1,6 @@
 import CloudKit
 import SwiftUI
+import TipKit
 
 #if canImport(UIKit)
     import UIKit
@@ -11,6 +12,7 @@ import SwiftUI
 @MainActor
 private func finishLaunching(registerForPushes: () -> Void) {
     let testing = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    if !testing { configureTips() }
     if !testing && !AppModel.shared.isPreview {
         registerForPushes()
         Task { await GenerationController.shared.installWorklistSubscription() }
@@ -40,6 +42,18 @@ private func finishLaunching(registerForPushes: () -> Void) {
             AppModel.shared.selectedTab = .share
         }
     #endif
+}
+
+/// Starts TipKit for the Desk's gesture hints (`DeskTips`). In Debug builds,
+/// `-BookwormsResetTips YES` forgets which hints have shown, and `-BookwormsShowTips YES` shows
+/// every hint whatever its rules, for Simulator checks.
+@MainActor
+private func configureTips() {
+    #if DEBUG
+        if UserDefaults.standard.bool(forKey: "BookwormsResetTips") { try? Tips.resetDatastore() }
+        if UserDefaults.standard.bool(forKey: "BookwormsShowTips") { Tips.showAllTipsForTesting() }
+    #endif
+    try? Tips.configure()
 }
 
 /// Whether a remote notification is the Apple TV's worklist change alert.
@@ -117,7 +131,10 @@ struct BookwormsApp: App {
                     .frame(minWidth: 760, minHeight: 560)
             }
             .defaultSize(width: 1180, height: 820)
-            .commands { BookwormsCommands(model: model, generation: generation) }
+            .commands {
+                BookwormsCommands(model: model, generation: generation)
+                DeskCommands()
+            }
             Settings {
                 MacSettingsView()
                     .environment(model)

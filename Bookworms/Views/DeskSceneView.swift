@@ -112,3 +112,65 @@ final class SceneWindowView: PlatformView {
         arView = nil
     }
 }
+
+#if os(macOS)
+    /// Reports the scroll wheel over its frame, for a view whose SwiftUI layer takes the
+    /// pointer's clicks.
+    ///
+    /// SwiftUI has no scroll wheel modifier, and the gesture layer over the desk's view keeps
+    /// AppKit from sending the wheel to any view under it, so this view reads the wheel with a
+    /// local event monitor while it is in a window. The monitor sees the app's every scroll, so
+    /// it passes on those in other windows, such as sheets, outside its frame, or that
+    /// `onScroll` declines. The view itself takes no events.
+    struct ScrollWheelReader: NSViewRepresentable {
+        /// Called with each scroll over the view and where it is, in the view's points with y
+        /// growing downward, as SwiftUI measures; returns whether it used the scroll.
+        let onScroll: @MainActor (NSEvent, CGPoint) -> Bool
+
+        func makeNSView(context: Context) -> ReaderView { ReaderView(onScroll: onScroll) }
+
+        func updateNSView(_ view: ReaderView, context: Context) { view.onScroll = onScroll }
+
+        static func dismantleNSView(_ view: ReaderView, coordinator: ()) { view.stopMonitoring() }
+
+        @MainActor
+        final class ReaderView: NSView {
+            var onScroll: @MainActor (NSEvent, CGPoint) -> Bool
+            private var monitor: Any?
+
+            init(onScroll: @escaping @MainActor (NSEvent, CGPoint) -> Bool) {
+                self.onScroll = onScroll
+                super.init(frame: .zero)
+            }
+
+            @available(*, unavailable)
+            required init?(coder: NSCoder) { nil }
+
+            override var isFlipped: Bool { true }
+
+            override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+            override func viewDidMoveToWindow() {
+                super.viewDidMoveToWindow()
+                stopMonitoring()
+                guard window != nil else { return }
+                monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) {
+                    [weak self] event in
+                    let used = MainActor.assumeIsolated { self?.handle(event) ?? false }
+                    return used ? nil : event
+                }
+            }
+
+            func stopMonitoring() {
+                if let monitor { NSEvent.removeMonitor(monitor) }
+                monitor = nil
+            }
+
+            private func handle(_ event: NSEvent) -> Bool {
+                guard let window, event.window === window else { return false }
+                let point = convert(event.locationInWindow, from: nil)
+                return bounds.contains(point) && onScroll(event, point)
+            }
+        }
+    }
+#endif
