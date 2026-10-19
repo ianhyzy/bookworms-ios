@@ -636,24 +636,29 @@ final class GenerationTests: XCTestCase {
     /// A run moves a design that stays to the book's new title without a cover download or a
     /// model request, keeping the hash of the cover it comes from, when its face letters the new
     /// title. The cover's host is one that `CoverURLPolicy` refuses, so a download attempt would
-    /// fail the book.
+    /// fail the book. The run's tally counts the moved design, a series copy too, as up to date.
     func testRunsMoveADesignToANewTitleItsFaceLetters() async throws {
         let renamed = LocalRun.book(7, title: "The Lantern Keeper, Revised")
-        let design = LocalRun.design(
-            for: LocalRun.book(7), coverHash: String(repeating: "c", count: 64),
-            generator: "ios-pcc-v1")
-        let run = try LocalRun(books: [renamed], designs: [design])
-        defer { run.remove() }
-        let (status, saved) = try await run.run()
-        XCTAssertEqual(status.phase, "Finished")
-        XCTAssertEqual(status.failed, 0, "The run downloaded no cover")
-        let moved = try XCTUnwrap(saved.first)
-        XCTAssertEqual(saved.count, 1)
-        XCTAssertEqual(moved.workItemHash, LocalRun.workHash(renamed))
-        XCTAssertEqual(moved.coverHash, design.coverHash)
-        XCTAssertEqual(moved.generatorVersion, "ios-pcc-v1")
-        XCTAssertEqual(moved.generatedAt, design.generatedAt)
-        XCTAssertEqual(try run.stored()[7], moved)
+        for provenance in [nil, "series-reuse:9"] {
+            let design = LocalRun.design(
+                for: LocalRun.book(7), coverHash: String(repeating: "c", count: 64),
+                generator: "ios-pcc-v1", provenance: provenance)
+            let run = try LocalRun(books: [renamed], designs: [design])
+            defer { run.remove() }
+            let (status, saved) = try await run.run()
+            XCTAssertEqual(status.phase, "Finished")
+            XCTAssertEqual(status.failed, 0, "The run downloaded no cover")
+            XCTAssertEqual(status.completed, 1)
+            XCTAssertEqual(status.designed, 0)
+            XCTAssertEqual(status.fromSeries, 0)
+            let moved = try XCTUnwrap(saved.first)
+            XCTAssertEqual(saved.count, 1)
+            XCTAssertEqual(moved.workItemHash, LocalRun.workHash(renamed))
+            XCTAssertEqual(moved.coverHash, design.coverHash)
+            XCTAssertEqual(moved.generatorVersion, "ios-pcc-v1")
+            XCTAssertEqual(moved.generatedAt, design.generatedAt)
+            XCTAssertEqual(try run.stored()[7], moved)
+        }
     }
 
     /// A design with the generator's colors that doesn't come from the cover the reader chose is
@@ -721,6 +726,9 @@ final class GenerationTests: XCTestCase {
                 coverHash: source.coverHash, tier: .local)
             let (status, saved) = try await run.run()
             XCTAssertEqual(status.failed, 0)
+            XCTAssertEqual(status.completed, 1)
+            XCTAssertEqual(status.designed, sourceAwaitsFont ? 1 : 0)
+            XCTAssertEqual(status.fromSeries, sourceAwaitsFont ? 0 : 1)
             XCTAssertEqual(saved.count, 1)
             let stored = try XCTUnwrap(try run.stored()[8])
             XCTAssertEqual(stored, saved.first)

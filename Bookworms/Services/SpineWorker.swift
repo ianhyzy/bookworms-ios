@@ -425,7 +425,7 @@ actor SpineWorker {
                     let outcome = try await design(
                         for: book, covers: covers, workHash: workHash, context: context,
                         forced: redesigned != nil, mode: mode)
-                    if case .save(let made, let isNew, let replacing) = outcome {
+                    if case .save(let made, let source, let replacing) = outcome {
                         guard try await store.isStillCurrent(context, book: book) else {
                             return true
                         }
@@ -433,7 +433,7 @@ actor SpineWorker {
                         continuation.yield(.saved(made))
                         bookDesigns[book.id] = made
                         checkedBooks.insert(book.id)
-                        if isNew {
+                        if source == .new {
                             await saveLook(
                                 from: made, for: book, replacing: redesigned?.remakesLook == true)
                         }
@@ -454,13 +454,8 @@ actor SpineWorker {
                         awaitsFont: awaitsFont)
                     snapshot.completed += 1
                     // A saved design moved to the book's new metadata counts as staying.
-                    if case .save(let made, let isNew, _) = outcome {
-                        if isNew {
-                            snapshot.designed += 1
-                        } else if made.isSeriesReuse {
-                            snapshot.fromSeries += 1
-                        }
-                    }
+                    if case .save(_, .new, _) = outcome { snapshot.designed += 1 }
+                    if case .save(_, .seriesCopy, _) = outcome { snapshot.fromSeries += 1 }
                 } catch {
                     try Task.checkCancellation()
                     // Error descriptions can carry a cover URL or quoted book content, which
@@ -512,11 +507,20 @@ actor SpineWorker {
     private enum Outcome {
         /// Leaves this design, iCloud's, in place.
         case keep(SpineDesignV1)
-        /// Saves this design. `isNew` tells whether the run's tier made it from the cover rather
-        /// than copying a saved design or look. `replacing` tells whether it replaces the saved
+        /// Saves this design, from `source`. `replacing` tells whether it replaces the saved
         /// design whatever that design's tier, as one from the cover the reader chose does
         /// (`SpineDesignV1.outlasts(_:replacing:)`).
-        case save(SpineDesignV1, isNew: Bool, replacing: Bool = false)
+        case save(SpineDesignV1, source: Source, replacing: Bool = false)
+
+        /// Where a saved design comes from.
+        enum Source {
+            /// The book's saved design, moved to its new work-item hash.
+            case moved
+            /// A new copy of a series' design or look.
+            case seriesCopy
+            /// The run's tier, from the cover.
+            case new
+        }
 
         var design: SpineDesignV1 {
             switch self {
@@ -603,7 +607,7 @@ actor SpineWorker {
         if let saved, book.chosenCoverURL == nil, !readerChoseCover {
             switch try await savedAction(coverHash: saved.coverHash) {
             case .keep: return .keep(await kept(saved))
-            case .save(let design): return .save(await kept(design), isNew: false)
+            case .save(let design): return .save(await kept(design), source: .moved)
             case .redesign: break
             }
         }
@@ -624,7 +628,7 @@ actor SpineWorker {
                 saved
             ) {
             case (.keep, let saved?): return .keep(await kept(saved))
-            case (.save(let design), _): return .save(await kept(design), isNew: false)
+            case (.save(let design), _): return .save(await kept(design), source: .moved)
             default: break
             }
             // Books in one look group share a design so their spines match on the shelf. A book
@@ -648,12 +652,12 @@ actor SpineWorker {
                         $0.isOutranked(by: reused.tier, awaitingFont: reused.awaitsFont)
                     }) ?? true
             {
-                return .save(reused, isNew: false, replacing: replacing)
+                return .save(reused, source: .seriesCopy, replacing: replacing)
             }
         }
         let made = try await newDesign(
             for: book, cover: cover, workHash: workHash, accountID: context.accountID, mode: mode)
-        return .save(made, isNew: true, replacing: replacing)
+        return .save(made, source: .new, replacing: replacing)
     }
 
     /// Designs `book` at the run's tier.
