@@ -123,7 +123,7 @@ struct BookwormsApp: App {
                     .environment(model)
                     .environment(generation)
             }
-            MenuBarExtra("Bookworms", systemImage: "books.vertical") {
+            MenuBarExtra("Bookworms", image: "menubar.bookworm") {
                 BookwormsMenu()
                     .environment(model)
                     .environment(generation)
@@ -159,10 +159,11 @@ struct RootView: View {
     var body: some View {
         @Bindable var model = model
         TabView(selection: $model.selectedTab) {
-            Tab("Share", systemImage: "square.and.arrow.up", value: .share) { ShareStudioView() }
+            // The custom symbols' sources are in `script/custom-symbols.py`.
+            Tab("Share", image: "tab.share", value: .share) { ShareStudioView() }
             Tab("Library", systemImage: "books.vertical", value: .library) { LibraryView() }
             Tab("Desk", systemImage: "lamp.desk", value: .desk) { DeskView() }
-            Tab("Spines", systemImage: "wand.and.sparkles", value: .spines) { GenerationView() }
+            Tab("Spines", image: "tab.spines", value: .spines) { GenerationView() }
         }
         #if os(macOS)
             // A Mac app lists its sections in a Liquid Glass sidebar rather than a tab bar. The
