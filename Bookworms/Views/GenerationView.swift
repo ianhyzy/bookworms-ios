@@ -85,11 +85,17 @@ struct GenerationView: View {
                 }
             #endif
             #if DEBUG
-                // `-BookwormsShowAccount YES` opens the account sheet for Simulator checks.
+                // `-BookwormsShowAccount YES` opens the account sheet for Simulator checks, and
+                // on the Mac, `-BookwormsShowSettings YES` opens Settings.
                 .onAppear {
                     if UserDefaults.standard.bool(forKey: "BookwormsShowAccount") {
                         showsAccount = true
                     }
+                    #if os(macOS)
+                        if UserDefaults.standard.bool(forKey: "BookwormsShowSettings") {
+                            openSettings()
+                        }
+                    #endif
                 }
             #endif
         }
