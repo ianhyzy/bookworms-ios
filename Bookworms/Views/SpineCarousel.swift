@@ -452,7 +452,8 @@ private struct SpineButton<Label: View>: View {
 #if os(macOS)
     /// What the Mac offers for a book, in its context menu and in the **Library** menu for the
     /// centered book: **Open**, **Open in New Window** (`BookWindow`), **Make Share Image**,
-    /// **Change Cover…**, **Redesign Spine**, and **Copy Title**. In the menu bar, **Open** shows
+    /// **Change Cover…** and **Redesign Spine**, which name the series for a series that shares a
+    /// design, and **Copy Title**. In the menu bar, **Open** shows
     /// its key equivalent, and **Open in New Window** is in the **File** menu instead
     /// (`LibraryCommands`).
     struct BookMenu: View {
@@ -473,9 +474,11 @@ private struct SpineButton<Label: View>: View {
             }
             Divider()
             Button("Make Share Image") { model.share(book) }
-            Button("Change Cover…") { changeCover(book) }
+            // A series that shares a design takes one cover for all its books, as the details say.
+            let series = model.sharesSeriesDesign(book)
+            Button(series ? "Change Series Cover…" : "Change Cover…") { changeCover(book) }
             // A run already redesigns what it finds; **Redesign** waits for it to end.
-            Button(model.sharesSeriesDesign(book) ? "Redesign Spines" : "Redesign Spine") {
+            Button(series ? "Redesign Spines" : "Redesign Spine") {
                 generation.redesign(book)
             }
             .disabled(generation.status.isRunning)
