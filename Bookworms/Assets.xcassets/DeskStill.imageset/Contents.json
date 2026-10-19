@@ -1,18 +1,7 @@
 {
   "images": [
     {
-      "filename": "desk.jpg",
-      "idiom": "universal",
-      "scale": "2x"
-    },
-    {
-      "appearances": [
-        {
-          "appearance": "contrast",
-          "value": "high"
-        }
-      ],
-      "filename": "desk-high.jpg",
+      "filename": "desk.heic",
       "idiom": "universal",
       "scale": "2x"
     }

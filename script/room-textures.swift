@@ -130,12 +130,6 @@ let stillHeight = 640
 /// renders the wood under its 2,700 K lamp.
 let deskLit: [Double] = [140, 72, 12]
 let deskDim: [Double] = [88, 34, 2]
-/// The wall's color halfway down the screen, which the still fades to at its edges, so it sits
-/// on the Desk tab's plain wall without a seam: the middle of `ShelfWallTop` and
-/// `ShelfWallBottom`, and of their High Contrast variants.
-let deskWall: [Double] = [40, 29, 21]
-let deskWallHigh: [Double] = [27, 20, 14]
-
 func smoothstep(_ edge0: Double, _ edge1: Double, _ x: Double) -> Double {
     let t = max(0, min(1, (x - edge0) / (edge1 - edge0)))
     return t * t * (3 - 2 * t)
@@ -143,8 +137,8 @@ func smoothstep(_ edge0: Double, _ edge1: Double, _ x: Double) -> Double {
 
 /// The empty desk seen from above, as the Desk scene sees it: the table's wood, its grain running
 /// up the screen, warm in the lamp's pool a little above the middle and darker toward the edges,
-/// where it fades into `wall`.
-func deskStill(wall: [Double]) -> CGImage {
+/// where it fades out, so it sits on any wall without a seam.
+func deskStill() -> CGImage {
     let source = CGImageSourceCreateWithURL(
         assets.appending(path: "TableWood.imageset/wood.jpg") as CFURL, nil)!
     let wood = CGImageSourceCreateImageAtIndex(source, 0, nil)!
@@ -170,29 +164,35 @@ func deskStill(wall: [Double]) -> CGImage {
             let light = 1 - smoothstep(0, 1.1, pool)
             // A rounded rectangle's distance, so the fade follows the still's edges.
             let edge = pow(pow(abs(dx), 4) + pow(abs(dy), 4), 0.25)
-            let fade = smoothstep(0.62, 0.98, edge)
+            let alpha = 1 - smoothstep(0.62, 0.98, edge)
             for channel in 0..<3 {
                 let lit = deskDim[channel] + (deskLit[channel] - deskDim[channel]) * light
-                let wood = lit * (1 + 0.14 * grain)
-                let value = wood + (wall[channel] - wood) * fade
+                let value = lit * (1 + 0.14 * grain) * alpha
                 pixels[(y * stillWidth + x) * 4 + channel] = UInt8(
                     max(0, min(255, value.rounded())))
             }
-            pixels[(y * stillWidth + x) * 4 + 3] = 255
+            pixels[(y * stillWidth + x) * 4 + 3] = UInt8((alpha * 255).rounded())
         }
     }
     let provider = CGDataProvider(data: Data(pixels) as CFData)!
     return CGImage(
         width: stillWidth, height: stillHeight, bitsPerComponent: 8, bitsPerPixel: 32,
         bytesPerRow: stillWidth * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
-        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
         provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)!
 }
 
+/// Writes HEIF, which keeps the still's transparency at a tenth of a PNG's size.
+func writeHEIC(_ image: CGImage, to url: URL) {
+    let destination = CGImageDestinationCreateWithURL(
+        url as CFURL, UTType.heic.identifier as CFString, 1, nil)!
+    CGImageDestinationAddImage(
+        destination, image, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
+    guard CGImageDestinationFinalize(destination) else { fatalError("Can't write \(url.path)") }
+}
+
 writeJPEG(grain(), to: assets.appending(path: "WallGrain.imageset/grain.jpg"))
-writeJPEG(deskStill(wall: deskWall), to: assets.appending(path: "DeskStill.imageset/desk.jpg"))
-writeJPEG(
-    deskStill(wall: deskWallHigh), to: assets.appending(path: "DeskStill.imageset/desk-high.jpg"))
+writeHEIC(deskStill(), to: assets.appending(path: "DeskStill.imageset/desk.heic"))
 for scale in [2, 3] {
     writePNG(
         softShadow(scale: scale),

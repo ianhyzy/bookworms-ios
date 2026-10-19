@@ -143,7 +143,7 @@ struct EmptyBookcase: View {
 }
 
 /// The empty desk under the lamp: a still baked from the table's wood (`DeskStill`, from
-/// `script/room-textures.swift`), whose edges fade into the Desk tab's wall.
+/// `script/room-textures.swift`), whose edges fade out into the wall behind it.
 struct EmptyDesk: View {
     var body: some View {
         Image(.deskStill)
