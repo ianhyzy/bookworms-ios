@@ -474,26 +474,27 @@ struct ShareStudioView: View {
         }
     }
 
-    /// Draws covers as 3D books when on and flat when off: a round glass button with a cube,
-    /// filled and tinted while on. Year in Books on Square shows no covers, so it disables the
-    /// button, and Desk, whose books are always 3D, hides it.
+    /// Draws covers as 3D books when on and flat when off: a round, untinted glass button whose
+    /// cube is filled while on, so it doesn't read as the screen's main action. Year in Books on
+    /// Square shows no covers, so it disables the button, and Desk, whose books are always 3D,
+    /// hides it.
     private var coverToggle: some View {
-        let isOn = Binding {
-            coverStyle == .threeD
-        } set: {
-            coverStyle = $0 ? .threeD : .flat
-        }
+        let isOn = coverStyle == .threeD
         let help = coverStyleNote ?? "Draws covers as 3D books"
-        return Toggle(isOn: isOn) {
-            Label("3D books", systemImage: isOn.wrappedValue ? "cube.fill" : "cube")
+        return Button {
+            coverStyle = isOn ? .flat : .threeD
+        } label: {
+            Label("3D books", systemImage: isOn ? "cube.fill" : "cube")
                 // Grows the circle to the 44-point touch target.
                 .padding(4)
         }
-        .toggleStyle(.button)
         .labelStyle(.iconOnly)
         .buttonStyle(.glass)
         .buttonBorderShape(.circle)
+        .foregroundStyle(.primary)
         .help(help)
+        .accessibilityAddTraits(.isToggle)
+        .accessibilityValue(isOn ? "On" : "Off")
         .accessibilityHint(help)
         .disabled(template == .yearInBooks && aspect == .square)
     }
