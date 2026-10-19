@@ -27,8 +27,8 @@ Check each item that your change touches. These are the problems CodeRabbit find
 
 ## CodeRabbit
 
-- Before you open a pull request into `main`, run `coderabbit review --agent --base main` in the background (allow 15 minutes) and fix its Critical and Major findings. Run it again on fix commits before you push them. Never pass `--use-credits`.
+- Before you open a pull request into `main`, run `coderabbit review --agent --base main` in the background (allow 15 minutes). Fix its Critical and Major findings and any useful Minor ones. Run it again on fix commits before you push them. Never pass `--use-credits`.
 - CodeRabbit reviews a pull request once, when it opens; fix pushes don't start a review. Open pull requests ready for review, and don't merge while a review runs: merging cancels it.
-- Critical and Major findings block a merge. Minor and Trivial findings never block testing, merging, or installs, but read each one, because the Minor label includes real bugs. Fix a Minor finding in the same pull request when the fix is small; otherwise, list it in a follow-up pull request. Fix a Trivial nitpick in the same pull request only when it's one line.
+- Critical and Major findings block a merge. Minor and Trivial findings never block testing, merging, or installs, but read each one, because the Minor label includes real bugs. Fix useful Minor findings in the same pull request; list any that need larger changes in a follow-up pull request. Fix a Trivial nitpick in the same pull request only when it's one line.
 - When you decline a finding, reply in its thread with the reason. CodeRabbit can withdraw the finding and save the reason as a learning.
 - Comment `@coderabbitai review` at most once per pull request, after a fix that changes credentials, a shared record, or concurrency, or that fixes a Critical or Major finding. Each review uses part of an hourly allowance.
