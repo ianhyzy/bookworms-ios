@@ -376,7 +376,7 @@ struct Bookplate: View {
                 Rectangle().fill(Stationery.rule).frame(height: 0.75)
                     .accessibilityHidden(true)
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Last synced").font(.catalogLabel).foregroundStyle(Stationery.labelInk)
+                    Text(syncLabel).font(.catalogLabel).foregroundStyle(Stationery.labelInk)
                     Spacer()
                     Text(syncLine).monospacedDigit()
                 }
@@ -396,8 +396,10 @@ struct Bookplate: View {
         .padding(.horizontal, 24)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Hardcover account, \(username.map { "@\($0)" } ?? "Hardcover")")
-        .accessibilityValue("Last synced: \(syncLine)")
+        .accessibilityValue("\(syncLabel): \(syncLine)")
     }
+
+    private var syncLabel: String { progress == nil ? "Last synced" : "Downloading" }
 
     private var syncLine: String {
         if let progress { return progress.description }
