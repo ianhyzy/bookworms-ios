@@ -163,14 +163,17 @@ final class ShareRenderTests: XCTestCase {
     }
 
     /// Top Five's fan reaches as far above its middle as below it, so the space over the books
-    /// matches the space under them, stays inside its height, and its turned books reach no
-    /// further than `TopFiveCard.overhang` past its width.
+    /// matches the space under them, stays inside its height, and its turned books, the widest
+    /// covers included, reach no further than `TopFiveCard.overhang` past its width.
     @MainActor
     func testTopFiveFanIsCenteredInItsSpace() {
         let size = CGSize(width: 920, height: 560)
         for style in [ShareCoverStyle.threeD, .flat] {
+            // The last book, an outermost one, is as wide as the style allows (`ShareCover.aspect`).
+            let widest = style == .flat ? 1 : Book3DView.aspects.upperBound
             for count in [1, 3, 5] {
-                let aspects = (0..<count).map { 0.6 + CGFloat($0) * 0.04 }
+                let aspects = (0..<count)
+                    .map { $0 == count - 1 ? widest : 0.6 + CGFloat($0) * 0.04 }
                 let jitters = (0..<count).map { Double($0) / 5 - 0.4 }
                 let cards = TopFiveCard.fan(
                     aspects: aspects, jitters: jitters, style: style, in: size)
