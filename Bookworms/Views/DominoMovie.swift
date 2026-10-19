@@ -99,7 +99,7 @@ struct DominoFinaleCard: View {
 final class DominoRecorder {
     /// What a recording shows: the view's size and bars, and the heading's text.
     struct Layout: Equatable {
-        let viewport: PileViewport
+        var viewport: PileViewport
         let title: String
         let count: Int
         let pages: Int
@@ -695,12 +695,16 @@ final class DominoRecorder {
     // MARK: Image
 
     /// An image of the view as it shows now, in a 9:16 PNG with the heading and the credit,
-    /// for **Share** when no recording of the run was kept. Replaces the previous one.
+    /// for **Share** when no recording of the run was kept. It frames `viewport`, the view the
+    /// chain was planned in, so a wider view's image shows the spread's area
+    /// (`DominoFinale.area(in:)`) also after the sidebar shows or hides, or the view's current
+    /// layout without one. Replaces the previous one.
     ///
     /// - Throws: `PileSnapshotError` when the view or its snapshot is missing or cannot be
     ///   drawn.
-    func snapshot() async throws -> URL {
-        guard let view, let layout else { throw PileSnapshotError.drawingFailed }
+    func snapshot(in viewport: PileViewport?) async throws -> URL {
+        guard let view, var layout else { throw PileSnapshotError.drawingFailed }
+        if let viewport { layout.viewport = viewport }
         let image: UIImage? = await withCheckedContinuation { done in
             view.snapshot(saveToHDR: false) { done.resume(returning: $0) }
         }

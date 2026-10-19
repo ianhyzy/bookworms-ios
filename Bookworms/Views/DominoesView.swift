@@ -264,9 +264,13 @@ struct DominoesView: View {
     /// The heading over the gathered books, in the share images' style, once every book lies
     /// in the spread; it fades in, and stays until **Set up again**. It spans the spread's area
     /// (`DominoFinale.area(in:)`), the whole view on an iPhone and the recording's 9:16 frame in
-    /// a wider view, so it shows where and as large as the video shows it.
+    /// a wider view, so it shows where and as large as the video shows it. The area is the one
+    /// the spread was laid out in, for the view the chain was planned in
+    /// (`DominoScene.plannedViewport`), which the scene keeps while the phase changes.
     @ViewBuilder private var heading: some View {
-        if scene.status.phase == .finished, details.lift == nil, let viewport {
+        if scene.status.phase == .finished, details.lift == nil,
+            let viewport = scene.plannedViewport
+        {
             let area = DominoFinale.area(in: viewport)
             DominoFinaleCard(
                 title: title, count: books.count, pages: DominoFinaleCard.pages(of: books),
@@ -326,7 +330,8 @@ struct DominoesView: View {
         } else {
             Task {
                 do {
-                    files = SharedFiles(urls: [try await recorder.snapshot()])
+                    files = SharedFiles(
+                        urls: [try await recorder.snapshot(in: scene.plannedViewport)])
                 } catch {
                     model.toasts.show(.failure("Couldn't make the image"))
                 }
