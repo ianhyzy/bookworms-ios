@@ -16,9 +16,6 @@ struct GenerationView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var showsAccount = false
     @State private var showsModelInfo = false
-    /// How many books have no cover and draw no design (`AppModel.defaultStyledBookCount()`),
-    /// counted when the library or its designs change.
-    @State private var coverless = 0
     @State private var path = NavigationPath()
     #if os(macOS)
         @Environment(\.openSettings) private var openSettings
@@ -73,9 +70,6 @@ struct GenerationView: View {
             }
             .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
             .task { await generation.refreshModelStatus() }
-            .onChange(of: model.designRevision, initial: true) {
-                coverless = model.defaultStyledBookCount()
-            }
             #if os(iOS)
                 .task { backgroundRefresh = UIApplication.shared.backgroundRefreshStatus }
                 .onChange(of: scenePhase) { _, phase in
@@ -170,20 +164,7 @@ struct GenerationView: View {
         } header: {
             Text("Generation").bookHeading()
         } footer: {
-            VStack(alignment: .leading, spacing: 6) {
-                if let note = Self.coverlessNote(coverless) { Text(note) }
-                // Says why **Generate now** is dimmed.
-                if status.isRunning, !generation.isGenerating {
-                    Text("A background run is in progress.")
-                }
-                // The worklist choice explains why a run may design books the shelf's gauge
-                // doesn't count.
-                if model.account.isSignedIn, !model.isPreview {
-                    Text(
-                        "When your Apple TV lists books to design, Bookworms designs those instead of your Hardcover library."
-                    )
-                }
-            }
+            GenerationFooter()
         }
     }
 
@@ -360,6 +341,37 @@ struct GenerationView: View {
         case .belowLimit: return "Not reached"
         case .approachingLimit: return "Almost reached" + reset
         case .limitReached: return "Reached" + reset
+        }
+    }
+}
+
+/// The Generation section's footer: the books without a cover, why **Generate now** is dimmed,
+/// and where a run's books come from. It counts the books without a cover when the library or
+/// its designs change (`AppModel.designRevision`), so only the footer, not the whole tab,
+/// redraws for each saved design.
+private struct GenerationFooter: View {
+    @Environment(AppModel.self) private var model
+    @Environment(GenerationController.self) private var generation
+    /// How many books have no cover and draw no design (`AppModel.defaultStyledBookCount()`).
+    @State private var coverless = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let note = GenerationView.coverlessNote(coverless) { Text(note) }
+            // Says why **Generate now** is dimmed.
+            if generation.status.isRunning, !generation.isGenerating {
+                Text("A background run is in progress.")
+            }
+            // The worklist choice explains why a run may design books the shelf's gauge
+            // doesn't count.
+            if model.account.isSignedIn, !model.isPreview {
+                Text(
+                    "When your Apple TV lists books to design, Bookworms designs those instead of your Hardcover library."
+                )
+            }
+        }
+        .onChange(of: model.designRevision, initial: true) {
+            coverless = model.defaultStyledBookCount()
         }
     }
 }
