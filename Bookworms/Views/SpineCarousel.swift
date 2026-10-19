@@ -1555,12 +1555,14 @@ private struct ShelfBoard: View {
 /// Side-by-side stacks share one board, since they rest on one line. It reaches a little past
 /// the longest book any stack could hold. Place its front edge on the bottom books' bottom edge.
 ///
-/// The books stand at its front edge, as on the Apple TV's Book Wall, so its front face starts
-/// right below them and its top shows only beside and behind them, where the books cover it.
-/// Its top shows as the stack's camera (`StackCamera`) sees it once the stack has scrolled to
-/// its end, where the thinnest bottom book lies across the eye: a board as deep as the deepest
-/// book, receding from just below the eye, so only a sliver shows. Seen straight on, in 2D, none
-/// does. Each stack's bottom book casts a contact shadow on the top beside its ends.
+/// The bottom books stand flush with its front edge, so its front face starts right below them.
+/// Its top shows only beside them; the books hide the part behind them. In 3D, the top is as deep
+/// on screen as the stack's camera (`StackCamera`) sees it once the stack has scrolled to its
+/// end, where the thinnest bottom book lies across the eye: a board as deep as the deepest book,
+/// receding from just below the eye, so only a sliver shows. It keeps that depth as the stack
+/// scrolls back, where the camera would show more of it, since tracking the scroll would add
+/// work to every frame. Each bottom book casts a contact shadow on the top beside its ends.
+/// Seen straight on, in 2D, no top or shadow shows.
 ///
 /// It scrolls with the books, as part of the scroll view's content, and holds no state, so it
 /// draws once. It draws one wood tile per stack, so the grain keeps one stack's scale however
