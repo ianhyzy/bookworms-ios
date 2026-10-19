@@ -3,14 +3,15 @@ import SwiftUI
 
 /// The books on the desk as dominoes: they stand on end along a winding path in finish order,
 /// evenly spaced (`DominoLayout`), and a cobweb hangs between two books wherever 30 days or more
-/// passed between their finishes (`DominoLayout.cobwebDays`). **Set up dominoes** in the desk's
-/// options menu hands this view the books lying on the desk, which set themselves up from where
-/// they lie (see `DominoScene` and `DominoSetup`). A chain of other books, such as another time
-/// frame's, gets its books ready under a spinner (`SceneLoading`), and they drop into their
-/// places from above the top of the screen.
+/// passed between their finishes (`DominoLayout.cobwebDays`). **Dominoes** in the desk's bar
+/// hands this view the books lying on the desk, which set themselves up from where they lie
+/// (see `DominoScene` and `DominoSetup`). A chain of other books, such as another time frame's,
+/// gets its books ready under a spinner (`SceneLoading`), and they drop into their places from
+/// above the top of the screen.
 ///
 /// A pointing hand floats before the first book, as a finger about to poke it; a tap on the
-/// hand topples the whole chain, tearing the cobwebs as it goes. Should the chain stop, such as
+/// hand topples the whole chain, tearing the cobwebs as it goes. The first time a chain stands,
+/// a tip points at the hand (`PushTip`). Should the chain stop, such as
 /// where a book leans on the next without knocking it over, the hand points at the book to tap
 /// to nudge it on. Tapping or touching and holding a book, before the push, while the chain
 /// falls, or once the books lie gathered, lifts it out of the chain to its details over the
@@ -23,9 +24,11 @@ import SwiftUI
 /// camera over until the next push. **Set up again** sets every book up again from where it
 /// lies.
 /// Collisions play taps and, while the desk's **Sounds** is on, knocks (`ImpactFeedback`).
-/// Once the books have gathered, **Share** offers the run's video, which the scene recorded as
-/// it played (`DominoRecorder`), and its last frame, through the share sheet; without a
-/// recording, it offers an image of the view.
+/// While the scene records a run, from the push until its video is written, a red dot and the
+/// time since the push show under the bar (`RecordingBadge`). Once the books have gathered,
+/// **Share** offers the run's video, which the scene recorded as it played (`DominoRecorder`),
+/// and its last frame, through the share sheet; without a recording, it offers an image of the
+/// view.
 ///
 /// The scene (`DeskScenes.dominoes`) draws in the desk's view, which lives only while Desk is
 /// on screen (`DeskSceneView`), so a hidden tab runs no frame loop, and this view lays the
@@ -118,6 +121,12 @@ struct DominoesView: View {
                 Button("Set up again") { desk.setUpDominoesAgain() }
             }
             .overlay { heading }
+            // Until the heading takes its place over the gathered books.
+            .overlay(alignment: .top) {
+                if scene.status.phase != .finished {
+                    RecordingBadge(recorder: scene.recorder).padding(.top, 8)
+                }
+            }
             .settingUp(scene.loading.isLoading)
             .modifier(
                 LiftedDetailsOverlay(details: details, scene: scene, canvas: canvas) {
@@ -397,5 +406,42 @@ struct DominoesView: View {
                     magnification: pinch?.magnification ?? 1, focus: pinch?.startLocation,
                     in: viewport?.size ?? .zero)
             }
+    }
+}
+
+/// A red dot and the time since the push, while the dominoes' run records, so the reader knows
+/// the run is being filmed. The time is a timer-style `Text`, which the system redraws each
+/// second without updating this view.
+private struct RecordingBadge: View {
+    let recorder: DominoRecorder
+
+    @State private var start: Date?
+
+    var body: some View {
+        Group {
+            if let start {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(.red)
+                        .frame(width: 8, height: 8)
+                    Text(start, style: .timer)
+                        .monospacedDigit()
+                }
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(ShelfPalette.paper)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(.black.opacity(0.45), in: .capsule)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Recording")
+                .transition(.opacity)
+            }
+        }
+        .allowsHitTesting(false)
+        .onChange(of: recorder.isRecording, initial: true) {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                start = recorder.isRecording ? start ?? .now : nil
+            }
+        }
     }
 }

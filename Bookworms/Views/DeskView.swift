@@ -1,9 +1,10 @@
 import SwiftUI
 
 /// The books on a desk under a lamp, in one 3D scene (`DeskScenes`): the Desk scene, which drops
-/// them onto the desk to throw around (`BookPileView`), and the dominoes that **Set up
-/// dominoes** turns them into, which stand on end and topple (`DominoesView`). Desk opens on the
-/// Desk scene; **Back to desk** returns to it with the books where they lie.
+/// them onto the desk to throw around (`BookPileView`), and the dominoes that the bar's
+/// **Dominoes** turns them into, which stand on end and topple (`DominoesView`). Desk opens on
+/// the Desk scene; **Back to desk**, in the same place, returns to it with the books where they
+/// lie.
 ///
 /// The scenes show the read books and current reads finished within their own time frame,
 /// which the bar's middle button chooses (`FrameChip`), apart from Library's. Filtering and
@@ -185,9 +186,9 @@ private struct DeskCanvas: View {
     }
 }
 
-/// Desk's bar: the time frame button in the middle and the options menu, which holds **Set up
-/// dominoes** or **Back to desk**. While a lifted book's details show, they give way to the
-/// details' **Back** and **Share** (`LiftedDetailsOverlay`).
+/// Desk's bar: the time frame button in the middle, **Dominoes** or **Back to desk**, and the
+/// options menu. While a lifted book's details show, they give way to the details' **Back** and
+/// **Share** (`LiftedDetailsOverlay`). Without books to show, the bar holds none of them.
 ///
 /// A modifier of its own, so a book's lift and return update only the bar, not the desk's
 /// body, which sorts the library.
@@ -208,7 +209,7 @@ private struct DeskBar: ViewModifier {
     @Binding var sort: ShelfSort
     /// Whether the desk has books to set up.
     let canSetUp: Bool
-    /// **Set up dominoes** or **Back to desk**, for the scene that shows.
+    /// **Dominoes** or **Back to desk**, for the scene that shows.
     let switchScene: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -228,12 +229,11 @@ private struct DeskBar: ViewModifier {
             .navigationTitle(liftedDetails.lift == nil ? "Desk" : "")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                if liftedDetails.lift == nil {
-                    if let chip {
-                        ToolbarItem(placement: .principal) {
-                            FrameChip(title: chip.title, shown: chip.shown, total: chip.total)
-                        }
+                if liftedDetails.lift == nil, let chip {
+                    ToolbarItem(placement: .principal) {
+                        FrameChip(title: chip.title, shown: chip.shown, total: chip.total)
                     }
+                    ToolbarItem(placement: .topBarLeading) { sceneSwitch }
                     ToolbarItem(placement: .topBarTrailing) { options }
                 }
             }
@@ -241,19 +241,35 @@ private struct DeskBar: ViewModifier {
 
     private var isDominoes: Bool { desk.mode == .dominoes }
 
+    /// Whether **Dominoes** can set up the desk's books, which finish dropping first, since
+    /// the books on the desk set up the chain.
+    private var canSwitch: Bool { isDominoes || (canSetUp && !desk.pile.status.isDropping) }
+
+    /// **Dominoes** in the Desk scene, and **Back to desk** in its place once the dominoes
+    /// stand. The Mac's roomier toolbar shows their names beside their symbols.
+    private var sceneSwitch: some View {
+        Group {
+            if isDominoes {
+                // The Desk tab's lamp, so it reads apart from **Set up again** beside it.
+                Button("Back to desk", systemImage: "lamp.desk", action: switchScene)
+            } else {
+                Button(
+                    "Dominoes", systemImage: "square.stack.3d.forward.dottedline",
+                    action: switchScene
+                )
+                .disabled(!canSwitch)
+                .accessibilityHint("Stands the books on the desk on end, to topple them.")
+            }
+        }
+        #if os(macOS)
+            .labelStyle(.titleAndIcon)
+        #endif
+    }
+
     /// The scene's options, and the order where it changes the scene's books:
     /// Dominoes stand in finish order whatever the sort (`DominoLayout.chain(_:)`).
     private var options: some View {
         Menu("Desk options", systemImage: "ellipsis") {
-            Section {
-                if isDominoes {
-                    Button("Back to desk", systemImage: "arrow.uturn.backward", action: switchScene)
-                } else {
-                    Button("Set up dominoes", systemImage: "books.vertical", action: switchScene)
-                        // The books on the desk set up the chain, so they finish dropping first.
-                        .disabled(!canSetUp || desk.pile.status.isDropping)
-                }
-            }
             Section {
                 // Reduce Motion keeps the camera still, so it offers no Follow.
                 if isDominoes && !reduceMotion {
@@ -276,7 +292,7 @@ private struct DeskBar: ViewModifier {
             Section {
                 // The pile drops its first books first, up to its maximum.
                 if !isDominoes {
-                    Picker("Sort by", selection: $sort) {
+                    Picker("Sort by", systemImage: "arrow.up.arrow.down", selection: $sort) {
                         ForEach(ShelfSort.allCases) { Text($0.title).tag($0) }
                     }
                     .pickerStyle(.menu)
@@ -298,6 +314,10 @@ private struct DeskBar: ViewModifier {
 /// The scenes' time frame and book count, such as "2025" and "39", in a button in the middle of
 /// the navigation bar. The button opens the time frame menu: **All books**, or a **Year** or
 /// **Month** with finished books. Every 3D view shares the choice, and the app saves it.
+///
+/// Where the bar leaves too little room between its buttons, as on an iPhone, the button drops
+/// the calendar, then the books' symbol, then the count, as a long span such as "2009–2026"
+/// needs; VoiceOver and the large content viewer still read the count.
 struct FrameChip: View {
     /// The time frame's name, such as "2025", or the years that every book spans.
     let title: String
@@ -310,27 +330,14 @@ struct FrameChip: View {
     @AppStorage(TimeFrame.pileSettingKey) private var setting = TimeFrame.defaultPileSetting
 
     var body: some View {
-        Menu {
-            options
-        } label: {
-            HStack(spacing: 10) {
-                Label(title, systemImage: "calendar")
-                Label(
-                    total > shown
-                        ? "\(shown.formatted()) of \(total.formatted())" : total.formatted(),
-                    systemImage: "books.vertical")
-                Image(systemName: "chevron.up.chevron.down")
-                    .imageScale(.small)
-                    .foregroundStyle(.secondary)
-            }
-            .labelStyle(.titleAndIcon)
-            .font(.subheadline.weight(.semibold))
-            .monospacedDigit()
-            // A long span and a capped count, such as "2009–2026" and "300 of 412", shrink
-            // rather than wrap at the largest text size.
-            .lineLimit(1)
-            .minimumScaleFactor(0.75)
-            .padding(.horizontal, 6)
+        // Built once for every size, since it reads every book's finish date.
+        let menu = options
+        // A menu in the bar keeps its label's full width, so the bar's room picks the size.
+        ViewThatFits(in: .horizontal) {
+            chip(menu, calendar: true, books: true, count: true)
+            chip(menu, calendar: false, books: true, count: true)
+            chip(menu, calendar: false, books: false, count: true)
+            chip(menu, calendar: false, books: false, count: false)
         }
         // Stops growing at the largest standard size so accessibility sizes leave the bar its
         // room; the large content viewer shows the text at those sizes.
@@ -340,6 +347,46 @@ struct FrameChip: View {
         }
         .accessibilityLabel("Time frame")
         .accessibilityValue("\(title), \(Self.books(shown, of: total))")
+    }
+
+    private func chip(_ menu: some View, calendar: Bool, books: Bool, count: Bool) -> some View {
+        Menu {
+            menu
+        } label: {
+            HStack(spacing: 8) {
+                part(title, systemImage: "calendar", symbol: calendar)
+                if count {
+                    part(
+                        total > shown
+                            ? "\(shown.formatted()) of \(total.formatted())" : total.formatted(),
+                        systemImage: "books.vertical", symbol: books)
+                }
+                Image(systemName: "chevron.up.chevron.down")
+                    .imageScale(.small)
+                    .foregroundStyle(.secondary)
+            }
+            .font(.subheadline.weight(.semibold))
+            .monospacedDigit()
+            .lineLimit(1)
+            #if os(macOS)
+                .padding(.horizontal, 6)
+            #endif
+        }
+        #if os(iOS)
+            // The iPhone's bar draws a menu in its middle as bare text; a capsule shows it opens
+            // a menu, as the Mac's toolbar does. A tinted fill rather than glass, so the bar adds
+            // no blur over the live scene, and small, so it fits between the bar's buttons.
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.capsule)
+            .controlSize(.small)
+        #endif
+    }
+
+    private func part(_ text: String, systemImage: String, symbol: Bool) -> some View {
+        HStack(spacing: 4) {
+            if symbol { Image(systemName: systemImage) }
+            Text(text)
+        }
     }
 
     /// **All books**, and the years and months with finished books, newest first. Choosing one

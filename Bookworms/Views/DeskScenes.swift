@@ -20,8 +20,8 @@ struct DeskHandover {
 /// the Desk scene (`BookPileScene`), the pile of books to grab and throw, and the dominoes
 /// (`DominoScene`) that the desk's books set up.
 ///
-/// **Set up dominoes** (`setUpDominoes(books:)`) hands the books on the desk, as they lie, to the
-/// dominoes, which set themselves up from there. **Back to desk** (`backToDesk(books:tidy:
+/// **Dominoes** in the bar (`setUpDominoes(books:)`) hands the books on the desk, as they lie, to
+/// the dominoes, which set themselves up from there. **Back to desk** (`backToDesk(books:tidy:
 /// periods:)`) hands the dominoes' books back, wherever they lie, standing, fallen, or gathered,
 /// as the desk's arrangement. Each handover swaps the scenes in the view between two frames,
 /// while the desk, the lamp, the books, and the camera stay as they were, so the eye sees one
@@ -222,7 +222,7 @@ final class DeskScenes {
         wake()
     }
 
-    /// **Set up dominoes**: hands the books on the desk to the dominoes as the chain of `books`,
+    /// **Dominoes**: hands the books on the desk to the dominoes as the chain of `books`,
     /// the books the desk drops, which then set themselves up from where they lie, or, with
     /// `reduceMotion`, stand in their places at once. Does nothing before a view shows the desk.
     func setUpDominoes(books: [CloudBook], reduceMotion: Bool) {
@@ -250,7 +250,7 @@ final class DeskScenes {
         mode = .dominoes
     }
 
-    /// Whether **Set up dominoes** hands the desk's books to the dominoes. In Debug builds,
+    /// Whether **Dominoes** hands the desk's books to the dominoes. In Debug builds,
     /// `-BookwormsDominoesFromAbove YES` keeps them back, so the chain stands up from above, as
     /// another time frame's chain does.
     private static var handsBooksOver: Bool {
@@ -297,7 +297,7 @@ final class DeskScenes {
         /// launch.
         private static var setUpOnLaunch = false
 
-        /// Simulator hook: `-BookwormsSetUpDominoes YES` chooses **Set up dominoes** for
+        /// Simulator hook: `-BookwormsSetUpDominoes YES` chooses **Dominoes** for
         /// `books` once, two seconds after the desk's first drop finishes.
         func setUpDominoesOnLaunch(books: [CloudBook], reduceMotion: Bool) async {
             guard !Self.setUpOnLaunch,
