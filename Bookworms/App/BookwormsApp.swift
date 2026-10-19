@@ -184,8 +184,6 @@ struct BookwormsApp: App {
         @AppStorage(MenuBarExtraToggle.key) private var showsMenuBarExtra = true
     #endif
 
-    init() { configureTips() }
-
     var body: some Scene {
         #if os(macOS)
             // One main window; the menu bar item reopens it and keeps generation reachable
