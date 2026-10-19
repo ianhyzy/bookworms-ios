@@ -116,7 +116,7 @@ struct SpineDesignerSettings: View {
                 "\(provider.name) designs spines with your API key, which can give better results than Apple's on-device model. Each new design is one request, billed to your API account. The provider receives each cover, its title and author, and the colors and fonts to choose from. If it rejects the key or model name, or your account runs out of credit, Apple's on-device model designs until you change these settings or \(press) Generate now. The key stays in this \(ThisDevice.name)'s Keychain."
         #else
             return
-                "This model designs spines only when Private Cloud Compute isn't available, before Apple's on-device model. If the provider rejects the key or model name, or the account has no credit, Apple's on-device model or local defaults design until you change these settings or start Generate now. The provider receives each cover, its title and author, and the colors and font families to choose from. Requests are billed to your API account. The key stays in this device's Keychain."
+                "This model designs spines only when Private Cloud Compute isn't available, before Apple's on-device model. If the provider rejects the key or model name, or the account has no credit, Bookworms uses Apple's on-device model or default styling until you change these settings or start Generate now. The provider receives each cover, its title and author, and the colors and font families to choose from. Requests are billed to your API account. The key stays in this device's Keychain."
         #endif
     }
 
