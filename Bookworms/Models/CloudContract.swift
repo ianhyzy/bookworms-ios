@@ -278,6 +278,10 @@ struct CloudBook: Codable, Sendable, Hashable, Identifiable {
     /// TV archive carries it; older archives leave it out, and then a finish date alone marks a
     /// read book (`hasBeenRead`).
     var isRead: Bool? = nil
+    /// Hardcover's shelf for the book (`user_books.status_id`), such as
+    /// `HardcoverClient.wantToReadStatus`. Archives and caches saved before statuses were kept
+    /// leave it out, and so do Apple TV builds that don't download it.
+    var statusID: Int? = nil
     /// Reading progress, 0...1, for current reads.
     var progress: Double? = nil
     /// The start date of a current read as `yyyy-MM-dd`.

@@ -441,6 +441,7 @@ actor HardcoverClient {
 
     /// Downloads a reader's rated books and the books on their Currently Reading, Read, Paused,
     /// and Did Not Finish shelves, highest rated first, 100 per request about a second apart.
+    /// Rated books the reader marked **Ignored** are left out, as in the owner's library.
     ///
     /// Each book carries the reader's own rating and finish date, but no review. A library
     /// larger than `readerLibraryLimit` keeps its highest-rated books. Hardcover leaves out what
@@ -756,10 +757,14 @@ actor HardcoverClient {
         }
         """
 
+    /// Hardcover's `status_id` for **Want to Read**.
+    static let wantToReadStatus = 1
     /// Hardcover's `status_id` for **Currently Reading**.
     private static let currentlyReadingStatus = 2
     /// Hardcover's `status_id` for **Read**.
     private static let readStatus = 3
+    /// Hardcover's `status_id` for **Ignored**, books the reader chose not to see.
+    private static let ignoredStatus = 6
 
     /// The two-letter code of this iPhone's preferred language. Cover choice considers other
     /// editions only in this language or with no recorded language.
@@ -769,15 +774,17 @@ actor HardcoverClient {
     }
 
     /// Converts rows to books the way the Apple TV app does, keeping one row per book: the most
-    /// recently finished. A book keeps every finished read's date in `finishedDates`, and its
-    /// newest read's edition. `previous` holds the account's books from its last sync, by ID, whose
+    /// recently finished. Books the reader marked **Ignored** are left out, as on the Apple TV,
+    /// so a snapshot this app saves to the archive never brings them back there. A book keeps
+    /// its shelf in `statusID`, every finished read's date in `finishedDates`, and its newest
+    /// read's edition. `previous` holds the account's books from its last sync, by ID, whose
     /// covers stay fixed unless an upgrade applies
     /// (`coverURLs(edition:book:otherEditions:editionIsInLanguage:previous:)`).
     private static func normalize(_ rows: [LibraryPage.Row], previous: [Int: CloudBook] = [:])
         -> [CloudBook]
     {
         var unique: [Int: CloudBook] = [:]
-        for row in rows {
+        for row in rows where row.statusID != ignoredStatus {
             let source = row.book
             let read = row.finishedReads?.first
             let finishes = (row.finishedReads ?? []).compactMap(\.finishedAt)
@@ -830,6 +837,7 @@ actor HardcoverClient {
                 // As the Apple TV marks read books: on the Read shelf, or finished at some point.
                 isRead: (row.statusID == readStatus || !finishes.isEmpty
                     || row.lastReadDate != nil) ? true : nil,
+                statusID: row.statusID,
                 progress: isReading
                     ? progress(
                         of: current, pages: row.edition?.pages ?? source.pages,

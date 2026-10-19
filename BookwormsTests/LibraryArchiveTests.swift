@@ -31,6 +31,7 @@ final class LibraryArchiveTests: XCTestCase {
         XCTAssertEqual(mine.books.first?.review, "Loved it.")
         XCTAssertEqual(mine.books.first?.finished, "2026-02-01")
         XCTAssertEqual(mine.books.first?.finishedDates, ["2026-02-01", "2019-07-04"])
+        XCTAssertEqual(mine.books.first?.statusID, 1)
         XCTAssertNil(mine.books.first?.chosenCoverURL)
         // The fields only the Apple TV stores survive the replacement.
         XCTAssertEqual(mine.books.first?.sources, [.hardcover])
@@ -65,12 +66,15 @@ final class LibraryArchiveTests: XCTestCase {
         XCTAssertEqual(
             reencoded.sources.first { $0.accountID == "42" }?.books.first?.finishedDates,
             ["2026-02-01", "2019-07-04"])
-        // An Apple TV build without the list drops it when it re-encodes the archive, and this
-        // app then knows only the newest read.
+        XCTAssertEqual(
+            reencoded.sources.first { $0.accountID == "42" }?.books.first?.statusID, 1)
+        // An Apple TV build without the list or the status drops them when it re-encodes the
+        // archive, and this app then knows only the newest read and no shelf.
         var olderTV = archive
         for source in olderTV.sources.indices {
             for book in olderTV.sources[source].books.indices {
                 olderTV.sources[source].books[book].finishedDates = nil
+                olderTV.sources[source].books[book].statusID = nil
             }
         }
         let olderTVCopy = try JSONDecoder()
@@ -79,6 +83,7 @@ final class LibraryArchiveTests: XCTestCase {
         XCTAssertEqual(stripped?.finished, "2026-02-01")
         XCTAssertNil(stripped?.finishedDates)
         XCTAssertEqual(stripped?.readCount, 1)
+        XCTAssertNil(stripped?.statusID)
         XCTAssertEqual(
             ported.sources.first { $0.accountID == "42" }?.series?.first?.name, "The Stored Series")
         var withSeries = snapshot(accountID: "42", syncedAt: synced.addingTimeInterval(120))
@@ -165,8 +170,8 @@ final class LibraryArchiveTests: XCTestCase {
         }
     }
 
-    /// A Hardcover snapshot as this app writes it, with a reread book that carries a review, a
-    /// chosen cover, and a series link.
+    /// A Hardcover snapshot as this app writes it, with a reread book on Want to Read that
+    /// carries a review, a chosen cover, and a series link.
     private func snapshot(accountID: String, syncedAt: Date) -> CloudSourceSnapshot {
         let book = CloudBook(
             id: 1, title: "New", author: "Author", coverURL: nil,
@@ -175,7 +180,7 @@ final class LibraryArchiveTests: XCTestCase {
                 SeriesMembership(
                     seriesID: 5, name: "The Stored Series", featured: true, compilation: false)
             ],
-            finished: "2026-02-01", finishedDates: ["2026-02-01", "2019-07-04"],
+            finished: "2026-02-01", finishedDates: ["2026-02-01", "2019-07-04"], statusID: 1,
             ratingDistribution: [RatingBucket(rating: 4.5, count: 3)], review: "Loved it.",
             chosenCoverURL: URL(string: "https://assets.hardcover.app/chosen.jpg"),
             seriesLink: SeriesLinkV1(
@@ -277,6 +282,7 @@ private struct TVBook: Codable {
     var sources: [TVSource]?
     var isOwned: Bool?
     var isRead: Bool?
+    var statusID: Int? = nil
     var publicationYear: Int?
     var isReading: Bool?
     var progress: Double?

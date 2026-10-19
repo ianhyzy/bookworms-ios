@@ -595,7 +595,8 @@ final class HardcoverTests: XCTestCase {
                     ],
                     pages: 336,
                     finished: "2025-03-01", finishedDates: ["2025-03-01", "2022-06-10"],
-                    rating: 4.5, isRead: true, communityRating: 4.12, ratingsCount: 250,
+                    rating: 4.5, isRead: true, statusID: 3, communityRating: 4.12,
+                    ratingsCount: 250,
                     ratingDistribution: [
                         RatingBucket(rating: 4, count: 120), RatingBucket(rating: 5, count: 130),
                     ],
@@ -605,15 +606,16 @@ final class HardcoverTests: XCTestCase {
                 CloudBook(
                     id: 303, title: "Someday Soon", author: "Lena Marsh", coverURL: nil,
                     detailCoverURL: nil, publicationYear: 2026, seriesMemberships: [], pages: 280,
-                    ratingsCount: 3),
+                    statusID: 1, ratingsCount: 3),
                 CloudBook(
                     id: 202, title: "Salt and Static", author: "Iris Okafor", coverURL: nil,
                     detailCoverURL: nil, publicationYear: 2024, format: "Read",
                     seriesMemberships: [], pages: 200,
-                    isReading: true, progress: 0.25, started: "2025-04-10", ratingsCount: 0),
+                    isReading: true, statusID: 2, progress: 0.25, started: "2025-04-10",
+                    ratingsCount: 0),
             ])
-        // Only the finished book belongs on the shelf: not the current read, and not the book
-        // on Want to Read.
+        // The Ignored book is left out. Only the finished book belongs on the shelf: not the
+        // current read, and not the book on Want to Read.
         XCTAssertEqual(library.books.filter(\.hasBeenRead).map(\.id), [101])
         // The featured series names the book; the shorter series decides its look.
         XCTAssertEqual(SeriesDesigns.styleSeries(of: library.books[0], link: nil)?.id, 7)
@@ -1181,7 +1183,8 @@ final class HardcoverTests: XCTestCase {
         #"{"access_token":"fictional-new","refresh_token":"fictional-refresh-2","expires_in":604800,"token_type":"Bearer"}"#
 
     /// One fictional page: a book read twice with an HTML review, a current read, a book on Want
-    /// to Read, and an older row for the first book that normalization drops.
+    /// to Read, and two rows that normalization drops: a finished book on Ignored and an older
+    /// row for the first book.
     private static let libraryPage = """
         {"data":{"user_books":[
           {"status_id":3,"last_read_date":"2025-03-02","rating":4.5,
@@ -1223,6 +1226,12 @@ final class HardcoverTests: XCTestCase {
              "cached_contributors":[{"author":{"name":"Lena Marsh"},"contribution":null}],
              "cached_tags":null,"rating":null,"ratings_count":3,"image":null,"book_series":[],"editions":[]},
            "edition":null,"user_book_reads":[],"current_read":[]},
+          {"status_id":6,"last_read_date":"2024-08-01","rating":2,"review":null,
+           "book":{"id":404,"title":"Set Aside","pages":150,"release_year":2020,
+             "cached_contributors":[],"cached_tags":null,"rating":null,"ratings_count":0,
+             "image":null,"book_series":[],"editions":[]},
+           "edition":null,"user_book_reads":[{"finished_at":"2024-08-01","edition":null}],
+           "current_read":[]},
           {"status_id":3,"last_read_date":"2023-01-05","rating":3,"review":"Older read.",
            "book":{"id":101,"title":"The Lantern Keeper: A Novel","pages":320,"release_year":2021,
              "cached_contributors":[],"cached_tags":null,"rating":4.12,"ratings_count":250,
