@@ -21,15 +21,19 @@ enum LibraryTime: Hashable, Sendable {
     /// The spans that **Time** lists above its **Year** menu, the default first.
     static let spans: [LibraryTime] = [.last12Months, .thisYear, .last5Years, .allTime]
 
+    /// The span's name, in the same vocabulary as `TimeFrame.title`.
     var title: String {
         switch self {
-        case .last12Months: "Last 12 Months"
-        case .thisYear: "This Year"
-        case .last5Years: "Last 5 Years"
-        case .allTime: "All Time"
+        case .last12Months: "Last 12 months"
+        case .thisYear: "This year"
+        case .last5Years: "Last 5 years"
+        case .allTime: TimeFrame.lifetime.title
         case .year(let year): String(year)
         }
     }
+
+    /// The span's name in title case, such as "Last 12 Months", for menu items, as the HIG asks.
+    var menuTitle: String { title.capitalized }
 
     /// The books of `books` that the span holds, where `now` falls on a calendar day in
     /// `timeZone`. **All Time** keeps every book in its order. Other spans list books most

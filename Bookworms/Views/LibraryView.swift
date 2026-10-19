@@ -34,10 +34,10 @@ struct LibraryView: View {
         NavigationStack(path: $path) {
             content(read: read, books: books, options: options)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background { ShelfPalette.wall.ignoresSafeArea() }
+                .background { WalnutWall().ignoresSafeArea() }
                 .modifier(LibraryBar(pullOut: pullOut, options: options))
                 .navigationDestination(for: Int.self) { id in
-                    PushedBookDetail(id: id)
+                    PushedBookDetail(id: id, tab: .library)
                         #if os(iOS)
                             .navigationTransition(.zoom(sourceID: id, in: namespace))
                         #endif
@@ -111,7 +111,7 @@ struct LibraryView: View {
         }
     }
 
-    /// Says that the time has no books, and offers **Show All Time**.
+    /// Says that the time has no books, and offers **Show all time**.
     private var noBooksInTime: some View {
         // Scrolls so that at accessibility sizes the actions stay above the footer.
         ScrollView {
@@ -121,7 +121,7 @@ struct LibraryView: View {
                 Text("Books you finish in this time appear here.")
             } actions: {
                 if time != .allTime {
-                    Button("Show All Time") { time = .allTime }
+                    Button("Show all time") { time = .allTime }
                 }
             }
         }
@@ -271,6 +271,10 @@ private struct LibraryBar: ViewModifier {
                     options != nil && !pullOut.showsDetails ? .hidden : .automatic,
                     for: .navigationBar)
             #endif
+            .focusedSceneValue(
+                \.goBack, pullOut.showsDetails ? SceneAction(perform: pullOut.putBack) : nil,
+                in: .library
+            )
             .toolbar {
                 if let book = pullOut.book, pullOut.showsDetails {
                     ToolbarItem(placement: .topBarLeading) {
@@ -292,7 +296,7 @@ private struct LibraryBar: ViewModifier {
     }
 }
 
-/// On the iPhone, the library's name and its status, such as "Last 12 Months · 39 books",
+/// On the iPhone, the library's name and its status, such as "Last 12 months · 39 books",
 /// centered under the caption, with **View options** as a round glass button at the trailing
 /// end, as Mail shows a mailbox's status beside its filter button.
 ///
@@ -367,7 +371,7 @@ private struct LibraryOptions: View {
 
     @ScaledMetric(relativeTo: .body) private var icon: CGFloat = 17
 
-    /// The time and the number of books shown, such as "Last 12 Months · 39 books".
+    /// The time and the number of books shown, such as "Last 12 months · 39 books".
     var status: String { "\(time.title) · \(books)" }
     /// The number of books shown, such as "39 books".
     var books: String { FrameChip.books(count, of: count) }
@@ -410,7 +414,7 @@ private struct LibraryOptions: View {
             }
         }
         Picker("Time", selection: $time) {
-            ForEach(LibraryTime.spans, id: \.self) { Text($0.title).tag($0) }
+            ForEach(LibraryTime.spans, id: \.self) { Text($0.menuTitle).tag($0) }
         }
         .pickerStyle(.inline)
         if !years.isEmpty {
@@ -440,16 +444,23 @@ private struct LibraryOptions: View {
 /// The details of the book with `id`, which Library and Desk push, or why they are missing.
 struct PushedBookDetail: View {
     let id: Int
+    /// The tab whose navigation stack holds the details.
+    let tab: AppTab
     @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        if let book = model.books.first(where: { $0.id == id }) {
-            BookDetailView(book: book)
-        } else {
-            ContentUnavailableView(
-                "Book unavailable", systemImage: "book.closed",
-                description: Text("The latest library no longer includes this book."))
+        Group {
+            if let book = model.books.first(where: { $0.id == id }) {
+                BookDetailView(book: book)
+            } else {
+                ContentUnavailableView(
+                    "Book unavailable", systemImage: "book.closed",
+                    description: Text("The latest library no longer includes this book."))
+            }
         }
+        // Dismissing pops the details off their navigation stack.
+        .focusedSceneValue(\.goBack, SceneAction { dismiss() }, in: tab)
     }
 }
 
@@ -559,19 +570,6 @@ struct RatingStars: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Rated \(rating.formatted()) out of 5")
     }
-}
-
-/// The shelf's walnut palette, from the Apple TV's dark wood shelf.
-enum ShelfPalette {
-    /// The wall's lighter end, at its top.
-    static let wallLight = ColorValue(red: 51, green: 37, blue: 27)
-    static let wall = LinearGradient(
-        colors: [wallLight.color, Color(red: 0.11, green: 0.078, blue: 0.055)],
-        startPoint: .top, endPoint: .bottom)
-    static let board = Color(red: 0.32, green: 0.21, blue: 0.135)
-    static let lamp = Color(red: 1, green: 0.8, blue: 0.56)
-    static let paper = Color(red: 0.95, green: 0.9, blue: 0.82)
-    static let gold = Color(red: 0.98, green: 0.76, blue: 0.36)
 }
 
 /// How the shelf orders books.

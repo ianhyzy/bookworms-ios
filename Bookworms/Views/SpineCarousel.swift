@@ -107,8 +107,8 @@ struct SpineCarousel: View {
             if mode == .stack {
                 LinearGradient(
                     stops: [
-                        .init(color: ShelfPalette.wallLight.color.opacity(0.6), location: 0),
-                        .init(color: ShelfPalette.wallLight.color.opacity(0.45), location: 0.6),
+                        .init(color: Color(.shelfWallTop).opacity(0.6), location: 0),
+                        .init(color: Color(.shelfWallTop).opacity(0.45), location: 0.6),
                         .init(color: .clear, location: 1),
                     ], startPoint: .top, endPoint: .bottom
                 )

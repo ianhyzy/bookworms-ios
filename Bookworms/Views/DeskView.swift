@@ -43,6 +43,8 @@ struct DeskView: View {
         NavigationStack(path: $path) {
             content(shelf, frame: frame)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // The scene's table covers the wall, so the wall's grain and seams would only
+                // blend under every RealityKit frame.
                 .background { ShelfPalette.wall.ignoresSafeArea() }
                 .modifier(
                     DeskBar(
@@ -61,7 +63,7 @@ struct DeskView: View {
                         }
                     }
                 )
-                .navigationDestination(for: Int.self) { PushedBookDetail(id: $0) }
+                .navigationDestination(for: Int.self) { PushedBookDetail(id: $0, tab: .desk) }
         }
         // The walnut backdrop is dark in both appearances, so text and bars use dark styles.
         .environment(\.colorScheme, .dark)
@@ -155,7 +157,7 @@ struct DeskView: View {
 
     /// The books in the chosen order, and in `frame` when it is set.
     private func shownBooks(frame: TimeFrame?) -> [CloudBook] {
-        // The read books, as in Library, and current reads, which **All books** marks with
+        // The read books, as in Library, and current reads, which **All Time** marks with
         // ribbons. Want to Read and other unread shelves stay off.
         var books = model.books.filter { $0.hasBeenRead || $0.isReading == true }
         // A reread shows by its finish in the frame, which can change its place.
@@ -374,7 +376,7 @@ private struct DeskBar: ViewModifier {
 }
 
 /// The scenes' time frame and book count, such as "2025" and "39", in a button in the middle of
-/// the navigation bar. The button opens the time frame menu: **All books**, or a **Year** or
+/// the navigation bar. The button opens the time frame menu: **All Time**, or a **Year** or
 /// **Month** with finished books. Every 3D view shares the choice, and the app saves it.
 ///
 /// Where the bar leaves too little room between its buttons, as on an iPhone, the button drops
@@ -455,7 +457,7 @@ struct FrameChip: View {
         }
     }
 
-    /// **All books**, and the years and months with finished books, newest first. Choosing one
+    /// **All Time**, and the years and months with finished books, newest first. Choosing one
     /// shows that period's books, which the Pile drops in a new pile.
     @ViewBuilder private var options: some View {
         // Reading finish dates parses them, so the chosen frame resolves once, not for each
@@ -468,7 +470,7 @@ struct FrameChip: View {
             setting = $0?.setting ?? ""
         }
         Picker("Books", selection: frame) {
-            Text("All books").tag(TimeFrame?.none)
+            Text(TimeFrame.lifetime.menuTitle).tag(TimeFrame?.none)
         }
         if !periods.years.isEmpty {
             Picker("Year", selection: frame) {

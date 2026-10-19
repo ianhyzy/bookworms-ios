@@ -1,6 +1,7 @@
 import CloudKit
 import SwiftUI
 import TipKit
+import os
 
 #if canImport(UIKit)
     import UIKit
@@ -44,16 +45,28 @@ private func finishLaunching(registerForPushes: () -> Void) {
     #endif
 }
 
-/// Starts TipKit for the Desk's gesture hints (`DeskTips`). In Debug builds,
-/// `-BookwormsResetTips YES` forgets which hints have shown, and `-BookwormsShowTips YES` shows
-/// every hint whatever its rules, for Simulator checks.
+/// Configures TipKit once per launch, before any view shows a tip, so each area only adds its
+/// tips. The tips' display state lives in TipKit's default datastore in the app's container.
+///
+/// Debug builds accept `-BookwormsTips <show|hide|reset>`: `show` shows every tip whatever its
+/// rules, `hide` hides them all for screenshots, and `reset` forgets which tips were shown.
 @MainActor
 private func configureTips() {
     #if DEBUG
-        if UserDefaults.standard.bool(forKey: "BookwormsResetTips") { try? Tips.resetDatastore() }
-        if UserDefaults.standard.bool(forKey: "BookwormsShowTips") { Tips.showAllTipsForTesting() }
+        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        switch arguments["BookwormsTips"] as? String {
+        case "show": Tips.showAllTipsForTesting()
+        case "hide": Tips.hideAllTipsForTesting()
+        case "reset": try? Tips.resetDatastore()
+        default: break
+        }
     #endif
-    try? Tips.configure()
+    do {
+        try Tips.configure()
+    } catch {
+        Logger(subsystem: "gay.ian.Bookworms.iOS", category: "tips")
+            .error("TipKit setup failed: \(error.localizedDescription, privacy: .public)")
+    }
 }
 
 /// Whether a remote notification is the Apple TV's worklist change alert.
@@ -131,6 +144,7 @@ struct BookwormsApp: App {
                     .frame(minWidth: 760, minHeight: 560)
             }
             .defaultSize(width: 1180, height: 820)
+            // Each area's menu commands, one line each (see `FocusedActions.swift`).
             .commands {
                 BookwormsCommands(model: model, generation: generation)
                 DeskCommands()
@@ -140,7 +154,7 @@ struct BookwormsApp: App {
                     .environment(model)
                     .environment(generation)
             }
-            MenuBarExtra("Bookworms", systemImage: "books.vertical") {
+            MenuBarExtra("Bookworms", image: "menubar.bookworm") {
                 BookwormsMenu()
                     .environment(model)
                     .environment(generation)
@@ -176,29 +190,17 @@ struct RootView: View {
     var body: some View {
         @Bindable var model = model
         TabView(selection: $model.selectedTab) {
-            Tab("Share", systemImage: "square.and.arrow.up", value: .share) { ShareStudioView() }
-            // On a Mac, Library and Desk set their own tint, which keeps the sidebar's lamp tint
-            // out of their account sheets, which follow the system appearance.
-            Tab("Library", systemImage: "books.vertical", value: .library) {
-                LibraryView()
-                    #if os(macOS)
-                        .tint(.accentColor)
-                    #endif
-            }
-            Tab("Desk", systemImage: "lamp.desk", value: .desk) {
-                DeskView()
-                    #if os(macOS)
-                        .tint(.accentColor)
-                    #endif
-            }
-            Tab("Spines", systemImage: "wand.and.sparkles", value: .spines) { GenerationView() }
+            // The custom symbols' sources are in `script/custom-symbols.py`.
+            Tab("Share", image: "tab.share", value: .share) { ShareStudioView() }
+            Tab("Library", systemImage: "books.vertical", value: .library) { LibraryView() }
+            Tab("Desk", systemImage: "lamp.desk", value: .desk) { DeskView() }
+            Tab("Spines", image: "tab.spines", value: .spines) { GenerationView() }
         }
         #if os(macOS)
-            // A Mac app lists its sections in a Liquid Glass sidebar rather than a tab bar.
+            // A Mac app lists its sections in a Liquid Glass sidebar rather than a tab bar. The
+            // sidebar marks the selected row in the person's accent color, as other Mac apps
+            // do; Library and Desk tint only their own content with the lamp's color.
             .tabViewStyle(.sidebarAdaptable)
-            // While Library or Desk shows, the sidebar marks its row in their lamp's color. An
-            // iPhone's tab bar turns dark over them instead (see `DeskView`).
-            .tint([.library, .desk].contains(model.selectedTab) ? ShelfPalette.lamp : nil)
         #endif
         .environment(\.fullSizeShareImage, $fullSizeShareImage)
         .overlay {
@@ -207,8 +209,7 @@ struct RootView: View {
             }
         }
         // Hardcover is the library's own source, so each launch without a working sign-in, and
-        // a sign-in that stops working, offers it over whichever tab shows. Outside the Mac's
-        // tint, so the sheet follows the system appearance.
+        // a sign-in that stops working, offers it over whichever tab shows.
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
         #if os(macOS)
             // Grouped forms match the iPhone's inset sections instead of the Mac's columns.

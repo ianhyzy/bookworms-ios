@@ -60,7 +60,14 @@ final class TimeFrameTests: XCTestCase {
 
     func testTitles() {
         XCTAssertEqual(TimeFrame.year(2025).title, "2025")
-        XCTAssertEqual(TimeFrame.lifetime.title, "Lifetime")
+        XCTAssertEqual(TimeFrame.lifetime.title, "All time")
+        // Library names its every-book span as Desk and Share do.
+        XCTAssertEqual(LibraryTime.allTime.title, TimeFrame.lifetime.title)
         XCTAssertTrue(TimeFrame.month(year: 2025, month: 8).title.contains("2025"))
+        // Menu items take title case.
+        XCTAssertEqual(TimeFrame.lifetime.menuTitle, "All Time")
+        let menu = LibraryTime.spans.map(\.menuTitle)
+        XCTAssertEqual(menu, ["Last 12 Months", "This Year", "Last 5 Years", "All Time"])
+        XCTAssertEqual(LibraryTime.year(2025).menuTitle, "2025")
     }
 }
