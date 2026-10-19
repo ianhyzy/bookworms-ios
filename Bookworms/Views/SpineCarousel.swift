@@ -120,18 +120,6 @@ struct SpineCarousel: View {
                 .accessibilityHidden(true)
             }
         }
-        .background {
-            // A pool of warm light behind the middle of the stack, larger than the carousel so its
-            // falloff never meets an edge. The shelf's lamp lights the bookcase instead.
-            if mode == .stack {
-                RadialGradient(
-                    colors: [ShelfPalette.lamp.opacity(0.22), .clear], center: .center,
-                    startRadius: 0, endRadius: 320
-                )
-                .frame(width: 700, height: 700)
-                .accessibilityHidden(true)
-            }
-        }
     }
 
     /// Stack, in as many side-by-side stacks as the width holds at full scale, such as in a wide
@@ -150,9 +138,22 @@ struct SpineCarousel: View {
         // Where each run starts; the first `books.count % columns` runs take one more book.
         let bound = { ($0 * books.count + columns - 1) / columns }
         let runs = (0..<columns).map { Array(books[bound($0)..<bound($0 + 1)]) }
+        let track = arrangement.track(of: runs)
+        // The middle of each stack across the carousel.
+        let centers = runs.indices.map { room + (CGFloat($0) + 0.5) * arrangement.width }
         return stackScroll(
-            arrangement.track(of: runs), arrangement: arrangement, inset: room,
-            camera: style == .threeD ? StackCamera.distance(viewing: size) : nil, in: size)
+            track, arrangement: arrangement, inset: room,
+            camera: style == .threeD ? StackCamera.distance(viewing: size) : nil, in: size,
+            board: StackBoard(
+                arrangement: arrangement, inset: room, bottoms: runs.compactMap(\.last))
+        )
+        // A pool of warm light behind the stack whose book the caption names, larger than the
+        // carousel so its falloff never meets an edge. The shelf's lamp lights the bookcase
+        // instead.
+        .background {
+            StackLamp(
+                track: track, centers: centers, height: size.height, centeredID: $centeredID)
+        }
     }
 
     /// A scroll view `size` big of `track`'s stacks, side by side, each `arrangement.width` wide,
@@ -160,7 +161,7 @@ struct SpineCarousel: View {
     /// straight on.
     private func stackScroll(
         _ track: SpineTrack, arrangement: StackArrangement, inset: CGFloat, camera: CGFloat?,
-        in size: CGSize
+        in size: CGSize, board: StackBoard
     ) -> some View {
         // A lazy stack builds only the pages within its scroll view's bounds. A spine overhangs
         // its page by up to half its thickness, and toward the ends of a 3D stack, a book's top
@@ -240,6 +241,8 @@ struct SpineCarousel: View {
                                 isOut: track.pages[page].contains { $0.id == out }))
                     }
                 }
+                // Behind the books, so a book that slides out over it draws in front.
+                .background(alignment: .topLeading) { board.offset(y: track.length) }
                 Color.clear.frame(height: track.trailingSpace(viewport: size.height) + bleed)
             }
         }
@@ -1232,14 +1235,25 @@ private struct BookcaseBay: View {
                             .init(color: .black.opacity(0.4), location: 1),
                         ], startPoint: .top, endPoint: .bottom)
                 }
-            // The board's top, darker toward the back, and light enough in front for the books'
-            // contact shadows to show.
+            ShelfBoard(tile: tile)
+        }
+        .frame(width: tile, height: tile)
+    }
+}
+
+/// A walnut board seen from just above, one wood `tile` wide at most: its top, darker toward
+/// the back and light enough in front for the books' contact shadows to show, its front edge,
+/// lit along its top, and its shadow on the wall below.
+private struct ShelfBoard: View {
+    let tile: CGFloat
+
+    var body: some View {
+        VStack(spacing: 0) {
             LinearGradient(
                 colors: [ShelfPalette.board.mix(with: .black, by: 0.35), ShelfPalette.board],
                 startPoint: .top, endPoint: .bottom
             )
             .frame(height: Bookcase.surface)
-            // The board's front edge, lit along its top.
             WoodGrain(tile: tile, shade: 0.4)
                 .overlay {
                     LinearGradient(
@@ -1252,7 +1266,71 @@ private struct BookcaseBay: View {
                 .frame(height: Bookcase.lip)
             Bookcase.dropShadow
         }
-        .frame(width: tile, height: tile)
+    }
+}
+
+/// The board under **Stack**, below the stacks' bottom books, so the stacks rest on it rather
+/// than over the empty wall. Side-by-side stacks share one board, since they rest on one line. It
+/// reaches a little past the longest book any stack could hold, and each stack's bottom book
+/// casts a contact shadow on it. The books lie a little back from its front edge, so its top
+/// shows below them.
+///
+/// It scrolls with the books, as part of the scroll view's content, and holds no state, so it
+/// draws once.
+private struct StackBoard: View {
+    let arrangement: StackArrangement
+    /// How far the first stack starts in from the carousel's leading edge.
+    let inset: CGFloat
+    /// Each stack's bottom book.
+    let bottoms: [CloudBook]
+
+    var body: some View {
+        let reach = CGFloat(BookShape.longest) * arrangement.scale + 2 * StackArrangement.margin
+        let start = inset + max(0, (arrangement.width - reach) / 2)
+        let width = CGFloat(bottoms.count) * arrangement.width - 2 * (start - inset)
+        ShelfBoard(tile: width)
+            .frame(width: width)
+            .overlay(alignment: .topLeading) {
+                ForEach(bottoms.indices, id: \.self) { column in
+                    let book = bottoms[column]
+                    let length = arrangement.spine(of: book).width
+                    ContactShadow(width: length)
+                        .position(
+                            x: inset + CGFloat(column) * arrangement.width
+                                + arrangement.leading(of: book) + length / 2 - start,
+                            y: 0)
+                }
+            }
+            .padding(.leading, start)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
+/// The pool of warm light behind **Stack**, centered on the stack whose book the caption names,
+/// so beside other stacks it marks which one that is. It glides to another stack when the
+/// caption's book moves there, or moves at once with Reduce Motion on. With one stack, it never
+/// reads `centeredID`, so scrolling never updates it.
+private struct StackLamp: View {
+    let track: SpineTrack
+    /// The middle of each stack across the carousel.
+    let centers: [CGFloat]
+    /// The carousel's height, whose middle the pool lights.
+    let height: CGFloat
+    @Binding var centeredID: Int?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let column = centers.count > 1 ? track.column(of: centeredID) : 0
+        RadialGradient(
+            colors: [ShelfPalette.lamp.opacity(0.22), .clear], center: .center, startRadius: 0,
+            endRadius: 320
+        )
+        .frame(width: 700, height: 700)
+        .position(x: centers.indices.contains(column) ? centers[column] : 0, y: height / 2)
+        .animation(reduceMotion ? nil : .smooth(duration: SpineCarousel.glide), value: column)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 

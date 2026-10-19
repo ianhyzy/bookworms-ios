@@ -498,6 +498,20 @@ private struct ShelfCaption: View {
     @ScaledMetric(relativeTo: .title3) private var height: CGFloat = 120
     @Environment(\.dynamicTypeSize) private var typeSize
 
+    // The Mac's text styles are smaller than the iPhone's, and its window is read from farther
+    // away, so the caption steps each style up there.
+    #if os(macOS)
+        private static let positionFont = Font.callout.weight(.medium)
+        private static let titleFont = Font.title2.weight(.semibold)
+        private static let authorFont = Font.body
+        private static let detailsFont = Font.body
+    #else
+        private static let positionFont = Font.caption2.weight(.medium)
+        private static let titleFont = Font.title3.weight(.semibold)
+        private static let authorFont = Font.subheadline
+        private static let detailsFont = Font.footnote
+    #endif
+
     var body: some View {
         let index = books.firstIndex { $0.id == centeredID } ?? 0
         let book = books[index]
@@ -505,20 +519,20 @@ private struct ShelfCaption: View {
             // The position is decorative, so accessibility sizes give its line to the title.
             if !typeSize.isAccessibilitySize {
                 Text("\(index + 1) of \(books.count)")
-                    .font(.caption2.weight(.medium))
+                    .font(Self.positionFont)
                     .monospacedDigit()
                     // Dimmer than the title, and above 4.5:1 contrast on the walnut wall.
                     .foregroundStyle(ShelfPalette.paper.opacity(0.6))
                     .accessibilityHidden(true)
             }
             BookText(book.title, of: book)
-                .font(.title3.weight(.semibold))
+                .font(Self.titleFont)
                 .fontDesign(.serif)
                 .lineLimit(2)
                 .layoutPriority(1)
                 .accessibilityAddTraits(.isHeader)
             Text(book.author)
-                .font(.subheadline)
+                .font(Self.authorFont)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             let finished = book.finishedDate.map {
@@ -548,7 +562,7 @@ private struct ShelfCaption: View {
                     stars
                 }
             }
-            .font(.footnote)
+            .font(Self.detailsFont)
             .foregroundStyle(.secondary)
         }
         .multilineTextAlignment(.center)
