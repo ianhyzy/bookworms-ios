@@ -271,22 +271,22 @@ struct TopFiveCard: View {
             aspects.count == 1
             ? min(size.height * 0.88, size.width * 0.86 / aspects[0])
             : min(size.height * 0.78, size.width * 0.55)
-        // An outer book, at 0.82 of the lead height and turned about 21 degrees, reaches up to
-        // 0.5 lead heights from its center with the widest 3D book, or 0.53 with the widest flat
-        // cover (`ShareCover.aspect`). This spacing keeps the outermost slot (2) within
+        // An outer book, at 0.82 of the lead height and turned at most 15.75 degrees, reaches up
+        // to 0.48 lead heights from its center with the widest 3D book, or 0.51 with the widest
+        // flat cover (`ShareCover.aspect`). This spacing keeps the outermost slot (2) within
         // `overhang` of the fan's width, and so inside the card.
-        let reach: CGFloat = style == .flat ? 0.53 : 0.5
+        let reach: CGFloat = style == .flat ? 0.51 : 0.48
         let spacing = min(
             size.width * 0.2, (size.width / 2 + overhang - reach * leadHeight) / 2)
         let cards = aspects.indices.map { index in
             let slot = slots[index] - middle
             let height = leadHeight * (index == 0 ? 1 : 0.82)
-            let turn = Double(slot) * 10 + jitters[index] * 2
+            let turn = Double(slot) * 7.5 + jitters[index] * 1.5
             let angle = abs(turn) * .pi / 180
             return (
                 x: slot * spacing, height: height, turn: turn,
                 // In proportion to the books, so a small fan curves as a large one does.
-                drop: (slot * slot * 0.035 + (index == 0 ? 0 : 0.06)) * leadHeight,
+                drop: (slot * slot * 0.026 + (index == 0 ? 0 : 0.06)) * leadHeight,
                 // How far the turned book reaches above and below its center.
                 half: (height * aspects[index] * sin(angle) + height * cos(angle)) / 2
             )
