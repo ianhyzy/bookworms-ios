@@ -318,7 +318,8 @@ struct TopFiveCard: View {
                     ShareCover(
                         book: book, look: input.look(for: book), cover: input.covers[book.id],
                         style: input.coverStyle, height: card.height,
-                        yaw: 0.36 + jitters[index] * 0.12, pitch: -0.1
+                        yaw: 0.36 + jitters[index] * 0.12, pitch: -0.1,
+                        roll: card.turn * .pi / 180
                     )
                     .rotationEffect(.degrees(card.turn))
                     // After the turn, so every book's shadow falls straight down from one light.
