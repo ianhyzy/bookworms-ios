@@ -198,8 +198,10 @@ struct ShareStudioView: View {
         // A newer design alone keeps the image shareable while the render loop draws it.
         let isPending = renderedRequest?.options != request.options
         #if os(macOS)
-            // The commands dim without an image and while a newer one is on its way.
-            let shownCommands = image == nil || isPending ? nil : commands
+            // The commands dim without an image, while a newer one is on its way, and while one
+            // of the tab's sheets, a window of its own, covers the image.
+            let shownCommands =
+                image == nil || isPending || filmsPile || showsAccount ? nil : commands
         #endif
         NavigationStack {
             if model.library == nil {

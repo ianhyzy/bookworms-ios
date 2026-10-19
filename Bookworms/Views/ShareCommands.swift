@@ -7,7 +7,8 @@
     /// which shows or hides the studio's settings.
     ///
     /// They act on the image the Share tab shows in the key window (`ShareStudioView`), and dim
-    /// while another tab shows or while a newer image is on its way.
+    /// while another tab shows, while a newer image is on its way, and while one of the tab's
+    /// sheets covers it.
     struct ShareCommands: Commands {
         @FocusedValue(\.copyShareImage) private var copy
         @FocusedValue(\.saveShareImage) private var save
