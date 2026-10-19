@@ -1,0 +1,24 @@
+{
+  "images": [
+    {
+      "filename": "desk.jpg",
+      "idiom": "universal",
+      "scale": "2x"
+    },
+    {
+      "appearances": [
+        {
+          "appearance": "contrast",
+          "value": "high"
+        }
+      ],
+      "filename": "desk-high.jpg",
+      "idiom": "universal",
+      "scale": "2x"
+    }
+  ],
+  "info": {
+    "author": "xcode",
+    "version": 1
+  }
+}
