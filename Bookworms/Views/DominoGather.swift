@@ -13,11 +13,13 @@ extension DominoFinale {
     /// How long after the first drop the last drop due in the spread's order starts, before
     /// drops wait for the books under them.
     static let dropSpread: Float = 0.4
-    /// The lowest a book lifts, how far above its place a book hovers before it drops, and the
-    /// most its height changes across the whole crossing while it neither climbs over nor
-    /// clears another book, in units.
+    /// The lowest a book lifts, and how far above its place a book hovers before it drops, in
+    /// units.
     static let liftFloor: Float = 1.5
     static let hoverHeight: Float = 1.5
+    /// How steeply a book climbs to pass over another, and comes down after, as the height it
+    /// would change over a whole crossing at that pace, in units: a book that must climb more
+    /// steeply starts climbing sooner.
     static let steepest: Float = 6
     /// The least gap between books that pass over and under each other in the air, in units.
     static let airGap: Float = 0.1
@@ -27,7 +29,7 @@ extension DominoFinale {
     ///
     /// Every book lifts straight up off the desk at once, turning to lie level, each to its
     /// own height: a book that lay on another rises higher than it, and books that lay close
-    /// to each other rise to heights at least a book's thickness apart (`airGap`). The books
+    /// to each other rise to heights at least their thicknesses and `airGap` apart. The books
     /// then cross together, along straight lines across the table, to over their places in
     /// the spread spread a little wider (`staging`), turning to lie as their places do. Books
     /// that come close as they cross pass at heights apart: taking the books from the lowest
