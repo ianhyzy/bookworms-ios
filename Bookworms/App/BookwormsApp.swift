@@ -19,47 +19,48 @@ private func finishLaunching(registerForPushes: () -> Void) {
         Task { await GenerationController.shared.installWorklistSubscription() }
     }
     #if DEBUG
-        // `-BookwormsShelfMode <stack|shelf>` opens Library, and `pile` opens Desk.
-        // `-BookwormsTab <share|library|desk|spines>` opens that tab. Only launch arguments
-        // count: Library saves its mode under the same key.
-        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
-        if !testing, let mode = arguments["BookwormsShelfMode"] as? String {
-            AppModel.shared.selectedTab = mode == "pile" ? .desk : .library
-        }
-        if !testing, let tab = (arguments["BookwormsTab"] as? String).flatMap(AppTab.init) {
-            AppModel.shared.selectedTab = tab
-        }
-        // `-BookwormsGenerateOnLaunch YES` starts a run for Simulator checks, and
-        // `-BookwormsShowSpines YES` opens the Spines tab without one.
-        if !testing && UserDefaults.standard.bool(forKey: "BookwormsShowSpines") {
-            AppModel.shared.selectedTab = .spines
-        }
+        if !testing, let tab = launchArgumentTab() { AppModel.shared.selectedTab = tab }
+        // `-BookwormsGenerateOnLaunch YES` starts a run for Simulator checks.
         if !testing && UserDefaults.standard.bool(forKey: "BookwormsGenerateOnLaunch") {
-            AppModel.shared.selectedTab = .spines
             GenerationController.shared.generateNow()
-        }
-        // `-BookwormsShareTemplate <name>` opens the Share tab; see `ShareStudioView`.
-        if !testing && UserDefaults.standard.string(forKey: "BookwormsShareTemplate") != nil {
-            AppModel.shared.selectedTab = .share
         }
     #endif
 }
+
+#if DEBUG
+    /// The tab Debug launch arguments open, or `nil` when none chooses one. The last that
+    /// applies wins:
+    /// - `-BookwormsShelfMode <stack|shelf>` opens Library, and `pile` opens Desk. Only launch
+    ///   arguments count, since Library saves its mode under the same key.
+    /// - `-BookwormsTab <share|library|desk|spines>` opens that tab.
+    /// - `-BookwormsShowSpines YES` and `-BookwormsGenerateOnLaunch YES` open Spines.
+    /// - `-BookwormsShareTemplate <name>` opens Share; see `ShareStudioView`.
+    private func launchArgumentTab() -> AppTab? {
+        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        let defaults = UserDefaults.standard
+        var tab: AppTab?
+        if let mode = arguments["BookwormsShelfMode"] as? String {
+            tab = mode == "pile" ? .desk : .library
+        }
+        if let named = (arguments["BookwormsTab"] as? String).flatMap(AppTab.init) { tab = named }
+        if defaults.bool(forKey: "BookwormsShowSpines")
+            || defaults.bool(forKey: "BookwormsGenerateOnLaunch")
+        {
+            tab = .spines
+        }
+        if defaults.string(forKey: "BookwormsShareTemplate") != nil { tab = .share }
+        return tab
+    }
+#endif
 
 #if os(macOS)
     /// Whether a Debug launch argument chose the first tab (`finishLaunching`), which the window's
     /// saved tab then leaves alone.
     private let launchChoosesTab: Bool = {
         #if DEBUG
-            let arguments = UserDefaults.standard.volatileDomain(
-                forName: UserDefaults.argumentDomain)
-            let keys = [
-                "BookwormsShelfMode", "BookwormsTab", "BookwormsShowSpines",
-                "BookwormsGenerateOnLaunch",
-                "BookwormsShareTemplate",
-            ]
-            return keys.contains { arguments[$0] != nil }
+            launchArgumentTab() != nil
         #else
-            return false
+            false
         #endif
     }()
 #endif
