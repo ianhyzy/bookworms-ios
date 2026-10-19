@@ -318,9 +318,10 @@ struct ShareStudioView: View {
             #else
                 if isPinned {
                     settingsForm(hasNoBooks: hasNoBooks)
-                        // The form scrolls beneath the preview, which keeps its size, below a
-                        // hard edge, as under an opaque bar.
-                        .scrollEdgeEffectStyle(.hard, for: .top)
+                        // The form scrolls beneath the preview, which keeps its size. The
+                        // preview's blotter is opaque and hides the rows there, so the form
+                        // draws no edge effect that it would only cover.
+                        .scrollEdgeEffectHidden(true, for: .top)
                         .safeAreaBar(edge: .top) {
                             stage(isPending: isPending, hasNoBooks: hasNoBooks)
                                 .frame(height: stageHeight)
