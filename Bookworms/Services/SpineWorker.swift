@@ -16,8 +16,8 @@ enum RunMode: Sendable {
 /// The generator's progress, as the Spines tab and the continued-processing activity show it.
 ///
 /// The counts cover the whole run, across the passes that start again when the work changes, so
-/// `completed + failed + queue` is the run's work as known, which grows only when a later pass
-/// finds more books. The last run's outcome is saved across launches, because the charging task
+/// `completed + failed + queue` is the run's work as known, which changes only when a later pass
+/// finds more or fewer books. The last run's outcome is saved across launches, because the charging task
 /// usually runs in a process that iOS ends before the user opens the app.
 struct WorkerSnapshot: Sendable, Codable {
     var isRunning = false
@@ -45,6 +45,8 @@ struct WorkerSnapshot: Sendable, Codable {
     /// The time left after the pass's latest book, in seconds
     /// (`timeLeft(remaining:durations:elapsed:previous:)`).
     var timeLeft: TimeInterval?
+    /// The bar's `fraction` and the books done when the current pass began.
+    var passStart = (fraction: 0.0, done: 0)
 
     // The model status is read fresh, and a saved snapshot describes a finished run.
     private enum CodingKeys: String, CodingKey {
@@ -90,6 +92,15 @@ extension WorkerSnapshot {
     /// or the run stops.
     var designingBook: CloudBook? {
         isRunning && phase == "Designing spines" ? currentBook : nil
+    }
+
+    /// The bar's fraction of the run's work. Each pass continues from the fraction the run had
+    /// reached, so the bar never moves backward when a later pass finds more books; the count
+    /// shows the larger total.
+    var fraction: Double {
+        let done = completed + failed - passStart.done
+        guard done + queue > 0 else { return passStart.fraction }
+        return passStart.fraction + (1 - passStart.fraction) * Double(done) / Double(done + queue)
     }
 
     /// The run's progress in a line: "Designing 12 of 48" while a book is designed, the phase
@@ -362,6 +373,7 @@ actor SpineWorker {
         // The counts carry over from earlier passes, and the queue until this pass finds its own.
         snapshot.phase = "Checking the library"
         snapshot.timeLeft = nil
+        snapshot.passStart = (snapshot.fraction, snapshot.completed + snapshot.failed)
         bookDesigns = [:]
         checkedBooks = []
         lookGroups = [:]

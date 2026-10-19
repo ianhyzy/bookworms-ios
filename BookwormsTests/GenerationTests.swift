@@ -397,6 +397,7 @@ final class GenerationTests: XCTestCase {
                 detailCoverURL: nil),
             startedAt: now, durations: [12, 14, 16], timeLeft: 540)
         XCTAssertEqual(run.headline, "Designing 12 of 48")
+        XCTAssertEqual(run.fraction, 11.0 / 48)
         XCTAssertEqual(
             run.tally,
             ["6 new designs", "3 from a series", "1 up to date", "1 failed"])
@@ -424,6 +425,15 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(
             finished.headline, "Designed 9 spines in 6 minutes",
             "A later pass found the work done after an earlier pass's designs")
+
+        // A later pass that finds 30 more books after 40 of 48 continues the bar from there.
+        var grown = WorkerSnapshot(
+            isRunning: true, phase: "Designing spines", queue: 38, completed: 40,
+            passStart: (fraction: 40.0 / 48, done: 40))
+        XCTAssertEqual(grown.fraction, 40.0 / 48)
+        grown.completed = 59
+        grown.queue = 19
+        XCTAssertEqual(grown.fraction, 40.0 / 48 + 8.0 / 48 / 2, accuracy: 1e-9)
 
         let legacy = try JSONDecoder()
             .decode(

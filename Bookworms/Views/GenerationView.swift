@@ -156,13 +156,12 @@ struct GenerationView: View {
     /// book being designed and the model designing it, and the time left; then its tally.
     /// VoiceOver reads it as one element.
     private func runProgress(_ status: WorkerSnapshot) -> some View {
-        let done = status.completed + status.failed
         let left = status.timeLeftText
         let tally = status.tally
         let model = Self.modelName(status.model)
         return VStack(alignment: .leading, spacing: 6) {
             if status.isRunning {
-                ProgressView(value: Double(done), total: Double(max(done + status.queue, 1))) {
+                ProgressView(value: status.fraction) {
                     Text(status.headline)
                 } currentValueLabel: {
                     if let book = status.designingBook {
