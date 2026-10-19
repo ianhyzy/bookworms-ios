@@ -551,12 +551,14 @@ private struct SpineButton<Label: View>: View {
             guard !ids.isEmpty else { return false }
             let index = centeredID.flatMap { ids.firstIndex(of: $0) } ?? 0
             let column = track.column(of: centeredID)
+            // Moving along the books stays in this stack; Left and Right change stacks.
+            let stack = track.columns[column]
             let along = axis == .vertical
             switch key {
             case .upArrow where along, .leftArrow where !along:
-                return center(ids[max(0, index - 1)])
+                return center(ids[max(stack.lowerBound, index - 1)])
             case .downArrow where along, .rightArrow where !along:
-                return center(ids[min(ids.count - 1, index + 1)])
+                return center(ids[min(stack.upperBound - 1, index + 1)])
             case .leftArrow, .rightArrow:
                 // The stack beside this one, at the same height.
                 let next = column + (key == .leftArrow ? -1 : 1)
