@@ -165,7 +165,7 @@ struct GenerationView: View {
                 ProgressView(value: Double(done), total: Double(max(done + status.queue, 1))) {
                     Text(status.headline)
                 } currentValueLabel: {
-                    if let book = status.currentBook {
+                    if let book = status.designingBook {
                         // One line when the title and the model fit, as at most text sizes;
                         // otherwise the model goes under the title.
                         ViewThatFits(in: .horizontal) {
@@ -194,7 +194,7 @@ struct GenerationView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(status.headline)
         .accessibilityValue(
-            ([status.currentBook.map { "\($0.title), \(model)" }, left] + tally)
+            ([status.designingBook.map { "\($0.title), \(model)" }, left] + tally)
                 .compactMap { $0 }
                 .joined(separator: ", "))
     }

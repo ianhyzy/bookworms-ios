@@ -387,6 +387,10 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(run.timeLeftText, "About 9 minutes left")
         run.retryAfter = now
         XCTAssertNil(run.timeLeftText, "A run waiting on a retry date shows no estimate")
+        // A later pass checks the library with the last pass's book still in the bindery.
+        run.phase = "Checking the library"
+        XCTAssertEqual(run.headline, "Checking the library")
+        XCTAssertNil(run.designingBook)
 
         var finished = run
         finished.isRunning = false
@@ -400,6 +404,10 @@ final class GenerationTests: XCTestCase {
             .decode(WorkerSnapshot.self, from: JSONEncoder().encode(finished))
         XCTAssertEqual(saved.headline, finished.headline)
         XCTAssertEqual(saved.tally, finished.tally)
+        finished.phase = "All spines are up to date"
+        XCTAssertEqual(
+            finished.headline, "Designed 9 spines in 6 minutes",
+            "A later pass found the work done after an earlier pass's designs")
 
         let legacy = try JSONDecoder()
             .decode(

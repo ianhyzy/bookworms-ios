@@ -31,7 +31,8 @@ struct WorkerSnapshot: Sendable, Codable {
     var designed = 0
     /// The checked books that saved a copy of a series' design without a request.
     var fromSeries = 0
-    /// The book being designed.
+    /// The book being designed. It stays set while a later pass checks the library, so the
+    /// bindery header keeps it in view; `designingBook` is `nil` then.
     var currentBook: CloudBook?
     var error: String?
     var model: ModelStatus?
@@ -82,17 +83,24 @@ extension WorkerSnapshot {
     /// How many books a run checks before it estimates the time left.
     static let estimateMinimum = 3
 
+    /// The book being designed, while the run designs it; `nil` while a pass checks the library
+    /// or the run stops.
+    var designingBook: CloudBook? {
+        isRunning && phase == "Designing spines" ? currentBook : nil
+    }
+
     /// The run's progress in a line: "Designing 12 of 48" while a book is designed, the phase
     /// while the run checks the library, and once it ends, its outcome, such as "Designed 48
     /// spines in 6 minutes" or "Paused until 3:15 PM", until the next run.
     var headline: String {
         let done = completed + failed
         if isRunning {
-            guard currentBook != nil else { return phase }
+            guard designingBook != nil else { return phase }
             return "Designing \(done + 1) of \(done + queue)"
         }
         switch phase {
-        case "Finished":
+        // A later pass finds the work up to date after an earlier pass checked books.
+        case "Finished", "All spines are up to date":
             guard let startedAt, let lastRunAt, done > 0 else { return phase }
             let took = Self.durationText(lastRunAt.timeIntervalSince(startedAt))
             let saved = designed + fromSeries
@@ -130,7 +138,7 @@ extension WorkerSnapshot {
     /// The time left while a book is designed, such as "About 3 minutes left"; `nil` before the
     /// run has timed `estimateMinimum` books, or while it checks the library.
     var timeLeftText: String? {
-        guard isRunning, currentBook != nil, retryAfter == nil,
+        guard designingBook != nil, retryAfter == nil,
             let seconds = Self.timeLeft(remaining: queue, durations: durations)
         else { return nil }
         return Self.timeLeftText(seconds)
