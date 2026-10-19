@@ -88,13 +88,9 @@ struct SpineCarousel: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("BookwormsStackStyle") private var style = StackStyle.flat
     @State private var scrolling = CarouselScrolling()
-    #if os(macOS)
-        /// Whether the carousel has keyboard focus, which warms the lamp's light rather than
-        /// drawing a focus ring.
-        @FocusState private var isFocused: Bool
-    #else
-        private let isFocused = false
-    #endif
+    /// Whether the carousel has keyboard focus on the Mac, which warms the lamp's light rather
+    /// than drawing a focus ring. Only the lamps read it, so a focus change redraws only them.
+    @FocusState private var isFocused: Bool
 
     /// Shelved books nearly touch, so their spines read as separate books.
     private static let shelfSpacing: CGFloat = 1
@@ -171,7 +167,7 @@ struct SpineCarousel: View {
         // instead.
         .background {
             StackLamp(
-                track: track, centers: centers, height: size.height, warm: isFocused,
+                track: track, centers: centers, height: size.height, focus: $isFocused,
                 centeredID: $centeredID)
         }
     }
@@ -387,10 +383,7 @@ struct SpineCarousel: View {
                     centeredID: $centeredID, pullOut: pullOut, focus: $isFocused, open: open))
         #endif
         .padding(.horizontal, -bleed)
-        .overlay {
-            ShelfLamp(warmth: isFocused ? ShelfLamp.focusedWarmth : ShelfLamp.warmth)
-                .modifier(LampHandOff(pullOut: pullOut))
-        }
+        .overlay { PlacedShelfLamp(pullOut: pullOut, focus: $isFocused) }
     }
 
     /// A book's button (`SpineButton`), which opens it.
@@ -1591,15 +1584,19 @@ private struct StackLamp: View {
     let centers: [CGFloat]
     /// The carousel's height, whose middle the pool lights.
     let height: CGFloat
-    /// Whether the carousel has keyboard focus, which the pool marks by warming.
-    let warm: Bool
+    /// Whether the carousel has keyboard focus, which the pool marks by warming, more with
+    /// Increase Contrast on.
+    let focus: FocusState<Bool>.Binding
     @Binding var centeredID: Int?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
         let column = centers.count > 1 ? track.column(of: centeredID) : 0
+        let warm = focus.wrappedValue
+        let focused = contrast == .increased ? 0.45 : 0.32
         RadialGradient(
-            colors: [ShelfPalette.lamp.opacity(warm ? 0.32 : 0.22), .clear], center: .center,
+            colors: [ShelfPalette.lamp.opacity(warm ? focused : 0.22), .clear], center: .center,
             startRadius: 0, endRadius: 320
         )
         .frame(width: 700, height: 700)
@@ -1677,19 +1674,26 @@ private struct ContactShadow: View {
     }
 }
 
-/// Hides the shelf's lamp while `pullOut` has a book out, when the book's flight draws the lamp
-/// over the book instead, and reports the lamp's frame for that.
-private struct LampHandOff: ViewModifier {
+/// The shelf's lamp in its place, warmer while the shelf has keyboard focus, and more so with
+/// Increase Contrast on. It hides while `pullOut` has a book out, when the book's flight draws
+/// the lamp over the book instead, and reports the lamp's frame and warmth for that. It reads the
+/// focus itself, so a focus change redraws only the lamp.
+private struct PlacedShelfLamp: View {
     let pullOut: ShelfPullOut
+    let focus: FocusState<Bool>.Binding
+    @Environment(\.colorSchemeContrast) private var contrast
 
-    func body(content: Content) -> some View {
-        content
+    var body: some View {
+        let focused = contrast == .increased ? 0.32 : ShelfLamp.focusedWarmth
+        let warmth = focus.wrappedValue ? focused : ShelfLamp.warmth
+        ShelfLamp(warmth: warmth)
             .opacity(pullOut.isOut ? 0 : 1)
             .onGeometryChange(for: CGRect.self) {
                 $0.frame(in: .global)
             } action: {
                 pullOut.lampFrame = $0
             }
+            .onChange(of: warmth, initial: true) { pullOut.lampWarmth = warmth }
     }
 }
 

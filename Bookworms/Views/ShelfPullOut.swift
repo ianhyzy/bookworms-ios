@@ -39,6 +39,9 @@ final class ShelfPullOut {
     /// The frame of **Shelf**'s lamp in global coordinates, which the lamp reports. While a book
     /// is out, the flight draws the lamp over the book, so the book keeps the light its spine had.
     var lampFrame: CGRect?
+    /// How strongly **Shelf**'s lamp shines (`ShelfLamp.warmth`), which the lamp reports with
+    /// its frame, so the flight's lamp matches it.
+    var lampWarmth = ShelfLamp.warmth
     /// The details' book stage in global coordinates, which `HostedBook.place` reports.
     var stage: CGRect?
     /// The pose the details give their book, which `HostedBook.turn` reports.
@@ -531,6 +534,7 @@ private struct PullOutFlightHost: View {
                             thicknessRatio: Book3DView.thicknessRatio(of: current, cover: cover),
                             rest: pullOut.rest, eye: pullOut.eye ?? .zero),
                         lamp: pullOut.upright ? pullOut.lampFrame?.applying(shift) : nil,
+                        lampWarmth: pullOut.lampWarmth,
                         progress: pullOut.progress
                     )
                     .onAppear { pullOut.fly() }
@@ -559,8 +563,10 @@ private struct PullOutFlight: View, Animatable {
     let look: SpineLook
     let cover: UIImage?
     let path: PullOutPath
-    /// The frame of **Shelf**'s lamp, which the shelf hides while the book is out.
+    /// The frame of **Shelf**'s lamp, which the shelf hides while the book is out, and how
+    /// strongly it shines.
     let lamp: CGRect?
+    let lampWarmth: Double
     var progress: Double
 
     nonisolated var animatableData: Double {
@@ -614,7 +620,7 @@ private struct PullOutFlight: View, Animatable {
         .background { WalnutWall(opacity: pose.lift).ignoresSafeArea() }
         .overlay {
             if let lamp {
-                ShelfLamp()
+                ShelfLamp(warmth: lampWarmth)
                     .frame(width: lamp.width, height: lamp.height)
                     .position(x: lamp.midX, y: lamp.midY)
                     .opacity(1 - pose.lift)
