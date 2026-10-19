@@ -1756,7 +1756,8 @@ extension UndoManager {
         _ name: String, revert: @escaping @MainActor () async throws -> Void,
         redo: @escaping @MainActor () async throws -> Void
     ) {
-        registerUndo(withTarget: AppModel.shared) { model in
+        // Weak, so the registered action doesn't keep its manager alive.
+        registerUndo(withTarget: AppModel.shared) { [weak self] model in
             Task {
                 do {
                     try await revert()
@@ -1764,7 +1765,7 @@ extension UndoManager {
                     model.toasts.show(.failure("Couldn't change the style back"))
                 }
             }
-            self.registerStyleChange(name, revert: redo, redo: revert)
+            self?.registerStyleChange(name, revert: redo, redo: revert)
         }
         setActionName(name)
     }
