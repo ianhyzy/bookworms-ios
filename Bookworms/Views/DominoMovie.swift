@@ -60,8 +60,10 @@ struct DominoFinaleCard: View {
 /// Records a dominoes run as the reader watches it, for **Share**: from the push through the
 /// finale until the heading has shown, as a story-size MP4 with the hits' knocks
 /// (`PileMovieWriter`), and a PNG of its last frame, both with the credit at the bottom edge.
-/// The movie then holds its last frame still for `DominoMovieTiming.lastFrameHold` seconds,
-/// so viewers see the gathered books under the heading before it ends. Nothing renders again:
+/// Once the books have gathered, the movie then holds its last frame still for
+/// `DominoMovieTiming.lastFrameHold` seconds, so viewers see the gathered books under the
+/// heading before it ends; a recording cut off at its frame limit before then ends without the
+/// hold. Nothing renders again:
 /// once the recording ends, the encoder takes the last frame again for each frame of the hold
 /// and finishes, the soundtrack is mixed into the movie, running on under the hold, and the
 /// PNG is written alongside.
@@ -653,8 +655,10 @@ final class DominoRecorder {
                 async let written: Void = PileSnapshotRenderer.writeStill(
                     poster, identifier: nil, to: still)
                 let deadline = ContinuousClock.now + PileMovieWriter.finishTimeout
-                try await run.writer.repeatFrame(
-                    last, for: DominoMovieTiming.lastFrameHold, before: deadline)
+                // A recording cut off at its frame limit before the books gather ends mid-run,
+                // where a still last frame would look like a stalled player.
+                let held = run.finishedAt == nil ? 0 : DominoMovieTiming.lastFrameHold
+                try await run.writer.repeatFrame(last, for: held, before: deadline)
                 try await run.writer.finish(hits: hits, before: deadline)
                 try await written
                 let clip = PileMovie(

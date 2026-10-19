@@ -303,7 +303,8 @@ struct DominoMovieTiming {
     /// How long the movie shows the recording's last frame still, in seconds, so viewers see
     /// the gathered books under the heading before it ends. The writer repeats the frame
     /// (`PileMovieWriter.repeatFrame(_:for:before:)`), which costs no rendering and keeps the
-    /// run's pacing within `longest`.
+    /// run's pacing within `longest`. A recording that ends before the books gather, at
+    /// `frameLimit`, has no hold.
     static let lastFrameHold: Double = 5
     /// The seconds of video the run before the finale may take: what `longest` leaves after
     /// the finale and the hold, less a second for a finale that starts a little late.
