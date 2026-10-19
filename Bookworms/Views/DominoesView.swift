@@ -262,17 +262,23 @@ struct DominoesView: View {
     }
 
     /// The heading over the gathered books, in the share images' style, once every book lies
-    /// in the spread; it fades in, and stays until **Set up again**.
+    /// in the spread; it fades in, and stays until **Set up again**. It spans the spread's area
+    /// (`DominoFinale.area(in:)`), the whole view on an iPhone and the recording's 9:16 frame in
+    /// a wider view, so it shows where and as large as the video shows it.
     @ViewBuilder private var heading: some View {
         if scene.status.phase == .finished, details.lift == nil, let viewport {
-            // The overlay lies within the safe area, below the bar and above the tab bar, so
-            // the card needs no insets of its own.
+            let area = DominoFinale.area(in: viewport)
             DominoFinaleCard(
                 title: title, count: books.count, pages: DominoFinaleCard.pages(of: books),
-                scale: viewport.size.width / ShareAspect.story.size.width,
+                scale: area.width / ShareAspect.story.size.width,
                 insets: EdgeInsets(
-                    top: DominoFinaleCard.liveTop, leading: 0, bottom: 0, trailing: 0)
+                    top: viewport.insets.top + DominoFinaleCard.liveTop - area.minY, leading: 0,
+                    bottom: 0, trailing: 0)
             )
+            .frame(width: area.width, height: area.height)
+            .offset(x: area.minX, y: area.minY)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .ignoresSafeArea()
             .allowsHitTesting(false)
             .transition(.opacity.animation(.easeIn(duration: 0.6)))
             // VoiceOver reads the same totals as the scene's value.
