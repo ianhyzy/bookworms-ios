@@ -13,7 +13,9 @@ import SwiftUI
 /// books, such as a library update, draws again once the image in progress, if any, is ready. The previous image stays in view
 /// under a progress indicator until the new one is ready, and sharing waits for it. The preview
 /// leaves out the credit, which the shared file carries. **Video** films the same books falling
-/// into the same spread (`PileVideoSheet`).
+/// into the same spread (`PileVideoSheet`), pushed in this sheet's navigation stack so only one
+/// sheet shows at a time. On a Mac, the sheet takes the page size, which leaves the preview room,
+/// and a failure shows in an alert in the sheet, since the main window's toasts sit behind it.
 struct PileSnapshotSheet: View {
     let books: [CloudBook]
     let title: String
@@ -39,6 +41,9 @@ struct PileSnapshotSheet: View {
     @State private var files: SharedFiles?
     /// Whether **Share** is adding the credit and writing the file.
     @State private var isPreparing = false
+    #if os(macOS)
+        @State private var failure: String?
+    #endif
 
     private struct Options: Equatable {
         var aspect: ShareAspect
@@ -103,6 +108,9 @@ struct PileSnapshotSheet: View {
             .padding()
             .navigationTitle("Share desk")
             .navigationBarTitleDisplayMode(.inline)
+            .navigationDestination(isPresented: $filmsPile) {
+                PileVideoSheet(books: latest, title: title, aspect: aspect, seed: seed)
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(role: .close) { dismiss() }
@@ -119,12 +127,20 @@ struct PileSnapshotSheet: View {
         }
         .shareSheet($files)
         .task(id: LoopKey(options: options.restartKey, redraws: redraws)) { await render() }
-        .sheet(isPresented: $filmsPile) {
-            PileVideoSheet(books: latest, title: title, aspect: aspect, seed: seed)
-        }
+        .presentationSizing(.page)
+        #if os(macOS)
+            .alert(
+                failure ?? "",
+                isPresented: Binding {
+                    failure != nil
+                } set: { _ in
+                    failure = nil
+                }
+            ) {}
+        #endif
         #if DEBUG
             .task {
-                // Lets this sheet finish presenting before it presents another.
+                // Lets this sheet finish presenting before it pushes the video.
                 guard PileVideoDebug.opensSheet else { return }
                 try? await Task.sleep(for: .seconds(1))
                 filmsPile = true
@@ -173,7 +189,11 @@ struct PileSnapshotSheet: View {
             files = try await SharedFiles.images([image])
             files?.text = HardcoverInvite.readingText(books: image.books, username: username)
         } catch {
-            model.toasts.show(.failure("Couldn't prepare the image"))
+            #if os(macOS)
+                failure = "Couldn't prepare the image."
+            #else
+                model.toasts.show(.failure("Couldn't prepare the image"))
+            #endif
         }
     }
 

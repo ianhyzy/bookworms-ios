@@ -236,7 +236,12 @@ struct ShareStudioView: View {
         #endif
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
         .sheet(isPresented: $filmsPile) {
-            PileVideoSheet(books: film.books, title: film.title, aspect: aspect, seed: seed)
+            NavigationStack {
+                PileVideoSheet(
+                    books: film.books, title: film.title, aspect: aspect, seed: seed,
+                    showsClose: true)
+            }
+            .presentationSizing(.page)
         }
         .task(id: request.options) {
             // A saved design draws after the image in progress instead of restarting it.
