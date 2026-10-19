@@ -317,6 +317,8 @@ enum DominoFinale {
 /// live view's frames it keeps, and when the hits sound in it.
 ///
 /// The recording starts at the push and ends `hold` seconds after the heading starts to show.
+/// The movie then shows its last frame for `lastFrameHold` seconds more, outside `longest`, so
+/// it lasts up to `longest` plus `lastFrameHold` seconds.
 /// The finale, from the last book's fall, keeps live speed, so the run before it gets what is
 /// left (`runBudget`). While the books fall, the recording keeps fewer frames than the view
 /// shows when the run would otherwise run long: it estimates the run's live length from how long
@@ -329,10 +331,16 @@ enum DominoFinale {
 /// the recording leaves out, such as while a book is out at its details, passes with no frames
 /// (`skip(_:)`), and its hits are left out too.
 struct DominoMovieTiming {
-    /// The longest a recording gets, in seconds.
+    /// The longest a recording gets, in seconds, before the movie's `lastFrameHold`.
     static let longest: Double = 30
     /// How long the recording runs on once the heading starts to fade in, in seconds.
     static let hold: Double = 2
+    /// How long the movie shows the recording's last frame still, in seconds, so viewers see
+    /// the gathered books under the heading before it ends. The writer repeats the frame
+    /// (`PileMovieWriter.repeatFrame(_:for:before:)`), which costs no rendering and keeps the
+    /// run's pacing within `longest`. A recording that ends before the books gather, at
+    /// `frameLimit`, has no hold.
+    static let lastFrameHold: Double = 5
     /// The seconds of video the run before the finale may take: what `longest` leaves after
     /// the finale and the hold, less a second for a finale that starts a little late.
     static let runBudget = longest - Double(DominoFinale.duration(count: 2)) - hold - 1

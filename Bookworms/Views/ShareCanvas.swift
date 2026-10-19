@@ -748,6 +748,9 @@ struct ShareCover: View {
     let height: CGFloat
     var yaw = 0.45
     var pitch = -0.12
+    /// How far the caller turns the cover in the image's plane, in radians, so a 3D book keeps
+    /// the light of an unturned one (`Book3DView.roll`).
+    var roll = 0.0
 
     var body: some View {
         switch style {
@@ -755,7 +758,7 @@ struct ShareCover: View {
             // The cover keeps the colors it has flat; the spine and edges take the shading.
             Book3DView(
                 book: Self.lettered(book), look: look, cover: cover, height: height, yaw: yaw,
-                pitch: pitch, shadesCover: false)
+                pitch: pitch, shadesCover: false, roll: roll)
         case .flat:
             let width = height * Self.aspect(of: cover, style: .flat)
             let shape = RoundedRectangle(cornerRadius: max(4, height * 0.025))

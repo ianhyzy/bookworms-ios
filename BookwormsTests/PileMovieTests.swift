@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreMedia
 import RealityKit
 import XCTest
@@ -149,6 +150,40 @@ final class PileMovieTests: XCTestCase {
             }
         let mix = ImpactMix.samples(pileUp, in: 0..<PileMovieTiming.samplesPerFrame * 4)
         XCTAssertEqual(mix.map(abs).max() ?? 0, 1, accuracy: 1e-6)
+    }
+
+    /// A held last frame lengthens the movie and its soundtrack by the hold, in frames a
+    /// thirtieth of a second long, as a dominoes recording ends.
+    @MainActor
+    func testAHeldFrameLengthensTheMovieAndItsSoundtrack() async throws {
+        let folder = URL.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appending(path: "held.mp4")
+        let writer = try PileMovieWriter(url: url, width: 64, height: 64)
+        try writer.start()
+        let picture = CVReadOnlyPixelBuffer(try writer.framePool().makeMutablePixelBuffer())
+        let deadline = ContinuousClock.now + PileMovieWriter.finishTimeout
+        for frame in 0..<3 { try await writer.append(picture, at: frame, before: deadline) }
+        try await writer.repeatFrame(picture, for: 1, before: deadline)
+        XCTAssertEqual(writer.frameCount, 33)
+        try await writer.finish(hits: [], before: deadline)
+
+        let asset = AVURLAsset(url: url)
+        let duration = try await asset.load(.duration)
+        XCTAssertEqual(duration.seconds, 1.1, accuracy: 0.02)
+        let audio = try await asset.loadTracks(withMediaType: .audio).first
+        let sound = try await audio?.load(.timeRange).duration
+        XCTAssertEqual(sound?.seconds ?? 0, 1.1, accuracy: 0.03)
+        let tracks = try await asset.loadTracks(withMediaType: .video)
+        let video = try XCTUnwrap(tracks.first)
+        let reader = try AVAssetReader(asset: asset)
+        let samples = reader.outputProvider(
+            for: AVAssetReaderTrackOutput(track: video, outputSettings: nil))
+        try reader.start()
+        var count = 0
+        while try await samples.next() != nil { count += 1 }
+        XCTAssertEqual(count, 33)
     }
 
     private func record(
