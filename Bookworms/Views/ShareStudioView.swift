@@ -432,7 +432,6 @@ struct ShareStudioView: View {
                         // Keeps the size picker's width where the template has one style.
                         .opacity(template.hasCoverStyle ? 1 : 0)
                         .accessibilityHidden(!template.hasCoverStyle)
-                        .help(coverStyleNote ?? "Draws covers as 3D books")
                 }
                 .frame(maxWidth: 460)
             #endif
@@ -463,17 +462,39 @@ struct ShareStudioView: View {
         .pickerStyle(.segmented)
     }
 
-    /// Draws covers as 3D books when on and flat when off. Year in Books on Square shows no
-    /// covers, so it disables the switch, and Desk, whose books are always 3D, has none.
+    /// The image's size, and beside it whether covers draw as 3D books or flat. At accessibility
+    /// text sizes the button moves below the picker, which then keeps the row's whole width.
+    private var imageRow: some View {
+        let layout =
+            dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(spacing: 12)) : AnyLayout(HStackLayout(spacing: 12))
+        return layout {
+            sizePicker.labelsHidden()
+            if template.hasCoverStyle { coverToggle }
+        }
+    }
+
+    /// Draws covers as 3D books when on and flat when off: a round glass button with a cube,
+    /// filled and tinted while on. Year in Books on Square shows no covers, so it disables the
+    /// button, and Desk, whose books are always 3D, hides it.
     private var coverToggle: some View {
-        Toggle(
-            "3D books",
-            isOn: Binding {
-                coverStyle == .threeD
-            } set: {
-                coverStyle = $0 ? .threeD : .flat
-            }
-        )
+        let isOn = Binding {
+            coverStyle == .threeD
+        } set: {
+            coverStyle = $0 ? .threeD : .flat
+        }
+        let help = coverStyleNote ?? "Draws covers as 3D books"
+        return Toggle(isOn: isOn) {
+            Label("3D books", systemImage: isOn.wrappedValue ? "cube.fill" : "cube")
+                // Grows the circle to the 44-point touch target.
+                .padding(4)
+        }
+        .toggleStyle(.button)
+        .labelStyle(.iconOnly)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .help(help)
+        .accessibilityHint(help)
         .disabled(template == .yearInBooks && aspect == .square)
     }
 
@@ -518,8 +539,7 @@ struct ShareStudioView: View {
         }
         #if os(iOS)
             Section {
-                sizePicker
-                if template.hasCoverStyle { coverToggle }
+                imageRow
             } header: {
                 Text("Image")
             } footer: {
