@@ -94,16 +94,17 @@ struct PileVideoSheet: View {
                     }
                 }
             }
-            if let movie {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Share", systemImage: "square.and.arrow.up") {
-                        files = SharedFiles(urls: [movie.movie])
+            // A Mac sheet shows a pushed view's toolbar items nowhere, so the Mac's **Share**
+            // sits in the row under the clip (`actions(_:)`).
+            #if os(iOS)
+                if let movie {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Share", systemImage: "square.and.arrow.up") {
+                            files = SharedFiles(urls: [movie.movie])
+                        }
                     }
-                    #if os(macOS)
-                        .shareSheet($files, fromButton: true)
-                    #endif
                 }
-            }
+            #endif
         }
         #if os(iOS)
             .shareSheet($files)
@@ -238,9 +239,9 @@ struct PileVideoSheet: View {
         }
     }
 
-    /// What to do with the finished clip: on a Mac, play or pause it (Space) and save it as a
-    /// file or a Live Photo; on an iPhone, whose share sheet saves the video, save it as a Live
-    /// Photo.
+    /// What to do with the finished clip: on a Mac, play or pause it (Space), save it as a Live
+    /// Photo, share it, or save it as a file; on an iPhone, whose share sheet saves the video,
+    /// save it as a Live Photo.
     @ViewBuilder
     private func actions(_ movie: PileMovie) -> some View {
         let livePhoto = Button(
@@ -261,6 +262,10 @@ struct PileVideoSheet: View {
                 .keyboardShortcut(.space, modifiers: [])
                 Spacer()
                 livePhoto
+                Button("Share", systemImage: "square.and.arrow.up") {
+                    files = SharedFiles(urls: [movie.movie])
+                }
+                .shareSheet($files, fromButton: true)
                 Button("Save Video…") { savesVideo = true }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
