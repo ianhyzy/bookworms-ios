@@ -610,8 +610,10 @@ final class DominoScene {
     /// (see `blended(_:to:progress:)`).
     nonisolated private static let aimLead: Float = 0.6
     private static let coverWait = Duration.seconds(1.5)
-    /// The longest the first book of a setup from the desk waits for the camera, in seconds.
-    private static let setupLead: Float = 1.2
+    /// The longest the first book of a setup from the desk waits for the camera, in seconds,
+    /// and the longest the setup waits for books still sliding from a throw to come to rest.
+    private static let setupLead: Float = 0.5
+    private static let settleWait = Duration.seconds(1)
     /// How many books are built and stood up at a time.
     private static let batchSize = 16
     /// The cosine of the tilt under which a book counts as upright, about 6 degrees: more
@@ -788,13 +790,21 @@ final class DominoScene {
         var moves: [DominoSetup.Move?]
         var landed: [Bool]
         /// The cobweb in front of each book, by the book's index, and when it started to fade
-        /// in, once the book has landed.
+        /// in, once the book has landed and the web hangs, and whether every web hangs.
         var webs: [Int: Entity] = [:]
         var fades: [Int: Float] = [:]
+        var hung = false
         #if DEBUG
             /// The setup log's lines (see `logSetup`), and when the setup was asked for.
             var log: [String] = []
             let requested = ContinuousClock.now
+
+            /// Logs that the setup reached `stage`, with the seconds since it was asked for.
+            mutating func mark(_ stage: String) {
+                log.append(
+                    String(
+                        format: "%@,%.3f", stage, (ContinuousClock.now - requested) / .seconds(1)))
+            }
         #endif
 
         init(count: Int) {
@@ -1347,7 +1357,8 @@ final class DominoScene {
     /// the book before the batch, wherever `DominoLayout.cobweb(days:)` finds the days between
     /// their finishes long enough. A book without parts cannot stand, so the days across its
     /// place count toward the web between its neighbors. Each web runs between the books'
-    /// facing top edges, from near their corners.
+    /// facing top edges, from near their corners. The webs' meshes generate at once rather
+    /// than one after another, which a long chain's many webs would otherwise wait on.
     private func makeCobwebs(_ batch: some Sequence<DominoSlot>, after first: DominoSlot?) async
         -> [Int: HangingCobweb]
     {
@@ -1359,7 +1370,7 @@ final class DominoScene {
             // Just under the top edge, so the threads leave the boards rather than float.
             return [middle - across, middle + across].map { [$0.x, size.y - 0.005, $0.y] }
         }
-        var cobwebs: [Int: HangingCobweb] = [:]
+        var webs: [(id: Int, web: Cobweb)] = []
         var near = first
         for far in batch where factory.parts[far.book.id] != nil {
             if let near, let density = DominoLayout.cobweb(days: far.day - near.day) {
@@ -1367,10 +1378,19 @@ final class DominoScene {
                     near: edge(near, facing: 1), far: edge(far, facing: -1), density: density,
                     seed: UInt64(bitPattern: Int64(near.book.id)) &* 0x9E37_79B9_7F4A_7C15
                         ^ UInt64(bitPattern: Int64(far.book.id)))
-                cobwebs[far.book.id] = await HangingCobweb(
-                    web, material: Self.silk, lighting: stage.lighting)
+                webs.append((far.book.id, web))
             }
             near = far
+        }
+        let lighting = stage.lighting
+        let building = webs.map { item in
+            Task { await HangingCobweb(item.web, material: Self.silk, lighting: lighting) }
+        }
+        var cobwebs: [Int: HangingCobweb] = [:]
+        await withTaskCancellationHandler {
+            for (item, task) in zip(webs, building) { cobwebs[item.id] = await task.value }
+        } onCancel: {
+            for task in building { task.cancel() }
         }
         return cobwebs
     }
@@ -1474,39 +1494,38 @@ final class DominoScene {
         key = nil
     }
 
-    /// Gets the handed-over books ready to set themselves up: hangs the chain's cobwebs, unseen,
-    /// and waits, at most two seconds, until the books lie still. It then moves the books, the
-    /// camera, and the lamp's pool across the table by whole tiles, which the table does not
-    /// show, so the places lie clear of the books (`DominoSetup.offset(of:aspect:)`), and moves
-    /// the camera to a view of both the books and their places. With Reduce Motion on, the books
-    /// stand in their places at once instead, and the camera cuts to the overview.
+    /// Gets the handed-over books ready to set themselves up: waits, at most a second, until
+    /// the books lie still, then moves them, the camera, and the lamp's pool across the table by
+    /// whole tiles, which the table does not show, so the places lie clear of the books
+    /// (`DominoSetup.offset(of:aspect:)`), and moves the camera to a view of both the books and
+    /// their places. The chain's cobwebs build while the books move (`hangCobwebs(key:)`). With
+    /// Reduce Motion on, the books stand in their places at once instead, once the cobwebs
+    /// hang, and the camera cuts to the overview.
     private func prepareArrangement(key: Key) async {
-        let webs = await makeCobwebs(slots.dropFirst(), after: slots.first)
-        guard !Task.isCancelled, self.key == key, arrangement != nil else { return }
-        for (index, slot) in slots.enumerated() {
-            guard var web = webs[slot.book.id] else { continue }
-            web.book = index - 1
-            web.root.components.set(OpacityComponent(opacity: 0))
-            shelf.addChild(web.root)
-            cobwebs.append(web)
-            arrangement?.webs[index] = web.root
-            status.cobwebs += 1
+        guard !reducesMotion else {
+            await hangCobwebs(key: key)
+            if self.key == key, arrangement != nil { finishArrangement() }
+            return
         }
-        guard !reducesMotion else { return finishArrangement() }
-        let still = ContinuousClock.now + .seconds(2)
+        let still = ContinuousClock.now + Self.settleWait
         while ContinuousClock.now < still, books.contains(where: Self.isMoving) {
             try? await Task.sleep(for: .milliseconds(50))
             guard !Task.isCancelled, self.key == key, arrangement != nil else { return }
         }
-        let sizes = books.indices.map(size(of:))
+        #if DEBUG
+            arrangement?.mark("still")
+        #endif
         let lying = books.indices.map {
             (
-                size: sizes[$0], lying: books[$0].transform,
+                size: size(of: $0), lying: books[$0].transform,
                 slot: DominoLayout.standingPose(of: slots[$0])
             )
         }
         let offset = await Self.offset(of: lying, aspect: aspect)
         guard !Task.isCancelled, self.key == key, arrangement != nil else { return }
+        #if DEBUG
+            arrangement?.mark("offset")
+        #endif
         for book in books { book.position += offset }
         var shown = camera.transform
         shown.translation += offset
@@ -1537,6 +1556,36 @@ final class DominoScene {
         // The first book waits until the camera has come part of the way, so the places it
         // hops to show.
         arrangement?.time = -min((handoff?.duration ?? 0) * 0.5, Self.setupLead)
+        await hangCobwebs(key: key)
+    }
+
+    /// Builds the chain's cobwebs `batchSize` books at a time, in chain order, and hangs each
+    /// unseen, so the first books need not wait for the last webs. A web fades in once the book
+    /// behind it has landed, or as it hangs if that book has landed already. The setup ends
+    /// only once every web hangs.
+    private func hangCobwebs(key: Key) async {
+        for start in stride(from: 1, to: slots.count, by: Self.batchSize) {
+            let end = min(start + Self.batchSize, slots.count)
+            let webs = await makeCobwebs(slots[start..<end], after: slots[start - 1])
+            guard !Task.isCancelled, self.key == key, var arrangement else { return }
+            for index in start..<end {
+                guard var web = webs[slots[index].book.id] else { continue }
+                web.book = index - 1
+                web.root.components.set(OpacityComponent(opacity: 0))
+                shelf.addChild(web.root)
+                cobwebs.append(web)
+                status.cobwebs += 1
+                arrangement.webs[index] = web.root
+                if arrangement.landed[index], arrangement.fades[index] == nil {
+                    arrangement.fades[index] = arrangement.time ?? 0
+                }
+            }
+            self.arrangement = arrangement
+        }
+        #if DEBUG
+            arrangement?.mark("cobwebs")
+        #endif
+        arrangement?.hung = true
     }
 
     /// The offset `DominoSetup.offset(of:aspect:)` finds, away from the main actor.
@@ -1692,7 +1741,7 @@ final class DominoScene {
                 })
         #endif
         if arrangement.next == books.count, !arrangement.landed.contains(false),
-            arrangement.fades.isEmpty
+            arrangement.fades.isEmpty, arrangement.hung
         {
             finishArrangement()
         }

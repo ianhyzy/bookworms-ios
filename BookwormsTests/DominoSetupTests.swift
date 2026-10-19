@@ -118,10 +118,10 @@ final class DominoSetupTests: XCTestCase {
                 XCTAssertGreaterThanOrEqual(pose.translation.y, slot.translation.y - 1e-4)
             }
         }
-        // It lands in its slot, falling as fast as the arc's gravity, the desk's, makes it.
+        // It lands in its slot, falling as fast as the arc's gravity makes it.
         XCTAssertLessThan(
             simd_distance(move.pose(at: move.end).translation, slot.translation), 1e-3)
-        XCTAssertEqual(move.hopTime, (8 * 3 / PileLayout.gravity).squareRoot(), accuracy: 1e-4)
+        XCTAssertEqual(move.hopTime, (8 * 3 / DominoSetup.hopGravity).squareRoot(), accuracy: 1e-4)
         XCTAssertTrue(move.isHopping(at: leaves + 0.01))
         XCTAssertFalse(move.isHopping(at: leaves - 0.01))
         XCTAssertFalse(move.isHopping(at: move.end))
