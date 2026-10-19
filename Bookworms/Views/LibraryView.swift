@@ -37,7 +37,7 @@ struct LibraryView: View {
                 .background { WalnutWall().ignoresSafeArea() }
                 .modifier(LibraryBar(pullOut: pullOut, options: options))
                 .navigationDestination(for: Int.self) { id in
-                    PushedBookDetail(id: id)
+                    PushedBookDetail(id: id, tab: .library)
                         #if os(iOS)
                             .navigationTransition(.zoom(sourceID: id, in: namespace))
                         #endif
@@ -272,7 +272,8 @@ private struct LibraryBar: ViewModifier {
                     for: .navigationBar)
             #endif
             .focusedSceneValue(
-                \.goBack, pullOut.showsDetails ? SceneAction(perform: pullOut.putBack) : nil
+                \.goBack, pullOut.showsDetails ? SceneAction(perform: pullOut.putBack) : nil,
+                in: .library
             )
             .toolbar {
                 if let book = pullOut.book, pullOut.showsDetails {
@@ -443,6 +444,8 @@ private struct LibraryOptions: View {
 /// The details of the book with `id`, which Library and Desk push, or why they are missing.
 struct PushedBookDetail: View {
     let id: Int
+    /// The tab whose navigation stack holds the details.
+    let tab: AppTab
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
 
@@ -457,7 +460,7 @@ struct PushedBookDetail: View {
             }
         }
         // Dismissing pops the details off their navigation stack.
-        .focusedSceneValue(\.goBack, SceneAction { dismiss() })
+        .focusedSceneValue(\.goBack, SceneAction { dismiss() }, in: tab)
     }
 }
 

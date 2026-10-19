@@ -166,7 +166,8 @@ struct LiftedDetailsOverlay: ViewModifier {
             }
             .focusedSceneValue(
                 \.goBack,
-                details.lift?.isReturning == false ? SceneAction { details.close(scene) } : nil
+                details.lift?.isReturning == false ? SceneAction { details.close(scene) } : nil,
+                in: .desk
             )
             .toolbar {
                 if let lift = details.lift {

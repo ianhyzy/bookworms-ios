@@ -58,7 +58,7 @@ struct DeskView: View {
                         }
                     }
                 )
-                .navigationDestination(for: Int.self) { PushedBookDetail(id: $0) }
+                .navigationDestination(for: Int.self) { PushedBookDetail(id: $0, tab: .desk) }
         }
         // The walnut backdrop is dark in both appearances, so text and bars use dark styles.
         .environment(\.colorScheme, .dark)
