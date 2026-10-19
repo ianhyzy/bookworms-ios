@@ -786,7 +786,9 @@ private struct LibrarySearch: ViewModifier {
                     guard pullOut.book == nil, let book = found.first else { return }
                     centeredID = book.id
                 }
-                .onChange(of: books.map(\.id)) { found = BookFinding.matches(text, in: books) }
+                // A sync can change a title or author without moving any book. Comparing the
+                // books is cheap while the array keeps its storage.
+                .onChange(of: books) { found = BookFinding.matches(text, in: books) }
                 // The centered match, which the caption names, so Return pulls out the book a
                 // chosen suggestion glided to.
                 .onSubmit(of: .search) {
