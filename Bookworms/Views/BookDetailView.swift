@@ -140,8 +140,7 @@ struct BookDetailView: View {
                 // A series that shares a design takes its spine from its source's cover.
                 CoverPickerView(
                     book: model.designSource(for: book),
-                    scope: model.sharesSeriesDesign(book)
-                        ? .series(name: seriesName(of: book)) : .book,
+                    scope: .init(of: book, in: model),
                     undoManager: undoManager
                 ) {
                     coverChangedAt = .now
@@ -208,13 +207,6 @@ struct BookDetailView: View {
             // the minimum height adds room below it instead.
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, minHeight: viewport, alignment: .top)
-    }
-
-    /// The name of the series whose design `book` shares, when its memberships name it.
-    private func seriesName(of book: CloudBook) -> String? {
-        let id = SeriesDesigns.styleSeries(of: book, link: book.seriesLink)?.id
-        return book.seriesMemberships?.first { $0.seriesID == id }?.name
-            ?? (id != nil && id == book.seriesID ? book.seriesName : nil)
     }
 
     /// Offers a run that redesigns the spine from the new cover.

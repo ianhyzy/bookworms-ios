@@ -104,6 +104,9 @@ struct BookPileView: View {
     #if os(macOS)
         /// The book whose cover the context menu's **Change Cover…** changes.
         @State private var coverBook: CloudBook?
+        /// Set when the cover picker asks to sign in, which shows the Hardcover sheet in its place.
+        @State private var showsAccount = false
+        @Environment(\.undoManager) private var undoManager
         /// Where the pointer last was over the desk.
         @State private var pointerSpot = DeskPointer.Spot()
     #endif
@@ -299,12 +302,24 @@ struct BookPileView: View {
             }
             .sheet(isPresented: $sharesPile) { PileSnapshotSheet(books: books, title: title) }
             #if os(macOS)
-                .focusedSceneValue(\.deskSheetShows, sharesPile || coverBook != nil)
+                .focusedSceneValue(
+                    \.deskSheetShows, sharesPile || coverBook != nil || showsAccount
+                )
                 // As a book's details open it: a series that shares a design takes its spine
                 // from its source's cover, and the sheet matches the room's dark scheme.
                 .sheet(item: $coverBook) { book in
-                    CoverPickerView(book: model.designSource(for: book)) {}
+                    CoverPickerView(
+                        book: model.designSource(for: book), scope: .init(of: book, in: model),
+                        undoManager: undoManager
+                    ) {
+                    } signIn: {
+                        coverBook = nil
+                        showsAccount = true
+                    }
                     .preferredColorScheme(.dark)
+                }
+                .sheet(isPresented: $showsAccount) {
+                    HardcoverAccountView().preferredColorScheme(.dark)
                 }
             #endif
             #if DEBUG

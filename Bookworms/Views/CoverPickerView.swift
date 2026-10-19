@@ -24,6 +24,19 @@ struct CoverPickerView: View {
         case book
         /// The series, named when its memberships name it.
         case series(name: String?)
+
+        /// `book`'s series when it shares a design, else the book alone.
+        @MainActor
+        init(of book: CloudBook, in model: AppModel) {
+            guard model.sharesSeriesDesign(book) else {
+                self = .book
+                return
+            }
+            let id = SeriesDesigns.styleSeries(of: book, link: book.seriesLink)?.id
+            self = .series(
+                name: book.seriesMemberships?.first { $0.seriesID == id }?.name
+                    ?? (id != nil && id == book.seriesID ? book.seriesName : nil))
+        }
     }
 
     let book: CloudBook
