@@ -100,19 +100,22 @@ struct SpineCarousel: View {
         // A book can only return to the place it left, which the other style draws differently.
         .onChange(of: style) { pullOut.close() }
         .overlay(alignment: .top) {
-            // On the iPhone, Stack runs up under the status bar. A faint wash of the wall's color
-            // keeps the time and battery readable over spine lettering, and fades out by the
-            // status bar's lower edge, so the books below it stay sharp. The system's soft edge
-            // effect reaches about a spine farther and blurs that book too.
-            if mode == .stack {
+            // On the iPhone, Stack runs up under the status bar. A wash of the wall's color, dense
+            // enough to hide spine lettering behind the time and battery, covers the bar and
+            // fades out over 8 points below it, so the books below stay sharp. The system's soft
+            // edge effect reaches about a spine farther and blurs that book too.
+            if mode == .stack, statusBar > 0 {
+                let height = statusBar + 8
                 LinearGradient(
                     stops: [
-                        .init(color: Color(.shelfWallTop).opacity(0.6), location: 0),
-                        .init(color: Color(.shelfWallTop).opacity(0.45), location: 0.6),
+                        .init(color: Color(.shelfWallTop).opacity(0.85), location: 0),
+                        .init(
+                            color: Color(.shelfWallTop).opacity(0.85),
+                            location: statusBar * 0.75 / height),
                         .init(color: .clear, location: 1),
                     ], startPoint: .top, endPoint: .bottom
                 )
-                .frame(height: statusBar)
+                .frame(height: height)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
             }
