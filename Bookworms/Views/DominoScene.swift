@@ -1995,21 +1995,19 @@ final class DominoScene {
     }
 
     /// Where a recording's frame centers across the view, as a share of its width, or `nil`
-    /// to leave it where it is (see `DominoRecorder`): between the pointing hand and the book
-    /// it points at until the push, the falling front while the chain runs (`action`), where
-    /// the last book lands until the books start to gather (`landing`), and then the point the
-    /// spread's view looks at, where the last book springs up in the middle of the view once
-    /// the camera rests.
+    /// to leave it where it is (see `DominoRecorder`): the falling front while the chain runs
+    /// (`action`), which starts at the first book, where the hand pushes it, where the last
+    /// book lands until the books start to gather (`landing`), and then the point the spread's
+    /// view looks at, where the last book springs up in the middle of the view once the camera
+    /// rests.
     private var recordingSubject: CGFloat? {
         let point: SIMD3<Float>?
         if let ending, !ending.flights.isEmpty {
             point = ending.camera.target
         } else if next >= books.count {
             point = landing
-        } else if started {
-            point = action
         } else {
-            point = marker.isEnabled ? (marker.position + hand.position(relativeTo: root)) / 2 : nil
+            point = action
         }
         return point.flatMap { screenPoint(of: $0, in: CGSize(width: 1, height: 1))?.x }
     }

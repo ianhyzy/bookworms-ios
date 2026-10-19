@@ -70,17 +70,17 @@ struct DominoFinaleCard: View {
 /// (`crop(in:)`) over the wall's gradient, which shows around the scene, with the heading and
 /// the credit, into a pixel buffer from the encoder's pool. In a view wider than 9:16, such as
 /// a Mac's window, the frame shows the view's full height and pans across it after the run's
-/// subject, which the scene passes on each update: the hand and the first book until the
-/// push, the falling front, then the finale (`DominoPan`). Each frame request carries the
-/// frame's place, and its size stays fixed, so the heading and the credit stay put in the
-/// video, and the PNG shows the last frame's place. Once the GPU is done, the frame
-/// goes to the hardware encoder on the main actor, which expects frames in real time; frames
-/// the encoder has no room for wait for it in order, up to `backlogLimit`, past which every
-/// other one is dropped. The heading is `DominoFinaleCard`, where the live view shows it, and
-/// it fades in as the live one does. `DominoMovieTiming` picks the frames on each scene update,
-/// so a long run plays faster than live and the video stays within 30 seconds, and times the
-/// hits that `ImpactFeedback` recorded, which are mixed into the soundtrack once the recording
-/// ends (`ImpactMix`).
+/// subject, which the scene passes on each update: the falling front, which starts where the
+/// hand pushes the first book, then the finale (`DominoPan`). The video opens on the subject.
+/// Each frame request carries the frame's place, and its size stays fixed, so the heading and
+/// the credit stay put in the video, and the PNG shows the last frame's place. Once the GPU is
+/// done, the frame goes to the hardware encoder on the main actor, which expects frames in
+/// real time; frames the encoder has no room for wait for it in order, up to `backlogLimit`,
+/// past which every other one is dropped. The heading is `DominoFinaleCard`, where the live
+/// view shows it, and it fades in as the live one does. `DominoMovieTiming` picks the frames on
+/// each scene update, so a long run plays faster than live and the video stays within 30
+/// seconds, and times the hits that `ImpactFeedback` recorded, which are mixed into the
+/// soundtrack once the recording ends (`ImpactMix`).
 ///
 /// The recording arms once the chain stands, so its costs fall before the push (`arm()`). The
 /// writer is made and started, and Core Image compiles the frames' kernels, away from the main
@@ -90,7 +90,7 @@ struct DominoFinaleCard: View {
 /// view, with the main actor idle. A push that comes while the recording arms starts it once
 /// it is armed, so the video then starts that much after the push. The callback comes off
 /// when the recording ends. While a book is out at its details, the recording pauses
-/// (`advance(by:phase:progress:paused:)`), so the video cuts from the lift to the book's
+/// (`advance(by:phase:progress:paused:subject:)`), so the video cuts from the lift to the book's
 /// return. Leaving the scene before the books have gathered discards the recording; once they
 /// have gathered, leaving ends it early and keeps it. A new chain deletes the clip.
 @MainActor
@@ -141,8 +141,10 @@ final class DominoRecorder {
         let name: String
         /// The frames' timing from the push on.
         var timing: DominoMovieTiming?
-        /// Where the frames show the view, which follows the run's subject across a wide view.
+        /// Where the frames show the view, which follows the run's subject across a wide view,
+        /// and whether it has aimed at one yet.
         var pan: DominoPan
+        private var hasAimed = false
         /// The live time each frame shows, by frame number.
         var times: [Double] = []
         /// When the books lay gathered, in live seconds since the push.
@@ -165,11 +167,15 @@ final class DominoRecorder {
         }
 
         /// Moves the frame `deltaTime` seconds toward `subject`, a share of the view's width
-        /// from its left edge, keeping it within the view (see `DominoPan`).
+        /// from its left edge, keeping it within the view (see `DominoPan`). The first aim
+        /// goes straight to the subject, so the video opens on it, also after a push that came
+        /// while the recording armed.
         func aim(at subject: CGFloat, by deltaTime: TimeInterval) {
             pan.step(
                 toward: subject * tap.width - tap.crop.width / 2,
-                within: 0...max(tap.width - tap.crop.width, 0), by: deltaTime)
+                within: 0...max(tap.width - tap.crop.width, 0),
+                by: hasAimed ? deltaTime : .infinity)
+            hasAimed = true
         }
     }
 
@@ -324,8 +330,7 @@ final class DominoRecorder {
     /// with `progress` of the run done (see `DominoMovieTiming.advance(by:progress:)`), and
     /// pans its frame toward `subject`, where the run's action shows across the view, as a
     /// share of its width; or leaves them out while `paused`, as while a book is out at its
-    /// details. Until the push, the frame stays on the subject, so the video starts there.
-    /// Arms a recording once the chain stands.
+    /// details. Arms a recording once the chain stands.
     func advance(
         by deltaTime: TimeInterval, phase: DominoPhase, progress: Float, paused: Bool,
         subject: CGFloat?
@@ -334,11 +339,7 @@ final class DominoRecorder {
             if phase == .standing, !cannotRecord { arm() }
             return
         }
-        guard var timing = run.timing else {
-            if let subject, !paused { run.aim(at: subject, by: .infinity) }
-            return
-        }
-        guard !run.isEnding else { return }
+        guard var timing = run.timing, !run.isEnding else { return }
         defer { run.timing = timing }
         guard !paused else { return timing.skip(deltaTime) }
         if let subject { run.aim(at: subject, by: deltaTime) }
