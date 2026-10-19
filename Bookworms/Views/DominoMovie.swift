@@ -60,8 +60,13 @@ struct DominoFinaleCard: View {
 /// Records a dominoes run as the reader watches it, for **Share**: from the push through the
 /// finale until the heading has shown, as a story-size MP4 with the hits' knocks
 /// (`PileMovieWriter`), and a PNG of its last frame, both with the credit at the bottom edge.
-/// Nothing renders again: once the recording ends, the encoder finishes, the soundtrack is
-/// mixed into the movie, and the PNG is written alongside.
+/// Once the books have gathered, the movie then holds its last frame still for
+/// `DominoMovieTiming.lastFrameHold` seconds, so viewers see the gathered books under the
+/// heading before it ends; a recording cut off at its frame limit before then ends without the
+/// hold. Nothing renders again:
+/// once the recording ends, the encoder takes the last frame again for each frame of the hold
+/// and finishes, the soundtrack is mixed into the movie, running on under the hold, and the
+/// PNG is written alongside.
 ///
 /// The recorder takes the frames that the Desk scene's `ARView` draws. RealityKit calls its
 /// `postProcess` render callback on its render thread as it encodes each frame (`Tap`). The
@@ -79,7 +84,7 @@ struct DominoFinaleCard: View {
 /// frames the encoder has no room for wait for it in order, up to `backlogLimit`, past which
 /// every other one is dropped. The heading is `DominoFinaleCard`, where the live view shows it,
 /// and it fades in as the live one does. `DominoMovieTiming` picks the frames on each scene
-/// update, so a long run plays faster than live and the video stays within 30 seconds, and
+/// update, so a long run plays faster than live and the recording stays within 30 seconds, and
 /// times the hits that `ImpactFeedback` recorded, which are mixed into the soundtrack once the
 /// recording ends (`ImpactMix`).
 ///
@@ -649,8 +654,12 @@ final class DominoRecorder {
                 // The still encodes away from the main actor while the movie finishes.
                 async let written: Void = PileSnapshotRenderer.writeStill(
                     poster, identifier: nil, to: still)
-                try await run.writer.finish(
-                    hits: hits, before: .now + PileMovieWriter.finishTimeout)
+                let deadline = ContinuousClock.now + PileMovieWriter.finishTimeout
+                // A recording cut off at its frame limit before the books gather ends mid-run,
+                // where a still last frame would look like a stalled player.
+                let held = run.finishedAt == nil ? 0 : DominoMovieTiming.lastFrameHold
+                try await run.writer.repeatFrame(last, for: held, before: deadline)
+                try await run.writer.finish(hits: hits, before: deadline)
                 try await written
                 let clip = PileMovie(
                     movie: run.writer.url, still: still, poster: poster, name: run.name)
@@ -665,6 +674,7 @@ final class DominoRecorder {
                 #endif
             } catch {
                 Self.log.error("The recording could not be written: \(error)")
+                run.writer.cancel()
                 try? FileManager.default.removeItem(at: run.folder)
             }
             if generation == self.generation { isRecording = false }
