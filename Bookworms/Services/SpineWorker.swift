@@ -419,6 +419,20 @@ actor SpineWorker {
                 "Run started with \(queue.count) books; tier \(String(describing: model.tier), privacy: .public); covers read by \(String(describing: model.coverReader), privacy: .public); quota \(String(describing: model.quota), privacy: .public)"
             )
             let covers = mode == .foreground ? self.covers : backgroundCovers
+            // Each book's time runs from the end of the one before, skipped books included, so
+            // the estimate's durations cover the same books its remaining count does.
+            var mark = ContinuousClock.now
+            func timeBook() {
+                let now = ContinuousClock.now
+                let seconds = mark.duration(to: now) / .seconds(1)
+                mark = now
+                snapshot.durations = Array(
+                    (snapshot.durations + [seconds]).suffix(WorkerSnapshot.estimateWindow))
+                snapshot.timeLeft = WorkerSnapshot.timeLeft(
+                    remaining: snapshot.queue, durations: snapshot.durations,
+                    elapsed: snapshot.startedAt.map { Date().timeIntervalSince($0) } ?? 0,
+                    previous: snapshot.timeLeft)
+            }
             for book in queue {
                 try Task.checkCancellation()
                 let workHash = CloudContract.workItemHash(accountID: accountID, book: book)
@@ -436,11 +450,10 @@ actor SpineWorker {
                     // Counted as checked, so the run's total holds.
                     snapshot.completed += 1
                     snapshot.queue -= 1
+                    timeBook()
                     continue
                 }
-                // The book's time runs to the next book, so the estimate counts the run's checks
-                // between designs too.
-                let start = ContinuousClock.now
+                let start = mark
                 snapshot.phase = "Designing spines"
                 snapshot.currentBook = book
                 publish()
@@ -509,13 +522,7 @@ actor SpineWorker {
                 if redesigned != nil { redesign = nil }
                 snapshot.queue -= 1
                 if stopForModel(await readModel(), mode: mode) { return false }
-                let seconds = start.duration(to: .now) / .seconds(1)
-                snapshot.durations = Array(
-                    (snapshot.durations + [seconds]).suffix(WorkerSnapshot.estimateWindow))
-                snapshot.timeLeft = WorkerSnapshot.timeLeft(
-                    remaining: snapshot.queue, durations: snapshot.durations,
-                    elapsed: snapshot.startedAt.map { Date().timeIntervalSince($0) } ?? 0,
-                    previous: snapshot.timeLeft)
+                timeBook()
             }
             snapshot.phase = "Finished"
         } catch {
