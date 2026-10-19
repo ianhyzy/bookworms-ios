@@ -1,7 +1,7 @@
 import SwiftUI
 import TipKit
 
-/// The Desk's gesture hints, which nothing else on screen teaches: picking up and throwing a
+/// The Desk's gesture hints, which nothing else on screen teaches: picking up and carrying a
 /// book, moving the camera, and pushing the dominoes. Each shows once, in a popover that points
 /// at what it names, when that gesture can next be tried, and goes for good once the reader
 /// uses the gesture or closes the hint. The Desk scene's hints show only while the desk rests,
@@ -64,18 +64,19 @@ enum DeskTips {
     }
 }
 
-/// How to pick up and throw a book, at the first rest after a drop.
+/// How to pick up and carry a book, at the first rest after a drop.
 struct PickUpTip: Tip {
     /// Whether the Desk scene rests, its still in place of its view.
     @Parameter(.transient) static var deskRests: Bool = false
 
     var title: Text { Text("Pick up a book") }
 
+    /// Words that hold with Reduce Motion on too, when a book let go drops rather than flies.
     var message: Text? {
         #if os(macOS)
-            Text("Drag a book to carry it, and let go while it moves to throw it.")
+            Text("Drag a book to carry it, then let go.")
         #else
-            Text("Touch and hold a book to pick it up, then flick to throw it.")
+            Text("Touch and hold a book to pick it up, then drag it and let go.")
         #endif
     }
 
