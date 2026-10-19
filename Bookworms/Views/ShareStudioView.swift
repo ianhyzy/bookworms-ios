@@ -660,12 +660,6 @@ struct ShareStudioView: View {
                     #else
                         // The representation adds the credit only once the image is dropped.
                         .draggable(image)
-                        .focusable()
-                        .copyable([image])
-                        .onKeyPress(.space) {
-                            Task { await quickLook() }
-                            return .handled
-                        }
                     #endif
                     .accessibilityLabel("\(image.name) preview")
                     .accessibilityFocused($focusesPreview)
@@ -696,6 +690,16 @@ struct ShareStudioView: View {
         // A blank sheet until the first image arrives.
         .background(.quaternary)
         .modifier(PrintEdge())
+        #if os(macOS)
+            // Outside the print's clip, which would cut off the focus ring.
+            .focusable(image != nil)
+            .copyable(image.map { [$0] } ?? [])
+            .onKeyPress(.space) {
+                guard image != nil else { return .ignored }
+                Task { await quickLook() }
+                return .handled
+            }
+        #endif
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
