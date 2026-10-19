@@ -39,6 +39,9 @@ final class ShelfPullOut {
     /// The frame of **Shelf**'s lamp in global coordinates, which the lamp reports. While a book
     /// is out, the flight draws the lamp over the book, so the book keeps the light its spine had.
     var lampFrame: CGRect?
+    /// How strongly **Shelf**'s lamp shines (`ShelfLamp.warmth`), which the lamp reports with
+    /// its frame, so the flight's lamp matches it.
+    var lampWarmth = ShelfLamp.warmth
     /// The details' book stage in global coordinates, which `HostedBook.place` reports.
     var stage: CGRect?
     /// The pose the details give their book, which `HostedBook.turn` reports.
@@ -58,6 +61,11 @@ final class ShelfPullOut {
     private(set) var showsText = false
     /// Set by **Back**, until the book is back in its place.
     private(set) var isReturning = false
+    /// Counts the returns that slid their book back into its place, for the haptic as it seats.
+    private(set) var seats = 0
+    /// The book that **Space** peeks at on the Mac (`peek(_:)`), while it slides partway out
+    /// of its place and back.
+    private(set) var peekID: CloudBook.ID?
     /// Set by the book's **Share**, so the details stay while the Share tab shows.
     @ObservationIgnored var keepsForShare = false
     /// Counts pulls and returns, so a completion from an earlier one changes nothing.
@@ -83,6 +91,17 @@ final class ShelfPullOut {
         closing = 0
         self.upright = upright
         self.book = book
+    }
+
+    /// Slides the book with `id` partway out of its place, straight toward the reader, and back,
+    /// as a peek before a pull. Does nothing while a book is out or another peek runs.
+    func peek(_ id: CloudBook.ID) {
+        guard book == nil, peekID == nil else { return }
+        withAnimation(.smooth(duration: 0.18)) {
+            peekID = id
+        } completion: { [self] in
+            withAnimation(.smooth(duration: 0.3)) { peekID = nil }
+        }
     }
 
     /// Flies the book from its place to the stage, then fades the details in. The flying book
@@ -136,6 +155,7 @@ final class ShelfPullOut {
         } completion: { [self] in
             guard self.revision == revision else { return }
             close(keepingRoom: true)
+            seats &+= 1
             // The neighbors snap back into place now that the book is back between them.
             withAnimation(.linear(duration: StackRoom.closingDuration)) { closing = 1 }
             AccessibilityNotification.ScreenChanged(nil).post()
@@ -226,6 +246,11 @@ struct PullOutPath {
     static let veilStart = 0.45
     /// How much larger a spine looks once its book has slid out toward the reader.
     static let pullScale = 1.15
+    /// The progress along the slide out of the shelf that the pointer resting on a book eases
+    /// it to: about 1.5% nearer the reader.
+    static let nudge = 0.06
+    /// The progress that a peek (`ShelfPullOut.peek(_:)`) slides a book to: halfway out.
+    static let peek = 0.15
     /// The float gathers speed, then settles gently on the stage.
     static let floatCurve = UnitCurve.bezier(
         startControlPoint: UnitPoint(x: 0.4, y: 0), endControlPoint: UnitPoint(x: 0.2, y: 1))
@@ -365,6 +390,12 @@ struct PullOutPath {
         return (CGSize(width: side * pull, height: down * pull), 1 + (pullScale - 1) * pull)
     }
 
+    /// How much larger an upright spine looks at `progress`, while it slides out of its place
+    /// toward the reader.
+    static func uprightScale(at progress: Double) -> CGFloat {
+        1 + (pullScale - 1) * phase(progress, from: 0, to: pullEnd, .easeInOut)
+    }
+
     /// How far `curve` has gone at `progress` through the part of the flight from `start` to
     /// `end`: 0 before it, and 1 after it.
     private static func phase(
@@ -396,6 +427,16 @@ struct ShelfPullOutStage: ViewModifier {
             // Another tab closes the details at once, except for the book's Share, which
             // keeps them for the reader's return, as pushed details stay.
             .onDisappear { if !pullOut.keepsForShare { pullOut.close() } }
+            // A light tap as the book leaves its place, and another as it seats again, as the
+            // Desk's books knock. The Mac's trackpad has no impact, so it only marks the seat.
+            #if os(iOS)
+                .sensoryFeedback(trigger: pullOut.isOut) { _, isOut in
+                    isOut ? .impact(weight: .light, intensity: 0.5) : nil
+                }
+                .sensoryFeedback(.impact(weight: .light, intensity: 0.5), trigger: pullOut.seats)
+            #else
+                .sensoryFeedback(.alignment, trigger: pullOut.seats)
+            #endif
     }
 }
 
@@ -496,6 +537,7 @@ private struct PullOutFlightHost: View {
                             thicknessRatio: Book3DView.thicknessRatio(of: current, cover: cover),
                             rest: pullOut.rest, eye: pullOut.eye ?? .zero),
                         lamp: pullOut.upright ? pullOut.lampFrame?.applying(shift) : nil,
+                        lampWarmth: pullOut.lampWarmth,
                         progress: pullOut.progress
                     )
                     .onAppear { pullOut.fly() }
@@ -524,8 +566,10 @@ private struct PullOutFlight: View, Animatable {
     let look: SpineLook
     let cover: UIImage?
     let path: PullOutPath
-    /// The frame of **Shelf**'s lamp, which the shelf hides while the book is out.
+    /// The frame of **Shelf**'s lamp, which the shelf hides while the book is out, and how
+    /// strongly it shines.
     let lamp: CGRect?
+    let lampWarmth: Double
     var progress: Double
 
     nonisolated var animatableData: Double {
@@ -579,7 +623,7 @@ private struct PullOutFlight: View, Animatable {
         .background { WalnutWall(opacity: pose.lift).ignoresSafeArea() }
         .overlay {
             if let lamp {
-                ShelfLamp()
+                ShelfLamp(warmth: lampWarmth)
                     .frame(width: lamp.width, height: lamp.height)
                     .position(x: lamp.midX, y: lamp.midY)
                     .opacity(1 - pose.lift)

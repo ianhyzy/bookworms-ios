@@ -19,31 +19,51 @@ private func finishLaunching(registerForPushes: () -> Void) {
         Task { await GenerationController.shared.installWorklistSubscription() }
     }
     #if DEBUG
-        // `-BookwormsShelfMode <stack|shelf>` opens Library, and `pile` opens Desk.
-        // `-BookwormsTab <share|library|desk|spines>` opens that tab. Only launch arguments
-        // count: Library saves its mode under the same key.
-        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
-        if !testing, let mode = arguments["BookwormsShelfMode"] as? String {
-            AppModel.shared.selectedTab = mode == "pile" ? .desk : .library
-        }
-        if !testing, let tab = (arguments["BookwormsTab"] as? String).flatMap(AppTab.init) {
-            AppModel.shared.selectedTab = tab
-        }
-        // `-BookwormsGenerateOnLaunch YES` starts a run for Simulator checks, and
-        // `-BookwormsShowSpines YES` opens the Spines tab without one.
-        if !testing && UserDefaults.standard.bool(forKey: "BookwormsShowSpines") {
-            AppModel.shared.selectedTab = .spines
-        }
+        if !testing, let tab = launchArgumentTab() { AppModel.shared.selectedTab = tab }
+        // `-BookwormsGenerateOnLaunch YES` starts a run for Simulator checks.
         if !testing && UserDefaults.standard.bool(forKey: "BookwormsGenerateOnLaunch") {
-            AppModel.shared.selectedTab = .spines
             GenerationController.shared.generateNow()
-        }
-        // `-BookwormsShareTemplate <name>` opens the Share tab; see `ShareStudioView`.
-        if !testing && UserDefaults.standard.string(forKey: "BookwormsShareTemplate") != nil {
-            AppModel.shared.selectedTab = .share
         }
     #endif
 }
+
+#if DEBUG
+    /// The tab Debug launch arguments open, or `nil` when none chooses one. The last that
+    /// applies wins:
+    /// - `-BookwormsShelfMode <stack|shelf>` opens Library, and `pile` opens Desk. Only launch
+    ///   arguments count, since Library saves its mode under the same key.
+    /// - `-BookwormsTab <share|library|desk|spines>` opens that tab.
+    /// - `-BookwormsShowSpines YES` and `-BookwormsGenerateOnLaunch YES` open Spines.
+    /// - `-BookwormsShareTemplate <name>` opens Share; see `ShareStudioView`.
+    private func launchArgumentTab() -> AppTab? {
+        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        let defaults = UserDefaults.standard
+        var tab: AppTab?
+        if let mode = arguments["BookwormsShelfMode"] as? String {
+            tab = mode == "pile" ? .desk : .library
+        }
+        if let named = (arguments["BookwormsTab"] as? String).flatMap(AppTab.init) { tab = named }
+        if defaults.bool(forKey: "BookwormsShowSpines")
+            || defaults.bool(forKey: "BookwormsGenerateOnLaunch")
+        {
+            tab = .spines
+        }
+        if defaults.string(forKey: "BookwormsShareTemplate") != nil { tab = .share }
+        return tab
+    }
+#endif
+
+#if os(macOS)
+    /// Whether a Debug launch argument chose the first tab (`finishLaunching`), which the window's
+    /// saved tab then leaves alone.
+    private let launchChoosesTab: Bool = {
+        #if DEBUG
+            launchArgumentTab() != nil
+        #else
+            false
+        #endif
+    }()
+#endif
 
 /// Configures TipKit once per launch, before any view shows a tip, so each area only adds its
 /// tips. The tips' display state lives in TipKit's default datastore in the app's container.
@@ -76,8 +96,9 @@ private func isWorklistChange(_ userInfo: [AnyHashable: Any]) -> Bool {
 }
 
 #if os(macOS)
-    /// Registers for CloudKit change alerts, routes them to the generator, and keeps the app
-    /// running in the menu bar after its last window closes.
+    /// Registers for CloudKit change alerts, routes them to the generator, keeps the app
+    /// running in the menu bar after its last window closes, and gives the Dock icon a menu
+    /// with **Generate Now** or **Stop Generating** and **Sync Library**.
     final class AppDelegate: NSObject, NSApplicationDelegate {
         func applicationDidFinishLaunching(_ notification: Notification) {
             MainActor.assumeIsolated {
@@ -89,6 +110,34 @@ private func isWorklistChange(_ userInfo: [AnyHashable: Any]) -> Bool {
 
         func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
             false
+        }
+
+        /// Built each time the Dock asks, so it names the run's current state. AppKit asks on the
+        /// main thread.
+        @MainActor func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+            let menu = NSMenu()
+            let generating = GenerationController.shared.isGenerating
+            menu.addItem(
+                withTitle: generating ? "Stop Generating" : "Generate Now",
+                action: #selector(toggleGeneration), keyEquivalent: ""
+            )
+            .target = self
+            menu.addItem(
+                withTitle: "Sync Library", action: #selector(syncLibrary), keyEquivalent: ""
+            )
+            .target = self
+            return menu
+        }
+
+        @objc private func toggleGeneration() {
+            MainActor.assumeIsolated {
+                let generation = GenerationController.shared
+                if generation.isGenerating { generation.stop() } else { generation.generateNow() }
+            }
+        }
+
+        @objc private func syncLibrary() {
+            Task { @MainActor in await AppModel.shared.syncLibrary() }
         }
 
         func application(
@@ -132,6 +181,9 @@ struct BookwormsApp: App {
     #endif
     @State private var model = AppModel.shared
     @State private var generation = GenerationController.shared
+    #if os(macOS)
+        @AppStorage(MenuBarExtraToggle.key) private var showsMenuBarExtra = true
+    #endif
 
     var body: some Scene {
         #if os(macOS)
@@ -146,15 +198,24 @@ struct BookwormsApp: App {
             .defaultSize(width: 1180, height: 820)
             // Each area's menu commands, one line each (see `FocusedActions.swift`).
             .commands {
-                BookwormsCommands(model: model, generation: generation)
+                SidebarCommands()
+                BookwormsCommands(model: model)
+                LibraryCommands(model: model, generation: generation)
                 DeskCommands()
             }
+            // A book's details, opened from Library in a window of their own.
+            WindowGroup("Book", id: BookWindow.id, for: Int.self) { $id in
+                BookWindow(bookID: id)
+                    .environment(model)
+                    .environment(generation)
+            }
+            .defaultSize(width: 680, height: 820)
             Settings {
                 MacSettingsView()
                     .environment(model)
                     .environment(generation)
             }
-            MenuBarExtra("Bookworms", image: "menubar.bookworm") {
+            MenuBarExtra("Bookworms", image: "menubar.bookworm", isInserted: $showsMenuBarExtra) {
                 BookwormsMenu()
                     .environment(model)
                     .environment(generation)
@@ -179,6 +240,11 @@ struct RootView: View {
     @AppStorage("BookwormsOfferedHardcover") private var offeredHardcover = false
     @Environment(GenerationController.self) private var generation
     @Environment(\.scenePhase) private var scenePhase
+    #if os(macOS)
+        /// The section last chosen, which the next launch reopens on; Share at first launch. The
+        /// app keeps it rather than the window, whose saved state ends when the window closes.
+        @AppStorage("BookwormsLastTab") private var savedTab = AppTab.share
+    #endif
     @State private var showsAccount = false
     /// The share image shown full size over every tab and bar, while the Share tab's preview is
     /// held.
@@ -229,6 +295,11 @@ struct RootView: View {
         .onChange(of: model.account.needsReconnect) { _, broken in
             if broken && !model.isPreview { showsAccount = true }
         }
+        // **Library > Hardcover Account…** on the Mac.
+        .focusedSceneValue(\.showAccount, SceneAction { showsAccount = true })
+        #if os(macOS)
+            .modifier(RestoresTab(savedTab: $savedTab))
+        #endif
         .task { await model.reload() }
         .onChange(of: scenePhase) { _, phase in
             generation.scenePhaseChanged(to: phase)
@@ -236,3 +307,31 @@ struct RootView: View {
         }
     }
 }
+
+#if os(macOS)
+    /// Reopens the Mac's main window on the section it last showed, once per launch, and saves
+    /// each new section. A Debug launch argument's section wins, and so does a share that a book
+    /// window requested before the main window opened, which `BookWindow` opens the main window
+    /// for. A window reopened later in the same launch, such as from the menu bar item, keeps the
+    /// section that shows. A modifier of its own, so a tab switch updates only it, not the root
+    /// view.
+    private struct RestoresTab: ViewModifier {
+        /// Whether a window has restored its section in this launch.
+        private static var restored = false
+
+        @Binding var savedTab: AppTab
+        @Environment(AppModel.self) private var model
+
+        func body(content: Content) -> some View {
+            content
+                .onAppear {
+                    guard !Self.restored else { return }
+                    Self.restored = true
+                    if !launchChoosesTab && model.shareBookID == nil {
+                        model.selectedTab = savedTab
+                    }
+                }
+                .onChange(of: model.selectedTab) { _, tab in savedTab = tab }
+        }
+    }
+#endif
