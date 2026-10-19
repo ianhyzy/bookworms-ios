@@ -662,7 +662,7 @@ xcodebuild -project Bookworms.xcodeproj -scheme Bookworms \
   OTHER_SWIFT_FLAGS='-disable-sandbox' test
 ```
 
-The tests use fictional books, covers, and canned Hardcover responses, and need no iCloud account, network, Hardcover login, or model. The Hardcover Keychain test uses its own service name, and tests keep AI provider keys in the Keychain service `gay.ian.Bookworms.ai-provider.tests`, so a Mac test run never reads your keys. Simulator runs check rendering and the generation flow against the preview folder; the Simulator does not run background tasks. Check a signed device build for iCloud access, push delivery, the charging task, continued processing, and Private Cloud Compute quotas, and confirm that the Apple TV caches the designs.
+The tests use fictional books, covers, and canned Hardcover responses, and need no iCloud account, network, Hardcover login, or model. The Hardcover Keychain test uses its own service name, and tests keep AI provider keys in the Keychain service `gay.ian.Bookworms.ai-provider.tests` and the backup model choice and its remembered rejection in the user defaults suite `gay.ian.Bookworms.tests`, so a Mac test run never reads your keys or changes your settings. Simulator runs check rendering and the generation flow against the preview folder; the Simulator does not run background tasks. Check a signed device build for iCloud access, push delivery, the charging task, continued processing, and Private Cloud Compute quotas, and confirm that the Apple TV caches the designs.
 
 ## Credits
 
