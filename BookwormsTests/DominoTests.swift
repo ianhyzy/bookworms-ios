@@ -952,15 +952,19 @@ final class DominoTests: XCTestCase {
         let range: ClosedRange<CGFloat> = 0...750
         let step = 1.0 / 60
         var pan = DominoPan(left: 375)
+        var led = DominoPan(left: 375)
         var lefts: [CGFloat] = []
         // The subject sweeps right at 300 points a second for a second, then stops.
         for frame in 1...180 {
             let goal = 375 + 300 * CGFloat(min(frame, 60)) * step
             pan.step(toward: goal, within: range, by: step)
+            led.step(toward: goal + 300 * DominoPan.lag, within: range, by: step)
             XCTAssertLessThanOrEqual(pan.left, goal, "frame \(frame)")
             if frame == 60 {
-                // It trails a steady sweep by about 2 / rate seconds.
-                XCTAssertEqual(goal - pan.left, 300 * 2 / DominoPan.rate, accuracy: 10)
+                // It trails a steady sweep by about `lag`, and keeps up with a goal that far
+                // ahead.
+                XCTAssertEqual(goal - pan.left, 300 * DominoPan.lag, accuracy: 10)
+                XCTAssertEqual(led.left, goal, accuracy: 10)
             }
             lefts.append(pan.left)
         }

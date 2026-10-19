@@ -1995,29 +1995,60 @@ final class DominoScene {
     }
 
     /// Where a recording's frame centers across the view, as a share of its width, or `nil`
-    /// to leave it where it is (see `DominoRecorder`): the falling front while the chain runs
-    /// (`action`), which starts at the first book, where the hand pushes it, and where the last
-    /// book lands once it falls (`landing`). In the finale, a point that moves from there to
-    /// the one the spread's view looks at, where the last book springs up in the middle of the
-    /// view once the camera rests. After the Follow camera, it moves with the camera's aim,
-    /// which centers on the last book and then turns to the spread. After the overview, which
-    /// does not turn to the last book, it sets off at once and slows to arrive as the books
-    /// lift, so the frame leaves the chain's end, where it shows bare table beyond the last
-    /// book, as soon as the last book falls; the frame's own easing smooths the start.
+    /// to leave it where it is (see `DominoRecorder`).
+    ///
+    /// While the Follow camera films, it is where that camera composes the front, so the frame
+    /// holds still while the camera keeps the front there. While another view shows, it is
+    /// the chain just ahead of the falling front, by as far as the front moves in the time the
+    /// frame trails a steady subject (`DominoPan.lag`), so the front shows near the frame's
+    /// middle, with room for the standing books it falls toward. It starts at the first book,
+    /// where the hand pushes it. A blend between the cameras moves from one to the other.
+    /// Once the last book falls, it is where that book lands (`landing`).
+    ///
+    /// In the finale, it moves from there to the point the spread's view looks at, where the
+    /// last book springs up in the middle of the view once the camera rests. After the Follow
+    /// camera, it moves with the camera's aim, which centers on the last book and then turns
+    /// to the spread. After the overview, which does not turn to the last book, it sets off at
+    /// once and slows to arrive as the books lift, so the frame leaves the chain's end, where
+    /// it shows bare table beyond the last book, as soon as the last book falls; the frame's
+    /// own easing smooths the start.
     private var recordingSubject: CGFloat? {
-        let point: SIMD3<Float>?
+        func across(_ point: SIMD3<Float>) -> CGFloat? {
+            screenPoint(of: point, in: CGSize(width: 1, height: 1))?.x
+        }
         if let ending, let landing {
             let rest = 1 - min(ending.clock / DominoFinale.gatherDelay, 1)
             let weight =
                 ending.focus == nil
                 ? 1 - rest * rest * rest : DominoFinale.aim(at: ending.clock)
-            point = landing + (ending.camera.target - landing) * weight
-        } else if next >= books.count {
-            point = landing
-        } else {
-            point = action
+            return across(landing + (ending.camera.target - landing) * weight)
         }
-        return point.flatMap { screenPoint(of: $0, in: CGSize(width: 1, height: 1))?.x }
+        let follow = followShare
+        let composed = area.map {
+            CGFloat($0.low.x + ($0.high.x - $0.low.x) * DominoCameraRig.composition.x + 1) / 2
+        }
+        let point: SIMD3<Float>?
+        if next >= books.count {
+            point = landing
+        } else if follow < 1, started, let rig {
+            let ahead = rig.point(
+                at: rig.estimate - DominoCameraRig.focusBack + rig.pace * Float(DominoPan.lag))
+            point = [ahead.x, rig.tallest * DominoCameraRig.typicalHeight / 2, ahead.y]
+        } else {
+            point = nil
+        }
+        guard let composed, follow > 0 else { return point.flatMap(across) }
+        guard follow < 1 else { return composed }
+        return point.flatMap(across).map { $0 + (composed - $0) * CGFloat(follow) }
+    }
+
+    /// How much the Follow camera films, from 0 to 1: 1 while it films, 0 while another view
+    /// shows, and the share of a blend's time gone while it hands over between them.
+    private var followShare: Float {
+        let to: Float = follows && cameraMove == nil && mode == .follow ? 1 : 0
+        guard let handoff else { return to }
+        let from: Float = if case .live(.follow) = handoff.from { 1 } else { 0 }
+        return from + (to - from) * min(handoff.time / handoff.duration, 1)
     }
 
     /// How far along the path the chain's front has come: the next book's place, and as much

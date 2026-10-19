@@ -730,12 +730,16 @@ final class DominoRecorder {
 /// critically damped spring: the frame sets off and settles smoothly, and never overshoots.
 /// Each step moves each lag part of the way toward a value it has had, so the edge only takes
 /// values between its first and the goals it has had, which `step` holds within the view. It
-/// follows a subject that moves at a steady speed `2 / rate` seconds behind.
+/// follows a subject that moves at a steady speed `lag` seconds behind, so the scene aims that
+/// far ahead along the chain.
 struct DominoPan {
-    /// How fast each lag closes on its goal, per second. The frame then trails a moving
-    /// subject by a fifth of a second, which keeps a year's chain, the fastest across a Mac
-    /// window's overview, well inside the frame.
+    /// How fast each lag closes on its goal, per second: fast enough to turn with the chain at
+    /// a row's end within a few tenths of a second, at the fastest fronts measured across a
+    /// Mac window's overview, a year's and a month's, while it smooths the books' unevenness.
     static let rate: Double = 10
+
+    /// How long the frame trails a subject that moves at a steady speed, in seconds.
+    static var lag: TimeInterval { 2 / rate }
 
     /// The frame's left edge, and the first lag's.
     private(set) var left: CGFloat
