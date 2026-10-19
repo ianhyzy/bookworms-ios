@@ -9,6 +9,9 @@ import SwiftUI
 // to a system menu with `CommandGroup(after:)` or `CommandGroup(replacing:)`; the app's own
 // **Go** menu stays in `BookwormsCommands`, so add **Go** items there. Declare every key here.
 //
+// Publish only values that change at the pace of a person's choices. Every change rebuilds the
+// commands that read the key and updates the menu bar.
+//
 // The values are published on the iPhone too, where nothing reads them.
 extension FocusedValues {
     /// Closes the book details showing in the key window: **Go > Back** (Command-[).
@@ -16,6 +19,8 @@ extension FocusedValues {
     /// The book whose details show in the key window.
     @Entry var detailsBook: CloudBook?
     /// The book centered in Library's **Stack** or **Shelf**.
+    ///
+    /// Publish it once scrolling settles, not as each book passes the center during a fling.
     @Entry var centeredBook: CloudBook?
     /// The image the Share tab's preview shows.
     @Entry var shareImage: ShareImage?
