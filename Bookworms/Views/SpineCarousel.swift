@@ -1546,7 +1546,8 @@ private struct ShelfBoard: View {
 /// shows below them.
 ///
 /// It scrolls with the books, as part of the scroll view's content, and holds no state, so it
-/// draws once.
+/// draws once. It draws one wood tile per stack, so the grain keeps one stack's scale however
+/// many stacks it holds.
 private struct StackBoard: View {
     let arrangement: StackArrangement
     /// How far the first stack starts in from the carousel's leading edge.
@@ -1558,22 +1559,25 @@ private struct StackBoard: View {
         let reach = CGFloat(BookShape.longest) * arrangement.scale + 2 * StackArrangement.margin
         let start = inset + max(0, (arrangement.width - reach) / 2)
         let width = CGFloat(bottoms.count) * arrangement.width - 2 * (start - inset)
-        ShelfBoard(tile: width)
-            .frame(width: width)
-            .overlay(alignment: .topLeading) {
-                ForEach(bottoms.indices, id: \.self) { column in
-                    let book = bottoms[column]
-                    let length = arrangement.spine(of: book).width
-                    ContactShadow(width: length)
-                        .position(
-                            x: inset + CGFloat(column) * arrangement.width
-                                + arrangement.leading(of: book) + length / 2 - start,
-                            y: 0)
-                }
+        let tile = width / CGFloat(max(1, bottoms.count))
+        HStack(spacing: 0) {
+            ForEach(bottoms.indices, id: \.self) { _ in ShelfBoard(tile: tile).frame(width: tile) }
+        }
+        .frame(width: width)
+        .overlay(alignment: .topLeading) {
+            ForEach(bottoms.indices, id: \.self) { column in
+                let book = bottoms[column]
+                let length = arrangement.spine(of: book).width
+                ContactShadow(width: length)
+                    .position(
+                        x: inset + CGFloat(column) * arrangement.width
+                            + arrangement.leading(of: book) + length / 2 - start,
+                        y: 0)
             }
-            .padding(.leading, start)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
+        }
+        .padding(.leading, start)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
