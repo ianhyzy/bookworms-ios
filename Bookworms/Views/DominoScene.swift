@@ -2019,7 +2019,9 @@ final class DominoScene {
             let rest = CGFloat(1 - min(ending.clock / DominoFinale.gatherDelay, 1))
             return across(landing).map { $0 + (0.5 - $0) * (1 - rest * rest * rest) }
         }
-        let follow = followShare
+        // Until the Follow camera has made its establishing move, the front is the subject, so
+        // a push during that move still opens the video on the first book and the hand.
+        let follow = rig?.isEstablished == true ? followShare : 0
         let composed = area.map {
             CGFloat($0.low.x + ($0.high.x - $0.low.x) * DominoCameraRig.composition.x + 1) / 2
         }
