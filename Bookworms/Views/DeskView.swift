@@ -4,7 +4,8 @@ import SwiftUI
 /// them onto the desk to throw around (`BookPileView`), and the dominoes that the bar's
 /// **Dominoes** turns them into, which stand on end and topple (`DominoesView`). Desk opens on
 /// the Desk scene; **Back to desk**, in the same place, returns to it with the books where they
-/// lie.
+/// lie. On the Mac, the **Desk** and **View** menus offer the same switch and the Desk scene's
+/// zoom (`DeskCommands`).
 ///
 /// The scenes show the read books and current reads finished within their own time frame,
 /// which the bar's middle button chooses (`FrameChip`), apart from Library's. Filtering and
@@ -45,7 +46,7 @@ struct DeskView: View {
                 .modifier(
                     DeskBar(
                         liftedDetails: liftedDetails, desk: desk, chip: shelf.chip, frame: frame,
-                        sort: $sort, canSetUp: !shelf.dropped.isEmpty
+                        sort: $sort, canSetUp: !shelf.dropped.isEmpty, isCovered: !path.isEmpty
                     ) {
                         switch desk.mode {
                         case .desk:
@@ -190,6 +191,9 @@ private struct DeskCanvas: View {
 /// options menu. While a lifted book's details show, they give way to the details' **Back** and
 /// **Share** (`LiftedDetailsOverlay`). Without books to show, the bar holds none of them.
 ///
+/// On the Mac, the bar also hands the menu bar's Desk commands what they act on
+/// (`DeskCommands`), while Desk shows its scene with nothing over it.
+///
 /// A modifier of its own, so a book's lift and return update only the bar, not the desk's
 /// body, which sorts the library.
 private struct DeskBar: ViewModifier {
@@ -209,9 +213,12 @@ private struct DeskBar: ViewModifier {
     @Binding var sort: ShelfSort
     /// Whether the desk has books to set up.
     let canSetUp: Bool
+    /// Whether pushed details cover the scene.
+    let isCovered: Bool
     /// **Dominoes** or **Back to desk**, for the scene that shows.
     let switchScene: () -> Void
 
+    @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// How the Desk scene follows the phone's tilt, which `BookPileView` reads.
     @AppStorage("BookwormsPileTiltMode") private var tilt = PileTilt.off
@@ -237,6 +244,9 @@ private struct DeskBar: ViewModifier {
                     ToolbarItem(placement: .topBarTrailing) { options }
                 }
             }
+            #if os(macOS)
+                .focusedSceneValue(\.deskCommands, commands)
+            #endif
     }
 
     private var isDominoes: Bool { desk.mode == .dominoes }
@@ -265,6 +275,18 @@ private struct DeskBar: ViewModifier {
             .labelStyle(.titleAndIcon)
         #endif
     }
+
+    #if os(macOS)
+        /// What the Desk commands act on, while Desk shows its scene and nothing covers it.
+        private var commands: DeskCommandTarget? {
+            guard model.selectedTab == .desk, chip != nil, liftedDetails.lift == nil,
+                !isCovered
+            else { return nil }
+            return DeskCommandTarget(
+                desk: desk, isDominoes: isDominoes, canSwitch: canSwitch,
+                switchScene: switchScene)
+        }
+    #endif
 
     /// The scene's options, and the order where it changes the scene's books:
     /// Dominoes stand in finish order whatever the sort (`DominoLayout.chain(_:)`).

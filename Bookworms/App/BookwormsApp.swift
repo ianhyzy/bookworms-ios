@@ -131,7 +131,10 @@ struct BookwormsApp: App {
                     .frame(minWidth: 760, minHeight: 560)
             }
             .defaultSize(width: 1180, height: 820)
-            .commands { BookwormsCommands(model: model, generation: generation) }
+            .commands {
+                BookwormsCommands(model: model, generation: generation)
+                DeskCommands()
+            }
             Settings {
                 MacSettingsView()
                     .environment(model)
