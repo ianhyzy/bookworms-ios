@@ -774,6 +774,11 @@ final class GenerationTests: XCTestCase {
             )
             .designerName, "Anthropic with your API key")
         XCTAssertEqual(
+            ModelTier.backup.name(
+                backup: SpineDesigner(
+                    provider: .custom, model: "local", baseURL: "http://localhost:1234/v1")),
+            "Your OpenAI-compatible endpoint", "A custom endpoint may need no key")
+        XCTAssertEqual(
             SpineWorker.fallbackMessage(
                 rejection: "Anthropic: invalid x-api-key",
                 next: ModelStatus(

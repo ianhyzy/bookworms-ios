@@ -209,8 +209,10 @@ struct GenerationView: View {
                     .labelStyle(.iconOnly)
                     .buttonStyle(.borderless)
                     .popover(isPresented: $showsModelInfo) {
-                        modelInfo(status: status, tier: tier, name: name)
-                            .presentationCompactAdaptation(.popover)
+                        modelInfo(
+                            status: status, tier: tier, designer: status?.designer ?? .current
+                        )
+                        .presentationCompactAdaptation(.popover)
                     }
                 }
             }
@@ -270,9 +272,11 @@ struct GenerationView: View {
         }
     }
 
-    /// What a design costs at `tier`, whose model is `name`, and why the better tiers are
-    /// unavailable.
-    private func modelInfo(status: ModelStatus?, tier: ModelTier, name: String) -> some View {
+    /// What a design costs at `tier`, with `designer` as the backup model, and why the better
+    /// tiers are unavailable.
+    private func modelInfo(status: ModelStatus?, tier: ModelTier, designer: SpineDesigner)
+        -> some View
+    {
         let note: String
         switch tier {
         case .privateCloudCompute:
@@ -280,8 +284,11 @@ struct GenerationView: View {
                 "Each new design uses one request from your daily limit. Books in a series often reuse a design without a request."
         case .backup:
             #if NO_PCC
+                // A custom endpoint may need no key and bill no account.
                 note =
-                    "\(name) designs each new spine. Each design is one request, billed to your API account. Books in a series often reuse a design without a request."
+                    designer.provider == .custom
+                    ? "Your OpenAI-compatible endpoint designs each new spine, with one request for each design. Books in a series often reuse a design without a request."
+                    : "\(designer.provider.name) designs each new spine with your API key. Each design is one request, billed to your API account. Books in a series often reuse a design without a request."
             #else
                 note =
                     "Private Cloud Compute isn't available, so your backup model designs. Each new design uses one request to this provider, billed to your API account. Books in a series often reuse a design without a request. When Private Cloud Compute becomes available, runs redesign the spines a weaker model made."
@@ -289,7 +296,7 @@ struct GenerationView: View {
         case .onDevice:
             #if NO_PCC
                 note =
-                    "Apple's on-device model designs each new spine on this \(ThisDevice.name), at no cost and with no daily limit. Books in a series often reuse a design. A model with your own API key can give better results. \(Self.upgradeNote)"
+                    "Apple's on-device model designs each new spine on this \(ThisDevice.name), at no cost and with no daily limit. Books in a series often reuse a design. A model with your own API key can give better results. Once you add one, runs redesign the spines this model made."
             #else
                 note =
                     "Private Cloud Compute isn't available, so each new design runs on this \(ThisDevice.name), with no daily limit. Books in a series often reuse a design. \(Self.upgradeNote)"

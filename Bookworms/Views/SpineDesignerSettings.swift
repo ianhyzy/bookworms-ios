@@ -99,7 +99,8 @@ struct SpineDesignerSettings: View {
     private static let localNote =
         "When no model is available, spines use a default style from the cover's colors and lettering and the book's genres."
 
-    /// The footer for a third-party `provider`.
+    /// The footer for a third-party `provider`. A custom endpoint may need no key and bill no
+    /// account, so its footer claims neither.
     private static func providerNote(_ provider: SpineDesigner.Provider) -> String {
         #if NO_PCC
             #if os(macOS)
@@ -107,6 +108,10 @@ struct SpineDesignerSettings: View {
             #else
                 let press = "tap"
             #endif
+            if provider == .custom {
+                return
+                    "Your OpenAI-compatible endpoint designs spines, with your API key if it needs one. Each new design is one request. The endpoint receives each cover, its title and author, and the colors and fonts to choose from. If it rejects the key or model name, Apple's on-device model designs until you change these settings or \(press) Generate now. A key stays in this \(ThisDevice.name)'s Keychain."
+            }
             return
                 "\(provider.name) designs spines with your API key, which can give better results than Apple's on-device model. Each new design is one request, billed to your API account. The provider receives each cover, its title and author, and the colors and fonts to choose from. If it rejects the key or model name, or your account runs out of credit, Apple's on-device model designs until you change these settings or \(press) Generate now. The key stays in this \(ThisDevice.name)'s Keychain."
         #else

@@ -40,11 +40,14 @@ enum ModelTier: Int, Codable, Comparable, Sendable {
     }
 
     /// The tier's name as the Spines tab's **Model** row shows it, naming `designer`'s provider
-    /// for the backup model, such as "Google Gemini with your API key".
+    /// for the backup model, such as "Google Gemini with your API key". A custom endpoint may
+    /// need no key, so its name mentions none.
     func name(backup designer: SpineDesigner) -> String {
         switch self {
         case .privateCloudCompute: "Private Cloud Compute"
-        case .backup: "\(designer.provider.name) with your API key"
+        case .backup:
+            designer.provider == .custom
+                ? "Your OpenAI-compatible endpoint" : "\(designer.provider.name) with your API key"
         case .onDevice: "Apple on-device model"
         case .local: "Default styling"
         }
