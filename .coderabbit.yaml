@@ -7,13 +7,28 @@
 language: en-US
 tone_instructions: >-
   Be brief and concrete. Lead with frame-rate, legibility, and book-realism
-  problems. Skip formatting nits that swift-format already enforces.
+  problems. Skip formatting nits that swift-format already enforces, and
+  nitpicks that prevent no bug or measurable cost.
 
 reviews:
   profile: chill
   poem: false
   in_progress_fortune: false
   sequence_diagrams: false
+  suggested_reviewers: false
+  suggested_labels: false
+  estimate_code_review_effort: false
+
+  auto_review:
+    # Review each pull request once, when it opens. Fix pushes don't start a
+    # review: AGENTS.md has the author review fix commits locally with
+    # `coderabbit review --agent` and comment `@coderabbitai review` only after
+    # fixes to credentials, shared records, or concurrency.
+    auto_incremental_review: false
+
+  pre_merge_checks:
+    docstrings:
+      mode: "off" # AGENTS.md asks for comments that explain intent, not coverage.
 
   # Generated, bundled, or binary content. Excluding it keeps reviews (and the
   # trial's rate limit) on source code.
@@ -38,14 +53,14 @@ reviews:
     - path: "**/*.swift"
       instructions: |
         Frame rate: every screen must hold 60 fps or better on every device. Flag:
-        - Networking, decoding, image analysis, sorting, text measurement, Keychain access, or file I/O in a SwiftUI `body`, a gesture or scroll handler, or other main-actor code that runs during interaction.
+        - Networking, decoding, image analysis, sorting, text measurement, Keychain access, or file I/O in a SwiftUI `body`, a gesture or scroll handler, or other main-actor code that runs during interaction. Flag work that repeats, such as sorting in `body` or in a property that `body` reads. Work that runs once per input change (a keystroke or a library change) and takes a few milliseconds for 2,000 books may stay on the main actor unless a trace shows a hitch.
         - Allocations, collection rebuilds, string formatting, or image creation in per-frame code: RealityKit and SceneKit update closures, `TimelineView`, `Canvas`, display links, and animation callbacks.
         - New timers, blur layers, `drawingGroup`, animated shadow radii, offscreen rendering, or rasterization without a stated reason.
         - Caches or task handles in observed state, broad `@Observable` dependencies that invalidate large view trees, and unstable `ForEach` identity.
         - A `Task {}` assumed to leave the main actor, missing cancellation, and stale async results that can replace newer state.
         - Animations or "delight" effects that delay input, navigation, or the next interaction.
 
-        Legibility: flag hard-coded font sizes that ignore Dynamic Type or fall below 11 pt, and text colors likely to miss WCAG 4.5:1 contrast (3:1 for large text) against their background. Pairs and sets of colors should complement each other.
+        Legibility: flag interface text with hard-coded font sizes that ignore Dynamic Type or fall below 11 pt, and text colors likely to miss WCAG 4.5:1 contrast (3:1 for large text) against their background. Lettering printed on spines, covers, share images, and 3D textures scales with its book instead: judge it by its size on the smallest book the view draws and by its fallbacks (two-line titles, shorter author forms), not by a fixed point floor. Pairs and sets of colors should complement each other.
 
         Platform: guard iOS-only and macOS-only APIs with `#if os(iOS)` or `#if os(macOS)`; add missing UIKit members to `Support/AppKitBridge.swift` instead of forking drawing code. Use Swift 6 strict concurrency with explicit isolation.
 
@@ -72,3 +87,14 @@ reviews:
   tools:
     swiftlint:
       enabled: false # The repository uses swift-format (.swift-format).
+
+knowledge_base:
+  learnings:
+    scope: global # Share learnings with the other Bookworms repositories; public repositories default to local.
+  linked_repositories:
+    - repository: ianhyzy/bookworms-tvos
+      instructions: >-
+        The Apple TV app. Its `SpineCloudStore.swift` and `CloudLibraryStore.swift`
+        read the CloudKit JSON contract in `Bookworms/Models/CloudContract.swift`,
+        its `Bookworms/Models/SeriesDesigns.swift` must match this repository's
+        copy, and it shares the Hardcover token-renewal rule.
