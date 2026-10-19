@@ -61,6 +61,10 @@ enum StackStyle: String {
 /// wood as part of the content. A tap on any book opens it, and so does VoiceOver activation.
 /// The body does not read `centeredID`.
 ///
+/// With a pointer, a book eases a little way out of its place while the pointer rests on it, and
+/// its tooltip names it (`SpineButton`). On the Mac, a book's context menu offers what its
+/// details do (`BookMenu`), and the carousel takes keyboard focus (`KeyboardBrowsing`).
+///
 /// While `pullOut` has a book out, that book hides, leaving a shadowed gap, and reports the gap's
 /// frame, where the book flies from and back to.
 struct SpineCarousel: View {
@@ -74,6 +78,8 @@ struct SpineCarousel: View {
     /// How far the status bar reaches down over the carousel's top, which Shelf keeps its books
     /// below. Stack runs under it.
     let statusBar: CGFloat
+    /// Opens **Change cover** for a book, which its context menu offers on the Mac.
+    let changeCover: (CloudBook) -> Void
     /// Opens a book's details.
     let open: (CloudBook) -> Void
 
@@ -81,6 +87,13 @@ struct SpineCarousel: View {
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("BookwormsStackStyle") private var style = StackStyle.flat
+    #if os(macOS)
+        /// Whether the carousel has keyboard focus, which warms the lamp's light rather than
+        /// drawing a focus ring.
+        @FocusState private var isFocused: Bool
+    #else
+        private let isFocused = false
+    #endif
 
     /// Shelved books nearly touch, so their spines read as separate books.
     private static let shelfSpacing: CGFloat = 1
@@ -153,7 +166,8 @@ struct SpineCarousel: View {
         // instead.
         .background {
             StackLamp(
-                track: track, centers: centers, height: size.height, centeredID: $centeredID)
+                track: track, centers: centers, height: size.height, warm: isFocused,
+                centeredID: $centeredID)
         }
     }
 
@@ -207,9 +221,10 @@ struct SpineCarousel: View {
                         ZStack(alignment: .topLeading) {
                             ForEach(track.pages[page]) { slot in
                                 let spine = arrangement.spine(of: slot.book)
-                                spineButton(slot.book) {
+                                spineButton(slot.book) { nudged in
                                     stackedBook(
-                                        slot.book, spine: spine, camera: camera, eye: eye)
+                                        slot.book, spine: spine, camera: camera, eye: eye,
+                                        nudged: nudged)
                                 }
                                 .padding(
                                     .leading,
@@ -251,6 +266,12 @@ struct SpineCarousel: View {
             CenterTracking(
                 track: track, axis: .vertical, viewport: size.height, centeredID: $centeredID)
         )
+        #if os(macOS)
+            .modifier(
+                KeyboardBrowsing(
+                    books: books, track: track, axis: .vertical, viewport: size.height,
+                    centeredID: $centeredID, pullOut: pullOut, focus: $isFocused, open: open))
+        #endif
         // Fades the stack as one image, so a fading 3D book never shows the book under it through
         // its spine.
         .mask { LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom) }
@@ -277,11 +298,11 @@ struct SpineCarousel: View {
     /// thickness, seen by a camera `camera` points in front of the stack (`StackCamera`), or
     /// straight on.
     private func stackedBook(
-        _ book: CloudBook, spine: CGSize, camera: CGFloat?, eye: CGPoint
+        _ book: CloudBook, spine: CGSize, camera: CGFloat?, eye: CGPoint, nudged: Bool
     ) -> some View {
         StackedBook(
             book: book, look: model.look(for: book), spine: spine, rest: style.rest(of: book),
-            camera: camera, eye: eye, pullOut: pullOut)
+            camera: camera, eye: eye, pullOut: pullOut, nudged: nudged)
     }
 
     private func shelf(in size: CGSize) -> some View {
@@ -312,10 +333,19 @@ struct SpineCarousel: View {
                             ZStack(alignment: .bottomLeading) {
                                 ForEach(track.pages[page]) { slot in
                                     let spine = slot.book.shelfSpineSize(scale: scale)
-                                    spineButton(slot.book) {
+                                    spineButton(slot.book) { nudged in
                                         UprightSpineView(
                                             book: slot.book, look: model.look(for: slot.book),
                                             height: spine.height, thickness: spine.width
+                                        )
+                                        // Comes a little way toward the reader, standing on
+                                        // the board.
+                                        .scaleEffect(
+                                            PullOutPath.uprightScale(
+                                                at: pullOut.peekID == slot.book.id
+                                                    ? PullOutPath.peek
+                                                    : nudged ? PullOutPath.nudge : 0),
+                                            anchor: .bottom
                                         )
                                         .modifier(
                                             PulledSpine(
@@ -345,28 +375,217 @@ struct SpineCarousel: View {
             CenterTracking(
                 track: track, axis: .horizontal, viewport: size.width, centeredID: $centeredID)
         )
+        #if os(macOS)
+            .modifier(
+                KeyboardBrowsing(
+                    books: books, track: track, axis: .horizontal, viewport: size.width,
+                    centeredID: $centeredID, pullOut: pullOut, focus: $isFocused, open: open))
+        #endif
         .padding(.horizontal, -bleed)
-        .overlay { ShelfLamp().modifier(LampHandOff(pullOut: pullOut)) }
+        .overlay {
+            ShelfLamp(warmth: isFocused ? ShelfLamp.focusedWarmth : ShelfLamp.warmth)
+                .modifier(LampHandOff(pullOut: pullOut))
+        }
     }
 
-    /// A book's button, which opens it.
-    private func spineButton(_ book: CloudBook, @ViewBuilder label: () -> some View) -> some View {
+    /// A book's button (`SpineButton`), which opens it.
+    private func spineButton(
+        _ book: CloudBook, @ViewBuilder label: @escaping (_ nudged: Bool) -> some View
+    ) -> some View {
+        SpineButton(
+            book: book, namespace: namespace, open: open, changeCover: changeCover, label: label)
+    }
+}
+
+/// A book's button in **Stack** or **Shelf**, which opens it.
+///
+/// With a pointer, the book eases a little way out of its place while the pointer rests on it,
+/// straight toward the reader along the way its spine faces, with no tilt (`PullOutPath.nudge`),
+/// and its tooltip names it. The hover is the button's own state, so a pointer moving over the
+/// books updates only the books it enters and leaves. Reduce Motion keeps the book still. On the
+/// Mac, its context menu offers what its details do (`BookMenu`).
+private struct SpineButton<Label: View>: View {
+    let book: CloudBook
+    let namespace: Namespace.ID
+    let open: (CloudBook) -> Void
+    let changeCover: (CloudBook) -> Void
+    /// The book, eased out of its place while `nudged`.
+    @ViewBuilder let label: (_ nudged: Bool) -> Label
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hovered = false
+
+    var body: some View {
         Button {
             open(book)
         } label: {
             #if os(iOS)
-                label().matchedTransitionSource(id: book.id, in: namespace)
+                label(hovered).matchedTransitionSource(id: book.id, in: namespace)
             #else
                 // Only the iPhone zooms pushed details out of the book. On the Mac, the source
                 // clips the book to its place, which would cut off a pulled book's slide.
-                label()
+                label(hovered)
             #endif
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(book.title), by \(book.author)")
         .accessibilityHint("Opens the book's details.")
+        .help("\(book.title) — \(book.author)")
+        .onHover { inside in
+            guard !reduceMotion || !inside else { return }
+            withAnimation(.smooth(duration: 0.2)) { hovered = inside }
+        }
+        #if os(macOS)
+            .contextMenu { BookMenu(book: book, open: open, changeCover: changeCover) }
+        #endif
     }
 }
+
+#if os(macOS)
+    /// What the Mac offers for a book, in its context menu and in the **Library** menu for the
+    /// centered book: **Open**, **Open in New Window** (`BookWindow`), **Make Share Image**,
+    /// **Change Cover…**, **Redesign Spine**, and **Copy Title**. In the menu bar, **Open** shows
+    /// its key equivalent, and **Open in New Window** is in the **File** menu instead
+    /// (`LibraryCommands`).
+    struct BookMenu: View {
+        let book: CloudBook
+        let open: (CloudBook) -> Void
+        let changeCover: (CloudBook) -> Void
+        var inMenuBar = false
+
+        @Environment(AppModel.self) private var model
+        @Environment(GenerationController.self) private var generation
+        @Environment(\.openWindow) private var openWindow
+
+        var body: some View {
+            Button("Open") { open(book) }
+                .keyboardShortcut(inMenuBar ? KeyboardShortcut("o") : nil)
+            if !inMenuBar {
+                Button("Open in New Window") { openWindow(id: BookWindow.id, value: book.id) }
+            }
+            Divider()
+            Button("Make Share Image") { model.share(book) }
+            Button("Change Cover…") { changeCover(book) }
+            // A run already redesigns what it finds; **Redesign** waits for it to end.
+            Button(model.sharesSeriesDesign(book) ? "Redesign Spines" : "Redesign Spine") {
+                generation.redesign(book)
+            }
+            .disabled(generation.status.isRunning)
+            Divider()
+            Button("Copy Title") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(book.title, forType: .string)
+            }
+        }
+    }
+
+    /// Browses the carousel with the keyboard while it has focus, which a click or Tab gives it
+    /// and Library gives it when it appears: the arrow keys along the shelf step to the next or
+    /// previous book, and in **Stack** Left and Right move to the stack beside it; Page Up and
+    /// Page Down move about a screenful; Home and End go to the first and last book; Return opens
+    /// the centered book, in a window of its own with Option; Space peeks, sliding the book
+    /// partway out and back; and typing a title's first letters goes to the first book whose
+    /// title starts with them.
+    ///
+    /// Each key moves `centeredID`, which the carousel glides to (`CenterTracking`). The keys do
+    /// nothing while a book's details show. The focus draws no ring; the lamp's light warms
+    /// instead (`StackLamp`, `ShelfLamp`).
+    private struct KeyboardBrowsing: ViewModifier {
+        let books: [CloudBook]
+        let track: SpineTrack
+        /// The axis along which the books lie in a row: vertical for **Stack**.
+        let axis: Axis
+        /// The length along `axis` that shows on screen.
+        let viewport: CGFloat
+        @Binding var centeredID: Int?
+        let pullOut: ShelfPullOut
+        let focus: FocusState<Bool>.Binding
+        let open: (CloudBook) -> Void
+
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        /// The letters typed so far for type-select, and when the last one came. A pause of a
+        /// second starts a new title.
+        @State private var typed = ""
+        @State private var typedAt = Date.distantPast
+
+        func body(content: Content) -> some View {
+            content
+                .focusable(interactions: .edit)
+                .focused(focus)
+                .focusEffectDisabled()
+                .defaultFocus(focus, true)
+                .onKeyPress(
+                    keys: [
+                        .upArrow, .downArrow, .leftArrow, .rightArrow, .pageUp, .pageDown, .home,
+                        .end, .return, .space,
+                    ]
+                ) { press in
+                    guard pullOut.book == nil, !press.modifiers.contains(.command) else {
+                        return .ignored
+                    }
+                    return move(press.key) ? .handled : .ignored
+                }
+                .onKeyPress(characters: .alphanumerics, phases: .down) { press in
+                    guard pullOut.book == nil,
+                        press.modifiers.isDisjoint(with: [.command, .control])
+                    else { return .ignored }
+                    typeSelect(press.characters)
+                    return .handled
+                }
+        }
+
+        /// Acts on `key`, returning whether it did anything.
+        private func move(_ key: KeyEquivalent) -> Bool {
+            let ids = track.ids
+            guard !ids.isEmpty else { return false }
+            let index = centeredID.flatMap { ids.firstIndex(of: $0) } ?? 0
+            let column = track.column(of: centeredID)
+            let along = axis == .vertical
+            switch key {
+            case .upArrow where along, .leftArrow where !along:
+                return center(ids[max(0, index - 1)])
+            case .downArrow where along, .rightArrow where !along:
+                return center(ids[min(ids.count - 1, index + 1)])
+            case .leftArrow, .rightArrow:
+                // The stack beside this one, at the same height.
+                let next = column + (key == .leftArrow ? -1 : 1)
+                guard track.columns.indices.contains(next) else { return false }
+                return center(track.id(nearest: track.offset(of: centeredID), in: next))
+            case .pageUp, .pageDown:
+                let page = viewport * 0.8 * (key == .pageUp ? -1 : 1)
+                return center(track.id(nearest: track.offset(of: centeredID) + page, in: column))
+            case .home: return center(ids[track.columns[column].lowerBound])
+            case .end: return center(ids[track.columns[column].upperBound - 1])
+            case .return:
+                guard let book = books.first(where: { $0.id == ids[index] }) else { return false }
+                open(book)
+                return true
+            case .space:
+                if !reduceMotion { pullOut.peek(ids[index]) }
+                return true
+            default: return false
+            }
+        }
+
+        private func center(_ id: Int?) -> Bool {
+            guard let id else { return false }
+            centeredID = id
+            return true
+        }
+
+        private func typeSelect(_ characters: String) {
+            let now = Date.now
+            typed = now.timeIntervalSince(typedAt) < 1 ? typed + characters : characters
+            typedAt = now
+            let match = books.first {
+                $0.title.range(
+                    of: typed, options: [.anchored, .caseInsensitive, .diacriticInsensitive])
+                    != nil
+            }
+            if let match { centeredID = match.id }
+        }
+    }
+#endif
 
 /// A book in **Stack**: `Book3DView` lying on its back, head on the left, turned as `rest`
 /// says, and seen straight on or, in 3D, by the stack's camera (`StackCamera`), `camera` points
@@ -388,6 +607,8 @@ struct StackedBook: View {
     let camera: CGFloat?
     let eye: CGPoint
     let pullOut: ShelfPullOut
+    /// Whether the pointer rests on the book, which eases it a little way out of its place.
+    var nudged = false
 
     @Environment(AppModel.self) private var model
     @State private var cover: UIImage?
@@ -459,10 +680,14 @@ struct StackedBook: View {
         .frame(width: drawn.width, height: drawn.height)
         // Read from the tap on, not from `isOut`: this view must already depend on `progress`
         // when `ShelfPullOut.fly` animates it, or the animation never reaches the slide and the
-        // book holds still until the flight takes over.
+        // book holds still until the flight takes over. A peek or the pointer slides the book
+        // partway out along the same path, and back.
         .modifier(
             StackSlide(
-                progress: isPulled ? pullOut.progress : 0,
+                progress: isPulled
+                    ? pullOut.progress
+                    : pullOut.peekID == book.id
+                        ? PullOutPath.peek : nudged ? PullOutPath.nudge : 0,
                 spine: spine, extent: drawn.height, rest: rest)
         )
         .frame(width: spine.width, height: spine.height, alignment: .bottom)
@@ -760,7 +985,13 @@ private struct CenterTracking: ViewModifier {
             .onAppear {
                 if centeredID == nil || centeredID != scrolledID { scrollToCenteredBook() }
             }
-            .scrollIndicators(.hidden)
+            // The Mac's scroll bars follow the person's setting in System Settings; the iPhone's
+            // books run to the screen's edge without one.
+            #if os(macOS)
+                .scrollIndicators(.automatic)
+            #else
+                .scrollIndicators(.hidden)
+            #endif
             // The books run to the screen's edge or fade out before it, so a bar's edge effect
             // would only draw a seam across the walnut. Under the iPhone's status bar, Stack draws
             // its own faint backing instead (`SpineCarousel.body`).
@@ -1318,18 +1549,21 @@ private struct StackLamp: View {
     let centers: [CGFloat]
     /// The carousel's height, whose middle the pool lights.
     let height: CGFloat
+    /// Whether the carousel has keyboard focus, which the pool marks by warming.
+    let warm: Bool
     @Binding var centeredID: Int?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let column = centers.count > 1 ? track.column(of: centeredID) : 0
         RadialGradient(
-            colors: [ShelfPalette.lamp.opacity(0.22), .clear], center: .center, startRadius: 0,
-            endRadius: 320
+            colors: [ShelfPalette.lamp.opacity(warm ? 0.32 : 0.22), .clear], center: .center,
+            startRadius: 0, endRadius: 320
         )
         .frame(width: 700, height: 700)
         .position(x: centers.indices.contains(column) ? centers[column] : 0, y: height / 2)
         .animation(reduceMotion ? nil : .smooth(duration: SpineCarousel.glide), value: column)
+        .animation(.easeOut(duration: 0.2), value: warm)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
@@ -1423,10 +1657,17 @@ private struct LampHandOff: ViewModifier {
 /// It fades out at its top and bottom, so it meets the plain wall above and below the carousel
 /// without a step.
 struct ShelfLamp: View {
+    /// The light's usual strength.
+    static let warmth = 0.14
+    /// The light while the shelf has keyboard focus, which it marks instead of a focus ring.
+    static let focusedWarmth = 0.22
+
+    var warmth = Self.warmth
+
     var body: some View {
         ZStack {
             RadialGradient(
-                colors: [ShelfPalette.lamp.opacity(0.14), .clear], center: .top, startRadius: 0,
+                colors: [ShelfPalette.lamp.opacity(warmth), .clear], center: .top, startRadius: 0,
                 endRadius: 480)
             LinearGradient(
                 stops: [

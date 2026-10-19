@@ -60,6 +60,9 @@ final class ShelfPullOut {
     private(set) var isReturning = false
     /// Counts the returns that slid their book back into its place, for the haptic as it seats.
     private(set) var seats = 0
+    /// The book that **Space** peeks at on the Mac (`peek(_:)`), while it slides partway out
+    /// of its place and back.
+    private(set) var peekID: CloudBook.ID?
     /// Set by the book's **Share**, so the details stay while the Share tab shows.
     @ObservationIgnored var keepsForShare = false
     /// Counts pulls and returns, so a completion from an earlier one changes nothing.
@@ -85,6 +88,17 @@ final class ShelfPullOut {
         closing = 0
         self.upright = upright
         self.book = book
+    }
+
+    /// Slides the book with `id` partway out of its place, straight toward the reader, and back,
+    /// as a peek before a pull. Does nothing while a book is out or another peek runs.
+    func peek(_ id: CloudBook.ID) {
+        guard book == nil, peekID == nil else { return }
+        withAnimation(.smooth(duration: 0.18)) {
+            peekID = id
+        } completion: { [self] in
+            withAnimation(.smooth(duration: 0.3)) { peekID = nil }
+        }
     }
 
     /// Flies the book from its place to the stage, then fades the details in. The flying book
@@ -229,6 +243,11 @@ struct PullOutPath {
     static let veilStart = 0.45
     /// How much larger a spine looks once its book has slid out toward the reader.
     static let pullScale = 1.15
+    /// The progress along the slide out of the shelf that the pointer resting on a book eases
+    /// it to: about 1.5% nearer the reader.
+    static let nudge = 0.06
+    /// The progress that a peek (`ShelfPullOut.peek(_:)`) slides a book to: halfway out.
+    static let peek = 0.15
     /// The float gathers speed, then settles gently on the stage.
     static let floatCurve = UnitCurve.bezier(
         startControlPoint: UnitPoint(x: 0.4, y: 0), endControlPoint: UnitPoint(x: 0.2, y: 1))
@@ -366,6 +385,12 @@ struct PullOutPath {
         let side = -sin(rest.pitch) * distance * (pullScale - 1) * length
         let down = rest.distance == nil ? max(0, extent * (1 + pullScale) / 2 - thickness) : 0
         return (CGSize(width: side * pull, height: down * pull), 1 + (pullScale - 1) * pull)
+    }
+
+    /// How much larger an upright spine looks at `progress`, while it slides out of its place
+    /// toward the reader.
+    static func uprightScale(at progress: Double) -> CGFloat {
+        1 + (pullScale - 1) * phase(progress, from: 0, to: pullEnd, .easeInOut)
     }
 
     /// How far `curve` has gone at `progress` through the part of the flight from `start` to

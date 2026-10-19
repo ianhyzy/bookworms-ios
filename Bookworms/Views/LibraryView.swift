@@ -26,9 +26,14 @@ struct LibraryView: View {
     /// Set to find a book: the iPhone opens its finder, and the Mac focuses the toolbar's search
     /// field (`LibrarySearch`).
     @State private var findsBook = false
+    /// The book whose **Change Cover** a context menu or the **Library** menu chose.
+    @State private var coverBook: CloudBook?
     /// How far the status bar and the Dynamic Island reach down from the screen's top edge.
     @State private var statusBar: CGFloat = 0
     @Namespace private var namespace
+    #if os(macOS)
+        @Environment(\.openWindow) private var openWindow
+    #endif
 
     var body: some View {
         let read = readBooks
@@ -66,6 +71,12 @@ struct LibraryView: View {
             .toolbarBackgroundVisibility(.visible, for: .tabBar)
         #endif
         .tint(ShelfPalette.lamp)
+        .sheet(item: $coverBook) { book in
+            // As the details' **Change cover** shows it: over the room, and for the book whose
+            // cover sets the spine of a series that shares a design.
+            CoverPickerView(book: model.designSource(for: book)) {}
+                .preferredColorScheme(.dark)
+        }
         // Outside the dark scheme and tint, so the account sheet follows the system appearance.
         // Kept on the stack, so the sheet stays open when the library it brings replaces the
         // empty state.
@@ -154,7 +165,7 @@ struct LibraryView: View {
     @ViewBuilder private func carousel(_ books: [CloudBook]) -> some View {
         SpineCarousel(
             books: books, mode: mode, centeredID: $centeredID, namespace: namespace,
-            pullOut: pullOut, statusBar: statusBar, open: open
+            pullOut: pullOut, statusBar: statusBar, changeCover: { coverBook = $0 }, open: open
         )
         .modifier(ShelfPullOutWait(pullOut: pullOut))
         #if os(iOS)
@@ -175,9 +186,17 @@ struct LibraryView: View {
             #endif
     }
 
-    /// Opens `book`'s details, from a tap, a search, or the keyboard. Does nothing while other
-    /// details show.
+    /// Opens `book`'s details, from a click or tap, the keyboard, a search, or a menu. Does
+    /// nothing while other details show.
+    ///
+    /// On the Mac, with Option held, as for Option-click or Option-Return, it opens them in a
+    /// window of their own (`BookWindow`) instead.
     private func open(_ book: CloudBook) {
+        #if os(macOS)
+            if NSEvent.modifierFlags.contains(.option) {
+                return openWindow(id: BookWindow.id, value: book.id)
+            }
+        #endif
         guard pullOut.book == nil, path.isEmpty else { return }
         if reduceMotion {
             path.append(book.id)
@@ -819,8 +838,9 @@ private struct BookFinderRow: View {
 /// The details of the book with `id`, which Library and Desk push, or why they are missing.
 struct PushedBookDetail: View {
     let id: Int
-    /// The tab whose navigation stack holds the details.
-    let tab: AppTab
+    /// The tab whose navigation stack holds the details, or `nil` in a book's own window
+    /// (`BookWindow`), which has nothing to go back to.
+    let tab: AppTab?
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
 
@@ -841,7 +861,8 @@ struct PushedBookDetail: View {
             .navigationSubtitle(book?.author ?? "")
         #endif
         // Dismissing pops the details off their navigation stack.
-        .focusedSceneValue(\.goBack, SceneAction { dismiss() }, in: tab)
+        .focusedSceneValue(
+            \.goBack, tab.map { _ in SceneAction { dismiss() } }, in: tab ?? .library)
     }
 }
 

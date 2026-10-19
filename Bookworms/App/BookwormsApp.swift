@@ -148,6 +148,13 @@ struct BookwormsApp: App {
             .commands {
                 BookwormsCommands(model: model, generation: generation)
             }
+            // A book's details, opened from Library in a window of their own.
+            WindowGroup("Book", id: BookWindow.id, for: Int.self) { $id in
+                BookWindow(bookID: id)
+                    .environment(model)
+                    .environment(generation)
+            }
+            .defaultSize(width: 680, height: 820)
             Settings {
                 MacSettingsView()
                     .environment(model)

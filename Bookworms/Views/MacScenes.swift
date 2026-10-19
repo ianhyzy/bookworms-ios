@@ -130,4 +130,30 @@
             }
         }
     }
+
+    /// A book's details in a window of their own, which **Open in New Window**, Option-click,
+    /// and Option-Return open from Library. The window takes the book's name, comes back with
+    /// the app, and says so when the library no longer includes the book. The details'
+    /// **Share** brings the main window forward on the Share tab.
+    struct BookWindow: View {
+        static let id = "book"
+
+        let bookID: Int?
+
+        @Environment(AppModel.self) private var model
+        @Environment(\.openWindow) private var openWindow
+
+        var body: some View {
+            NavigationStack {
+                PushedBookDetail(id: bookID ?? 0, tab: nil)
+            }
+            // The details stand in the walnut room, as in the main window.
+            .environment(\.colorScheme, .dark)
+            .tint(ShelfPalette.lamp)
+            .frame(minWidth: 420, minHeight: 520)
+            .onChange(of: model.shareBookID) {
+                if model.shareBookID != nil { openWindow(id: BookwormsMenu.windowID) }
+            }
+        }
+    }
 #endif
