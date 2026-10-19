@@ -10,6 +10,7 @@ enum ShelfMode: String, CaseIterable, Identifiable {
 
     var id: Self { self }
     var title: String { self == .stack ? "Stack" : "Shelf" }
+    var symbol: String { self == .stack ? "square.stack.3d.up" : "books.vertical" }
 }
 
 /// How **Stack** draws its books. The raw values are what `BookwormsStackStyle` saves.
@@ -60,6 +61,10 @@ enum StackStyle: String {
 /// wood as part of the content. A tap on any book opens it, and so does VoiceOver activation.
 /// The body does not read `centeredID`.
 ///
+/// With a pointer, a book eases a little way out of its place while the pointer rests on it, and
+/// its tooltip names it (`SpineButton`). On the Mac, a book's context menu offers what its
+/// details do (`BookMenu`), and the carousel takes keyboard focus (`KeyboardBrowsing`).
+///
 /// While `pullOut` has a book out, that book hides, leaving a shadowed gap, and reports the gap's
 /// frame, where the book flies from and back to.
 struct SpineCarousel: View {
@@ -73,6 +78,8 @@ struct SpineCarousel: View {
     /// How far the status bar reaches down over the carousel's top, which Shelf keeps its books
     /// below. Stack runs under it.
     let statusBar: CGFloat
+    /// Opens **Change cover** for a book, which its context menu offers on the Mac.
+    let changeCover: (CloudBook) -> Void
     /// Opens a book's details.
     let open: (CloudBook) -> Void
 
@@ -80,6 +87,10 @@ struct SpineCarousel: View {
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("BookwormsStackStyle") private var style = StackStyle.flat
+    @State private var scrolling = CarouselScrolling()
+    /// Whether the carousel has keyboard focus on the Mac, which warms the lamp's light rather
+    /// than drawing a focus ring. Only the lamps read it, so a focus change redraws only them.
+    @FocusState private var isFocused: Bool
 
     /// Shelved books nearly touch, so their spines read as separate books.
     private static let shelfSpacing: CGFloat = 1
@@ -99,33 +110,28 @@ struct SpineCarousel: View {
         }
         // A book can only return to the place it left, which the other style draws differently.
         .onChange(of: style) { pullOut.close() }
+        .onScrollPhaseChange { _, phase in scrolling.isScrolling = phase.isScrolling }
+        #if os(macOS)
+            .modifier(SettledBook(books: books, centeredID: $centeredID, pullOut: pullOut))
+        #endif
         .overlay(alignment: .top) {
-            // On the iPhone, Stack runs up under the status bar. A faint wash of the wall's color
-            // keeps the time and battery readable over spine lettering, and fades out by the
-            // status bar's lower edge, so the books below it stay sharp. The system's soft edge
-            // effect reaches about a spine farther and blurs that book too.
-            if mode == .stack {
+            // On the iPhone, Stack runs up under the status bar. A wash of the wall's color, dense
+            // enough to hide spine lettering behind the time and battery, covers the whole bar
+            // and fades out over 8 points below it, so the books below stay sharp. The system's
+            // soft edge effect reaches about a spine farther and blurs that book too.
+            if mode == .stack, statusBar > 0 {
+                let height = statusBar + 8
                 LinearGradient(
                     stops: [
-                        .init(color: Color(.shelfWallTop).opacity(0.6), location: 0),
-                        .init(color: Color(.shelfWallTop).opacity(0.45), location: 0.6),
+                        .init(color: Color(.shelfWallTop).opacity(0.85), location: 0),
+                        .init(
+                            color: Color(.shelfWallTop).opacity(0.85),
+                            location: statusBar / height),
                         .init(color: .clear, location: 1),
                     ], startPoint: .top, endPoint: .bottom
                 )
-                .frame(height: statusBar)
+                .frame(height: height)
                 .allowsHitTesting(false)
-                .accessibilityHidden(true)
-            }
-        }
-        .background {
-            // A pool of warm light behind the middle of the stack, larger than the carousel so its
-            // falloff never meets an edge. The shelf's lamp lights the bookcase instead.
-            if mode == .stack {
-                RadialGradient(
-                    colors: [ShelfPalette.lamp.opacity(0.22), .clear], center: .center,
-                    startRadius: 0, endRadius: 320
-                )
-                .frame(width: 700, height: 700)
                 .accessibilityHidden(true)
             }
         }
@@ -147,9 +153,23 @@ struct SpineCarousel: View {
         // Where each run starts; the first `books.count % columns` runs take one more book.
         let bound = { ($0 * books.count + columns - 1) / columns }
         let runs = (0..<columns).map { Array(books[bound($0)..<bound($0 + 1)]) }
+        let track = arrangement.track(of: runs)
+        // The middle of each stack across the carousel.
+        let centers = runs.indices.map { room + (CGFloat($0) + 0.5) * arrangement.width }
         return stackScroll(
-            arrangement.track(of: runs), arrangement: arrangement, inset: room,
-            camera: style == .threeD ? StackCamera.distance(viewing: size) : nil, in: size)
+            track, arrangement: arrangement, inset: room,
+            camera: style == .threeD ? StackCamera.distance(viewing: size) : nil, in: size,
+            board: StackBoard(
+                arrangement: arrangement, inset: room, bottoms: runs.compactMap(\.last))
+        )
+        // A pool of warm light behind the stack whose book the caption names, larger than the
+        // carousel so its falloff never meets an edge. The shelf's lamp lights the bookcase
+        // instead.
+        .background {
+            StackLamp(
+                track: track, centers: centers, height: size.height, focus: $isFocused,
+                centeredID: $centeredID)
+        }
     }
 
     /// A scroll view `size` big of `track`'s stacks, side by side, each `arrangement.width` wide,
@@ -157,7 +177,7 @@ struct SpineCarousel: View {
     /// straight on.
     private func stackScroll(
         _ track: SpineTrack, arrangement: StackArrangement, inset: CGFloat, camera: CGFloat?,
-        in size: CGSize
+        in size: CGSize, board: StackBoard
     ) -> some View {
         // A lazy stack builds only the pages within its scroll view's bounds. A spine overhangs
         // its page by up to half its thickness, and toward the ends of a 3D stack, a book's top
@@ -202,9 +222,10 @@ struct SpineCarousel: View {
                         ZStack(alignment: .topLeading) {
                             ForEach(track.pages[page]) { slot in
                                 let spine = arrangement.spine(of: slot.book)
-                                spineButton(slot.book) {
+                                spineButton(slot.book) { nudged in
                                     stackedBook(
-                                        slot.book, spine: spine, camera: camera, eye: eye)
+                                        slot.book, spine: spine, camera: camera, eye: eye,
+                                        nudged: nudged)
                                 }
                                 .padding(
                                     .leading,
@@ -237,6 +258,8 @@ struct SpineCarousel: View {
                                 isOut: track.pages[page].contains { $0.id == out }))
                     }
                 }
+                // Behind the books, so a book that slides out over it draws in front.
+                .background(alignment: .topLeading) { board.offset(y: track.length) }
                 Color.clear.frame(height: track.trailingSpace(viewport: size.height) + bleed)
             }
         }
@@ -244,6 +267,12 @@ struct SpineCarousel: View {
             CenterTracking(
                 track: track, axis: .vertical, viewport: size.height, centeredID: $centeredID)
         )
+        #if os(macOS)
+            .modifier(
+                KeyboardBrowsing(
+                    books: books, track: track, axis: .vertical, viewport: size.height,
+                    centeredID: $centeredID, pullOut: pullOut, focus: $isFocused, open: open))
+        #endif
         // Fades the stack as one image, so a fading 3D book never shows the book under it through
         // its spine.
         .mask { LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom) }
@@ -270,11 +299,11 @@ struct SpineCarousel: View {
     /// thickness, seen by a camera `camera` points in front of the stack (`StackCamera`), or
     /// straight on.
     private func stackedBook(
-        _ book: CloudBook, spine: CGSize, camera: CGFloat?, eye: CGPoint
+        _ book: CloudBook, spine: CGSize, camera: CGFloat?, eye: CGPoint, nudged: Bool
     ) -> some View {
         StackedBook(
             book: book, look: model.look(for: book), spine: spine, rest: style.rest(of: book),
-            camera: camera, eye: eye, pullOut: pullOut)
+            camera: camera, eye: eye, pullOut: pullOut, nudged: nudged)
     }
 
     private func shelf(in size: CGSize) -> some View {
@@ -305,10 +334,19 @@ struct SpineCarousel: View {
                             ZStack(alignment: .bottomLeading) {
                                 ForEach(track.pages[page]) { slot in
                                     let spine = slot.book.shelfSpineSize(scale: scale)
-                                    spineButton(slot.book) {
+                                    spineButton(slot.book) { nudged in
                                         UprightSpineView(
                                             book: slot.book, look: model.look(for: slot.book),
                                             height: spine.height, thickness: spine.width
+                                        )
+                                        // Comes a little way toward the reader, standing on
+                                        // the board.
+                                        .scaleEffect(
+                                            PullOutPath.uprightScale(
+                                                at: pullOut.peekID == slot.book.id
+                                                    ? PullOutPath.peek
+                                                    : nudged ? PullOutPath.nudge : 0),
+                                            anchor: .bottom
                                         )
                                         .modifier(
                                             PulledSpine(
@@ -338,28 +376,256 @@ struct SpineCarousel: View {
             CenterTracking(
                 track: track, axis: .horizontal, viewport: size.width, centeredID: $centeredID)
         )
+        #if os(macOS)
+            .modifier(
+                KeyboardBrowsing(
+                    books: books, track: track, axis: .horizontal, viewport: size.width,
+                    centeredID: $centeredID, pullOut: pullOut, focus: $isFocused, open: open))
+        #endif
         .padding(.horizontal, -bleed)
-        .overlay { ShelfLamp().modifier(LampHandOff(pullOut: pullOut)) }
+        .overlay { PlacedShelfLamp(pullOut: pullOut, focus: $isFocused) }
     }
 
-    /// A book's button, which opens it.
-    private func spineButton(_ book: CloudBook, @ViewBuilder label: () -> some View) -> some View {
+    /// A book's button (`SpineButton`), which opens it.
+    private func spineButton(
+        _ book: CloudBook, @ViewBuilder label: @escaping (_ nudged: Bool) -> some View
+    ) -> some View {
+        SpineButton(
+            book: book, namespace: namespace, scrolling: scrolling, open: open,
+            changeCover: changeCover, label: label)
+    }
+}
+
+/// Whether the carousel is scrolling, which a book reads as the pointer enters it. A reference
+/// that nothing observes, so a change of scroll phase updates no view.
+@MainActor
+private final class CarouselScrolling {
+    var isScrolling = false
+}
+
+/// A book's button in **Stack** or **Shelf**, which opens it.
+///
+/// With a pointer, the book eases a little way out of its place while the pointer rests on it,
+/// straight toward the reader along the way its spine faces, with no tilt (`PullOutPath.nudge`),
+/// and its tooltip names it. The hover is the button's own state, so a pointer moving over the
+/// books updates only the books it enters and leaves. Books that scroll under a resting pointer
+/// stay in place, so a fling doesn't ripple. Reduce Motion keeps the book still. On the Mac, its
+/// context menu offers what its details do (`BookMenu`).
+private struct SpineButton<Label: View>: View {
+    let book: CloudBook
+    let namespace: Namespace.ID
+    let scrolling: CarouselScrolling
+    let open: (CloudBook) -> Void
+    let changeCover: (CloudBook) -> Void
+    /// The book, eased out of its place while `nudged`.
+    @ViewBuilder let label: (_ nudged: Bool) -> Label
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hovered = false
+
+    var body: some View {
         Button {
             open(book)
         } label: {
             #if os(iOS)
-                label().matchedTransitionSource(id: book.id, in: namespace)
+                label(hovered).matchedTransitionSource(id: book.id, in: namespace)
             #else
                 // Only the iPhone zooms pushed details out of the book. On the Mac, the source
                 // clips the book to its place, which would cut off a pulled book's slide.
-                label()
+                label(hovered)
             #endif
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(book.title), by \(book.author)")
         .accessibilityHint("Opens the book's details.")
+        .help("\(book.title) — \(book.author)")
+        .onHover { inside in
+            guard !inside || !(reduceMotion || scrolling.isScrolling) else { return }
+            withAnimation(.smooth(duration: 0.2)) { hovered = inside }
+        }
+        #if os(macOS)
+            .contextMenu { BookMenu(book: book, open: open, changeCover: changeCover) }
+        #endif
     }
 }
+
+#if os(macOS)
+    /// What the Mac offers for a book, in its context menu and in the **Library** menu for the
+    /// centered book: **Open**, **Open in New Window** (`BookWindow`), **Make Share Image**,
+    /// **Change Cover…** and **Redesign Spine**, which name the series for a series that shares a
+    /// design, and **Copy Title**. In the menu bar, **Open** shows
+    /// its key equivalent, and **Open in New Window** is in the **File** menu instead
+    /// (`LibraryCommands`).
+    struct BookMenu: View {
+        let book: CloudBook
+        let open: (CloudBook) -> Void
+        let changeCover: (CloudBook) -> Void
+        var inMenuBar = false
+
+        @Environment(AppModel.self) private var model
+        @Environment(GenerationController.self) private var generation
+        @Environment(\.openWindow) private var openWindow
+
+        var body: some View {
+            Button("Open") { open(book) }
+                .keyboardShortcut(inMenuBar ? KeyboardShortcut("o") : nil)
+            if !inMenuBar {
+                Button("Open in New Window") { openWindow(id: BookWindow.id, value: book.id) }
+            }
+            Divider()
+            Button("Make Share Image") { model.share(book) }
+            // A series that shares a design takes one cover for all its books, as the details say.
+            let series = model.sharesSeriesDesign(book)
+            Button(series ? "Change Series Cover…" : "Change Cover…") { changeCover(book) }
+            // A run already redesigns what it finds; **Redesign** waits for it to end.
+            Button(series ? "Redesign Spines" : "Redesign Spine") {
+                generation.redesign(book)
+            }
+            .disabled(generation.status.isRunning)
+            Divider()
+            Button("Copy Title") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(book.title, forType: .string)
+            }
+        }
+    }
+
+    /// Browses the carousel with the keyboard while it has focus, which a click or Tab gives it
+    /// and Library gives it when it appears: the arrow keys along the shelf step to the next or
+    /// previous book, and in **Stack** Left and Right move to the stack beside it; Page Up and
+    /// Page Down move about a screenful; Home and End go to the first and last book of the
+    /// centered book's stack, or of the shelf; Return opens the centered book, in a window of its
+    /// own with Option; Space peeks, sliding the book partway out and back; and typing a title's
+    /// first letters goes to the first book whose title starts with them.
+    ///
+    /// Each key moves `centeredID`, which the carousel glides to (`CenterTracking`). The keys do
+    /// nothing while a book's details show. The focus draws no ring; the lamp's light warms
+    /// instead (`StackLamp`, `ShelfLamp`).
+    private struct KeyboardBrowsing: ViewModifier {
+        let books: [CloudBook]
+        let track: SpineTrack
+        /// The axis along which the books lie in a row: vertical for **Stack**.
+        let axis: Axis
+        /// The length along `axis` that shows on screen.
+        let viewport: CGFloat
+        @Binding var centeredID: Int?
+        let pullOut: ShelfPullOut
+        let focus: FocusState<Bool>.Binding
+        let open: (CloudBook) -> Void
+
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        /// The letters typed so far for type-select, and when the last one came. A pause of a
+        /// second starts a new title.
+        @State private var typed = ""
+        @State private var typedAt = Date.distantPast
+
+        func body(content: Content) -> some View {
+            content
+                .focusable(interactions: .edit)
+                .focused(focus)
+                .focusEffectDisabled()
+                .defaultFocus(focus, true)
+                .onKeyPress(
+                    keys: [
+                        .upArrow, .downArrow, .leftArrow, .rightArrow, .pageUp, .pageDown, .home,
+                        .end, .return, .space,
+                    ]
+                ) { press in
+                    guard pullOut.book == nil, !press.modifiers.contains(.command) else {
+                        return .ignored
+                    }
+                    return move(press.key) ? .handled : .ignored
+                }
+                .onKeyPress(characters: .alphanumerics, phases: .down) { press in
+                    guard pullOut.book == nil,
+                        press.modifiers.isDisjoint(with: [.command, .control])
+                    else { return .ignored }
+                    typeSelect(press.characters)
+                    return .handled
+                }
+        }
+
+        /// Acts on `key`, returning whether it did anything.
+        private func move(_ key: KeyEquivalent) -> Bool {
+            let ids = track.ids
+            guard !ids.isEmpty else { return false }
+            let index = centeredID.flatMap { ids.firstIndex(of: $0) } ?? 0
+            let column = track.column(of: centeredID)
+            // Moving along the books stays in this stack; Left and Right change stacks.
+            let stack = track.columns[column]
+            let along = axis == .vertical
+            switch key {
+            case .upArrow where along, .leftArrow where !along:
+                return center(ids[max(stack.lowerBound, index - 1)])
+            case .downArrow where along, .rightArrow where !along:
+                return center(ids[min(stack.upperBound - 1, index + 1)])
+            case .leftArrow, .rightArrow:
+                // The stack beside this one, at the same height.
+                let next = column + (key == .leftArrow ? -1 : 1)
+                guard track.columns.indices.contains(next) else { return false }
+                return center(track.id(nearest: track.offset(of: centeredID), in: next))
+            case .pageUp, .pageDown:
+                let page = viewport * 0.8 * (key == .pageUp ? -1 : 1)
+                return center(track.id(nearest: track.offset(of: centeredID) + page, in: column))
+            case .home: return center(ids[track.columns[column].lowerBound])
+            case .end: return center(ids[track.columns[column].upperBound - 1])
+            case .return:
+                guard let book = books.first(where: { $0.id == ids[index] }) else { return false }
+                open(book)
+                return true
+            case .space:
+                if !reduceMotion { pullOut.peek(ids[index]) }
+                return true
+            default: return false
+            }
+        }
+
+        private func center(_ id: Int?) -> Bool {
+            guard let id else { return false }
+            centeredID = id
+            return true
+        }
+
+        private func typeSelect(_ characters: String) {
+            let now = Date.now
+            typed = now.timeIntervalSince(typedAt) < 1 ? typed + characters : characters
+            typedAt = now
+            let match = books.first {
+                $0.title.range(
+                    of: typed, options: [.anchored, .caseInsensitive, .diacriticInsensitive])
+                    != nil
+            }
+            if let match { centeredID = match.id }
+        }
+    }
+
+    /// Publishes the centered book for the menu bar's **Library** commands
+    /// (`FocusedValues.centeredBook`) once scrolling settles, rather than as each book passes the
+    /// center, and none while a book is out.
+    private struct SettledBook: ViewModifier {
+        let books: [CloudBook]
+        @Binding var centeredID: Int?
+        let pullOut: ShelfPullOut
+
+        @State private var settledID: Int?
+        @State private var isScrolling = false
+
+        func body(content: Content) -> some View {
+            content
+                .onScrollPhaseChange { _, phase in
+                    isScrolling = phase.isScrolling
+                    if !phase.isScrolling { settledID = centeredID }
+                }
+                // A change that does not scroll, such as the first centered book.
+                .onChange(of: centeredID, initial: true) {
+                    if !isScrolling { settledID = centeredID }
+                }
+                .focusedSceneValue(
+                    \.centeredBook,
+                    pullOut.book == nil ? books.first { $0.id == settledID } : nil, in: .library)
+        }
+    }
+#endif
 
 /// A book in **Stack**: `Book3DView` lying on its back, head on the left, turned as `rest`
 /// says, and seen straight on or, in 3D, by the stack's camera (`StackCamera`), `camera` points
@@ -381,6 +647,8 @@ struct StackedBook: View {
     let camera: CGFloat?
     let eye: CGPoint
     let pullOut: ShelfPullOut
+    /// Whether the pointer rests on the book, which eases it a little way out of its place.
+    var nudged = false
 
     @Environment(AppModel.self) private var model
     @State private var cover: UIImage?
@@ -452,10 +720,14 @@ struct StackedBook: View {
         .frame(width: drawn.width, height: drawn.height)
         // Read from the tap on, not from `isOut`: this view must already depend on `progress`
         // when `ShelfPullOut.fly` animates it, or the animation never reaches the slide and the
-        // book holds still until the flight takes over.
+        // book holds still until the flight takes over. A peek or the pointer slides the book
+        // partway out along the same path, and back.
         .modifier(
             StackSlide(
-                progress: isPulled ? pullOut.progress : 0,
+                progress: isPulled
+                    ? pullOut.progress
+                    : pullOut.peekID == book.id
+                        ? PullOutPath.peek : nudged ? PullOutPath.nudge : 0,
                 spine: spine, extent: drawn.height, rest: rest)
         )
         .frame(width: spine.width, height: spine.height, alignment: .bottom)
@@ -753,7 +1025,13 @@ private struct CenterTracking: ViewModifier {
             .onAppear {
                 if centeredID == nil || centeredID != scrolledID { scrollToCenteredBook() }
             }
-            .scrollIndicators(.hidden)
+            // The Mac's scroll bars follow the person's setting in System Settings; the iPhone's
+            // books run to the screen's edge without one.
+            #if os(macOS)
+                .scrollIndicators(.automatic)
+            #else
+                .scrollIndicators(.hidden)
+            #endif
             // The books run to the screen's edge or fade out before it, so a bar's edge effect
             // would only draw a seam across the walnut. Under the iPhone's status bar, Stack draws
             // its own faint backing instead (`SpineCarousel.body`).
@@ -1229,14 +1507,25 @@ private struct BookcaseBay: View {
                             .init(color: .black.opacity(0.4), location: 1),
                         ], startPoint: .top, endPoint: .bottom)
                 }
-            // The board's top, darker toward the back, and light enough in front for the books'
-            // contact shadows to show.
+            ShelfBoard(tile: tile)
+        }
+        .frame(width: tile, height: tile)
+    }
+}
+
+/// A walnut board seen from just above, one wood `tile` wide at most: its top, darker toward
+/// the back and light enough in front for the books' contact shadows to show, its front edge,
+/// lit along its top, and its shadow on the wall below.
+private struct ShelfBoard: View {
+    let tile: CGFloat
+
+    var body: some View {
+        VStack(spacing: 0) {
             LinearGradient(
                 colors: [ShelfPalette.board.mix(with: .black, by: 0.35), ShelfPalette.board],
                 startPoint: .top, endPoint: .bottom
             )
             .frame(height: Bookcase.surface)
-            // The board's front edge, lit along its top.
             WoodGrain(tile: tile, shade: 0.4)
                 .overlay {
                     LinearGradient(
@@ -1249,7 +1538,82 @@ private struct BookcaseBay: View {
                 .frame(height: Bookcase.lip)
             Bookcase.dropShadow
         }
-        .frame(width: tile, height: tile)
+    }
+}
+
+/// The board under **Stack**, below the stacks' bottom books, so the stacks rest on it rather
+/// than over the empty wall. Side-by-side stacks share one board, since they rest on one line. It
+/// reaches a little past the longest book any stack could hold, and each stack's bottom book
+/// casts a contact shadow on it. The books lie a little back from its front edge, so its top
+/// shows below them.
+///
+/// It scrolls with the books, as part of the scroll view's content, and holds no state, so it
+/// draws once. It draws one wood tile per stack, so the grain keeps one stack's scale however
+/// many stacks it holds.
+private struct StackBoard: View {
+    let arrangement: StackArrangement
+    /// How far the first stack starts in from the carousel's leading edge.
+    let inset: CGFloat
+    /// Each stack's bottom book.
+    let bottoms: [CloudBook]
+
+    var body: some View {
+        let reach = CGFloat(BookShape.longest) * arrangement.scale + 2 * StackArrangement.margin
+        let start = inset + max(0, (arrangement.width - reach) / 2)
+        let width = CGFloat(bottoms.count) * arrangement.width - 2 * (start - inset)
+        let tile = width / CGFloat(max(1, bottoms.count))
+        HStack(spacing: 0) {
+            ForEach(bottoms.indices, id: \.self) { _ in ShelfBoard(tile: tile).frame(width: tile) }
+        }
+        .frame(width: width)
+        .overlay(alignment: .topLeading) {
+            ForEach(bottoms.indices, id: \.self) { column in
+                let book = bottoms[column]
+                let length = arrangement.spine(of: book).width
+                ContactShadow(width: length)
+                    .position(
+                        x: inset + CGFloat(column) * arrangement.width
+                            + arrangement.leading(of: book) + length / 2 - start,
+                        y: 0)
+            }
+        }
+        .padding(.leading, start)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+/// The pool of warm light behind **Stack**, centered on the stack whose book the caption names,
+/// so beside other stacks it marks which one that is. It glides to another stack when the
+/// caption's book moves there, or moves at once with Reduce Motion on. With one stack, it never
+/// reads `centeredID`, so scrolling never updates it.
+private struct StackLamp: View {
+    let track: SpineTrack
+    /// The middle of each stack across the carousel.
+    let centers: [CGFloat]
+    /// The carousel's height, whose middle the pool lights.
+    let height: CGFloat
+    /// Whether the carousel has keyboard focus, which the pool marks by warming, more with
+    /// Increase Contrast on.
+    let focus: FocusState<Bool>.Binding
+    @Binding var centeredID: Int?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        let column = centers.count > 1 ? track.column(of: centeredID) : 0
+        let warm = focus.wrappedValue
+        let focused = contrast == .increased ? 0.45 : 0.32
+        RadialGradient(
+            colors: [ShelfPalette.lamp.opacity(warm ? focused : 0.22), .clear], center: .center,
+            startRadius: 0, endRadius: 320
+        )
+        .frame(width: 700, height: 700)
+        .position(x: centers.indices.contains(column) ? centers[column] : 0, y: height / 2)
+        .animation(reduceMotion ? nil : .smooth(duration: SpineCarousel.glide), value: column)
+        .animation(.easeOut(duration: 0.2), value: warm)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -1319,19 +1683,26 @@ struct ContactShadow: View {
     }
 }
 
-/// Hides the shelf's lamp while `pullOut` has a book out, when the book's flight draws the lamp
-/// over the book instead, and reports the lamp's frame for that.
-private struct LampHandOff: ViewModifier {
+/// The shelf's lamp in its place, warmer while the shelf has keyboard focus, and more so with
+/// Increase Contrast on. It hides while `pullOut` has a book out, when the book's flight draws
+/// the lamp over the book instead, and reports the lamp's frame and warmth for that. It reads the
+/// focus itself, so a focus change redraws only the lamp.
+private struct PlacedShelfLamp: View {
     let pullOut: ShelfPullOut
+    let focus: FocusState<Bool>.Binding
+    @Environment(\.colorSchemeContrast) private var contrast
 
-    func body(content: Content) -> some View {
-        content
+    var body: some View {
+        let focused = contrast == .increased ? 0.32 : ShelfLamp.focusedWarmth
+        let warmth = focus.wrappedValue ? focused : ShelfLamp.warmth
+        ShelfLamp(warmth: warmth)
             .opacity(pullOut.isOut ? 0 : 1)
             .onGeometryChange(for: CGRect.self) {
                 $0.frame(in: .global)
             } action: {
                 pullOut.lampFrame = $0
             }
+            .onChange(of: warmth, initial: true) { pullOut.lampWarmth = warmth }
     }
 }
 
@@ -1341,10 +1712,17 @@ private struct LampHandOff: ViewModifier {
 /// It fades out at its top and bottom, so it meets the plain wall above and below the carousel
 /// without a step.
 struct ShelfLamp: View {
+    /// The light's usual strength.
+    static let warmth = 0.14
+    /// The light while the shelf has keyboard focus, which it marks instead of a focus ring.
+    static let focusedWarmth = 0.22
+
+    var warmth = Self.warmth
+
     var body: some View {
         ZStack {
             RadialGradient(
-                colors: [ShelfPalette.lamp.opacity(0.14), .clear], center: .top, startRadius: 0,
+                colors: [ShelfPalette.lamp.opacity(warmth), .clear], center: .top, startRadius: 0,
                 endRadius: 480)
             LinearGradient(
                 stops: [

@@ -274,8 +274,13 @@ private struct DeskBar: ViewModifier {
     func body(content: Content) -> some View {
         content
             // Details over the scene show no title, as pushed details do. The time frame button
-            // takes the title's place.
-            .navigationTitle(liftedDetails.lift == nil ? "Desk" : "")
+            // takes the title's place. On the Mac, the window takes the book's name.
+            #if os(macOS)
+                .navigationTitle(liftedDetails.lift?.book.title ?? "Desk")
+                .navigationSubtitle(liftedDetails.lift?.book.author ?? "")
+            #else
+                .navigationTitle(liftedDetails.lift == nil ? "Desk" : "")
+            #endif
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if liftedDetails.lift == nil, let chip {
