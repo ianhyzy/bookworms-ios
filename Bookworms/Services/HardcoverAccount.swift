@@ -49,11 +49,25 @@ final class HardcoverAccount {
     /// or comparison finishes with a valid token.
     static let renewalMargin: TimeInterval = 60 * 60
 
+    /// How far the first download of a library has come: the books downloaded so far, and how
+    /// many the account has, when Hardcover reports it.
+    struct DownloadProgress: Equatable, CustomStringConvertible {
+        var books: Int
+        var total: Int?
+
+        var description: String {
+            total.map { "\(books) of \($0) books" } ?? (books == 1 ? "1 book" : "\(books) books")
+        }
+    }
+
     private(set) var isSignedIn = false
     private(set) var summary: Summary?
     private(set) var signIn: SignIn?
     private(set) var isSyncing = false
     private(set) var syncError: String?
+    /// The progress of a download while this device has no copy of the account's library, on
+    /// this device or in iCloud, so the screens without a library can show it; otherwise `nil`.
+    private(set) var downloadProgress: DownloadProgress?
     /// Whether Hardcover rejected the saved login, so only a new sign-in can sync again. The
     /// cached library stays until then.
     private(set) var needsReconnect = false
@@ -394,8 +408,16 @@ final class HardcoverAccount {
                 }
             }
             let newest = previous
+            // Only a first download leaves the screens without a library while it runs.
+            var progress: (@MainActor @Sendable (Int, Int?) -> Void)?
+            if newest == nil {
+                progress = { [weak self] books, total in
+                    self?.downloadProgress = DownloadProgress(books: books, total: total)
+                }
+            }
+            let report = progress
             let library = try await withAccessToken {
-                try await client.library(token: $0, previous: newest)
+                try await client.library(token: $0, previous: newest, progress: report)
             }
             return (library: library, publishes: publishes)
         }
@@ -405,6 +427,7 @@ final class HardcoverAccount {
         guard syncTask == task else { return }
         syncTask = nil
         isSyncing = false
+        downloadProgress = nil
         guard revision == libraryRevision else {
             // A sign-in during the download owns the cache now, and the new account's own sync
             // was skipped while this one ran.
@@ -504,6 +527,7 @@ final class HardcoverAccount {
         syncTask?.cancel()
         syncTask = nil
         isSyncing = false
+        downloadProgress = nil
         cancelRenewal()
         tokens.delete()
         cachedCredential = nil

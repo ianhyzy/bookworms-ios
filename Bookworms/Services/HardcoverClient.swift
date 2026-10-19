@@ -277,7 +277,14 @@ actor HardcoverClient {
     /// (`coverURLs(edition:book:otherEditions:editionIsInLanguage:previous:)`) only when it
     /// belongs to the token's account; a copy of another account is ignored. A failed series
     /// request leaves `series` `nil` and still returns the library.
-    func library(token: String, previous: PhoneLibrary? = nil) async throws -> PhoneLibrary {
+    ///
+    /// With `progress`, the download first asks how many books the account has, one request more,
+    /// and reports the books downloaded so far, with that total when Hardcover gave it, before
+    /// the first page and after each page.
+    func library(
+        token: String, previous: PhoneLibrary? = nil,
+        progress: (@MainActor @Sendable (_ books: Int, _ total: Int?) -> Void)? = nil
+    ) async throws -> PhoneLibrary {
         let user = try await account(token: token)
         let accountID = String(user.id)
         let previousBooks = Dictionary(
@@ -288,14 +295,20 @@ actor HardcoverClient {
             let offset: Int
             let language: String
         }
+        var total: Int?
+        if let progress {
+            total = try? await bookCount(user: user.id, token: token)
+            await progress(0, total)
+        }
         var rows: [LibraryPage.Row] = []
         for offset in stride(from: 0, to: 10_000, by: 100) {
-            if offset > 0 { try await Task.sleep(for: Self.pagePause) }
+            if offset > 0 || progress != nil { try await Task.sleep(for: Self.pagePause) }
             let page: LibraryPage = try await query(
                 Self.libraryQuery,
                 variables: Variables(user: user.id, offset: offset, language: Self.coverLanguage),
                 token: token)
             rows += page.userBooks
+            await progress?(rows.count, total)
             if page.userBooks.count < 100 {
                 let books = Self.normalize(rows, previous: previousBooks)
                 return PhoneLibrary(
@@ -304,6 +317,21 @@ actor HardcoverClient {
             }
         }
         throw HardcoverError.incomplete
+    }
+
+    /// The number of books on the account's shelves, which the library download pages through.
+    private func bookCount(user: Int, token: String) async throws -> Int? {
+        struct Reply: Decodable {
+            struct Books: Decodable {
+                struct Aggregate: Decodable { let count: Int }
+                let aggregate: Aggregate?
+            }
+            let books: Books
+            enum CodingKeys: String, CodingKey { case books = "user_books_aggregate" }
+        }
+        let reply: Reply = try await query(
+            Self.libraryCountQuery, variables: ["user": user], token: token)
+        return reply.books.aggregate?.count
     }
 
     /// Returns the names and main books of the series `ids`, 50 series per request, each request
@@ -654,6 +682,11 @@ actor HardcoverClient {
     // Ported from the Apple TV app's library query, plus the reader's review. `review` is the
     // field the Apple TV's social client reads with the same client and scopes; Hardcover's
     // documentation also lists `review_raw`, which no Bookworms client has used yet.
+    private static let libraryCountQuery = """
+        query PhoneLibraryCount($user: Int!) {
+          user_books_aggregate(where: {user_id: {_eq: $user}}) { aggregate { count } }
+        }
+        """
     private static let libraryQuery = """
         query PhoneLibrary($user: Int!, $offset: Int!, $language: String!) {
           user_books(where: {user_id: {_eq: $user}}, order_by: {id: asc}, limit: 100, offset: $offset) {
