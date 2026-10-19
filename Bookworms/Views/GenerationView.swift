@@ -32,9 +32,9 @@ struct GenerationView: View {
         @Bindable var generation = generation
         NavigationStack(path: $path) {
             Form {
-                // Equatable on the book in progress, so a run's other progress updates skip it.
-                BinderyHeader(current: generation.status.currentBook, showsAccount: $showsAccount)
-                    .equatable()
+                BinderyHeader(
+                    current: generation.status.currentBook, path: $path,
+                    showsAccount: $showsAccount)
                 progress
                 designModel
                 Section {
@@ -319,9 +319,13 @@ struct GenerationView: View {
 ///
 /// The shelf's books and the gauge's colors are prepared when the books' designs change
 /// (`AppModel.designRevision`) or a run moves to another book, not in the body. The header is
-/// equal for the same book in progress, so a run's other progress updates skip it.
+/// equal for the same book in progress, and SwiftUI compares an equatable view that isn't plain
+/// data by its `==`, so a run's other progress updates skip it. `.equatable()` would also hide
+/// the section's rows from the form, which then draws them as one.
 private struct BinderyHeader: View, Equatable {
     let current: CloudBook?
+    /// The tab's navigation path, which a spine pushes its book's details onto.
+    @Binding var path: NavigationPath
     @Binding var showsAccount: Bool
 
     @Environment(AppModel.self) private var model
@@ -356,7 +360,10 @@ private struct BinderyHeader: View, Equatable {
                     _ in
                     HStack(alignment: .bottom, spacing: 1) {
                         ForEach(books, id: \.book.id) { item in
-                            NavigationLink(value: item.book.id) {
+                            // A navigation link in a form row would add a disclosure chevron.
+                            Button {
+                                path.append(item.book.id)
+                            } label: {
                                 BinderySpine(book: item.book, look: item.look, size: item.size)
                             }
                             .buttonStyle(.plain)
