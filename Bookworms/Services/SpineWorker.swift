@@ -115,7 +115,7 @@ extension WorkerSnapshot {
             let time =
                 Calendar.current.isDateInToday(retryAfter)
                 ? retryAfter.formatted(date: .omitted, time: .shortened)
-                : retryAfter.formatted(date: .abbreviated, time: .shortened)
+                : retryAfter.formatted(.dateTime.month().day().hour().minute())
             return "Paused until \(time)"
         default:
             return phase
