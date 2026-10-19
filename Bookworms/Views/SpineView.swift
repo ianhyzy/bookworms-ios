@@ -103,9 +103,9 @@ struct SpineView: View {
         // The title takes the width its name needs first. The author takes what is left, from
         // the 24% share it always had up to 40% of the length, and never more than its name
         // needs. A name too long for its width wraps onto two lines on a thick spine, then
-        // falls back to the surname, and shrinks only as a last resort. The author's size stops
-        // growing with thickness at a share of the length, so a thick spine fits the same name a
-        // thinner one does, and stays below the title's.
+        // falls back to the surname, and shrinks only as a last resort. The author's size is at
+        // most 55% of the title's and stops growing with thickness at a share of the length, so
+        // a thick spine fits the same name a thinner one does.
         return SpineLettering(
             spacing: thickness * 0.3, authorShare: length * 0.24, authorCap: length * 0.4
         ) {
