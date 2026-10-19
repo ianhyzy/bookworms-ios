@@ -6,6 +6,10 @@ Each tile is a small dark card, as every share image is dark, in the shape of a 
 books follow the workspace's realism rules: they stand on a ledge or lie flat, keep book
 proportions, and never tilt in the card's plane unless they lie flat on the Desk's table.
 
+Each tile is drawn on a 120-by-150 grid and sized to the 56 by 70 points that `ShareStudioView`
+shows it at, without its vector data. The asset catalog then draws its bitmaps at build time,
+and the app shows them at their own size instead of drawing the vector at run time.
+
 Run it from the repository root after changing a drawing:
 
     python3 script/template-art.py
@@ -16,6 +20,8 @@ import math
 import pathlib
 
 W, H = 120, 150
+# The tile's size in points, as `ShareStudioView.templateTile(_:)` frames it.
+POINTS = 56, 70
 CREAM = "#FAF2DE"
 GOLD = "#E9B949"
 INK = "#1E1611"
@@ -76,7 +82,7 @@ def heading(width, y=14):
 
 
 def card(body):
-    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{POINTS[0]}" height="{POINTS[1]}" viewBox="0 0 {W} {H}">
 <defs>
 <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
 <stop offset="0" stop-color="#3A2A1F"/><stop offset="1" stop-color="{INK}"/>
@@ -272,7 +278,6 @@ for name, draw in TEMPLATES.items():
     contents = {
         "images": [{"filename": f"template.{name}.svg", "idiom": "universal"}],
         "info": {"author": "xcode", "version": 1},
-        "properties": {"preserves-vector-representation": True},
     }
     (folder / "Contents.json").write_text(json.dumps(contents, indent=2) + "\n")
 print(f"Wrote {len(TEMPLATES)} template tiles to {OUT}")
