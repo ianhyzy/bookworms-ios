@@ -56,7 +56,10 @@ final class HardcoverAccount {
         var total: Int?
 
         var description: String {
-            total.map { "\(books) of \($0) books" } ?? (books == 1 ? "1 book" : "\(books) books")
+            let count = total ?? books
+            let noun = count == 1 ? "book" : "books"
+            guard let total else { return "\(books.formatted()) \(noun)" }
+            return "\(books.formatted()) of \(total.formatted()) \(noun)"
         }
     }
 
