@@ -679,14 +679,14 @@ actor HardcoverClient {
 
     // MARK: - Library normalization
 
-    // Ported from the Apple TV app's library query, plus the reader's review. `review` is the
-    // field the Apple TV's social client reads with the same client and scopes; Hardcover's
-    // documentation also lists `review_raw`, which no Bookworms client has used yet.
     private static let libraryCountQuery = """
         query PhoneLibraryCount($user: Int!) {
           user_books_aggregate(where: {user_id: {_eq: $user}}) { aggregate { count } }
         }
         """
+    // Ported from the Apple TV app's library query, plus the reader's review. `review` is the
+    // field the Apple TV's social client reads with the same client and scopes; Hardcover's
+    // documentation also lists `review_raw`, which no Bookworms client has used yet.
     private static let libraryQuery = """
         query PhoneLibrary($user: Int!, $offset: Int!, $language: String!) {
           user_books(where: {user_id: {_eq: $user}}, order_by: {id: asc}, limit: 100, offset: $offset) {
