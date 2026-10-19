@@ -1996,14 +1996,22 @@ final class DominoScene {
 
     /// Where a recording's frame centers across the view, as a share of its width, or `nil`
     /// to leave it where it is (see `DominoRecorder`): the falling front while the chain runs
-    /// (`action`), which starts at the first book, where the hand pushes it, where the last
-    /// book lands until the books start to gather (`landing`), and then the point the spread's
-    /// view looks at, where the last book springs up in the middle of the view once the camera
-    /// rests.
+    /// (`action`), which starts at the first book, where the hand pushes it, and where the last
+    /// book lands once it falls (`landing`). In the finale, a point that moves from there to
+    /// the one the spread's view looks at, where the last book springs up in the middle of the
+    /// view once the camera rests. After the Follow camera, it moves with the camera's aim,
+    /// which centers on the last book and then turns to the spread. After the overview, which
+    /// does not turn to the last book, it sets off at once and slows to arrive as the books
+    /// lift, so the frame leaves the chain's end, where it shows bare table beyond the last
+    /// book, as soon as the last book falls; the frame's own easing smooths the start.
     private var recordingSubject: CGFloat? {
         let point: SIMD3<Float>?
-        if let ending, !ending.flights.isEmpty {
-            point = ending.camera.target
+        if let ending, let landing {
+            let rest = 1 - min(ending.clock / DominoFinale.gatherDelay, 1)
+            let weight =
+                ending.focus == nil
+                ? 1 - rest * rest * rest : DominoFinale.aim(at: ending.clock)
+            point = landing + (ending.camera.target - landing) * weight
         } else if next >= books.count {
             point = landing
         } else {
