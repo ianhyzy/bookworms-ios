@@ -14,6 +14,14 @@ import TipKit
 /// configures TipKit at launch.
 @MainActor
 enum DeskTips {
+    /// The Desk scene's hints: how to pick up a book, then how to move the camera once two
+    /// books have been thrown. One group for the app, made once, rather than with each update
+    /// of the view that shows it.
+    static let pile = TipGroup(.ordered) {
+        PickUpTip()
+        TurnTip()
+    }
+
     /// What this launch has already told TipKit, so a scroll or drag that runs many times
     /// tells it once.
     private static var hasPickedUp = false

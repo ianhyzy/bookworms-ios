@@ -583,16 +583,10 @@ private struct PileTipAnchor: View {
     let desk: DeskScenes
     let size: CGSize?
 
-    /// How to pick up a book, then how to move the camera once two books have been thrown.
-    @State private var tips = TipGroup(.ordered) {
-        PickUpTip()
-        TurnTip()
-    }
-
     var body: some View {
         let rests = desk.isPaused && desk.mode == .desk && size != nil
         TipAnchor(
-            tip: tips.currentTip,
+            tip: DeskTips.pile.currentTip,
             point: rests ? size.flatMap { desk.pile.middleBookPoint(in: $0) } : nil
         )
         .onChange(of: rests, initial: true) { PickUpTip.deskRests = rests }
