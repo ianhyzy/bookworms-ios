@@ -5,6 +5,14 @@ import SwiftUI
 struct PileViewport: Equatable {
     var size: CGSize
     var insets: EdgeInsets
+
+    /// The part of the view that the bars leave clear, in the view's points.
+    var clear: CGRect {
+        CGRect(
+            x: insets.leading, y: insets.top,
+            width: size.width - insets.leading - insets.trailing,
+            height: size.height - insets.top - insets.bottom)
+    }
 }
 
 /// The Desk scene: the library as a physics toy. The first books, up to `maximumBooks` of them
@@ -15,15 +23,19 @@ struct PileViewport: Equatable {
 /// Touch and hold a book to pick it up, with a light haptic tap, drag to carry it, and let go
 /// to throw it (`PileCarry`); tap one for its details, pinch to zoom, and turn two fingers to
 /// look around the pile. One finger's touch decides between a tap and a hold, and the first of
-/// a held book and a camera move to start keeps the fingers until they lift. When the phone
-/// reports motion, the desk's **Tilt** tips the table or makes the phone the pile's box
+/// a held book and a camera move to start keeps the fingers until they lift. On the Mac, a drag
+/// picks a book up at once and a click opens it; the pointer shows a grab hand over a book and
+/// while it carries one, a book's context menu offers its actions (`BookMenuItems`), the scroll
+/// wheel zooms toward the pointer, and Shift with the wheel, or Option with a drag, turns the
+/// view (`PilePointer`). Tips teach these gestures once the pile rests (`DeskTips`). When the
+/// phone reports motion, the desk's **Tilt** tips the table or makes the phone the pile's box
 /// (`PileTilt`), and in either a hard shake throws the books. With the desk's drop by period
 /// on, the books drop a month, week, or year at a time (see `PileLayout.periods`). Collisions
 /// play haptic taps and, while the desk's **Sounds** is on, knocks (`ImpactFeedback`), only
 /// while the pile shows in the active app. With Reduce Motion on, books appear in tidy stacks
 /// instead of falling, a held book neither swings nor flies but drops where it is let go, tilt
 /// and shaking are off, and no dust drifts in the lamp's beam. The table fills the screen, but
-/// walls keep the books between the bars.
+/// walls keep the books between the bars and, on the Mac, clear of the sidebar (`PileTray`).
 ///
 /// A tapped book rises out of the pile and flies to where `BookDetailView` draws its book, and
 /// the details fade in over the darkened pile once it lands (`LiftedDetails`). While they show,
@@ -89,6 +101,12 @@ struct BookPileView: View {
     @State private var touch: Touch?
     /// Counts books picked up, each of which plays a light haptic tap.
     @State private var pickups = 0
+    #if os(macOS)
+        /// The book whose cover the context menu's **Change Cover…** changes.
+        @State private var coverBook: CloudBook?
+        /// Where the pointer last was over the desk.
+        @State private var pointerSpot = DeskPointer.Spot()
+    #endif
     /// Set while a finger touches the desk. SwiftUI resets it when the touch ends or is
     /// cancelled, so a held book is let go either way.
     @GestureState private var touches = false
@@ -96,13 +114,19 @@ struct BookPileView: View {
     /// gesture starts from the camera as it is.
     @GestureState private var movesCamera = false
 
-    /// What a finger on the desk is doing.
+    /// What a finger, or the Mac's pointer with its button down, on the desk is doing.
     private enum Touch {
-        /// Resting until `PileCarry.holdDelay` passes, when `hold` picks up the book under it.
-        /// Lifting sooner taps.
-        case pressing(hold: Task<Void, Never>)
+        /// Resting until `PileCarry.holdDelay` passes, when `hold` picks up the book under it;
+        /// on the Mac, with no `hold`, until it drags past `PileCarry.slop`. Lifting sooner
+        /// taps.
+        case pressing(hold: Task<Void, Never>?)
+        /// Dragged on the Mac: `lift` picks up the book where the drag started, once the
+        /// desk's view can find it.
+        case lifting(Task<Void, Never>)
         /// Carrying a book it picked up.
         case holding
+        /// Dragging with Option held on the Mac, which turns the view about the pile.
+        case turning
         /// Moved before the hold, or held where no book could be picked up: it does nothing
         /// more until it lifts.
         case idle
@@ -126,6 +150,20 @@ struct BookPileView: View {
             .contentShape(.rect)
             .gesture(touchBook)
             .simultaneousGesture(moveCamera)
+            #if os(macOS)
+                .modifier(
+                    DeskPointer(
+                        desk: desk, books: books, size: viewport?.size, spot: pointerSpot,
+                        presses: touch != nil, carries: isCarrying,
+                        open: { book in
+                            Task {
+                                await desk.awake()
+                                show(book)
+                            }
+                        }, changeCover: { coverBook = $0 })
+                )
+                .background { ScrollWheelReader(onScroll: scroll) }
+            #endif
             .allowsHitTesting(details.lift == nil)
             .onGeometryChange(for: CGRect.self) {
                 $0.frame(in: .global)
@@ -136,9 +174,7 @@ struct BookPileView: View {
             .accessibilityElement()
             .accessibilityLabel("Desk with \(count)")
             .accessibilityValue(title)
-            .accessibilityHint(
-                "Touch and hold a book, then drag and let go to throw it, or tap one for its details. To go through books one at a time, open Library."
-            )
+            .accessibilityHint(Self.hint)
             .accessibilityAction(named: dropTitle) { desk.pileGeneration += 1 }
             .settingUp(scene.loading.isLoading)
             .modifier(
@@ -242,7 +278,12 @@ struct BookPileView: View {
             .onChange(of: touches) { if touches { desk.wake() } else { endTouch() } }
             .sensoryFeedback(.impact(weight: .light), trigger: pickups)
             .onChange(of: movesCamera) {
-                if movesCamera { desk.wake() } else { scene.endCameraMove() }
+                if movesCamera {
+                    desk.wake()
+                    DeskTips.cameraMoved()
+                } else {
+                    scene.endCameraMove()
+                }
             }
             .toolbar {
                 if details.lift == nil {
@@ -257,6 +298,15 @@ struct BookPileView: View {
                 }
             }
             .sheet(isPresented: $sharesPile) { PileSnapshotSheet(books: books, title: title) }
+            #if os(macOS)
+                .focusedSceneValue(\.deskSheetShows, sharesPile || coverBook != nil)
+                // As a book's details open it: a series that shares a design takes its spine
+                // from its source's cover, and the sheet matches the room's dark scheme.
+                .sheet(item: $coverBook) { book in
+                    CoverPickerView(book: model.designSource(for: book)) {}
+                    .preferredColorScheme(.dark)
+                }
+            #endif
             #if DEBUG
                 .onChange(of: desk.isPaused) { tapAfterPause() }
             #endif
@@ -303,49 +353,103 @@ struct BookPileView: View {
 
     private var dropTitle: String { reduceMotion ? "Stack again" : "Drop again" }
 
+    /// The scene's gestures as VoiceOver hints them, in the words of the Mac's pointer or the
+    /// iPhone's touch.
+    private static var hint: String {
+        #if os(macOS)
+            "Drag a book and let go to throw it, or click one for its details. To go through books one at a time, open Library."
+        #else
+            "Touch and hold a book, then drag and let go to throw it, or tap one for its details. To go through books one at a time, open Library."
+        #endif
+    }
+
+    /// Whether the touch carries a book, when the Mac's pointer shows a closed hand.
+    private var isCarrying: Bool {
+        if case .holding = touch { true } else { false }
+    }
+
+    /// Whether a new press turns the view rather than touching a book: Option held on the Mac.
+    private static var turnsView: Bool {
+        #if os(macOS)
+            NSEvent.modifierFlags.contains(.option)
+        #else
+            false
+        #endif
+    }
+
     /// One finger on the desk, which taps, or holds a book to pick it up, carry it, and throw
-    /// it. The scene's own ray finds the book, since the view takes no entity-targeted
-    /// gestures. A zero-distance drag reports the touch from the moment it lands, which a long
-    /// press does not, so the hold's timer runs here.
+    /// it; on the Mac, the pointer, which clicks, or drags a book at once. The scene's own ray
+    /// finds the book, since the view takes no entity-targeted gestures. A zero-distance drag
+    /// reports the touch from the moment it lands, which a long press does not, so the hold's
+    /// timer runs here.
     private var touchBook: some Gesture {
         DragGesture(minimumDistance: 0)
             .updating($touches) { _, touches, _ in touches = true }
             .onChanged { value in
                 let size = viewport?.size ?? .zero
                 switch touch {
+                case nil where Self.turnsView:
+                    touch = .turning
                 case nil:
-                    let start = value.startLocation
                     touch = .pressing(
-                        hold: Task {
-                            try? await Task.sleep(for: PileCarry.holdDelay)
-                            await desk.awake()
-                            guard !Task.isCancelled else { return }
-                            if scene.pickUp(at: start, in: size, gentle: reduceMotion) {
-                                touch = .holding
-                                pickups += 1
-                            } else {
-                                touch = .idle
-                            }
-                        })
+                        hold: PileCarry.picksUpOnDrag
+                            ? nil
+                            : pickUp(at: value.startLocation, in: size, after: PileCarry.holdDelay))
                 case .pressing(let hold) where Self.wandered(value):
-                    hold.cancel()
-                    touch = .idle
+                    hold?.cancel()
+                    touch =
+                        PileCarry.picksUpOnDrag
+                        ? .lifting(pickUp(at: value.startLocation, in: size)) : .idle
                 case .holding: scene.carry(to: value.location, in: size)
+                case .turning:
+                    scene.moveCamera(
+                        magnification: 1,
+                        rotation: .radians(
+                            Double(value.translation.width * PilePointer.turnPerPoint)),
+                        focus: nil, in: size)
                 default: break
                 }
             }
             .onEnded { value in
                 let size = viewport?.size ?? .zero
+                #if os(macOS)
+                    pointerSpot.location = value.location
+                #endif
                 switch touch {
                 case .pressing(let hold):
-                    hold.cancel()
+                    hold?.cancel()
                     if !Self.wandered(value) { tap(at: value.startLocation, in: size) }
+                case .lifting(let lift): lift.cancel()
                 case .holding:
                     scene.throwBook(velocity: value.velocity, at: value.location, in: size)
+                    DeskTips.thrown()
+                case .turning:
+                    scene.endCameraMove()
+                    DeskTips.cameraMoved()
                 default: break
                 }
                 touch = nil
             }
+    }
+
+    /// Picks up the book under `point`, in a view of `size`, after `delay`, once the desk's
+    /// view can find it, and carries it from then on. A point over no book leaves the touch
+    /// idle.
+    private func pickUp(at point: CGPoint, in size: CGSize, after delay: Duration = .zero)
+        -> Task<Void, Never>
+    {
+        Task {
+            if delay > .zero { try? await Task.sleep(for: delay) }
+            await desk.awake()
+            guard !Task.isCancelled else { return }
+            if scene.pickUp(at: point, in: size, gentle: reduceMotion) {
+                touch = .holding
+                pickups += 1
+                DeskTips.pickedUp()
+            } else {
+                touch = .idle
+            }
+        }
     }
 
     /// Whether a touch moved too far to be a tap or a hold.
@@ -356,10 +460,31 @@ struct BookPileView: View {
     /// Ends a touch that SwiftUI cancelled, dropping a held book where it is. After `onEnded`,
     /// this finds nothing left to do.
     private func endTouch() {
-        if case .pressing(let hold) = touch { hold.cancel() }
+        switch touch {
+        case .pressing(let hold): hold?.cancel()
+        case .lifting(let lift): lift.cancel()
+        case .turning: scene.endCameraMove()
+        default: break
+        }
         touch = nil
         scene.endDrag()
     }
+
+    #if os(macOS)
+        /// Zooms or turns the view for a scroll at `point` over the part of the desk the bars
+        /// leave clear, and returns whether it did; scrolls elsewhere, such as over the
+        /// sidebar, or while details or a sheet cover the desk, go on to the views under them.
+        private func scroll(_ event: NSEvent, at point: CGPoint) -> Bool {
+            guard isShown, details.lift == nil, !sharesPile, coverBook == nil,
+                viewport?.clear.contains(point) == true
+            else { return false }
+            let move = PilePointer.move(for: event)
+            desk.moveCamera(
+                magnification: move.magnification, rotation: move.rotation, focus: point)
+            DeskTips.cameraMoved()
+            return true
+        }
+    #endif
 
     /// Opens the book under a tap at `point` once the desk's view can find it. A tap on a paused
     /// desk wakes it, if the touch did not already, and the returning view takes a few frames
@@ -446,3 +571,64 @@ extension TimeFrame {
         }
     }
 }
+
+#if os(macOS)
+    /// The Mac's pointer over the Desk scene: an open hand over a book and a closed one while
+    /// it carries one, and the context menu of the book under it. Books are found from their
+    /// poses (`BookPileScene.bookID(under:in:)`), so hovering never wakes a paused desk, and the
+    /// view updates only when the pointer passes onto another book or off one.
+    ///
+    /// macOS reports no hovering during a press, or while books move under a pointer that
+    /// stays still. So once a press ends, which may have thrown the book or turned the view,
+    /// the pointer names no book until it moves, and it finds its book again when the desk
+    /// rests or wakes.
+    private struct DeskPointer: ViewModifier {
+        /// Where the pointer last was over the desk, as hovering and the end of a press report
+        /// it: a plain reference, so moving the pointer updates no view.
+        final class Spot {
+            var location: CGPoint?
+        }
+
+        let desk: DeskScenes
+        let books: [CloudBook]
+        let size: CGSize?
+        let spot: Spot
+        /// Whether the pointer's button is down over the desk.
+        let presses: Bool
+        /// Whether the pointer carries a book.
+        let carries: Bool
+        let open: (CloudBook) -> Void
+        let changeCover: (CloudBook) -> Void
+
+        @State private var hovered: Int?
+
+        func body(content: Content) -> some View {
+            content
+                .onContinuousHover { phase in
+                    if case .active(let point) = phase {
+                        spot.location = point
+                    } else {
+                        spot.location = nil
+                    }
+                    findHovered()
+                }
+                .onChange(of: presses) { if !presses { hovered = nil } }
+                .onChange(of: desk.isPaused) { findHovered() }
+                .pointerStyle(carries ? .grabActive : hovered == nil ? nil : .grabIdle)
+                .contextMenu {
+                    if let book = hovered.flatMap({ id in books.first { $0.id == id } }) {
+                        BookMenuItems(book: book, open: open, changeCover: changeCover)
+                    }
+                }
+        }
+
+        /// Finds the book under the pointer's last spot.
+        private func findHovered() {
+            var id: Int?
+            if let point = spot.location, let size {
+                id = desk.pile.bookID(under: point, in: size)
+            }
+            if id != hovered { hovered = id }
+        }
+    }
+#endif
