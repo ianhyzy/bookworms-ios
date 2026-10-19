@@ -157,15 +157,12 @@ struct FeaturedBookCard: View {
     }
 }
 
-/// The year's highest-rated books standing on a ledge, with a ranked list.
+/// The year's highest-rated books fanned like a hand of cards, with a ranked list.
 struct TopFiveCard: View {
     let input: ShareInput
 
-    /// Places along the ledge by rank: the first in the middle, then alternating outward.
+    /// Fan positions by rank: the first in the middle, then alternating outward.
     private static let slots: [CGFloat] = [0, -1, 1, -2, 2]
-    /// How far back on the ledge each rank stands: the first at its front edge, the next two
-    /// behind it, and the last two at the back.
-    private static let depths: [CGFloat] = [0, 1, 1, 2, 2]
 
     var body: some View {
         let aspect = input.aspect
@@ -176,13 +173,13 @@ struct TopFiveCard: View {
             LinearGradient(
                 colors: [theme.backdropLight.color, theme.backdropDark.color],
                 startPoint: .top, endPoint: .bottom)
-            // A glow behind the books.
+            // A glow behind the fan.
             RadialGradient(
                 colors: [theme.glow.color, .clear], center: UnitPoint(x: 0.5, y: 0.42),
                 startRadius: 0, endRadius: aspect.size.width * 0.75)
-            // Titles keep their subtitles while the ledge keeps its minimum height. Past that, the
+            // Titles keep their subtitles while the fan keeps its minimum height. Past that, the
             // longest titles give theirs up one at a time, and only once every title has given
-            // its subtitle up does the ledge shrink below its minimum.
+            // its subtitle up does the fan shrink below its minimum.
             ViewThatFits(in: .vertical) {
                 ForEach(0...shortenable.count, id: \.self) { shortened in
                     VStack(spacing: gaps.section) {
@@ -191,9 +188,9 @@ struct TopFiveCard: View {
                             .foregroundStyle(ShareStyle.cream.color)
                             .lineLimit(1)
                             .minimumScaleFactor(0.6)
-                        shelf(books)
+                        fan(books)
                             .frame(
-                                minHeight: shortened < shortenable.count ? minimumShelfHeight : nil)
+                                minHeight: shortened < shortenable.count ? minimumFanHeight : nil)
                         VStack(spacing: gaps.row) {
                             ForEach(Array(books.enumerated()), id: \.element.id) { index, book in
                                 row(
@@ -209,21 +206,21 @@ struct TopFiveCard: View {
         }
     }
 
-    /// The gaps around the ledge and between the ranked rows, in pixels.
+    /// The gaps around the fan and between the ranked rows, in pixels.
     ///
     /// A story's content reaches into its bottom strip (`ShareInput.reach`), and the two gaps
-    /// around the ledge and the one between each pair of rows share that height evenly, so the
-    /// books and the titles keep the sizes they have within `ShareAspect.insets`.
+    /// around the fan and the one between each pair of rows share that height evenly, so the fan
+    /// and the titles keep the sizes they have within `ShareAspect.insets`.
     private var gaps: (section: CGFloat, row: CGFloat) {
         let extra = input.reach / CGFloat(input.books.count + 1)
         return input.aspect == .story ? (48 + extra, 22 + extra) : (32, 14)
     }
 
-    /// The least height the ledge keeps while titles show their subtitles, below which its
-    /// covers get too small to recognize on a phone. Every size shows its 1,080-pixel width
-    /// across the screen, so the shorter Portrait and Square keep a larger share of their height,
-    /// which still leaves their covers smaller than a Story's.
-    private var minimumShelfHeight: CGFloat {
+    /// The least height the fan keeps while titles show their subtitles, below which its covers
+    /// get too small to recognize on a phone. Every size shows its 1,080-pixel width across the
+    /// screen, so the shorter Portrait and Square keep a larger share of their height, which
+    /// still leaves their covers smaller than a Story's.
+    private var minimumFanHeight: CGFloat {
         let share: CGFloat =
             switch input.aspect {
             case .story: 0.22
@@ -234,7 +231,7 @@ struct TopFiveCard: View {
     }
 
     /// The indexes of `books` whose titles have a shorter form, in the order they give up their
-    /// subtitles to make room for the books: the longest whole title first.
+    /// subtitles to make room for the fan: the longest whole title first.
     static func subtitleOrder(_ books: [CloudBook]) -> [Int] {
         let forms = books.map(ShareStyle.titles)
         return forms.indices.filter { forms[$0].count > 1 }
@@ -247,112 +244,89 @@ struct TopFiveCard: View {
         return input.frame == .lifetime ? "My all-time \(top)" : "My \(top) of \(input.period)"
     }
 
-    /// A book's place on the ledge: how far its middle sits from the middle of the books'
-    /// space, its height, and how far down that space its base rests.
-    struct LedgeBook {
-        let x: CGFloat
+    /// A book's place in the fan: its offset from the fan's center, its height, and its turn in
+    /// degrees.
+    struct FanCard {
+        let offset: CGPoint
         let height: CGFloat
-        let base: CGFloat
+        let turn: Double
     }
 
-    /// The ledge's top surface: its front edge, how far down the books' space it lies, and how
-    /// deep the surface shows above that edge, seen from a little above. The lip below it is
-    /// `lip` deep.
-    struct Ledge {
-        let books: [LedgeBook]
-        let front: CGFloat
-        let depth: CGFloat
-        let lip: CGFloat
-    }
-
-    /// How far the outermost books may reach past the space's width into the card's side
-    /// margins, in pixels: half of every size's 64-pixel margin.
+    /// How far the outermost books may reach past the fan's width into the card's side margins,
+    /// in pixels: half of every size's 64-pixel margin.
     static let overhang: CGFloat = 32
 
-    /// How much wider than its cover a book looks with its spine turned toward the viewer, at
-    /// most, for the reach of the outermost books.
-    private static let spineAllowance: CGFloat = 1.12
-
-    /// Stands books with the width-to-height `aspects`, by rank, on a ledge in `size`.
-    ///
-    /// The books stand upright, never turned in the card's plane. The first-ranked book stands at
-    /// the ledge's front edge in the middle, and the others alternate outward, further back the
-    /// further out they stand: a book further back rests higher on the surface, as seen from a
-    /// little above, and looks smaller, so the books stand in front of one another like a shop's
-    /// display rather than floating. Every base rests on the surface, between its front edge and
-    /// its back. The books and the lip span as much height above the space's middle as below
-    /// it, and the outermost books may reach `overhang` past the sides.
-    static func ledge(aspects: [CGFloat], in size: CGSize) -> Ledge {
-        // Centers the books when fewer than five leave the row lopsided.
+    /// Lays out the fan in `size` for books with the width-to-height `aspects`, by rank, each
+    /// turned a little by its jitter (-0.5...0.5). Outer books sit lower and turn further, as a
+    /// hand of cards curves, and the fan reaches as far above its middle as below it. The
+    /// outermost books may reach `overhang` past the sides.
+    static func fan(
+        aspects: [CGFloat], jitters: [Double], style: ShareCoverStyle, in size: CGSize
+    ) -> [FanCard] {
+        // Centers the fan when fewer than five books leave it lopsided.
         let used = slots.prefix(aspects.count)
         let middle = used.reduce(0, +) / CGFloat(max(1, used.count))
-        // A lone book takes the space, sized as a featured book's hero is.
+        // A lone book takes the fan's space, sized as a featured book's hero is.
         let leadHeight =
             aspects.count == 1
-            ? min(size.height * 0.84, size.width * 0.86 / aspects[0])
-            : min(size.height * 0.78, size.width * 0.54)
-        let scales: [CGFloat] = [1, 0.88, 0.78]
-        let rise = leadHeight * 0.06
-        let lip = leadHeight * 0.05
-        let heights = aspects.indices.map { leadHeight * scales[Int(depths[$0])] }
-        // The widest outer book, its spine turned out, reaches no further than `overhang` past
-        // the space's side.
-        let distances = aspects.indices.map { abs(slots[$0] - middle) }
-        let reach = distances.max() ?? 0
-        let outerHalf =
-            aspects.indices.filter { distances[$0] == reach }
-            .map { heights[$0] * aspects[$0] * spineAllowance / 2 }.max() ?? 0
-        let spacing =
-            reach == 0
-            ? 0 : min(size.width * 0.21, (size.width / 2 + overhang - outerHalf) / reach)
-        // The lead book is the tallest, so the books' top is its top.
-        let front = (size.height + leadHeight - lip) / 2
-        let books = aspects.indices.map { index in
-            LedgeBook(
-                x: (slots[index] - middle) * spacing, height: heights[index],
-                base: front - depths[index] * rise)
+            ? min(size.height * 0.88, size.width * 0.86 / aspects[0])
+            : min(size.height * 0.78, size.width * 0.55)
+        // An outer book, at 0.82 of the lead height and turned at most 15.75 degrees, reaches up
+        // to 0.48 lead heights from its center with the widest 3D book, or 0.51 with the widest
+        // flat cover (`ShareCover.aspect`). This spacing keeps the outermost slot (2) within
+        // `overhang` of the fan's width, and so inside the card.
+        let reach: CGFloat = style == .flat ? 0.51 : 0.48
+        let spacing = min(
+            size.width * 0.2, (size.width / 2 + overhang - reach * leadHeight) / 2)
+        let cards = aspects.indices.map { index in
+            let slot = slots[index] - middle
+            let height = leadHeight * (index == 0 ? 1 : 0.82)
+            let turn = Double(slot) * 7.5 + jitters[index] * 1.5
+            let angle = abs(turn) * .pi / 180
+            return (
+                x: slot * spacing, height: height, turn: turn,
+                // In proportion to the books, so a small fan curves as a large one does.
+                drop: (slot * slot * 0.026 + (index == 0 ? 0 : 0.06)) * leadHeight,
+                // How far the turned book reaches above and below its center.
+                half: (height * aspects[index] * sin(angle) + height * cos(angle)) / 2
+            )
         }
-        return Ledge(books: books, front: front, depth: rise * 2.6, lip: lip)
+        // The drops push the fan's lowest corners down, so the fan rises by half the difference
+        // between the books' reach below and above the middle. That leaves as much room under
+        // the books, above the ranked list, as over them.
+        let below = cards.map { $0.half + $0.drop }.max() ?? 0
+        let above = cards.map { $0.half - $0.drop }.max() ?? 0
+        let lift = (below - above) / 2
+        return cards.map {
+            FanCard(offset: CGPoint(x: $0.x, y: $0.drop - lift), height: $0.height, turn: $0.turn)
+        }
     }
 
-    private func shelf(_ books: [CloudBook]) -> some View {
+    private func fan(_ books: [CloudBook]) -> some View {
         let jitters = books.map { ShareStyle.unit(input.seed, $0.id, 6) - 0.5 }
         let aspects = books.map {
             ShareCover.aspect(of: input.covers[$0.id], style: input.coverStyle)
         }
-        let theme = input.theme
         return GeometryReader { proxy in
             let size = proxy.size
-            let ledge = Self.ledge(aspects: aspects, in: size)
-            ZStack(alignment: .top) {
-                // The ledge spans the card from edge to edge, like a shelf on the wall.
-                LedgeBoard(theme: theme, depth: ledge.depth, lip: ledge.lip)
-                    .frame(height: ledge.depth + ledge.lip)
-                    .padding(.horizontal, -input.aspect.insets.leading)
-                    .offset(y: ledge.front - ledge.depth)
+            let cards = Self.fan(
+                aspects: aspects, jitters: jitters, style: input.coverStyle, in: size)
+            ZStack {
                 // The first-ranked book is drawn last, in front.
                 ForEach(Array(books.enumerated().reversed()), id: \.element.id) { index, book in
-                    let place = ledge.books[index]
-                    let width = place.height * aspects[index]
+                    let card = cards[index]
                     ShareCover(
                         book: book, look: input.look(for: book), cover: input.covers[book.id],
-                        style: input.coverStyle, height: place.height,
-                        // Each book turns a little about its upright axis, never in the card's
-                        // plane.
+                        style: input.coverStyle, height: card.height,
                         yaw: 0.36 + jitters[index] * 0.12, pitch: -0.1
                     )
-                    .shadow(color: .black.opacity(0.35), radius: 14, y: 6)
-                    // Its base rests on the ledge, with its contact shadow under it.
-                    .background(alignment: .bottom) {
-                        EllipticalGradient(colors: [.black.opacity(0.55), .clear])
-                            .frame(width: width * 1.1, height: ledge.depth * 0.5)
-                            .offset(y: ledge.depth * 0.18)
-                    }
-                    .frame(width: size.width, height: place.base, alignment: .bottom)
-                    .offset(x: place.x)
+                    .rotationEffect(.degrees(card.turn))
+                    // After the turn, so every book's shadow falls straight down from one light.
+                    .shadow(color: .black.opacity(0.45), radius: 24, y: 18)
+                    .position(
+                        x: size.width / 2 + card.offset.x, y: size.height / 2 + card.offset.y)
                 }
             }
-            .frame(width: size.width, height: size.height, alignment: .top)
         }
     }
 
@@ -411,32 +385,5 @@ struct TopFiveCard: View {
                 }
             }
         }
-    }
-}
-
-/// The ledge under Top Five's books: its top surface, lit from above and darker toward the
-/// wall, and its front lip, in the card's color family.
-private struct LedgeBoard: View {
-    let theme: ShareTheme
-    /// How deep the top surface shows, and how deep the lip is, in pixels.
-    let depth: CGFloat
-    let lip: CGFloat
-
-    var body: some View {
-        VStack(spacing: 0) {
-            LinearGradient(
-                colors: [theme.backdropDark.color, theme.panel().color],
-                startPoint: .top, endPoint: .bottom
-            )
-            .frame(height: depth)
-            // The lit front edge, then the lip in shadow.
-            Rectangle().fill(ShareStyle.cream.color.opacity(0.22)).frame(height: 2)
-            LinearGradient(
-                colors: [theme.backdropDark.color, .black.opacity(0.85)],
-                startPoint: .top, endPoint: .bottom
-            )
-            .frame(height: max(0, lip - 2))
-        }
-        .accessibilityHidden(true)
     }
 }

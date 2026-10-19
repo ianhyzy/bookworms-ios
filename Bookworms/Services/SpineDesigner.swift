@@ -19,9 +19,11 @@ struct SpineDesigner: Hashable, Sendable {
 
         var id: Self { self }
 
+        /// The choice's name as the **Model** picker lists it. Only third-party providers'
+        /// names go into messages, because the Apple choice's name marks it as the default.
         var name: String {
             switch self {
-            case .apple: "None"
+            case .apple: "Apple on-device (default)"
             case .anthropic: "Anthropic"
             case .openAI: "OpenAI"
             case .google: "Google Gemini"
@@ -97,12 +99,12 @@ struct SpineDesigner: Hashable, Sendable {
         Self.defaults.set(baseURL, forKey: Self.baseURLKey)
     }
 
-    /// Why this choice cannot design yet, such as no backup model or a missing key or model name;
+    /// Why this choice cannot design yet, such as no provider or a missing key or model name;
     /// `nil` when it can. It reads the Keychain. The text names no place, because the Spines tab
-    /// shows it beside **Choose Backup Model**, which opens Settings on the Mac.
+    /// shows it beside **Choose model**, which opens Settings on the Mac.
     var problem: String? {
         switch provider {
-        case .apple: return "Choose a backup model."
+        case .apple: return "Choose a provider."
         case .custom where URL(string: baseURL)?.scheme == nil:
             return "Enter the endpoint's base URL."
         case .anthropic, .openAI, .google:

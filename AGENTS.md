@@ -11,3 +11,24 @@ This independent repository implements Bookworms for iPhone and Mac from one tar
 - Lint edited Swift with `xcrun swift-format lint --strict` and the repository `.swift-format`. Build with `script/build_and_run.sh`. Run tests when the request calls for them.
 - Use the private preview library (`script/load-preview-data.py`) for Simulator checks. It contains real reading history: keep it in `.local/` and never publish screenshots made from it. Tests use fictional fixtures.
 - Unsigned or Simulator builds prove compilation and local rendering only. iCloud access, push delivery, background scheduling, and Private Cloud Compute quotas need a signed device build.
+
+## Before you push
+
+Check each item that your change touches. These are the problems CodeRabbit finds most often here.
+
+- **After an `await` or a delay,** recheck the state the action needs (the centered book, the mode, a presented sheet, the signed-in account) before acting. Capture values the result needs, such as the username in a share image, before the `await`. Cancel the task when its view or scene resets, and apply saves that can overlap, such as recolors, in the order the reader made them.
+- **Sheets and hidden controls.** Present mutually exclusive sheets with one `.sheet(item:)` whose item is an enum, not two Booleans changed in one update. A control hidden with `.opacity(0)` also needs `.disabled(true)`.
+- **Repeated work.** Don't sort or filter in `body` or in a property that `body` reads; compute once when the input changes. Requests read the cached credential (`HardcoverAccount.cachedCredential`), never the Keychain, and files decode off the main actor.
+- **Hardcover tokens.** Only HTTP 400 or 401 with OAuth error `invalid_grant` ends a login. Keep the token for `invalid_client`, other OAuth errors, timeouts, and malformed replies. A request that joins a renewal falls back to the unexpired token, as the request that started it does.
+- **Shared records.** When you splice or replace an Apple TV record, keep the fields this app doesn't model (`sources`, `isOwned`), and reject a malformed value instead of overwriting it. Filter Hardcover rows in the query (`status_id: {_neq: 6}`) before a row limit applies. A failed fetch is a failure, never an empty list.
+- **Tests** use invented titles and names, write to their own `UUID`-named folders that `addTeardownBlock` or `defer` removes, and branch an assertion on `NO_PCC` when that flag changes the result.
+- **Docs.** Search `README.md` and `docs/` for each name your change touches and correct every statement. Say "iPhone" or "Mac" when behavior differs, and state the settings and limits a checklist step assumes.
+- **Both platforms compile.** When shared code changes, build for iOS (`script/build_and_run.sh`) and for the Mac (the `xcodebuild` command in `script/run_mac.sh`).
+
+## CodeRabbit
+
+- Before you open a pull request into `main`, run `coderabbit review --agent --base main` in the background and wait until it reports `complete`. Fix its Critical and Major findings and any useful Minor ones. Run it again on fix commits before you push them; a result with `reused: true` didn't review again, so rerun it with `--fresh`. Never pass `--use-credits`.
+- CodeRabbit reviews a pull request once, when it opens; fix pushes don't start a review. Open pull requests ready for review, and don't merge while a review runs: merging cancels it.
+- Critical and Major findings block a merge. Minor and Trivial findings never block testing, merging, or installs, but read each one, because the Minor label includes real bugs. Fix useful Minor findings in the same pull request; list any that need larger changes in a follow-up pull request. Fix a Trivial nitpick in the same pull request only when it's one line.
+- When you decline a finding, reply in its thread with the reason. CodeRabbit can withdraw the finding and save the reason as a learning.
+- Comment `@coderabbitai review` at most once per pull request, after a fix that changes credentials, a shared record, or concurrency, or that fixes a Critical or Major finding. Each review uses part of an hourly allowance.
