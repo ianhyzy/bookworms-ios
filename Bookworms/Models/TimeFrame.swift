@@ -39,7 +39,8 @@ enum TimeFrame: Hashable, Sendable {
         }
     }
 
-    /// The span's name for headings, such as "2025", "August 2025", or "Lifetime".
+    /// The span's name, such as "2025", "August 2025", or "All time". Every tab names its time
+    /// frames with these and `LibraryTime.title`, so Library, Desk, and Share use one vocabulary.
     var title: String {
         switch self {
         case .year(let year): return String(year)
@@ -48,7 +49,7 @@ enum TimeFrame: Hashable, Sendable {
             else { return String(year) }
             return date.formatted(
                 Date.FormatStyle(timeZone: .gmt).month(.wide).year())
-        case .lifetime: return "Lifetime"
+        case .lifetime: return "All time"
         }
     }
 

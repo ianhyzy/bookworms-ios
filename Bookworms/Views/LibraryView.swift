@@ -111,7 +111,7 @@ struct LibraryView: View {
         }
     }
 
-    /// Says that the time has no books, and offers **Show All Time**.
+    /// Says that the time has no books, and offers **Show all time**.
     private var noBooksInTime: some View {
         // Scrolls so that at accessibility sizes the actions stay above the footer.
         ScrollView {
@@ -121,7 +121,7 @@ struct LibraryView: View {
                 Text("Books you finish in this time appear here.")
             } actions: {
                 if time != .allTime {
-                    Button("Show All Time") { time = .allTime }
+                    Button("Show all time") { time = .allTime }
                 }
             }
         }

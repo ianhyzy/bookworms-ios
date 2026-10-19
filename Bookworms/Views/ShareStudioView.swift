@@ -571,7 +571,10 @@ struct ShareStudioView: View {
                 !ShareTemplate.hotTakes.books(from: library, in: .lifetime, direction: direction)
                     .isEmpty
             {
-                return ("No hot takes\(suffix)", "Choose another time frame or Lifetime.")
+                return (
+                    "No hot takes\(suffix)",
+                    "Choose another time frame, such as \(TimeFrame.lifetime.title)."
+                )
             }
             let side = direction == .lovedMore ? "above" : "below"
             return (
@@ -644,7 +647,10 @@ struct ShareStudioView: View {
                 )
             }
             if frame != .lifetime, !match.hotTakes(in: .lifetime, direction: direction).isEmpty {
-                return ("No hot takes\(suffix)", "Choose another time frame or Lifetime.")
+                return (
+                    "No hot takes\(suffix)",
+                    "Choose another time frame, such as \(TimeFrame.lifetime.title)."
+                )
             }
             return (
                 "No hot takes with \(name)\(suffix)",
@@ -711,7 +717,7 @@ struct ShareStudioView: View {
             switch self {
             case .year: "Year"
             case .month: "Month"
-            case .lifetime: "Lifetime"
+            case .lifetime: TimeFrame.lifetime.title
             }
         }
     }

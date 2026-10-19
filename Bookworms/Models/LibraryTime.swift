@@ -3,11 +3,11 @@ import Foundation
 /// The span of finish dates that Library's **Stack** and **Shelf** show, which **Time** in
 /// Library's menu chooses. Desk keeps its own `TimeFrame`.
 ///
-/// **Last 12 Months** and **Last 5 Years** end today and reach back that far: a book counts when
-/// it was finished after the same date 12 months or 5 years ago. **This Year** is today's
+/// **Last 12 months** and **Last 5 years** end today and reach back that far: a book counts when
+/// it was finished after the same date 12 months or 5 years ago. **This year** is today's
 /// calendar year. A book counts by its finish dates (`CloudBook.finishes`), calendar days, so a
 /// reread shows in every span in which it was finished, and a read book without a finish date
-/// falls in no dated span and shows only under **All Time**.
+/// falls in no dated span and shows only under **All time**.
 ///
 /// The raw value is what `BookwormsLibraryTime` saves: a case name, or "year:2025".
 enum LibraryTime: Hashable, Sendable {
@@ -21,18 +21,19 @@ enum LibraryTime: Hashable, Sendable {
     /// The spans that **Time** lists above its **Year** menu, the default first.
     static let spans: [LibraryTime] = [.last12Months, .thisYear, .last5Years, .allTime]
 
+    /// The span's name, in the same vocabulary as `TimeFrame.title`.
     var title: String {
         switch self {
-        case .last12Months: "Last 12 Months"
-        case .thisYear: "This Year"
-        case .last5Years: "Last 5 Years"
-        case .allTime: "All Time"
+        case .last12Months: "Last 12 months"
+        case .thisYear: "This year"
+        case .last5Years: "Last 5 years"
+        case .allTime: TimeFrame.lifetime.title
         case .year(let year): String(year)
         }
     }
 
     /// The books of `books` that the span holds, where `now` falls on a calendar day in
-    /// `timeZone`. **All Time** keeps every book in its order. Other spans list books most
+    /// `timeZone`. **All time** keeps every book in its order. Other spans list books most
     /// recently finished first, each as of its newest finish in the span
     /// (`CloudBook.asFinished(where:)`).
     func books(
