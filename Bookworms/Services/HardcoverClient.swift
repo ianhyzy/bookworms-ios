@@ -332,8 +332,11 @@ actor HardcoverClient {
             let books: Books
             enum CodingKeys: String, CodingKey { case books = "user_books_aggregate" }
         }
+        // The count only adds a total to the progress, so it gets one short try rather than
+        // holding up the first page with retries.
         let reply: Reply = try await query(
-            Self.libraryCountQuery, variables: ["user": user], token: token)
+            Self.libraryCountQuery, variables: ["user": user], token: token, retries: 0,
+            timeout: 10)
         return reply.books.aggregate?.count
     }
 
@@ -577,20 +580,23 @@ actor HardcoverClient {
         return (data, http.statusCode)
     }
 
+    /// Sends a GraphQL query and decodes its data. `retries` and `timeout` apply to each attempt
+    /// (`send(_:retries:)`).
     private func query<Result: Decodable>(
-        _ document: String, variables: some Encodable, token: String
+        _ document: String, variables: some Encodable, token: String, retries: Int = 2,
+        timeout: TimeInterval = 30
     ) async throws -> Result {
         guard let token = Self.validToken(token) else { throw HardcoverError.invalidToken }
         var request = URLRequest(url: URL(string: "https://api.hardcover.app/v1/graphql")!)
         request.httpMethod = "POST"
-        request.timeoutInterval = 30
+        request.timeoutInterval = timeout
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
         request.httpBody = try JSONEncoder()
             .encode(
                 GraphQLRequest(query: document, variables: variables))
-        let (data, http) = try await send(request)
+        let (data, http) = try await send(request, retries: retries)
         switch http.statusCode {
         case 200: break
         case 401: throw HardcoverError.invalidToken
@@ -615,14 +621,16 @@ actor HardcoverClient {
         return result
     }
 
-    /// Sends a GraphQL request and returns Hardcover's reply, retrying up to twice when a failure
-    /// may pass.
+    /// Sends a GraphQL request and returns Hardcover's reply, retrying up to `retries` times
+    /// (twice by default) when a failure may pass.
     ///
     /// Server errors, timeouts, and dropped connections retry after about 2 and then 4 seconds,
     /// plus up to a second of jitter. A rate limit retries once its `Retry-After` passes if that
     /// is at most 30 seconds away; a longer or missing `Retry-After` returns the reply at once.
     /// Cancellation ends a wait with `CancellationError` and is never retried.
-    private func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+    private func send(_ request: URLRequest, retries maximum: Int = 2) async throws -> (
+        Data, HTTPURLResponse
+    ) {
         var retries = 0
         while true {
             let backoff = Double(2 << retries) + .random(in: 0...1)
@@ -632,16 +640,16 @@ actor HardcoverClient {
                 guard let http = response as? HTTPURLResponse else { throw HardcoverError.rejected }
                 let retryAfter = http.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init)
                 switch http.statusCode {
-                case 500...599 where retries < 2:
+                case 500...599 where retries < maximum:
                     wait = backoff
-                case 429 where retries < 2:
+                case 429 where retries < maximum:
                     guard let retryAfter, retryAfter <= 30 else { return (data, http) }
                     wait = max(retryAfter, 0)
                 default:
                     return (data, http)
                 }
             } catch let error as URLError
-                where retries < 2
+                where retries < maximum
                 && [.timedOut, .networkConnectionLost, .cannotConnectToHost, .badServerResponse]
                     .contains(error.code)
             {
