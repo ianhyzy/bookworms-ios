@@ -727,7 +727,7 @@ actor HardcoverClient {
     // catalog details that only the owner's books show.
     private static let readerLibraryQuery = """
         query ReaderLibrary($user: Int!, $offset: Int!, $language: String!) {
-          user_books(where: {user_id: {_eq: $user},
+          user_books(where: {user_id: {_eq: $user}, status_id: {_neq: 6},
               _or: [{rating: {_is_null: false}}, {status_id: {_in: [2, 3, 4, 5]}}]},
             order_by: [{rating: desc_nulls_last}, {id: asc}], limit: 100, offset: $offset) {
             last_read_date rating status_id
