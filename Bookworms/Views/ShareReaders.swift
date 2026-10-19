@@ -93,18 +93,38 @@ struct ShareReaderSection: View {
 extension View {
     /// Filters a picker's list by `text`: with the navigation bar's search field on an iPhone,
     /// and on a Mac, where the pickers open in popovers without a bar, with a field above the
-    /// list.
-    func pickerSearch(_ text: Binding<String>, prompt: String = "Search") -> some View {
+    /// list, where Return performs `submit`, such as choosing the first match.
+    func pickerSearch(
+        _ text: Binding<String>, prompt: String = "Search", submit: @escaping () -> Void = {}
+    ) -> some View {
         #if os(macOS)
             safeAreaInset(edge: .top, spacing: 0) {
                 TextField(prompt, text: text)
                     .textFieldStyle(.roundedBorder)
+                    .onSubmit(submit)
                     .padding(10)
             }
         #else
             searchable(text: text, prompt: Text(prompt))
         #endif
     }
+
+    #if os(macOS)
+        /// Performs `perform` with a Mac picker list's highlighted row when Return is pressed.
+        ///
+        /// Tab moves the keyboard focus from the search field to the list, whose selection is
+        /// `highlighted`, and the arrow keys move the highlight. A click still presses the row's
+        /// button.
+        func pickerReturn<ID: Hashable>(
+            _ highlighted: Binding<ID?>, perform: @escaping (ID) -> Void
+        ) -> some View {
+            onKeyPress(.return) {
+                guard let id = highlighted.wrappedValue else { return .ignored }
+                perform(id)
+                return .handled
+            }
+        }
+    #endif
 }
 
 /// A reader's photo, name, username, and how their taste compares, as one VoiceOver element.
@@ -208,12 +228,16 @@ struct ShareReaderPicker: View {
     @State private var query = ""
     @State private var isLookingUp = false
     @State private var lookupError: String?
+    #if os(macOS)
+        /// The reader that the arrow keys highlight and Return chooses.
+        @State private var highlighted: Int?
+    #endif
 
     var body: some View {
         let readers = filtered
         let followed = readers.filter(\.isFollowed)
         let others = readers.filter { !$0.isFollowed }
-        List {
+        let rows = Group {
             if let candidate {
                 lookupSection(candidate)
             }
@@ -232,7 +256,22 @@ struct ShareReaderPicker: View {
                             : "Follow readers on Hardcover, or search for a public username."))
             }
         }
-        .pickerSearch($query, prompt: "Name or Hardcover username")
+        Group {
+            #if os(macOS)
+                List(selection: $highlighted) { rows }
+                    .pickerReturn($highlighted, perform: choose)
+            #else
+                List { rows }
+            #endif
+        }
+        // Return looks up the username the query names, or else chooses the first match.
+        .pickerSearch($query, prompt: "Name or Hardcover username") {
+            if let candidate {
+                if model.canLookUpReaders && !isLookingUp { Task { await lookUp(candidate) } }
+            } else if let reader = (followed + others).first {
+                choose(reader.id)
+            }
+        }
         .refreshable { await model.syncSocial(force: true) }
         #if os(macOS)
             .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -297,9 +336,7 @@ struct ShareReaderPicker: View {
     private func row(_ reader: SocialModel.Reader) -> some View {
         HStack {
             Button {
-                selection = reader.id
-                Task { await model.downloadReader(reader.id) }
-                dismiss()
+                choose(reader.id)
             } label: {
                 ShareReaderLabel(
                     reader: reader,
@@ -325,6 +362,13 @@ struct ShareReaderPicker: View {
                 Button("View on Hardcover", systemImage: "arrow.up.right.square") { openURL(url) }
             }
         }
+    }
+
+    /// Compares with the reader, whose ratings download if they haven't, and closes the list.
+    private func choose(_ id: Int) {
+        selection = id
+        Task { await model.downloadReader(id) }
+        dismiss()
     }
 
     private func lookUp(_ username: String) async {

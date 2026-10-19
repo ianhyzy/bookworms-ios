@@ -1421,32 +1421,50 @@ private struct ShareBookPicker: View {
     @Binding var selection: Int?
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
+    #if os(macOS)
+        /// The row that the arrow keys highlight and Return chooses (`pickerReturn(_:perform:)`).
+        @State private var highlighted: Int?
+    #endif
 
     var body: some View {
-        List(filtered) { book in
-            Button {
-                selection = book.id
-                dismiss()
-            } label: {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        BookText(book.title, of: book).lineLimit(2)
-                        Text(book.author).font(.subheadline).foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    Spacer()
-                    if book.id == current {
-                        Image(systemName: "checkmark")
-                            .foregroundStyle(.tint)
-                            .accessibilityLabel("Selected")
-                    }
-                }
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
+        let shown = filtered
+        Group {
+            #if os(macOS)
+                List(shown, selection: $highlighted, rowContent: row)
+                    .pickerReturn($highlighted, perform: choose)
+            #else
+                List(shown, rowContent: row)
+            #endif
         }
-        .pickerSearch($query)
+        .pickerSearch($query) { shown.first.map { choose($0.id) } }
         .navigationTitle("Book")
+    }
+
+    private func choose(_ id: Int) {
+        selection = id
+        dismiss()
+    }
+
+    private func row(_ book: CloudBook) -> some View {
+        Button {
+            choose(book.id)
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    BookText(book.title, of: book).lineLimit(2)
+                    Text(book.author).font(.subheadline).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if book.id == current {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(.tint)
+                        .accessibilityLabel("Selected")
+                }
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
     }
 
     private var filtered: [CloudBook] {
@@ -1470,6 +1488,10 @@ private struct TopFivePinPicker: View {
     /// The finished books, highest rated first, ranked when the library changes so a search
     /// edit only filters them.
     @State private var books: [CloudBook] = []
+    #if os(macOS)
+        /// The row that the arrow keys highlight and Return pins or unpins.
+        @State private var highlighted: Int?
+    #endif
 
     var body: some View {
         let shown =
@@ -1480,7 +1502,7 @@ private struct TopFivePinPicker: View {
                     || $0.author.localizedStandardContains(query)
             }
         let pinned = pins.ids.compactMap { id in shown.first { $0.id == id } }
-        List {
+        let rows = Group {
             if !pinned.isEmpty {
                 Section("Pinned") { ForEach(pinned, content: row) }
             }
@@ -1492,7 +1514,15 @@ private struct TopFivePinPicker: View {
                 if pins.isFull { Text("Unpin a book to pin another.") }
             }
         }
-        .pickerSearch($query)
+        Group {
+            #if os(macOS)
+                List(selection: $highlighted) { rows }
+                    .pickerReturn($highlighted, perform: toggle)
+            #else
+                List { rows }
+            #endif
+        }
+        .pickerSearch($query) { (pinned.first ?? shown.first).map { toggle($0.id) } }
         .navigationTitle("Pin to Top Five")
         .onChange(of: library, initial: true) { _, library in
             books = library.filter(TimeFrame.lifetime.contains)
@@ -1504,7 +1534,7 @@ private struct TopFivePinPicker: View {
     private func row(_ book: CloudBook) -> some View {
         let isPinned = pins.contains(book.id)
         return Button {
-            pins.toggle(book.id)
+            toggle(book.id)
         } label: {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -1524,6 +1554,12 @@ private struct TopFivePinPicker: View {
         .disabled(!isPinned && pins.isFull)
         .accessibilityValue(isPinned ? "Pinned" : "")
         .accessibilityHint(isPinned ? "Unpins it from Top Five." : "Pins it to lead Top Five.")
+    }
+
+    /// Pins or unpins the book, unless it is unpinned and the pins are full.
+    private func toggle(_ id: Int) {
+        guard pins.contains(id) || !pins.isFull else { return }
+        pins.toggle(id)
     }
 }
 
