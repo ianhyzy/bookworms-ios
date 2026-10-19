@@ -80,8 +80,8 @@ struct ShareStudioView: View {
         /// The credited copy of the image that Quick Look shows, or `nil` while it is closed.
         @State private var quickLookURL: URL?
         /// The menu commands' actions, made once so that publishing them never rebuilds the
-        /// menus (`FocusedActions.swift`).
-        @State private var commands: (save: SceneAction, preview: SceneAction)?
+        /// menus (`FocusedActions.swift`). Each reads the image when it runs.
+        @State private var commands: (save: SceneAction, preview: SceneAction, copy: SceneAction)?
     #endif
     /// VoiceOver's focus on the preview, which returns there when the full-size view closes.
     @AccessibilityFocusState private var focusesPreview: Bool
@@ -198,6 +198,7 @@ struct ShareStudioView: View {
         // A newer design alone keeps the image shareable while the render loop draws it.
         let isPending = renderedRequest?.options != request.options
         #if os(macOS)
+            // The commands dim without an image and while a newer one is on its way.
             let shownCommands = image == nil || isPending ? nil : commands
         #endif
         NavigationStack {
@@ -216,14 +217,15 @@ struct ShareStudioView: View {
             .shareSheet($files)
         #endif
         #if os(macOS)
-            // The commands dim without an image and while a newer one is on its way.
-            .focusedSceneValue(\.shareImage, isPending ? nil : image, in: .share)
+            .focusedSceneValue(\.copyShareImage, shownCommands?.copy, in: .share)
             .focusedSceneValue(\.saveShareImage, shownCommands?.save, in: .share)
             .focusedSceneValue(\.previewShareImage, shownCommands?.preview, in: .share)
             .onAppear {
                 guard commands == nil else { return }
                 commands = (
-                    SceneAction { savesImage = true }, SceneAction { Task { await quickLook() } }
+                    save: SceneAction { savesImage = true },
+                    preview: SceneAction { Task { await quickLook() } },
+                    copy: SceneAction { if let image { ShareCommands.copy(image) } }
                 )
             }
             .fileExporter(

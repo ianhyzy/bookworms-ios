@@ -9,7 +9,7 @@
     /// They act on the image the Share tab shows in the key window (`ShareStudioView`), and dim
     /// while another tab shows or while a newer image is on its way.
     struct ShareCommands: Commands {
-        @FocusedValue(\.shareImage) private var image
+        @FocusedValue(\.copyShareImage) private var copy
         @FocusedValue(\.saveShareImage) private var save
         @FocusedValue(\.previewShareImage) private var preview
 
@@ -20,8 +20,8 @@
                     .disabled(save == nil)
             }
             CommandGroup(after: .pasteboard) {
-                Button("Copy Image") { image.map(Self.copy) }
-                    .disabled(image == nil)
+                Button("Copy Image") { copy?() }
+                    .disabled(copy == nil)
             }
             CommandGroup(after: .toolbar) {
                 Button("Quick Look") { preview?() }
