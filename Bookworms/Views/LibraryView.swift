@@ -507,7 +507,9 @@ struct LibrarySync {
     }
 
     /// "2:41 PM" for a time today, and otherwise the date, such as "Oct 17, 2026".
-    static func time(of date: Date, now: Date = .now, calendar: Calendar = .current) -> String {
+    nonisolated static func time(
+        of date: Date, now: Date = .now, calendar: Calendar = .current
+    ) -> String {
         calendar.isDate(date, inSameDayAs: now)
             ? date.formatted(date: .omitted, time: .shortened)
             : date.formatted(date: .abbreviated, time: .omitted)
@@ -531,7 +533,7 @@ extension AppModel {
 }
 
 /// On the Mac, the toolbar's middle button, which names Library's time and the number of books
-/// it shows, such as "Last 12 Months" and "39", and chooses the time, as Desk's time frame button
+/// it shows, such as "Last 12 months" and "39", and chooses the time, as Desk's time frame button
 /// does for Desk.
 private struct LibraryTimeChip: View {
     let options: LibraryOptions
@@ -541,7 +543,7 @@ private struct LibraryTimeChip: View {
             options.timeChoices
         } label: {
             HStack(spacing: 10) {
-                Label(options.time.menuTitle, systemImage: "calendar")
+                Label(options.time.title, systemImage: "calendar")
                 Label(options.count.formatted(), systemImage: "books.vertical")
             }
             .labelStyle(.titleAndIcon)
@@ -711,18 +713,18 @@ private struct LibrarySearch: ViewModifier {
             content
                 .searchable(text: $text, placement: .toolbar, prompt: "Find a book")
                 .searchSuggestions {
-                    ForEach(Self.matches(text, in: books).prefix(8)) { book in
+                    ForEach(BookFinding.matches(text, in: books).prefix(8)) { book in
                         BookFinderRow(book: book).searchCompletion(book.title)
                     }
                 }
                 .searchFocused($isFocused)
                 .onChange(of: text) {
-                    guard pullOut.book == nil, let book = Self.matches(text, in: books).first
+                    guard pullOut.book == nil, let book = BookFinding.matches(text, in: books).first
                     else { return }
                     centeredID = book.id
                 }
                 .onSubmit(of: .search) {
-                    if let book = Self.matches(text, in: books).first { open(book) }
+                    if let book = BookFinding.matches(text, in: books).first { open(book) }
                 }
                 .onChange(of: findsBook) {
                     guard findsBook else { return }
@@ -758,7 +760,10 @@ private struct LibrarySearch: ViewModifier {
             opening = nil
         }
     #endif
+}
 
+/// How Library finds a book (`LibrarySearch`).
+enum BookFinding {
     /// The books of `books` whose title or author contains `query`, ignoring case and accents,
     /// in their shown order, those whose title starts with it first. Empty for an empty query.
     static func matches(_ query: String, in books: [CloudBook]) -> [CloudBook] {
@@ -814,7 +819,7 @@ private struct BookFinderRow: View {
         @FocusState private var isFocused: Bool
 
         var body: some View {
-            let matches = text.isEmpty ? books : LibrarySearch.matches(text, in: books)
+            let matches = text.isEmpty ? books : BookFinding.matches(text, in: books)
             NavigationStack {
                 List(matches) { book in
                     Button {

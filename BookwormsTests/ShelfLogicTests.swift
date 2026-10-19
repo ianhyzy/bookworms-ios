@@ -255,6 +255,32 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertNil(SpineView.twoLines("Plato"))
     }
 
+    func testFindingPutsTitlesThatStartWithTheTextFirst() {
+        let books = [
+            book(1, "Children of Dune", by: "Frank Herbert"),
+            book(2, "Piranesi", by: "Susanna Clarke"),
+            book(3, "Dune", by: "Frank Herbert"),
+            book(4, "Émile", by: "Dune Writer"),
+        ]
+        XCTAssertEqual(BookFinding.matches("dune", in: books).map(\.id), [3, 1, 4])
+        XCTAssertEqual(BookFinding.matches(" emile ", in: books).map(\.id), [4])
+        XCTAssertEqual(BookFinding.matches("clarke", in: books).map(\.id), [2])
+        XCTAssertEqual(BookFinding.matches("", in: books).map(\.id), [])
+    }
+
+    func testSyncStatusNamesTodaysTimeAndEarlierDates() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = losAngeles
+        let earlier = evening.addingTimeInterval(-60 * 60)
+        let yesterday = evening.addingTimeInterval(-24 * 60 * 60)
+        XCTAssertEqual(
+            LibrarySync.time(of: earlier, now: evening, calendar: calendar),
+            earlier.formatted(date: .omitted, time: .shortened))
+        XCTAssertEqual(
+            LibrarySync.time(of: yesterday, now: evening, calendar: calendar),
+            yesterday.formatted(date: .abbreviated, time: .omitted))
+    }
+
     func testSlabThicknessStaysInTheComfortableRange() {
         XCTAssertEqual(book(1, "Short", pages: 40).slabThickness, 44, accuracy: 0.001)
         XCTAssertEqual(book(2, "Long", pages: 2_000).slabThickness, 96, accuracy: 0.001)

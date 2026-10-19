@@ -295,16 +295,24 @@ struct RootView: View {
     }
 }
 
-/// Reopens the window on the section it last showed, unless a Debug launch argument chose one,
-/// and saves each new section. A modifier of its own, so a tab switch updates only it, not the
-/// root view.
+/// Reopens the window on the section it last showed, once per launch and unless a Debug launch
+/// argument chose one, and saves each new section. A window reopened later in the same launch,
+/// such as from the menu bar item, keeps the section that shows. A modifier of its own, so a tab
+/// switch updates only it, not the root view.
 private struct RestoresTab: ViewModifier {
+    /// Whether a window has restored its section in this launch.
+    private static var restored = false
+
     @Binding var savedTab: AppTab
     @Environment(AppModel.self) private var model
 
     func body(content: Content) -> some View {
         content
-            .onAppear { if !launchChoosesTab { model.selectedTab = savedTab } }
+            .onAppear {
+                guard !Self.restored else { return }
+                Self.restored = true
+                if !launchChoosesTab { model.selectedTab = savedTab }
+            }
             .onChange(of: model.selectedTab) { _, tab in savedTab = tab }
     }
 }
