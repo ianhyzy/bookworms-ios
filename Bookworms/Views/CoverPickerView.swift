@@ -64,6 +64,9 @@ struct CoverPickerView: View {
                     }
                 }
         }
+        // The walnut room's controls take the lamp's light, so the prominent buttons, whose
+        // white label the pale light would wash out, take dark ink.
+        .tint(ShelfPalette.lamp)
         // A sign-in or reconnect changes the library revision, even when it finishes after the
         // account sheet closes, so covers load again. A grid already shown stays.
         .task(id: model.account.libraryRevision) {
@@ -93,6 +96,7 @@ struct CoverPickerView: View {
             ) {
                 Button("Connect Hardcover", action: signIn)
                     .buttonStyle(.glassProminent)
+                    .foregroundStyle(Stationery.ink)
             }
         } else {
             switch covers {
@@ -112,6 +116,7 @@ struct CoverPickerView: View {
                         signIn()
                     }
                     .buttonStyle(.glassProminent)
+                    .foregroundStyle(Stationery.ink)
                 }
             case .failure(let error):
                 unavailable(

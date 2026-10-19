@@ -14,6 +14,9 @@ import SwiftUI
 ///
 /// Signed out, **Not now** is the cancel action (Escape on the Mac), and **Connect Hardcover** in
 /// the form is the default action (Return).
+///
+/// The sheet tints its controls with the accent wherever it opens, also from book details, whose
+/// walnut room's lamp tint would wash out **Connect Hardcover**'s white label.
 struct HardcoverAccountView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -39,6 +42,7 @@ struct HardcoverAccountView: View {
                     }
                 }
         }
+        .tint(.accentColor)
         #if DEBUG
             // `-BookwormsStubSignIn YES` shows the code step with a fictional code.
             .task {

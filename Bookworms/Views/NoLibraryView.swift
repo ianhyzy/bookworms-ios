@@ -154,25 +154,27 @@ struct NoLibraryView: View {
         case .signedOut:
             // Preview mode ignores the sign-in.
             if !model.isPreview {
-                Button("Connect Hardcover") { showsAccount = true }
-                    .buttonStyle(.glassProminent)
-                    .controlSize(.large)
+                prominent(Button("Connect Hardcover") { showsAccount = true })
             }
             tryAgain
         case .reconnect:
-            Button("Reconnect") {
-                model.account.startSignIn()
-                showsAccount = true
-            }
-            .buttonStyle(.glassProminent)
-            .controlSize(.large)
+            prominent(
+                Button("Reconnect") {
+                    model.account.startSignIn()
+                    showsAccount = true
+                })
         case .failed:
-            tryAgain
-                .buttonStyle(.glassProminent)
-                .controlSize(.large)
+            prominent(tryAgain)
         case .loading, .downloading:
             EmptyView()
         }
+    }
+
+    /// The room's main action. Library and Desk tint controls with the lamp's pale light, on
+    /// which the style's white label is unreadable, so their buttons take dark ink.
+    @ViewBuilder private func prominent(_ button: some View) -> some View {
+        let styled = button.buttonStyle(.glassProminent).controlSize(.large)
+        if room == .share { styled } else { styled.foregroundStyle(Stationery.ink) }
     }
 }
 
