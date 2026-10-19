@@ -187,6 +187,31 @@ def bookworm(w):
     return paths, max(48, head_x + head_r + 2)
 
 
+def bookworms(w):
+    """The Hardcover sheet: the icon's two bookworms behind an open book, as line art. The book
+    is solid, so the worms' outlines end at its top edge."""
+    width = 84
+    paths = []
+    worm = 26 + w * 0.6
+    eye = 2.2 + w * 0.15
+    for center in (width * 0.27, width * 0.73):
+        paths += ring(center - worm / 2, -78, worm, 60, worm / 2, w)
+        for side in (-1, 1):
+            paths.append(circle(center + side * worm * 0.17, -58, eye))
+    book = Path2D()
+    book.move((0, -34))
+    book.curve((width * 0.25, -36), (width * 0.42, -32), (width / 2, -28))
+    book.curve((width * 0.58, -32), (width * 0.75, -36), (width, -34))
+    book.line((width, 0))
+    book.curve((width * 0.75, 1), (width * 0.58, 3), (width / 2, 6))
+    book.curve((width * 0.42, 3), (width * 0.25, 1), (0, 0))
+    book.close()
+    paths.append(book)
+    gutter = max(1.6, w * 0.45)
+    paths.append(rrect(width / 2 - gutter / 2, -25, gutter, 27, gutter / 2, reverse=True))
+    return paths, width
+
+
 # Named for where the app uses them.
 # A tab bar shows a tab's symbol filled when a ".fill" variant exists.
 SYMBOLS = {
@@ -196,6 +221,7 @@ SYMBOLS = {
     "tab.spines.fill": lambda w: spine_foil(w, filled=True),
     "desk.dominoes": dominoes,
     "menubar.bookworm": bookworm,
+    "account.bookworms": bookworms,
 }
 
 HEADER = """<?xml version="1.0" encoding="UTF-8"?>

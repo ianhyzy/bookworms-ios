@@ -1,7 +1,9 @@
-// Bakes the room's textures: the walnut wall's grain (`WallGrain`) from `TableWood`, which
-// `WalnutWall` draws, and the paper ground's dither tile (`PaperDither`), which `PaperGround`
-// draws. Run it from the repository root with `xcrun swift script/room-textures.swift` after
-// changing a value below; the output is deterministic.
+// Bakes the room's textures and stills: the walnut wall's grain (`WallGrain`) from `TableWood`,
+// which `WalnutWall` draws; the paper ground's dither tile (`PaperDither`), which `PaperGround`
+// draws; the soft shadow under paper props and covers (`SoftShadow`); and the empty desk under
+// the lamp (`DeskStill`), which the Desk tab shows without books instead of its live scene. Run it
+// from the repository root with `xcrun swift script/room-textures.swift` after changing a value
+// below; the output is deterministic.
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -98,7 +100,104 @@ func writeJPEG(_ image: CGImage, to url: URL) {
     guard CGImageDestinationFinalize(destination) else { fatalError("Can't write \(url.path)") }
 }
 
+/// The shadow image's side in points: a 48-point rectangle with 24 points of blur around it.
+let shadowSide = 96
+
+/// A soft black shadow around a 48-point rounded rectangle, at `scale` pixels per point. The
+/// rectangle itself is drawn off the image, so only its shadow shows.
+func softShadow(scale: Int) -> CGImage {
+    let side = shadowSide * scale
+    let context = CGContext(
+        data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
+        space: CGColorSpace(name: CGColorSpace.sRGB)!,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    let unit = CGFloat(scale)
+    context.setShadow(
+        offset: CGSize(width: -CGFloat(side), height: 0), blur: 14 * unit,
+        color: CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+    let rect = CGRect(
+        x: 24 * unit + CGFloat(side), y: 24 * unit, width: 48 * unit, height: 48 * unit)
+    context.addPath(
+        CGPath(roundedRect: rect, cornerWidth: 4 * unit, cornerHeight: 4 * unit, transform: nil))
+    context.fillPath()
+    return context.makeImage()!
+}
+
+/// The still's size in pixels. It is marked 2x, so it draws 480 by 320 points at full size.
+let stillWidth = 960
+let stillHeight = 640
+/// The table's lit color at the middle of the lamp's pool and at its edge, as the Desk scene
+/// renders the wood under its 2,700 K lamp.
+let deskLit: [Double] = [140, 72, 12]
+let deskDim: [Double] = [88, 34, 2]
+func smoothstep(_ edge0: Double, _ edge1: Double, _ x: Double) -> Double {
+    let t = max(0, min(1, (x - edge0) / (edge1 - edge0)))
+    return t * t * (3 - 2 * t)
+}
+
+/// The empty desk seen from above, as the Desk scene sees it: the table's wood, its grain running
+/// up the screen, warm in the lamp's pool a little above the middle and darker toward the edges,
+/// where it fades out, so it sits on any wall without a seam.
+func deskStill() -> CGImage {
+    let source = CGImageSourceCreateWithURL(
+        assets.appending(path: "TableWood.imageset/wood.jpg") as CFURL, nil)!
+    let wood = CGImageSourceCreateImageAtIndex(source, 0, nil)!
+    let tile = 640
+    var gray = [UInt8](repeating: 0, count: tile * tile)
+    let context = CGContext(
+        data: &gray, width: tile, height: tile, bitsPerComponent: 8, bytesPerRow: tile,
+        space: CGColorSpace(name: CGColorSpace.genericGrayGamma2_2)!,
+        bitmapInfo: CGImageAlphaInfo.none.rawValue)!
+    context.interpolationQuality = .high
+    context.draw(wood, in: CGRect(x: 0, y: 0, width: tile, height: tile))
+    let values = gray.map(Double.init)
+    let mean = values.reduce(0, +) / Double(values.count)
+    let deviation = (values.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(values.count))
+        .squareRoot()
+    var pixels = [UInt8](repeating: 0, count: stillWidth * stillHeight * 4)
+    for y in 0..<stillHeight {
+        for x in 0..<stillWidth {
+            let grain = (values[(y % tile) * tile + x % tile] - mean) / deviation
+            let dx = (Double(x) + 0.5) / Double(stillWidth) * 2 - 1
+            let dy = (Double(y) + 0.5) / Double(stillHeight) * 2 - 1
+            let pool = (dx * dx + (dy + 0.1) * (dy + 0.1)).squareRoot()
+            let light = 1 - smoothstep(0, 1.1, pool)
+            // A rounded rectangle's distance, so the fade follows the still's edges.
+            let edge = pow(pow(abs(dx), 4) + pow(abs(dy), 4), 0.25)
+            let alpha = 1 - smoothstep(0.62, 0.98, edge)
+            for channel in 0..<3 {
+                let lit = deskDim[channel] + (deskLit[channel] - deskDim[channel]) * light
+                let value = lit * (1 + 0.14 * grain) * alpha
+                pixels[(y * stillWidth + x) * 4 + channel] = UInt8(
+                    max(0, min(255, value.rounded())))
+            }
+            pixels[(y * stillWidth + x) * 4 + 3] = UInt8((alpha * 255).rounded())
+        }
+    }
+    let provider = CGDataProvider(data: Data(pixels) as CFData)!
+    return CGImage(
+        width: stillWidth, height: stillHeight, bitsPerComponent: 8, bitsPerPixel: 32,
+        bytesPerRow: stillWidth * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+        provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)!
+}
+
+/// Writes HEIF, which keeps the still's transparency at a tenth of a PNG's size.
+func writeHEIC(_ image: CGImage, to url: URL) {
+    let destination = CGImageDestinationCreateWithURL(
+        url as CFURL, UTType.heic.identifier as CFString, 1, nil)!
+    CGImageDestinationAddImage(
+        destination, image, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
+    guard CGImageDestinationFinalize(destination) else { fatalError("Can't write \(url.path)") }
+}
+
 writeJPEG(grain(), to: assets.appending(path: "WallGrain.imageset/grain.jpg"))
+writeHEIC(deskStill(), to: assets.appending(path: "DeskStill.imageset/desk.heic"))
+for scale in [2, 3] {
+    writePNG(
+        softShadow(scale: scale),
+        to: assets.appending(path: "SoftShadow.imageset/shadow@\(scale)x.png"))
+}
 for scale in [2, 3] {
     writePNG(dither(), to: assets.appending(path: "PaperDither.imageset/dither@\(scale)x.png"))
 }

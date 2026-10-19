@@ -169,7 +169,7 @@ struct ShareStudioView: View {
         let isPending = renderedRequest?.options != request.options
         NavigationStack {
             if model.library == nil {
-                NoLibraryView(showsAccount: $showsAccount)
+                NoLibraryView(room: .share, showsAccount: $showsAccount)
                     .navigationTitle("Share")
             } else {
                 // The request lists one cover candidate per drawn book, so it shows emptiness
