@@ -756,8 +756,13 @@ private struct LibrarySearch: ViewModifier {
                     else { return }
                     centeredID = book.id
                 }
+                // The centered match, which the caption names, so Return pulls out the book a
+                // chosen suggestion glided to.
                 .onSubmit(of: .search) {
-                    if let book = BookFinding.matches(text, in: books).first { open(book) }
+                    let found = BookFinding.matches(text, in: books)
+                    if let book = found.first(where: { $0.id == centeredID }) ?? found.first {
+                        open(book)
+                    }
                 }
                 .onChange(of: findsBook) {
                     guard findsBook else { return }
@@ -798,20 +803,23 @@ private struct LibrarySearch: ViewModifier {
 /// How Library finds a book (`LibrarySearch`).
 enum BookFinding {
     /// The books of `books` whose title or author contains `query`, ignoring case and accents,
-    /// in their shown order, those whose title starts with it first. Empty for an empty query.
+    /// in their shown order: those whose title is `query` first, so a chosen suggestion finds its
+    /// own book rather than a longer title that starts with it, then those whose title starts with
+    /// it. Empty for an empty query.
     static func matches(_ query: String, in books: [CloudBook]) -> [CloudBook] {
         let query = query.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else { return [] }
+        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
         let found = books.filter {
             $0.title.localizedStandardContains(query) || $0.author.localizedStandardContains(query)
         }
-        let starts = found.filter {
-            $0.title.range(
-                of: query, options: [.anchored, .caseInsensitive, .diacriticInsensitive])
-                != nil
+        // 0 for the title itself, 1 for a title that starts with it, and 2 for the rest. The sort
+        // is stable, so each rank keeps the shown order.
+        func rank(_ book: CloudBook) -> Int {
+            if book.title.compare(query, options: options) == .orderedSame { return 0 }
+            return book.title.range(of: query, options: options.union(.anchored)) != nil ? 1 : 2
         }
-        let startIDs = Set(starts.map(\.id))
-        return starts + found.filter { !startIDs.contains($0.id) }
+        return found.map { (rank($0), $0) }.sorted { $0.0 < $1.0 }.map(\.1)
     }
 }
 

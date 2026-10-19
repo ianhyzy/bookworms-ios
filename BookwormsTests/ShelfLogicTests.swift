@@ -266,6 +266,11 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(BookFinding.matches(" emile ", in: books).map(\.id), [4])
         XCTAssertEqual(BookFinding.matches("clarke", in: books).map(\.id), [2])
         XCTAssertEqual(BookFinding.matches("", in: books).map(\.id), [])
+        // A chosen suggestion fills in its title, which finds that book before a longer title.
+        let series = [
+            book(1, "Dune Messiah", by: "Frank Herbert"), book(2, "Dune", by: "Frank Herbert"),
+        ]
+        XCTAssertEqual(BookFinding.matches("Dune", in: series).map(\.id), [2, 1])
     }
 
     func testSyncStatusNamesTodaysTimeAndEarlierDates() {
