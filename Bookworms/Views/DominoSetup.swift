@@ -485,6 +485,17 @@ enum DominoSetup {
             half = pointwiseMax(size / 2 + grow, .zero)
         }
 
+        private init(center: SIMD3<Float>, axes: simd_float3x3, half: SIMD3<Float>) {
+            self.center = center
+            self.axes = axes
+            self.half = half
+        }
+
+        /// The box moved by `offset`.
+        func moved(by offset: SIMD3<Float>) -> Box {
+            Box(center: center + offset, axes: axes, half: half)
+        }
+
         /// The box's bounds along the table's axes.
         var bounds: Bounds {
             let reach =

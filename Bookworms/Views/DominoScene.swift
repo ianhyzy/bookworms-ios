@@ -840,25 +840,15 @@ final class DominoScene {
         /// Where a recording's frame centered as the last book fell, as a share of the view's
         /// width, which it moves on from (`recordingSubject`).
         let subject: CGFloat?
-        /// The books' flights into the spread, in its order, once they start to gather, and how
-        /// many have landed.
-        var flights: [Flight] = []
-        var landed = 0
+        /// Once the books start to gather, each book's index in the chain, in the spread's
+        /// order, their ways into the spread (`DominoFinale.Gather`), and which have landed.
+        var gathering: [Int] = []
+        var gather: DominoFinale.Gather?
+        var landed: [Bool] = []
 
         /// Whether the camera still moves to the spread's view.
         var movesCamera: Bool { clock < DominoFinale.moveTime }
     }
-    /// A book's flight into the spread, whose arc peaks `peak` above its ends. The last flight
-    /// is the flourish instead (`DominoFinale.snapPose`).
-    private struct Flight {
-        /// The book's index in the chain.
-        let book: Int
-        let from: Transform
-        let to: Transform
-        let start: Float
-        let peak: Float
-    }
-
     private struct Key: Equatable {
         let ids: [Int]
         let generation: Int
@@ -2452,10 +2442,10 @@ final class DominoScene {
         if reducesMotion {
             guard ending.clock >= DominoFinale.stillWait else { return }
             rest(on: ending.camera)
-            if ending.flights.isEmpty { ending.flights = flights(into: ending) }
-            for flight in ending.flights { books[flight.book].transform = flight.to }
-            ending.landed = ending.flights.count
-            if let first = ending.flights.first { land(books[first.book], firmly: false) }
+            let placed = places(in: ending)
+            for (book, place) in placed { books[book].transform = place }
+            ending.landed = Array(repeating: true, count: placed.count)
+            if let first = placed.first { land(books[first.book], firmly: false) }
             status.phase = .finished
             return
         }
@@ -2555,51 +2545,52 @@ final class DominoScene {
         PileSpread(books, in: rect, of: size, seed: seed, last: last)
     }
 
-    /// The flights of the books into `ending`'s spread, from where they lie, which leaves them
-    /// kinematic.
-    private func flights(into ending: Ending) -> [Flight] {
-        let placed = ending.slots.compactMap { slot in
-            slots.firstIndex { $0.book.id == slot.book.id }.map { ($0, slot.transform) }
-        }
-        return placed.enumerated()
-            .map { order, place in
-                let book = books[place.0]
-                book.components[PhysicsBodyComponent.self]?.mode = .kinematic
-                book.components.set(PhysicsMotionComponent())
-                return Flight(
-                    book: place.0, from: book.transform, to: place.1,
-                    start: DominoFinale.start(of: order, count: placed.count),
-                    peak: DominoFinale.peak(of: order))
+    /// Each book's index in the chain and its place in `ending`'s spread, in the spread's
+    /// order, which leaves the books kinematic.
+    private func places(in ending: Ending) -> [(book: Int, place: Transform)] {
+        ending.slots.compactMap { slot in
+            guard let book = slots.firstIndex(where: { $0.book.id == slot.book.id }) else {
+                return nil
             }
+            books[book].components[PhysicsBodyComponent.self]?.mode = .kinematic
+            books[book].components.set(PhysicsMotionComponent())
+            return (book, slot.transform)
+        }
     }
 
-    /// Lifts the books off the desk once the gathering starts, flies them on, lands each in its
-    /// place with a soft knock, and the spread's last with a firm one, and ends the finale once
-    /// the last has landed.
+    /// Plans the books' ways into the spread from where they lie once the gathering starts
+    /// (`DominoFinale.Gather`), moves them on, lands each in its place with a soft knock, and
+    /// the spread's last, after its flourish, with a firm one, and ends the finale once the
+    /// last has landed.
     private func gather(_ ending: inout Ending) {
-        if ending.flights.isEmpty {
+        if ending.gather == nil {
             guard ending.clock >= DominoFinale.gatherDelay else { return }
-            ending.flights = flights(into: ending)
+            let placed = places(in: ending)
+            ending.gathering = placed.map(\.book)
+            ending.gather = DominoFinale.Gather(
+                placed.map { (books[$0.book].transform, $0.place, size(of: $0.book)) })
+            ending.landed = Array(repeating: false, count: placed.count)
             status.phase = .gathering
         }
-        let last = ending.flights.count - 1
-        for (order, flight) in ending.flights.enumerated().dropFirst(ending.landed) {
-            let time = ending.clock - flight.start
-            guard time > 0 else { break }
-            let book = books[flight.book]
-            let snaps = order == last
-            guard time >= (snaps ? DominoFinale.snapTime : DominoFinale.flightTime) else {
-                guard snaps else {
-                    book.transform = DominoFinale.pose(
-                        from: flight.from, to: flight.to, peak: flight.peak,
-                        progress: time / DominoFinale.flightTime)
+        guard let gather = ending.gather else { return }
+        let time = ending.clock - DominoFinale.gatherDelay
+        let last = gather.flights.count - 1
+        for (order, flight) in gather.flights.enumerated() where !ending.landed[order] {
+            let book = books[ending.gathering[order]]
+            if order == last, ending.clock >= DominoFinale.snapStart {
+                let snap = ending.clock - DominoFinale.snapStart
+                guard snap < DominoFinale.snapTime else {
+                    book.transform = flight.to
+                    stage.light(book, boost: 0)
+                    ending.landed[order] = true
+                    land(book, firmly: true)
                     continue
                 }
                 let top = DominoFinale.snapTop(
-                    size: size(of: flight.book), seenBy: ending.camera, in: ending.area,
-                    of: ending.view)
+                    size: size(of: ending.gathering[order]), seenBy: ending.camera,
+                    in: ending.area, of: ending.view)
                 book.transform = DominoFinale.snapPose(
-                    from: flight.from, to: flight.to, top: top, time: time)
+                    from: flight.hovering, to: flight.to, top: top, time: snap)
                 stage.light(
                     book,
                     boost: DominoFinale.boost(
@@ -2607,24 +2598,22 @@ final class DominoScene {
                         radius: poolRadius))
                 continue
             }
-            book.transform = flight.to
-            if snaps { stage.light(book, boost: 0) }
-            // Flights land in order, the flourish last, so the landed books are a prefix.
-            if order == ending.landed {
-                ending.landed += 1
-                land(book, firmly: snaps)
+            guard time < flight.landing else {
+                book.transform = flight.to
+                ending.landed[order] = true
+                land(book, firmly: false)
+                continue
             }
+            book.transform = flight.pose(at: time)
         }
         #if DEBUG
             var states = Array(repeating: "lying", count: books.count)
-            for (order, flight) in ending.flights.enumerated() {
-                let time = ending.clock - flight.start
-                let flies = time < (order == last ? DominoFinale.snapTime : DominoFinale.flightTime)
-                states[flight.book] = time <= 0 ? "lying" : flies ? "flying" : "placed"
+            for (order, book) in ending.gathering.enumerated() {
+                states[book] = ending.landed[order] ? "placed" : time > 0 ? "flying" : "lying"
             }
             logOverlaps("finale", at: ending.clock, states: states)
         #endif
-        if ending.landed == ending.flights.count {
+        if !ending.landed.contains(false) {
             status.phase = .finished
             #if DEBUG
                 writeOverlaps()
