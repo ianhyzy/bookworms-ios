@@ -100,7 +100,9 @@ struct LibraryView: View {
             // Also outside them, so the finder follows the system appearance, as a search does.
             .sheet(isPresented: $findsBook, onDismiss: openFoundBook) {
                 BookFinder(books: books) { book, opens in
-                    centeredID = book.id
+                    // In Stack, `open(_:)` glides a book to open to the middle itself before it
+                    // pulls out, which it skips for a book already centered.
+                    if !(opens && mode == .stack && !reduceMotion) { centeredID = book.id }
                     if opens { foundBook = book }
                 }
             }
@@ -763,6 +765,9 @@ private struct LibrarySearch: ViewModifier {
 
     @State private var text = ""
     #if os(macOS)
+        /// The books `text` finds, searched once per change of the text or the books rather
+        /// than in each place that reads them.
+        @State private var found: [CloudBook] = []
         @FocusState private var isFocused: Bool
     #endif
 
@@ -771,20 +776,20 @@ private struct LibrarySearch: ViewModifier {
             content
                 .searchable(text: $text, placement: .toolbar, prompt: "Find a book")
                 .searchSuggestions {
-                    ForEach(BookFinding.matches(text, in: books).prefix(8)) { book in
+                    ForEach(found.prefix(8)) { book in
                         BookFinderRow(book: book).searchCompletion(book.title)
                     }
                 }
                 .searchFocused($isFocused)
                 .onChange(of: text) {
-                    guard pullOut.book == nil, let book = BookFinding.matches(text, in: books).first
-                    else { return }
+                    found = BookFinding.matches(text, in: books)
+                    guard pullOut.book == nil, let book = found.first else { return }
                     centeredID = book.id
                 }
+                .onChange(of: books.map(\.id)) { found = BookFinding.matches(text, in: books) }
                 // The centered match, which the caption names, so Return pulls out the book a
                 // chosen suggestion glided to.
                 .onSubmit(of: .search) {
-                    let found = BookFinding.matches(text, in: books)
                     if let book = found.first(where: { $0.id == centeredID }) ?? found.first {
                         open(book)
                     }
