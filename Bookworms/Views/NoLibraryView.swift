@@ -83,37 +83,69 @@ enum LibraryStatus: Equatable {
     }
 }
 
-/// The Library, Desk, and Share tabs' content without a library: progress, or how to get one,
-/// with **Connect Hardcover**, **Reconnect**, or **Try again**.
+/// The tab an empty state stands in, which sets the scene it draws.
+enum EmptyRoom {
+    /// An empty bookcase with two brass bookends, which fills with plain books as the first
+    /// download arrives.
+    case library
+    /// The empty desk under the lamp.
+    case desk
+    /// A blotter with a blank card.
+    case share
+}
+
+/// The Library, Desk, and Share tabs' content without a library: the tab's empty room, with
+/// progress or how to get a library, and **Connect Hardcover**, **Reconnect**, or **Try again**.
+///
+/// While the first download runs, it shows how many books have arrived, out of how many when
+/// Hardcover says (`HardcoverAccount.downloadProgress`).
 ///
 /// The caller presents the account sheet when `showsAccount` is set, from a view that outlives
 /// this one, so the sheet stays open when the library arrives.
 struct NoLibraryView: View {
+    var room = EmptyRoom.library
     @Binding var showsAccount: Bool
     @Environment(AppModel.self) private var model
 
     var body: some View {
         let status = LibraryStatus(model)
-        switch status {
-        case .loading, .downloading:
-            ProgressView(status.title)
-        case .signedOut, .reconnect, .failed:
+        let progress = downloadProgress(status)
+        // Scrolls so that at accessibility sizes the actions stay reachable.
+        ScrollView {
             ContentUnavailableView {
-                Label(status.title, systemImage: systemImage(status))
+                VStack(spacing: 20) {
+                    RoomScene(room: room, progress: progress)
+                    Text(status.title)
+                        .font(.title2.weight(.semibold))
+                        .bookHeading()
+                        .accessibilityAddTraits(.isHeader)
+                }
             } description: {
-                Text(status.message)
+                switch status {
+                case .loading:
+                    ProgressView()
+                case .downloading:
+                    DownloadProgressView(progress: progress)
+                default:
+                    Text(status.message)
+                }
             } actions: {
                 actions(status)
             }
         }
+        .defaultScrollAnchor(.center, for: .alignment)
     }
 
-    private func systemImage(_ status: LibraryStatus) -> String {
-        switch status {
-        case .reconnect: "person.crop.circle.badge.exclamationmark"
-        case .failed: "exclamationmark.triangle"
-        default: "books.vertical"
-        }
+    /// The first download's progress, or in Debug builds launched with
+    /// `-BookwormsLibraryStatus downloading`, a fictional one.
+    private func downloadProgress(_ status: LibraryStatus) -> HardcoverAccount.DownloadProgress? {
+        guard status == .downloading else { return nil }
+        #if DEBUG
+            if UserDefaults.standard.string(forKey: "BookwormsLibraryStatus") == "downloading" {
+                return .init(books: 200, total: 412)
+            }
+        #endif
+        return model.account.downloadProgress
     }
 
     @ViewBuilder private func actions(_ status: LibraryStatus) -> some View {
@@ -123,7 +155,8 @@ struct NoLibraryView: View {
             // Preview mode ignores the sign-in.
             if !model.isPreview {
                 Button("Connect Hardcover") { showsAccount = true }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.glassProminent)
+                    .controlSize(.large)
             }
             tryAgain
         case .reconnect:
@@ -131,24 +164,78 @@ struct NoLibraryView: View {
                 model.account.startSignIn()
                 showsAccount = true
             }
-            .buttonStyle(.bordered)
-        default:
+            .buttonStyle(.glassProminent)
+            .controlSize(.large)
+        case .failed:
             tryAgain
+                .buttonStyle(.glassProminent)
+                .controlSize(.large)
+        case .loading, .downloading:
+            EmptyView()
         }
+    }
+}
+
+/// An empty room's scene, which VoiceOver skips.
+private struct RoomScene: View {
+    let room: EmptyRoom
+    let progress: HardcoverAccount.DownloadProgress?
+
+    var body: some View {
+        switch room {
+        case .library: EmptyBookcase(filled: filled)
+        case .desk: EmptyDesk()
+        case .share: BlankCardOnBlotter()
+        }
+    }
+
+    /// How full the empty bookcase is: the download's share of the total, or a book for every
+    /// page of 100 while the total is unknown.
+    private var filled: Double {
+        guard let progress else { return 0 }
+        if let total = progress.total, total > 0 { return Double(progress.books) / Double(total) }
+        return Double(progress.books / 100) / Double(EmptyBookcase.capacity)
+    }
+}
+
+/// The first download's progress: a bar with "212 of 412 books" once Hardcover gives the total,
+/// or a spinner with the count so far.
+private struct DownloadProgressView: View {
+    let progress: HardcoverAccount.DownloadProgress?
+
+    var body: some View {
+        VStack(spacing: 8) {
+            if let progress, let total = progress.total, total > 0 {
+                ProgressView(value: Double(min(progress.books, total)), total: Double(total))
+                    .frame(maxWidth: 240)
+            } else {
+                ProgressView()
+            }
+            if let progress {
+                Text(progress.description).monospacedDigit()
+            }
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 
 /// The Library and Desk tabs' content for a library without read books.
 struct NoBooksYetView: View {
+    var room = EmptyRoom.library
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        ContentUnavailableView(
-            "No books yet", systemImage: "books.vertical",
-            description: Text(
+        ContentUnavailableView {
+            VStack(spacing: 20) {
+                RoomScene(room: room, progress: nil)
+                Text("No books yet").font(.title2.weight(.semibold)).bookHeading()
+            }
+        } description: {
+            Text(
                 model.account.isSignedIn && !model.isPreview
                     ? "Books on your Hardcover shelves appear here after the next sync."
                     : "Books you finish appear here after one of your Apple devices next syncs with Hardcover."
-            ))
+            )
+        }
     }
 }

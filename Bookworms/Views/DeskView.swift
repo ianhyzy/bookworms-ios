@@ -96,7 +96,7 @@ struct DeskView: View {
     @ViewBuilder private func content(_ shelf: Shelf, frame: TimeFrame?) -> some View {
         if let library = model.library {
             if !library.books.contains(where: \.hasBeenRead) {
-                NoBooksYetView()
+                NoBooksYetView(room: .desk)
             } else {
                 let title = frame?.title ?? Self.years(of: shelf.books)
                 ZStack {
@@ -120,7 +120,7 @@ struct DeskView: View {
                 }
             }
         } else {
-            NoLibraryView(showsAccount: $showsAccount)
+            NoLibraryView(room: .desk, showsAccount: $showsAccount)
         }
     }
 
