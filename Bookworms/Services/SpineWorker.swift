@@ -15,26 +15,38 @@ enum RunMode: Sendable {
 
 /// The generator's progress, as the Spines tab and the continued-processing activity show it.
 ///
-/// The last run's outcome is saved across launches, because the charging task usually runs in a
-/// process that iOS ends before the user opens the app.
+/// The counts cover the whole run, across the passes that start again when the work changes, so
+/// `completed + failed + queue` is the run's work as known, which grows only when a later pass
+/// finds more books. The last run's outcome is saved across launches, because the charging task
+/// usually runs in a process that iOS ends before the user opens the app.
 struct WorkerSnapshot: Sendable, Codable {
     var isRunning = false
     var phase = "Not run yet"
     /// Books left in the current or last run's queue.
     var queue = 0
+    /// Books the run checked: new designs, series copies, and designs that stay.
     var completed = 0
     var failed = 0
+    /// The checked books the run's model designed anew.
+    var designed = 0
+    /// The checked books that saved a copy of a series' design without a request.
+    var fromSeries = 0
     /// The book being designed.
     var currentBook: CloudBook?
     var error: String?
     var model: ModelStatus?
     /// When a stopped run should resume: the quota reset or a service's retry delay.
     var retryAfter: Date?
+    var startedAt: Date?
     var lastRunAt: Date?
+    /// How long the run's latest books took to check, in seconds, oldest first, for the time
+    /// left (`timeLeft(remaining:durations:)`).
+    var durations: [TimeInterval] = []
 
     // The model status is read fresh, and a saved snapshot describes a finished run.
     private enum CodingKeys: String, CodingKey {
-        case phase, queue, completed, failed, error, retryAfter, lastRunAt
+        case phase, queue, completed, failed, designed, fromSeries, error, retryAfter, startedAt,
+            lastRunAt
     }
 
     /// Clears a stop reason whose retry date has passed, such as a quota that has since reset,
@@ -44,6 +56,118 @@ struct WorkerSnapshot: Sendable, Codable {
         phase = "Ready to continue"
         error = nil
         self.retryAfter = nil
+    }
+}
+
+extension WorkerSnapshot {
+    /// Reads a saved outcome. One saved before runs kept a tally has no start date, which hides
+    /// its tally.
+    init(from decoder: any Decoder) throws {
+        let saved = try decoder.container(keyedBy: CodingKeys.self)
+        phase = try saved.decode(String.self, forKey: .phase)
+        queue = try saved.decode(Int.self, forKey: .queue)
+        completed = try saved.decode(Int.self, forKey: .completed)
+        failed = try saved.decode(Int.self, forKey: .failed)
+        designed = try saved.decodeIfPresent(Int.self, forKey: .designed) ?? 0
+        fromSeries = try saved.decodeIfPresent(Int.self, forKey: .fromSeries) ?? 0
+        error = try saved.decodeIfPresent(String.self, forKey: .error)
+        retryAfter = try saved.decodeIfPresent(Date.self, forKey: .retryAfter)
+        startedAt = try saved.decodeIfPresent(Date.self, forKey: .startedAt)
+        lastRunAt = try saved.decodeIfPresent(Date.self, forKey: .lastRunAt)
+    }
+
+    /// How many of the latest books' times the estimate averages: enough that a cluster of quick
+    /// series copies or slow new designs doesn't swing it.
+    static let estimateWindow = 20
+    /// How many books a run checks before it estimates the time left.
+    static let estimateMinimum = 3
+
+    /// The run's progress in a line: "Designing 12 of 48" while a book is designed, the phase
+    /// while the run checks the library, and once it ends, its outcome, such as "Designed 48
+    /// spines in 6 minutes" or "Paused until 3:15 PM", until the next run.
+    var headline: String {
+        let done = completed + failed
+        if isRunning {
+            guard currentBook != nil else { return phase }
+            return "Designing \(done + 1) of \(done + queue)"
+        }
+        switch phase {
+        case "Finished":
+            guard let startedAt, let lastRunAt, done > 0 else { return phase }
+            let took = Self.durationText(lastRunAt.timeIntervalSince(startedAt))
+            let saved = designed + fromSeries
+            return saved > 0
+                ? "Designed \(Self.count(saved, "spine")) in \(took)"
+                : "Checked \(Self.count(done, "book")) in \(took)"
+        case "Paused":
+            guard let retryAfter else { return phase }
+            let time =
+                Calendar.current.isDateInToday(retryAfter)
+                ? retryAfter.formatted(date: .omitted, time: .shortened)
+                : retryAfter.formatted(date: .abbreviated, time: .shortened)
+            return "Paused until \(time)"
+        default:
+            return phase
+        }
+    }
+
+    /// The run's tally so far, without zero entries: new designs, series copies, designs that
+    /// stay, failures, and once the run stops, the books left. The Generation footer counts the
+    /// books without a cover, which no run designs.
+    var tally: [String] {
+        guard startedAt != nil else { return [] }
+        let upToDate = completed - designed - fromSeries
+        return [
+            designed > 0 ? Self.count(designed, "new design") : nil,
+            fromSeries > 0 ? "\(fromSeries) from a series" : nil,
+            upToDate > 0 ? "\(upToDate) up to date" : nil,
+            failed > 0 ? "\(failed) failed" : nil,
+            !isRunning && queue > 0 ? "\(queue) left" : nil,
+        ]
+        .compactMap { $0 }
+    }
+
+    /// The time left while a book is designed, such as "About 3 minutes left"; `nil` before the
+    /// run has timed `estimateMinimum` books, or while it checks the library.
+    var timeLeftText: String? {
+        guard isRunning, currentBook != nil, retryAfter == nil,
+            let seconds = Self.timeLeft(remaining: queue, durations: durations)
+        else { return nil }
+        return Self.timeLeftText(seconds)
+    }
+
+    /// The time `remaining` books take at the average of `durations`, the latest books' times in
+    /// seconds; `nil` with fewer than `estimateMinimum` times or no books left.
+    static func timeLeft(remaining: Int, durations: [TimeInterval]) -> TimeInterval? {
+        let recent = durations.suffix(estimateWindow)
+        guard recent.count >= estimateMinimum, remaining > 0 else { return nil }
+        return recent.reduce(0, +) / Double(recent.count) * Double(remaining)
+    }
+
+    /// `seconds` left, rounded so the estimate doesn't jump with each book: whole minutes under
+    /// 10 minutes, then 5 minutes under an hour, then hours.
+    static func timeLeftText(_ seconds: TimeInterval) -> String {
+        let minutes = Int((seconds / 60).rounded())
+        switch minutes {
+        case ..<1: return "Less than a minute left"
+        case 1: return "About a minute left"
+        case ..<10: return "About \(minutes) minutes left"
+        case ..<55: return "About \(Int((Double(minutes) / 5).rounded()) * 5) minutes left"
+        case ..<90: return "About an hour left"
+        default: return "About \(Int((Double(minutes) / 60).rounded())) hours left"
+        }
+    }
+
+    /// How long a finished run took, in whole minutes, such as "6 minutes" or "1 hour, 20
+    /// minutes".
+    static func durationText(_ seconds: TimeInterval) -> String {
+        guard seconds >= 30 else { return "under a minute" }
+        let minutes = Duration.seconds(Int((seconds / 60).rounded()) * 60)
+        return minutes.formatted(.units(allowed: [.hours, .minutes], width: .wide))
+    }
+
+    private static func count(_ count: Int, _ noun: String) -> String {
+        "\(count) \(noun)\(count == 1 ? "" : "s")"
     }
 }
 
@@ -190,9 +314,9 @@ actor SpineWorker {
         redesign = redesigning
         runModel = nil
         refusals = RefusalStreak()
-        snapshot.isRunning = true
-        snapshot.error = nil
-        snapshot.retryAfter = nil
+        snapshot = WorkerSnapshot(
+            isRunning: true, model: snapshot.model, startedAt: Date(),
+            lastRunAt: snapshot.lastRunAt)
         // A pass ends early when the Apple TV or the reader changes the work; the next pass
         // reads it again.
         var changed = false
@@ -217,10 +341,8 @@ actor SpineWorker {
     /// Returns `true` when the Apple TV or the reader's cover choice changed the work during the
     /// pass.
     private func runPass(mode: RunMode) async -> Bool {
+        // The counts carry over from earlier passes, and the queue until this pass finds its own.
         snapshot.phase = "Checking the library"
-        snapshot.queue = 0
-        snapshot.completed = 0
-        snapshot.failed = 0
         bookDesigns = [:]
         checkedBooks = []
         lookGroups = [:]
@@ -280,13 +402,17 @@ actor SpineWorker {
                         recordName: recordName, workItemHash: workHash,
                         chosenCover: book.chosenCoverURL, runTier: tier))
                 {
+                    // Counted as checked, so the run's total holds.
+                    snapshot.completed += 1
                     snapshot.queue -= 1
                     continue
                 }
+                // The book's time runs to the next book, so the estimate counts the run's checks
+                // between designs too.
+                let start = ContinuousClock.now
                 snapshot.phase = "Designing spines"
                 snapshot.currentBook = book
                 publish()
-                let start = ContinuousClock.now
                 do {
                     let outcome = try await design(
                         for: book, covers: covers, workHash: workHash, context: context,
@@ -319,6 +445,14 @@ actor SpineWorker {
                         tier: runModel.map { max($0.tier, outcome.design.tier) },
                         awaitsFont: awaitsFont)
                     snapshot.completed += 1
+                    // A saved design moved to the book's new metadata counts as staying.
+                    if case .save(let made, let isNew, _) = outcome {
+                        if isNew {
+                            snapshot.designed += 1
+                        } else if made.isSeriesReuse {
+                            snapshot.fromSeries += 1
+                        }
+                    }
                 } catch {
                     try Task.checkCancellation()
                     // Error descriptions can carry a cover URL or quoted book content, which
@@ -349,6 +483,9 @@ actor SpineWorker {
                 if redesigned != nil { redesign = nil }
                 snapshot.queue -= 1
                 if stopForModel(await readModel(), mode: mode) { return false }
+                let seconds = start.duration(to: .now) / .seconds(1)
+                snapshot.durations = Array(
+                    (snapshot.durations + [seconds]).suffix(WorkerSnapshot.estimateWindow))
             }
             snapshot.phase = "Finished"
         } catch {

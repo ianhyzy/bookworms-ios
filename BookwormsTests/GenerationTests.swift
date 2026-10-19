@@ -350,6 +350,65 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(saved.phase, "Ready to continue")
     }
 
+    /// The time left averages the latest books' times, waits for a few, and rounds so it
+    /// doesn't jump with each book.
+    func testTimeLeftAveragesTheLatestBooksAndRoundsGently() {
+        XCTAssertNil(WorkerSnapshot.timeLeft(remaining: 40, durations: [10, 20]))
+        XCTAssertNil(WorkerSnapshot.timeLeft(remaining: 0, durations: [10, 20, 30]))
+        XCTAssertEqual(WorkerSnapshot.timeLeft(remaining: 40, durations: [10, 20, 30]), 800)
+        // Only the latest `estimateWindow` times count.
+        let slowStart = [600.0] + Array(repeating: 15, count: WorkerSnapshot.estimateWindow)
+        XCTAssertEqual(WorkerSnapshot.timeLeft(remaining: 12, durations: slowStart), 180)
+
+        let seconds: [TimeInterval] = [20, 70, 180, 760, 1_680, 3_500, 5_000, 9_000]
+        XCTAssertEqual(
+            seconds.map(WorkerSnapshot.timeLeftText),
+            [
+                "Less than a minute left", "About a minute left", "About 3 minutes left",
+                "About 15 minutes left", "About 30 minutes left", "About an hour left",
+                "About an hour left", "About 3 hours left",
+            ])
+    }
+
+    /// A run's headline and tally, and a saved outcome from before runs kept a tally, which
+    /// shows its phase alone.
+    func testRunHeadlineCountsTheRunAndItsOutcome() throws {
+        var run = WorkerSnapshot(
+            isRunning: true, phase: "Designing spines", queue: 37, completed: 10, failed: 1,
+            designed: 6, fromSeries: 3,
+            currentBook: CloudBook(
+                id: 7, title: "The Glass Orchard", author: "Mara Quill", coverURL: nil,
+                detailCoverURL: nil),
+            startedAt: now, durations: [12, 14, 16])
+        XCTAssertEqual(run.headline, "Designing 12 of 48")
+        XCTAssertEqual(
+            run.tally,
+            ["6 new designs", "3 from a series", "1 up to date", "1 failed"])
+        XCTAssertEqual(run.timeLeftText, "About 9 minutes left")
+        run.retryAfter = now
+        XCTAssertNil(run.timeLeftText, "A run waiting on a retry date shows no estimate")
+
+        var finished = run
+        finished.isRunning = false
+        finished.phase = "Finished"
+        finished.currentBook = nil
+        finished.retryAfter = nil
+        finished.queue = 0
+        finished.lastRunAt = now.addingTimeInterval(370)
+        XCTAssertEqual(finished.headline, "Designed 9 spines in 6 minutes")
+        let saved = try JSONDecoder()
+            .decode(WorkerSnapshot.self, from: JSONEncoder().encode(finished))
+        XCTAssertEqual(saved.headline, finished.headline)
+        XCTAssertEqual(saved.tally, finished.tally)
+
+        let legacy = try JSONDecoder()
+            .decode(
+                WorkerSnapshot.self,
+                from: Data(#"{"phase":"Finished","queue":0,"completed":40,"failed":0}"#.utf8))
+        XCTAssertEqual(legacy.headline, "Finished")
+        XCTAssertEqual(legacy.tally, [])
+    }
+
     func testBackgroundRunsLeaveQuotaHeadroomAndForegroundRunsUseIt() {
         func status(
             available: Bool = true, reader: ModelStatus.CoverReader = .designModel,
