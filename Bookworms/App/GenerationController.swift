@@ -316,12 +316,15 @@ final class GenerationController {
             report(status, to: task)
         }
 
+        /// Shows the run's progress as the Spines tab words it: the count and time left, and the
+        /// bar's fraction, which never moves backward (`WorkerSnapshot.fraction`).
         private func report(_ snapshot: WorkerSnapshot, to task: BGContinuedProcessingTask) {
-            let done = snapshot.completed + snapshot.failed
-            task.progress.totalUnitCount = Int64(done + snapshot.queue)
-            task.progress.completedUnitCount = Int64(done)
+            task.progress.totalUnitCount = 1_000
+            task.progress.completedUnitCount = Int64(snapshot.fraction * 1_000)
             task.updateTitle(
-                "Designing spines", subtitle: snapshot.currentBook?.title ?? snapshot.phase)
+                "Designing spines",
+                subtitle: [snapshot.headline, snapshot.timeLeftText].compactMap { $0 }
+                    .joined(separator: " · "))
         }
     #endif
 }

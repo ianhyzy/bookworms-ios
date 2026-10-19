@@ -350,6 +350,99 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(saved.phase, "Ready to continue")
     }
 
+    /// The time left averages the latest books' times, waits for a few books and half a
+    /// minute, holds against small rises, and rounds so it doesn't jump with each book.
+    func testTimeLeftAveragesTheLatestBooksAndRoundsGently() {
+        let five: [TimeInterval] = [10, 20, 30, 20, 20]
+        XCTAssertNil(WorkerSnapshot.timeLeft(remaining: 40, durations: [10, 20, 30], elapsed: 90))
+        XCTAssertNil(
+            WorkerSnapshot.timeLeft(remaining: 40, durations: [1, 1, 1, 1, 1], elapsed: 6),
+            "Five quick checks at the start promise nothing")
+        XCTAssertNil(WorkerSnapshot.timeLeft(remaining: 0, durations: five, elapsed: 120))
+        XCTAssertEqual(WorkerSnapshot.timeLeft(remaining: 40, durations: five, elapsed: 120), 800)
+        // Only the latest `estimateWindow` times count.
+        let slowStart = [600.0] + Array(repeating: 15, count: WorkerSnapshot.estimateWindow)
+        XCTAssertEqual(
+            WorkerSnapshot.timeLeft(remaining: 12, durations: slowStart, elapsed: 900), 180)
+        // A slow book that raises the estimate by less than a quarter keeps the last one; a
+        // larger rise or a drop replaces it.
+        XCTAssertEqual(
+            WorkerSnapshot.timeLeft(remaining: 40, durations: five, elapsed: 120, previous: 700),
+            700)
+        XCTAssertEqual(
+            WorkerSnapshot.timeLeft(remaining: 40, durations: five, elapsed: 120, previous: 600),
+            800)
+        XCTAssertEqual(
+            WorkerSnapshot.timeLeft(remaining: 40, durations: five, elapsed: 120, previous: 900),
+            800)
+
+        let seconds: [TimeInterval] = [20, 70, 180, 760, 1_680, 3_500, 5_000, 9_000]
+        XCTAssertEqual(
+            seconds.map(WorkerSnapshot.timeLeftText),
+            [
+                "Less than a minute left", "About a minute left", "About 3 minutes left",
+                "About 15 minutes left", "About 30 minutes left", "About an hour left",
+                "About an hour left", "About 3 hours left",
+            ])
+    }
+
+    /// A run's headline and tally, and a saved outcome from before runs kept a tally, which
+    /// shows its phase alone.
+    func testRunHeadlineCountsTheRunAndItsOutcome() throws {
+        var run = WorkerSnapshot(
+            isRunning: true, phase: "Designing spines", queue: 37, completed: 10, failed: 1,
+            designed: 6, fromSeries: 3,
+            currentBook: CloudBook(
+                id: 7, title: "The Glass Orchard", author: "Mara Quill", coverURL: nil,
+                detailCoverURL: nil),
+            startedAt: now, durations: [12, 14, 16], timeLeft: 540)
+        XCTAssertEqual(run.headline, "Designing 12 of 48")
+        XCTAssertEqual(run.fraction, 11.0 / 48)
+        XCTAssertEqual(
+            run.tally,
+            ["6 new designs", "3 from a series", "1 up to date", "1 failed"])
+        XCTAssertEqual(run.timeLeftText, "About 9 minutes left")
+        run.retryAfter = now
+        XCTAssertNil(run.timeLeftText, "A run waiting on a retry date shows no estimate")
+        // A later pass checks the library with the last pass's book still in the bindery.
+        run.phase = "Checking the library"
+        XCTAssertEqual(run.headline, "Checking the library")
+        XCTAssertNil(run.designingBook)
+
+        var finished = run
+        finished.isRunning = false
+        finished.phase = "Finished"
+        finished.currentBook = nil
+        finished.retryAfter = nil
+        finished.queue = 0
+        finished.lastRunAt = now.addingTimeInterval(370)
+        XCTAssertEqual(finished.headline, "Designed 9 spines in 6 minutes")
+        let saved = try JSONDecoder()
+            .decode(WorkerSnapshot.self, from: JSONEncoder().encode(finished))
+        XCTAssertEqual(saved.headline, finished.headline)
+        XCTAssertEqual(saved.tally, finished.tally)
+        finished.phase = "All spines are up to date"
+        XCTAssertEqual(
+            finished.headline, "Designed 9 spines in 6 minutes",
+            "A later pass found the work done after an earlier pass's designs")
+
+        // A later pass that finds 30 more books after 40 of 48 continues the bar from there.
+        var grown = WorkerSnapshot(
+            isRunning: true, phase: "Designing spines", queue: 38, completed: 40,
+            passStart: (fraction: 40.0 / 48, done: 40))
+        XCTAssertEqual(grown.fraction, 40.0 / 48)
+        grown.completed = 59
+        grown.queue = 19
+        XCTAssertEqual(grown.fraction, 40.0 / 48 + 8.0 / 48 / 2, accuracy: 1e-9)
+
+        let legacy = try JSONDecoder()
+            .decode(
+                WorkerSnapshot.self,
+                from: Data(#"{"phase":"Finished","queue":0,"completed":40,"failed":0}"#.utf8))
+        XCTAssertEqual(legacy.headline, "Finished")
+        XCTAssertEqual(legacy.tally, [])
+    }
+
     func testBackgroundRunsLeaveQuotaHeadroomAndForegroundRunsUseIt() {
         func status(
             available: Bool = true, reader: ModelStatus.CoverReader = .designModel,
@@ -569,24 +662,29 @@ final class GenerationTests: XCTestCase {
     /// A run moves a design that stays to the book's new title without a cover download or a
     /// model request, keeping the hash of the cover it comes from, when its face letters the new
     /// title. The cover's host is one that `CoverURLPolicy` refuses, so a download attempt would
-    /// fail the book.
+    /// fail the book. The run's tally counts the moved design, a series copy too, as up to date.
     func testRunsMoveADesignToANewTitleItsFaceLetters() async throws {
         let renamed = LocalRun.book(7, title: "The Lantern Keeper, Revised")
-        let design = LocalRun.design(
-            for: LocalRun.book(7), coverHash: String(repeating: "c", count: 64),
-            generator: "ios-pcc-v1")
-        let run = try LocalRun(books: [renamed], designs: [design])
-        defer { run.remove() }
-        let (status, saved) = try await run.run()
-        XCTAssertEqual(status.phase, "Finished")
-        XCTAssertEqual(status.failed, 0, "The run downloaded no cover")
-        let moved = try XCTUnwrap(saved.first)
-        XCTAssertEqual(saved.count, 1)
-        XCTAssertEqual(moved.workItemHash, LocalRun.workHash(renamed))
-        XCTAssertEqual(moved.coverHash, design.coverHash)
-        XCTAssertEqual(moved.generatorVersion, "ios-pcc-v1")
-        XCTAssertEqual(moved.generatedAt, design.generatedAt)
-        XCTAssertEqual(try run.stored()[7], moved)
+        for provenance in [nil, "series-reuse:9"] {
+            let design = LocalRun.design(
+                for: LocalRun.book(7), coverHash: String(repeating: "c", count: 64),
+                generator: "ios-pcc-v1", provenance: provenance)
+            let run = try LocalRun(books: [renamed], designs: [design])
+            defer { run.remove() }
+            let (status, saved) = try await run.run()
+            XCTAssertEqual(status.phase, "Finished")
+            XCTAssertEqual(status.failed, 0, "The run downloaded no cover")
+            XCTAssertEqual(status.completed, 1)
+            XCTAssertEqual(status.designed, 0)
+            XCTAssertEqual(status.fromSeries, 0)
+            let moved = try XCTUnwrap(saved.first)
+            XCTAssertEqual(saved.count, 1)
+            XCTAssertEqual(moved.workItemHash, LocalRun.workHash(renamed))
+            XCTAssertEqual(moved.coverHash, design.coverHash)
+            XCTAssertEqual(moved.generatorVersion, "ios-pcc-v1")
+            XCTAssertEqual(moved.generatedAt, design.generatedAt)
+            XCTAssertEqual(try run.stored()[7], moved)
+        }
     }
 
     /// A design with the generator's colors that doesn't come from the cover the reader chose is
@@ -654,6 +752,9 @@ final class GenerationTests: XCTestCase {
                 coverHash: source.coverHash, tier: .local)
             let (status, saved) = try await run.run()
             XCTAssertEqual(status.failed, 0)
+            XCTAssertEqual(status.completed, 1)
+            XCTAssertEqual(status.designed, sourceAwaitsFont ? 1 : 0)
+            XCTAssertEqual(status.fromSeries, sourceAwaitsFont ? 0 : 1)
             XCTAssertEqual(saved.count, 1)
             let stored = try XCTUnwrap(try run.stored()[8])
             XCTAssertEqual(stored, saved.first)

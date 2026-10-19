@@ -15,26 +15,43 @@ enum RunMode: Sendable {
 
 /// The generator's progress, as the Spines tab and the continued-processing activity show it.
 ///
-/// The last run's outcome is saved across launches, because the charging task usually runs in a
-/// process that iOS ends before the user opens the app.
+/// The counts cover the whole run, across the passes that start again when the work changes, so
+/// `completed + failed + queue` is the run's work as known, which changes only when a later pass
+/// finds more or fewer books. The last run's outcome is saved across launches, because the
+/// charging task usually runs in a process that iOS ends before the user opens the app.
 struct WorkerSnapshot: Sendable, Codable {
     var isRunning = false
     var phase = "Not run yet"
     /// Books left in the current or last run's queue.
     var queue = 0
+    /// Books the run checked: new designs, series copies, and designs that stay.
     var completed = 0
     var failed = 0
-    /// The book being designed.
+    /// The checked books the run's model designed anew.
+    var designed = 0
+    /// The checked books that saved a copy of a series' design without a request.
+    var fromSeries = 0
+    /// The book being designed. It stays set while a later pass checks the library, so the
+    /// bindery header keeps it in view; `designingBook` is `nil` then.
     var currentBook: CloudBook?
     var error: String?
     var model: ModelStatus?
     /// When a stopped run should resume: the quota reset or a service's retry delay.
     var retryAfter: Date?
+    var startedAt: Date?
     var lastRunAt: Date?
+    /// How long the run's latest books took to check, in seconds, oldest first.
+    var durations: [TimeInterval] = []
+    /// The time left after the pass's latest book, in seconds
+    /// (`timeLeft(remaining:durations:elapsed:previous:)`).
+    var timeLeft: TimeInterval?
+    /// The bar's `fraction` and the books done when the current pass began.
+    var passStart = (fraction: 0.0, done: 0)
 
     // The model status is read fresh, and a saved snapshot describes a finished run.
     private enum CodingKeys: String, CodingKey {
-        case phase, queue, completed, failed, error, retryAfter, lastRunAt
+        case phase, queue, completed, failed, designed, fromSeries, error, retryAfter, startedAt,
+            lastRunAt
     }
 
     /// Clears a stop reason whose retry date has passed, such as a quota that has since reset,
@@ -44,6 +61,142 @@ struct WorkerSnapshot: Sendable, Codable {
         phase = "Ready to continue"
         error = nil
         self.retryAfter = nil
+    }
+}
+
+extension WorkerSnapshot {
+    /// Reads a saved outcome. One saved before runs kept a tally has no start date, which hides
+    /// its tally.
+    init(from decoder: any Decoder) throws {
+        let saved = try decoder.container(keyedBy: CodingKeys.self)
+        phase = try saved.decode(String.self, forKey: .phase)
+        queue = try saved.decode(Int.self, forKey: .queue)
+        completed = try saved.decode(Int.self, forKey: .completed)
+        failed = try saved.decode(Int.self, forKey: .failed)
+        designed = try saved.decodeIfPresent(Int.self, forKey: .designed) ?? 0
+        fromSeries = try saved.decodeIfPresent(Int.self, forKey: .fromSeries) ?? 0
+        error = try saved.decodeIfPresent(String.self, forKey: .error)
+        retryAfter = try saved.decodeIfPresent(Date.self, forKey: .retryAfter)
+        startedAt = try saved.decodeIfPresent(Date.self, forKey: .startedAt)
+        lastRunAt = try saved.decodeIfPresent(Date.self, forKey: .lastRunAt)
+    }
+
+    /// How many of the latest books' times the estimate averages: enough that a cluster of quick
+    /// series copies or slow new designs doesn't swing it.
+    static let estimateWindow = 40
+    /// How many books a run times, and how many seconds it runs, before it estimates the time
+    /// left, so a few quick checks of saved designs at the start don't promise a short run.
+    static let estimateMinimum = (books: 5, seconds: 30.0)
+
+    /// The book being designed, while the run designs it; `nil` while a pass checks the library
+    /// or the run stops.
+    var designingBook: CloudBook? {
+        isRunning && phase == "Designing spines" ? currentBook : nil
+    }
+
+    /// The bar's fraction of the run's work. Each pass continues from the fraction the run had
+    /// reached, so the bar never moves backward when a later pass finds more books; the count
+    /// shows the larger total.
+    var fraction: Double {
+        let done = completed + failed - passStart.done
+        guard done + queue > 0 else { return passStart.fraction }
+        return passStart.fraction + (1 - passStart.fraction) * Double(done) / Double(done + queue)
+    }
+
+    /// The run's progress in a line: "Designing 12 of 48" while a book is designed, the phase
+    /// while the run checks the library, and once it ends, its outcome, such as "Designed 48
+    /// spines in 6 minutes" or "Paused until 3:15 PM", until the next run.
+    var headline: String {
+        let done = completed + failed
+        if isRunning {
+            guard designingBook != nil else { return phase }
+            return "Designing \(done + 1) of \(done + queue)"
+        }
+        switch phase {
+        // A later pass finds the work up to date after an earlier pass checked books.
+        case "Finished", "All spines are up to date":
+            guard let startedAt, let lastRunAt, done > 0 else { return phase }
+            let took = Self.durationText(lastRunAt.timeIntervalSince(startedAt))
+            let saved = designed + fromSeries
+            return saved > 0
+                ? "Designed \(Self.count(saved, "spine")) in \(took)"
+                : "Checked \(Self.count(done, "book")) in \(took)"
+        case "Paused":
+            guard let retryAfter else { return phase }
+            let time =
+                Calendar.current.isDateInToday(retryAfter)
+                ? retryAfter.formatted(date: .omitted, time: .shortened)
+                : retryAfter.formatted(.dateTime.month().day().hour().minute())
+            return "Paused until \(time)"
+        default:
+            return phase
+        }
+    }
+
+    /// The run's tally so far, without zero entries: new designs, series copies, designs that
+    /// stay, failures, and once the run stops, the books left. The Generation footer counts the
+    /// books without a cover, which no run designs.
+    var tally: [String] {
+        guard startedAt != nil else { return [] }
+        let upToDate = completed - designed - fromSeries
+        return [
+            designed > 0 ? Self.count(designed, "new design") : nil,
+            fromSeries > 0 ? "\(fromSeries) from a series" : nil,
+            upToDate > 0 ? "\(upToDate) up to date" : nil,
+            failed > 0 ? "\(failed) failed" : nil,
+            !isRunning && queue > 0 ? "\(queue) left" : nil,
+        ]
+        .compactMap { $0 }
+    }
+
+    /// The time left while a book is designed, such as "About 3 minutes left"; `nil` before the
+    /// run has an estimate, or while it checks the library or waits for a retry date.
+    var timeLeftText: String? {
+        guard designingBook != nil, retryAfter == nil, let timeLeft else { return nil }
+        return Self.timeLeftText(timeLeft)
+    }
+
+    /// The time `remaining` books take at the average of `durations`, the latest books' times in
+    /// seconds; `nil` until the run has timed `estimateMinimum` books and run for `elapsed`
+    /// seconds, or with no books left. A rise of less than a quarter keeps the `previous`
+    /// estimate, so the rounded text doesn't flip between two steps from book to book.
+    static func timeLeft(
+        remaining: Int, durations: [TimeInterval], elapsed: TimeInterval,
+        previous: TimeInterval? = nil
+    ) -> TimeInterval? {
+        let recent = durations.suffix(estimateWindow)
+        guard recent.count >= estimateMinimum.books, elapsed >= estimateMinimum.seconds,
+            remaining > 0
+        else { return nil }
+        let estimate = recent.reduce(0, +) / Double(recent.count) * Double(remaining)
+        if let previous, estimate > previous, estimate < previous * 1.25 { return previous }
+        return estimate
+    }
+
+    /// `seconds` left, rounded so the estimate doesn't jump with each book: whole minutes under
+    /// 10 minutes, then 5 minutes under an hour, then hours.
+    static func timeLeftText(_ seconds: TimeInterval) -> String {
+        let minutes = Int((seconds / 60).rounded())
+        switch minutes {
+        case ..<1: return "Less than a minute left"
+        case 1: return "About a minute left"
+        case ..<10: return "About \(minutes) minutes left"
+        case ..<55: return "About \(Int((Double(minutes) / 5).rounded()) * 5) minutes left"
+        case ..<90: return "About an hour left"
+        default: return "About \(Int((Double(minutes) / 60).rounded())) hours left"
+        }
+    }
+
+    /// How long a finished run took, in whole minutes, such as "6 minutes" or "1 hour, 20
+    /// minutes".
+    static func durationText(_ seconds: TimeInterval) -> String {
+        guard seconds >= 30 else { return "under a minute" }
+        let minutes = Duration.seconds(Int((seconds / 60).rounded()) * 60)
+        return minutes.formatted(.units(allowed: [.hours, .minutes], width: .wide))
+    }
+
+    private static func count(_ count: Int, _ noun: String) -> String {
+        "\(count) \(noun)\(count == 1 ? "" : "s")"
     }
 }
 
@@ -190,9 +343,9 @@ actor SpineWorker {
         redesign = redesigning
         runModel = nil
         refusals = RefusalStreak()
-        snapshot.isRunning = true
-        snapshot.error = nil
-        snapshot.retryAfter = nil
+        snapshot = WorkerSnapshot(
+            isRunning: true, model: snapshot.model, startedAt: Date(),
+            lastRunAt: snapshot.lastRunAt)
         // A pass ends early when the Apple TV or the reader changes the work; the next pass
         // reads it again.
         var changed = false
@@ -217,10 +370,10 @@ actor SpineWorker {
     /// Returns `true` when the Apple TV or the reader's cover choice changed the work during the
     /// pass.
     private func runPass(mode: RunMode) async -> Bool {
+        // The counts carry over from earlier passes, and the queue until this pass finds its own.
         snapshot.phase = "Checking the library"
-        snapshot.queue = 0
-        snapshot.completed = 0
-        snapshot.failed = 0
+        snapshot.timeLeft = nil
+        snapshot.passStart = (snapshot.fraction, snapshot.completed + snapshot.failed)
         bookDesigns = [:]
         checkedBooks = []
         lookGroups = [:]
@@ -266,6 +419,20 @@ actor SpineWorker {
                 "Run started with \(queue.count) books; tier \(String(describing: model.tier), privacy: .public); covers read by \(String(describing: model.coverReader), privacy: .public); quota \(String(describing: model.quota), privacy: .public)"
             )
             let covers = mode == .foreground ? self.covers : backgroundCovers
+            // Each book's time runs from the end of the one before, skipped books included, so
+            // the estimate's durations cover the same books its remaining count does.
+            var mark = ContinuousClock.now
+            func timeBook() {
+                let now = ContinuousClock.now
+                let seconds = mark.duration(to: now) / .seconds(1)
+                mark = now
+                snapshot.durations = Array(
+                    (snapshot.durations + [seconds]).suffix(WorkerSnapshot.estimateWindow))
+                snapshot.timeLeft = WorkerSnapshot.timeLeft(
+                    remaining: snapshot.queue, durations: snapshot.durations,
+                    elapsed: snapshot.startedAt.map { Date().timeIntervalSince($0) } ?? 0,
+                    previous: snapshot.timeLeft)
+            }
             for book in queue {
                 try Task.checkCancellation()
                 let workHash = CloudContract.workItemHash(accountID: accountID, book: book)
@@ -280,18 +447,21 @@ actor SpineWorker {
                         recordName: recordName, workItemHash: workHash,
                         chosenCover: book.chosenCoverURL, runTier: tier))
                 {
+                    // Counted as checked, so the run's total holds.
+                    snapshot.completed += 1
                     snapshot.queue -= 1
+                    timeBook()
                     continue
                 }
+                let start = mark
                 snapshot.phase = "Designing spines"
                 snapshot.currentBook = book
                 publish()
-                let start = ContinuousClock.now
                 do {
                     let outcome = try await design(
                         for: book, covers: covers, workHash: workHash, context: context,
                         forced: redesigned != nil, mode: mode)
-                    if case .save(let made, let isNew, let replacing) = outcome {
+                    if case .save(let made, let source, let replacing) = outcome {
                         guard try await store.isStillCurrent(context, book: book) else {
                             return true
                         }
@@ -299,7 +469,7 @@ actor SpineWorker {
                         continuation.yield(.saved(made))
                         bookDesigns[book.id] = made
                         checkedBooks.insert(book.id)
-                        if isNew {
+                        if source == .new {
                             await saveLook(
                                 from: made, for: book, replacing: redesigned?.remakesLook == true)
                         }
@@ -319,6 +489,9 @@ actor SpineWorker {
                         tier: runModel.map { max($0.tier, outcome.design.tier) },
                         awaitsFont: awaitsFont)
                     snapshot.completed += 1
+                    // A saved design moved to the book's new metadata counts as staying.
+                    if case .save(_, .new, _) = outcome { snapshot.designed += 1 }
+                    if case .save(_, .seriesCopy, _) = outcome { snapshot.fromSeries += 1 }
                 } catch {
                     try Task.checkCancellation()
                     // Error descriptions can carry a cover URL or quoted book content, which
@@ -349,6 +522,7 @@ actor SpineWorker {
                 if redesigned != nil { redesign = nil }
                 snapshot.queue -= 1
                 if stopForModel(await readModel(), mode: mode) { return false }
+                timeBook()
             }
             snapshot.phase = "Finished"
         } catch {
@@ -367,11 +541,20 @@ actor SpineWorker {
     private enum Outcome {
         /// Leaves this design, iCloud's, in place.
         case keep(SpineDesignV1)
-        /// Saves this design. `isNew` tells whether the run's tier made it from the cover rather
-        /// than copying a saved design or look. `replacing` tells whether it replaces the saved
+        /// Saves this design, from `source`. `replacing` tells whether it replaces the saved
         /// design whatever that design's tier, as one from the cover the reader chose does
         /// (`SpineDesignV1.outlasts(_:replacing:)`).
-        case save(SpineDesignV1, isNew: Bool, replacing: Bool = false)
+        case save(SpineDesignV1, source: Source, replacing: Bool = false)
+
+        /// Where a saved design comes from.
+        enum Source {
+            /// The book's saved design, moved to its new work-item hash.
+            case moved
+            /// A new copy of a series' design or look.
+            case seriesCopy
+            /// The run's tier, from the cover.
+            case new
+        }
 
         var design: SpineDesignV1 {
             switch self {
@@ -458,7 +641,7 @@ actor SpineWorker {
         if let saved, book.chosenCoverURL == nil, !readerChoseCover {
             switch try await savedAction(coverHash: saved.coverHash) {
             case .keep: return .keep(await kept(saved))
-            case .save(let design): return .save(await kept(design), isNew: false)
+            case .save(let design): return .save(await kept(design), source: .moved)
             case .redesign: break
             }
         }
@@ -479,7 +662,7 @@ actor SpineWorker {
                 saved
             ) {
             case (.keep, let saved?): return .keep(await kept(saved))
-            case (.save(let design), _): return .save(await kept(design), isNew: false)
+            case (.save(let design), _): return .save(await kept(design), source: .moved)
             default: break
             }
             // Books in one look group share a design so their spines match on the shelf. A book
@@ -503,12 +686,12 @@ actor SpineWorker {
                         $0.isOutranked(by: reused.tier, awaitingFont: reused.awaitsFont)
                     }) ?? true
             {
-                return .save(reused, isNew: false, replacing: replacing)
+                return .save(reused, source: .seriesCopy, replacing: replacing)
             }
         }
         let made = try await newDesign(
             for: book, cover: cover, workHash: workHash, accountID: context.accountID, mode: mode)
-        return .save(made, isNew: true, replacing: replacing)
+        return .save(made, source: .new, replacing: replacing)
     }
 
     /// Designs `book` at the run's tier.
