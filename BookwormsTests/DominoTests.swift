@@ -977,11 +977,10 @@ final class DominoTests: XCTestCase {
         let mac = PileViewport(
             size: CGSize(width: 1_180, height: 820),
             insets: EdgeInsets(top: 52, leading: 144, bottom: 0, trailing: 0))
+        // The frame is 820 × 9 / 16 = 461.25 points wide, centered on x = 662, the middle of
+        // the 1,036 points right of the sidebar.
         let area = DominoFinale.area(in: mac)
-        XCTAssertEqual(area, DominoRecorder.crop(in: mac))
-        XCTAssertEqual(area.width / area.height, 9.0 / 16, accuracy: 1e-9)
-        XCTAssertEqual(area.height, 820)
-        XCTAssertEqual(area.midX, 144 + (1_180 - 144) / 2, accuracy: 1e-9)
+        XCTAssertEqual(area, CGRect(x: 431.375, y: 0, width: 461.25, height: 820))
         let wide = DominoFinale.spreadRect(in: mac)
         XCTAssertEqual(wide.minX, area.minX + 16, accuracy: 1e-9)
         XCTAssertEqual(wide.maxX, area.maxX - 16, accuracy: 1e-9)
