@@ -218,7 +218,8 @@ enum DominoFinale {
         from: Transform, to: PileCamera, around focus: SIMD3<Float>? = nil, progress: Float
     ) -> Transform {
         let share = glide(progress)
-        let aim = Self.aim(at: progress * moveTime)
+        let aim = DominoCameraRig.ease(
+            min(max(progress * moveTime - aimDelay, 0) / (moveTime - aimDelay), 1))
         let forward = from.rotation.act([0, 0, -1])
         // A view that looks level or up meets the table nowhere; it turns about a point ahead.
         let reach =
@@ -246,13 +247,6 @@ enum DominoFinale {
             rotation: camera.rotation
                 * turn(roll, to: simd_quatf(ix: 0, iy: 0, iz: 0, r: 1), by: share),
             translation: camera.transform.translation)
-    }
-
-    /// How far the camera's aim has turned from where the chain ended toward the spread's,
-    /// `time` seconds after the last book falls: 0 until `aimDelay`, then easing in and out to
-    /// 1 as the move ends (see `view(from:to:around:progress:)`).
-    static func aim(at time: Float) -> Float {
-        DominoCameraRig.ease(min(max(time - aimDelay, 0) / (moveTime - aimDelay), 1))
     }
 
     /// `from` turned `share` of the way to `to`, the shorter way.

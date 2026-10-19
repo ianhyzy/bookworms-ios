@@ -2005,23 +2005,19 @@ final class DominoScene {
     /// where the hand pushes it. A blend between the cameras moves from one to the other.
     /// Once the last book falls, it is where that book lands (`landing`).
     ///
-    /// In the finale, it moves from there to the point the spread's view looks at, where the
-    /// last book springs up in the middle of the view once the camera rests. After the Follow
-    /// camera, it moves with the camera's aim, which centers on the last book and then turns
-    /// to the spread. After the overview, which does not turn to the last book, it sets off at
-    /// once and slows to arrive as the books lift, so the frame leaves the chain's end, where
-    /// it shows bare table beyond the last book, as soon as the last book falls; the frame's
-    /// own easing smooths the start.
+    /// In the finale, it moves from there to the middle of the view, where the camera aims as
+    /// it moves to the spread's view and where the last book springs up once it rests. It
+    /// sets off at once and slows to arrive as the books lift, so the frame leaves the chain's
+    /// end, where it can show bare table beyond the last book, as soon as the last book falls,
+    /// and then holds still while the camera's move carries the books; the frame's own easing
+    /// smooths the start.
     private var recordingSubject: CGFloat? {
         func across(_ point: SIMD3<Float>) -> CGFloat? {
             screenPoint(of: point, in: CGSize(width: 1, height: 1))?.x
         }
         if let ending, let landing {
-            let rest = 1 - min(ending.clock / DominoFinale.gatherDelay, 1)
-            let weight =
-                ending.focus == nil
-                ? 1 - rest * rest * rest : DominoFinale.aim(at: ending.clock)
-            return across(landing + (ending.camera.target - landing) * weight)
+            let rest = CGFloat(1 - min(ending.clock / DominoFinale.gatherDelay, 1))
+            return across(landing).map { $0 + (0.5 - $0) * (1 - rest * rest * rest) }
         }
         let follow = followShare
         let composed = area.map {
