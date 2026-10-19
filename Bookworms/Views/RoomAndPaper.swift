@@ -95,8 +95,8 @@ private struct WallSeams: View {
 ///     .background { PaperGround().ignoresSafeArea() }
 /// ```
 ///
-/// Primary text and the accent keep 4.5:1 or more on it, and the accent 7:1 under Increase
-/// Contrast (`PaletteTests`). Secondary text keeps about the 3:1 it has on the system's grouped
+/// Primary text and the accent keep 4.5:1 or more on it, and the accent 7:1 on light paper under
+/// Increase Contrast (`PaletteTests`). Secondary text keeps about the 3:1 it has on the system's grouped
 /// background.
 struct PaperGround: View {
     var body: some View {
