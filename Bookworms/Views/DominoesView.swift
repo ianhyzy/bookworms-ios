@@ -24,8 +24,8 @@ import SwiftUI
 /// camera over until the next push. **Set up again** sets every book up again from where it
 /// lies.
 /// Collisions play taps and, while the desk's **Sounds** is on, knocks (`ImpactFeedback`).
-/// While the scene records a run, from the push until its video is written, a red dot and the
-/// time since the push show under the bar (`RecordingBadge`). Once the books have gathered,
+/// While the scene records a run, from the push until the heading shows over the gathered
+/// books, a red dot and the time since the push show under the bar (`RecordingBadge`). Once the books have gathered,
 /// **Share** offers the run's video, which the scene recorded as it played (`DominoRecorder`),
 /// and its last frame, through the share sheet; without a recording, it offers an image of the
 /// view.
