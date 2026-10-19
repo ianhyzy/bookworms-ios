@@ -350,15 +350,31 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(saved.phase, "Ready to continue")
     }
 
-    /// The time left averages the latest books' times, waits for a few, and rounds so it
-    /// doesn't jump with each book.
+    /// The time left averages the latest books' times, waits for a few books and half a
+    /// minute, holds against small rises, and rounds so it doesn't jump with each book.
     func testTimeLeftAveragesTheLatestBooksAndRoundsGently() {
-        XCTAssertNil(WorkerSnapshot.timeLeft(remaining: 40, durations: [10, 20]))
-        XCTAssertNil(WorkerSnapshot.timeLeft(remaining: 0, durations: [10, 20, 30]))
-        XCTAssertEqual(WorkerSnapshot.timeLeft(remaining: 40, durations: [10, 20, 30]), 800)
+        let five: [TimeInterval] = [10, 20, 30, 20, 20]
+        XCTAssertNil(WorkerSnapshot.timeLeft(remaining: 40, durations: [10, 20, 30], elapsed: 90))
+        XCTAssertNil(
+            WorkerSnapshot.timeLeft(remaining: 40, durations: [1, 1, 1, 1, 1], elapsed: 6),
+            "Five quick checks at the start promise nothing")
+        XCTAssertNil(WorkerSnapshot.timeLeft(remaining: 0, durations: five, elapsed: 120))
+        XCTAssertEqual(WorkerSnapshot.timeLeft(remaining: 40, durations: five, elapsed: 120), 800)
         // Only the latest `estimateWindow` times count.
         let slowStart = [600.0] + Array(repeating: 15, count: WorkerSnapshot.estimateWindow)
-        XCTAssertEqual(WorkerSnapshot.timeLeft(remaining: 12, durations: slowStart), 180)
+        XCTAssertEqual(
+            WorkerSnapshot.timeLeft(remaining: 12, durations: slowStart, elapsed: 900), 180)
+        // A slow book that raises the estimate by less than a quarter keeps the last one; a
+        // larger rise or a drop replaces it.
+        XCTAssertEqual(
+            WorkerSnapshot.timeLeft(remaining: 40, durations: five, elapsed: 120, previous: 700),
+            700)
+        XCTAssertEqual(
+            WorkerSnapshot.timeLeft(remaining: 40, durations: five, elapsed: 120, previous: 600),
+            800)
+        XCTAssertEqual(
+            WorkerSnapshot.timeLeft(remaining: 40, durations: five, elapsed: 120, previous: 900),
+            800)
 
         let seconds: [TimeInterval] = [20, 70, 180, 760, 1_680, 3_500, 5_000, 9_000]
         XCTAssertEqual(
@@ -379,7 +395,7 @@ final class GenerationTests: XCTestCase {
             currentBook: CloudBook(
                 id: 7, title: "The Glass Orchard", author: "Mara Quill", coverURL: nil,
                 detailCoverURL: nil),
-            startedAt: now, durations: [12, 14, 16])
+            startedAt: now, durations: [12, 14, 16], timeLeft: 540)
         XCTAssertEqual(run.headline, "Designing 12 of 48")
         XCTAssertEqual(
             run.tally,

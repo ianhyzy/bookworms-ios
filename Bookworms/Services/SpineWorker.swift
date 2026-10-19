@@ -40,9 +40,11 @@ struct WorkerSnapshot: Sendable, Codable {
     var retryAfter: Date?
     var startedAt: Date?
     var lastRunAt: Date?
-    /// How long the run's latest books took to check, in seconds, oldest first, for the time
-    /// left (`timeLeft(remaining:durations:)`).
+    /// How long the run's latest books took to check, in seconds, oldest first.
     var durations: [TimeInterval] = []
+    /// The time left after the pass's latest book, in seconds
+    /// (`timeLeft(remaining:durations:elapsed:previous:)`).
+    var timeLeft: TimeInterval?
 
     // The model status is read fresh, and a saved snapshot describes a finished run.
     private enum CodingKeys: String, CodingKey {
@@ -80,8 +82,9 @@ extension WorkerSnapshot {
     /// How many of the latest books' times the estimate averages: enough that a cluster of quick
     /// series copies or slow new designs doesn't swing it.
     static let estimateWindow = 20
-    /// How many books a run checks before it estimates the time left.
-    static let estimateMinimum = 3
+    /// How many books a run times, and how many seconds it runs, before it estimates the time
+    /// left, so a few quick checks of saved designs at the start don't promise a short run.
+    static let estimateMinimum = (books: 5, seconds: 30.0)
 
     /// The book being designed, while the run designs it; `nil` while a pass checks the library
     /// or the run stops.
@@ -136,20 +139,27 @@ extension WorkerSnapshot {
     }
 
     /// The time left while a book is designed, such as "About 3 minutes left"; `nil` before the
-    /// run has timed `estimateMinimum` books, or while it checks the library.
+    /// run has an estimate, or while it checks the library or waits for a retry date.
     var timeLeftText: String? {
-        guard designingBook != nil, retryAfter == nil,
-            let seconds = Self.timeLeft(remaining: queue, durations: durations)
-        else { return nil }
-        return Self.timeLeftText(seconds)
+        guard designingBook != nil, retryAfter == nil, let timeLeft else { return nil }
+        return Self.timeLeftText(timeLeft)
     }
 
     /// The time `remaining` books take at the average of `durations`, the latest books' times in
-    /// seconds; `nil` with fewer than `estimateMinimum` times or no books left.
-    static func timeLeft(remaining: Int, durations: [TimeInterval]) -> TimeInterval? {
+    /// seconds; `nil` until the run has timed `estimateMinimum` books and run for `elapsed`
+    /// seconds, or with no books left. A rise of less than a quarter keeps the `previous`
+    /// estimate, so the rounded text doesn't flip between two steps from book to book.
+    static func timeLeft(
+        remaining: Int, durations: [TimeInterval], elapsed: TimeInterval,
+        previous: TimeInterval? = nil
+    ) -> TimeInterval? {
         let recent = durations.suffix(estimateWindow)
-        guard recent.count >= estimateMinimum, remaining > 0 else { return nil }
-        return recent.reduce(0, +) / Double(recent.count) * Double(remaining)
+        guard recent.count >= estimateMinimum.books, elapsed >= estimateMinimum.seconds,
+            remaining > 0
+        else { return nil }
+        let estimate = recent.reduce(0, +) / Double(recent.count) * Double(remaining)
+        if let previous, estimate > previous, estimate < previous * 1.25 { return previous }
+        return estimate
     }
 
     /// `seconds` left, rounded so the estimate doesn't jump with each book: whole minutes under
@@ -351,6 +361,7 @@ actor SpineWorker {
     private func runPass(mode: RunMode) async -> Bool {
         // The counts carry over from earlier passes, and the queue until this pass finds its own.
         snapshot.phase = "Checking the library"
+        snapshot.timeLeft = nil
         bookDesigns = [:]
         checkedBooks = []
         lookGroups = [:]
@@ -489,6 +500,10 @@ actor SpineWorker {
                 let seconds = start.duration(to: .now) / .seconds(1)
                 snapshot.durations = Array(
                     (snapshot.durations + [seconds]).suffix(WorkerSnapshot.estimateWindow))
+                snapshot.timeLeft = WorkerSnapshot.timeLeft(
+                    remaining: snapshot.queue, durations: snapshot.durations,
+                    elapsed: snapshot.startedAt.map { Date().timeIntervalSince($0) } ?? 0,
+                    previous: snapshot.timeLeft)
             }
             snapshot.phase = "Finished"
         } catch {
