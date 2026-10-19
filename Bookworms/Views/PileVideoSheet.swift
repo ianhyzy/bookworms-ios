@@ -171,7 +171,10 @@ struct PileVideoSheet: View {
             if failed {
                 ContentUnavailableView(
                     "Couldn't film the desk", systemImage: "exclamationmark.triangle",
-                    description: Text("Close this, then try Shuffle or another size."))
+                    description: Text(
+                        showsClose
+                            ? "Close this, then try Shuffle or another size."
+                            : "Go back, then try Shuffle or another size."))
             } else if player == nil {
                 Group {
                     if let progress {
