@@ -199,12 +199,17 @@ struct LibraryView: View {
     }
 
     #if DEBUG
+        /// Whether `-BookwormsShelfSweep` has started, which it does once per launch.
+        private static var sweeps = false
+
         /// Simulator screenshot hooks, read once the library loads:
         /// `-BookwormsShelfScrollTo <index>` centers the book at that index,
         /// `-BookwormsShelfGlideTo <index>` centers the book at that index three seconds later,
-        /// gliding there from nearby, and `-BookwormsOpenBook <bookID>` centers that
-        /// book and, two seconds later, pulls it out to its details, or pushes them with Reduce
-        /// Motion on.
+        /// gliding there from nearby, `-BookwormsShelfSweep <count>` moves the center to the next
+        /// book `count` times, every 0.15 seconds from three seconds later, so a CPU or frame-time
+        /// recording sees the carousel scroll without a touch, and `-BookwormsOpenBook <bookID>`
+        /// centers that book and, two seconds later, pulls it out to its details, or pushes them
+        /// with Reduce Motion on.
         private func applyDebugArguments() {
             guard model.library != nil else { return }
             let books = shownBooks(of: readBooks)
@@ -220,6 +225,22 @@ struct LibraryView: View {
                 Task {
                     try? await Task.sleep(for: .seconds(3))
                     centeredID = books[index].id
+                }
+            }
+            if let count = defaults.string(forKey: "BookwormsShelfSweep").flatMap(Int.init),
+                !Self.sweeps
+            {
+                Self.sweeps = true
+                Task {
+                    try? await Task.sleep(for: .seconds(3))
+                    for _ in 0..<count {
+                        let shown = shownBooks(of: readBooks)
+                        // Before any scroll, no book is centered yet, so the sweep starts at the first.
+                        let index = shown.firstIndex { $0.id == centeredID } ?? 0
+                        guard index + 1 < shown.count else { break }
+                        centeredID = shown[index + 1].id
+                        try? await Task.sleep(for: .seconds(0.15))
+                    }
                 }
             }
             if let id = defaults.string(forKey: "BookwormsOpenBook").flatMap(Int.init),
