@@ -665,8 +665,10 @@ final class DominoScene {
     /// Seconds the hand has shown, which time its halo's pulse.
     private var handClock: TimeInterval = 0
     private var key: Key?
-    /// The viewport the plan was framed for.
-    private var plannedViewport: PileViewport?
+    /// The viewport the plan was framed for. The spread, the finale's heading, and an image of
+    /// the view keep it while the chain lasts, also once the sidebar shows or hides
+    /// (`DominoFinale.area(in:)`).
+    private(set) var plannedViewport: PileViewport?
     private var plan: [DominoSlot] = []
     private var extent = SIMD2<Float>.zero
     private var spawned = 0
@@ -816,6 +818,13 @@ final class DominoScene {
         /// The spread's places and view, turned to the camera's yaw.
         let slots: [PileSlot]
         let camera: PileCamera
+        /// The part of the view that the spread fills and the last book hangs in
+        /// (`DominoFinale.area(in:)`), and the view's size, in points.
+        let area: CGRect
+        let view: CGSize
+        /// Where a recording's frame centered as the last book fell, as a share of the view's
+        /// width, which it moves on from (`recordingSubject`).
+        let subject: CGFloat?
         /// The books' flights into the spread, in its order, once they start to gather, and how
         /// many have landed.
         var flights: [Flight] = []
@@ -1859,7 +1868,7 @@ final class DominoScene {
     /// Zooms toward the point under `focus` by `magnification`, or slides the camera across
     /// the table with a one-finger `translation`, keeping the path in view. Does nothing from
     /// when the finale starts until the last book lands in the spread, so the camera stays where
-    /// the last book hangs before it (`DominoFinale.snapTop(size:seenBy:aspect:)`), or while a
+    /// the last book hangs before it (`DominoFinale.snapTop(size:seenBy:in:of:)`), or while a
     /// book is out at its details, so a drag that goes on after a touch and hold has lifted a
     /// book leaves the view as it was.
     ///
@@ -2005,19 +2014,26 @@ final class DominoScene {
     /// where the hand pushes it. A blend between the cameras moves from one to the other.
     /// Once the last book falls, it is where that book lands (`landing`).
     ///
-    /// In the finale, it moves from there to the middle of the view, where the camera aims as
-    /// it moves to the spread's view and where the last book springs up once it rests. It
+    /// In the finale, it moves from where it was as the last book fell (`Ending.subject`) to the
+    /// middle of the spread's area (`DominoFinale.area(in:)`), which the frame then shows
+    /// exactly, with every gathered book and the last book as it springs up. It moves across
+    /// the view, not with the camera, so a frame that already shows the area holds still. It
     /// sets off at once and slows to arrive as the books lift, so the frame leaves the chain's
     /// end, where it can show bare table beyond the last book, as soon as the last book falls,
     /// and then holds still while the camera's move carries the books; the frame's own easing
-    /// smooths the start.
+    /// smooths the start. With Reduce Motion on, it is the area's middle from the start, so the
+    /// frame arrives there in the still second before the camera cuts to the spread
+    /// (`DominoFinale.stillWait`), and the books appear inside it.
     private var recordingSubject: CGFloat? {
         func across(_ point: SIMD3<Float>) -> CGFloat? {
             screenPoint(of: point, in: CGSize(width: 1, height: 1))?.x
         }
-        if let ending, let landing {
-            let rest = CGFloat(1 - min(ending.clock / DominoFinale.gatherDelay, 1))
-            return across(landing).map { $0 + (0.5 - $0) * (1 - rest * rest * rest) }
+        if let ending {
+            let clock = reducesMotion ? DominoFinale.gatherDelay : ending.clock
+            let rest = CGFloat(1 - min(clock / DominoFinale.gatherDelay, 1))
+            let middle = ending.area.midX / max(ending.view.width, 1)
+            guard let start = ending.subject else { return middle }
+            return start + (middle - start) * (1 - rest * rest * rest)
         }
         // Until the Follow camera has made its establishing move, the front is the subject, so
         // a push during that move still opens the video on the first book and the hand.
@@ -2385,10 +2401,13 @@ final class DominoScene {
     /// from the view as it shows, with the camera's motion while a camera mode films, so the
     /// move carries it on, and held still after a pinch or drag.
     private func startEnding() {
-        guard !slots.isEmpty, next >= books.count, flying == nil, let spread else { return }
+        guard !slots.isEmpty, next >= books.count, flying == nil, let spread,
+            let viewport = plannedViewport
+        else { return }
         let yaw = PileCamera(matching: camera.transform, fallback: view.target).yaw
         let placed = DominoFinale.turned(spread.slots, camera: spread.camera, by: yaw)
         let moves = follows && cameraMove == nil
+        let subject = recordingSubject
         handoff = nil
         cameraMove = nil
         // The overview shows the last book with the rest of the chain, so the move does not
@@ -2396,7 +2415,8 @@ final class DominoScene {
         ending = Ending(
             start: camera.transform, motion: moves ? motion : Motion(),
             focus: moves && mode == .follow ? landing : nil, slots: placed.slots,
-            camera: placed.camera)
+            camera: placed.camera, area: DominoFinale.area(in: viewport), view: viewport.size,
+            subject: subject)
         if !reducesMotion, let book = placed.slots.last?.book { sharpenCover(of: book) }
     }
 
@@ -2433,17 +2453,13 @@ final class DominoScene {
         self.view = view
     }
 
-    /// Lays the spread out for the view the chain was planned in, below the heading's room,
+    /// Lays the spread out for the view the chain was planned in, in the part of it that a
+    /// recording shows on a Mac and below the heading's room (`DominoFinale.spreadRect(in:)`),
     /// away from the main actor, once every book stands.
     private func layOutSpread() {
         guard isReady, let viewport = plannedViewport, let seed = key?.generation else { return }
         let size = viewport.size
-        let insets = viewport.insets
-        let room = DominoFinale.headingRoom(width: size.width)
-        let rect = CGRect(
-            x: insets.leading + 16, y: insets.top + room,
-            width: size.width - insets.leading - insets.trailing - 32,
-            height: size.height - insets.top - room - insets.bottom - 24)
+        let rect = DominoFinale.spreadRect(in: viewport)
         let shaped = slots.map { slot in
             (
                 slot.book,
@@ -2514,7 +2530,8 @@ final class DominoScene {
                     continue
                 }
                 let top = DominoFinale.snapTop(
-                    size: size(of: flight.book), seenBy: ending.camera, aspect: aspect)
+                    size: size(of: flight.book), seenBy: ending.camera, in: ending.area,
+                    of: ending.view)
                 book.transform = DominoFinale.snapPose(
                     from: flight.from, to: flight.to, top: top, time: time)
                 stage.light(

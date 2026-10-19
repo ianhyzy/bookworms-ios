@@ -124,6 +124,7 @@ struct DominoesView: View {
                 }
                 Button("Set up again") { desk.setUpDominoesAgain() }
             }
+            .overlay { shareFrame }
             .overlay { heading }
             // Until the heading takes its place over the gathered books.
             .overlay(alignment: .top) {
@@ -262,21 +263,57 @@ struct DominoesView: View {
     }
 
     /// The heading over the gathered books, in the share images' style, once every book lies
-    /// in the spread; it fades in, and stays until **Set up again**.
+    /// in the spread; it fades in, and stays until **Set up again**. It spans the spread's area
+    /// (`DominoFinale.area(in:)`), the whole view on an iPhone and the recording's 9:16 frame in
+    /// a wider view, so it shows where and as large as the video shows it. The area is the one
+    /// the spread was laid out in, for the view the chain was planned in
+    /// (`DominoScene.plannedViewport`), which the scene keeps while the phase changes.
     @ViewBuilder private var heading: some View {
-        if scene.status.phase == .finished, details.lift == nil, let viewport {
-            // The overlay lies within the safe area, below the bar and above the tab bar, so
-            // the card needs no insets of its own.
+        if scene.status.phase == .finished, details.lift == nil,
+            let viewport = scene.plannedViewport
+        {
+            let area = DominoFinale.area(in: viewport)
             DominoFinaleCard(
                 title: title, count: books.count, pages: DominoFinaleCard.pages(of: books),
-                scale: viewport.size.width / ShareAspect.story.size.width,
+                scale: area.width / ShareAspect.story.size.width,
                 insets: EdgeInsets(
-                    top: DominoFinaleCard.liveTop, leading: 0, bottom: 0, trailing: 0)
+                    top: viewport.insets.top + DominoFinaleCard.liveTop - area.minY, leading: 0,
+                    bottom: 0, trailing: 0)
             )
+            .frame(width: area.width, height: area.height)
+            .offset(x: area.minX, y: area.minY)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .ignoresSafeArea()
             .allowsHitTesting(false)
             .transition(.opacity.animation(.easeIn(duration: 0.6)))
             // VoiceOver reads the same totals as the scene's value.
             .accessibilityHidden(true)
+        }
+    }
+
+    /// In a view wider than 9:16, such as a Mac's window, darkens the view on either side of the
+    /// spread's area (`DominoFinale.area(in:)`) from when the books lift to gather, or appear
+    /// with Reduce Motion on, so the window shows the 9:16 frame that the video and **Image**
+    /// show. It fades in as the video's frame arrives there, and stays until **Set up again**.
+    /// A view that the area fills, such as an iPhone's, shows none.
+    @ViewBuilder private var shareFrame: some View {
+        if scene.status.phase.hasEnded, details.lift == nil,
+            let viewport = scene.plannedViewport
+        {
+            let area = DominoFinale.area(in: viewport)
+            if area.width < viewport.size.width {
+                HStack(spacing: 0) {
+                    Rectangle().frame(width: area.minX)
+                    Color.clear.frame(width: area.width)
+                    Rectangle()
+                }
+                .foregroundStyle(.black.opacity(0.5))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+                .transition(.opacity.animation(.easeInOut(duration: 0.6)))
+                .accessibilityHidden(true)
+            }
         }
     }
 
@@ -320,7 +357,8 @@ struct DominoesView: View {
         } else {
             Task {
                 do {
-                    files = SharedFiles(urls: [try await recorder.snapshot()])
+                    files = SharedFiles(
+                        urls: [try await recorder.snapshot(in: scene.plannedViewport)])
                 } catch {
                     model.toasts.show(.failure("Couldn't make the image"))
                 }
@@ -328,13 +366,19 @@ struct DominoesView: View {
         }
     }
 
-    /// The view's layout and heading, for the recording.
+    /// The view's layout and heading, for the recording. While the view keeps the size the
+    /// chain was planned in, it is the planned view (`DominoScene.plannedViewport`), whose clear
+    /// area the finale gathers in: showing or hiding the sidebar changes only the insets, so
+    /// the recording's frame still lands on the spread. A resized view uses its own layout,
+    /// since the frames the recording takes are that view's.
     private var recordingLayout: DominoRecorder.Layout? {
-        viewport.map {
-            DominoRecorder.Layout(
-                viewport: $0, title: title, count: books.count,
-                pages: DominoFinaleCard.pages(of: books))
-        }
+        let planned = scene.plannedViewport.flatMap { $0.size == viewport?.size ? $0 : nil }
+        return (planned ?? viewport)
+            .map {
+                DominoRecorder.Layout(
+                    viewport: $0, title: title, count: books.count,
+                    pages: DominoFinaleCard.pages(of: books))
+            }
     }
 
     /// The chain's phase as VoiceOver reads it.

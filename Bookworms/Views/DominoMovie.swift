@@ -104,7 +104,7 @@ struct DominoFinaleCard: View {
 final class DominoRecorder {
     /// What a recording shows: the view's size and bars, and the heading's text.
     struct Layout: Equatable {
-        let viewport: PileViewport
+        var viewport: PileViewport
         let title: String
         let count: Int
         let pages: Int
@@ -422,7 +422,9 @@ final class DominoRecorder {
     /// The part of a view of `viewport` that a 9:16 recording shows, in points. It spans the
     /// view's width and puts the heading at a story's top margin, where the share images put
     /// theirs, unless that would leave out the bottom of the scene above the tab bar. A view
-    /// wider than 9:16 shows its full height, centered, which a recording pans across the view
+    /// wider than 9:16 shows its full height, centered on the part of the view that the bars
+    /// leave clear as far as the view allows. That is where the finale gathers the books
+    /// (`DominoFinale.area(in:)`), and a recording pans there from across the view
     /// (`DominoPan`).
     nonisolated static func crop(in viewport: PileViewport) -> CGRect {
         let size = viewport.size
@@ -430,7 +432,8 @@ final class DominoRecorder {
         let height = size.width * story.height / story.width
         guard height <= size.height else {
             let width = size.height * story.width / story.height
-            return CGRect(x: (size.width - width) / 2, y: 0, width: width, height: size.height)
+            let left = min(max(viewport.clear.midX - width / 2, 0), size.width - width)
+            return CGRect(x: left, y: 0, width: width, height: size.height)
         }
         let heading = viewport.insets.top + DominoFinaleCard.liveTop
         let preferred = heading - ShareAspect.story.insets.top * size.width / story.width
@@ -702,12 +705,17 @@ final class DominoRecorder {
     // MARK: Image
 
     /// An image of the view as it shows now, in a 9:16 PNG with the heading and the credit,
-    /// for **Share** when no recording of the run was kept. Replaces the previous one.
+    /// for **Share** when no recording of the run was kept. It frames `viewport`, the view the
+    /// chain was planned in, while the view keeps that size, so a wider view's image shows the
+    /// spread's area (`DominoFinale.area(in:)`) also after the sidebar shows or hides. A view
+    /// resized since, or one without a plan, frames its current layout, which matches the
+    /// snapshot it takes. Replaces the previous one.
     ///
     /// - Throws: `PileSnapshotError` when the view or its snapshot is missing or cannot be
     ///   drawn.
-    func snapshot() async throws -> URL {
-        guard let view, let layout else { throw PileSnapshotError.drawingFailed }
+    func snapshot(in viewport: PileViewport?) async throws -> URL {
+        guard let view, var layout else { throw PileSnapshotError.drawingFailed }
+        if let viewport, viewport.size == layout.viewport.size { layout.viewport = viewport }
         let image: UIImage? = await withCheckedContinuation { done in
             view.snapshot(saveToHDR: false) { done.resume(returning: $0) }
         }

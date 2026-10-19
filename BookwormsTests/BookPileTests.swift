@@ -1,4 +1,5 @@
 import RealityKit
+import SwiftUI
 import XCTest
 
 @testable import Bookworms
@@ -534,6 +535,36 @@ final class BookPileTests: XCTestCase {
                     XCTAssertTrue(layout.pileRect.insetBy(dx: -1, dy: -1).contains(point), label)
                 }
             }
+        }
+    }
+
+    func testSpreadFillsARectOffTheImagesMiddle() {
+        // The dominoes finale's spread in a Mac's window with the sidebar: a rect clear of the
+        // sidebar, well right of the view's middle.
+        let view = PileViewport(
+            size: CGSize(width: 1_180, height: 820),
+            insets: EdgeInsets(top: 52, leading: 144, bottom: 0, trailing: 0))
+        let rect = DominoFinale.spreadRect(in: view)
+        XCTAssertGreaterThan(rect.midX, view.size.width / 2 + 50)
+        for count in [3, 39] {
+            let spread = PileSpread(spreadBooks(count), in: rect, of: view.size, seed: 1)
+            let boxes = zip(spread.slots, spread.shapes).map { ($0.transform, $1) }
+            let points = boxes.flatMap { corners(of: $0) }
+                .map { pixel(spread.camera, $0, view.size) }
+            // Every book lies inside the rect, which the books fill across or down, centered.
+            for point in points {
+                XCTAssertTrue(rect.insetBy(dx: -1, dy: -1).contains(point), "\(count)")
+            }
+            let low = CGPoint(x: points.map(\.x).min()!, y: points.map(\.y).min()!)
+            let high = CGPoint(x: points.map(\.x).max()!, y: points.map(\.y).max()!)
+            let fill = max((high.x - low.x) / rect.width, (high.y - low.y) / rect.height)
+            XCTAssertGreaterThan(fill, 0.95, "\(count)")
+            XCTAssertEqual((low.x + high.x) / 2, rect.midX, accuracy: 10, "\(count)")
+            // At least four fifths of each cover shows, measured more finely than the layout
+            // measures it.
+            let shares = PileSpread.visibility(
+                of: boxes, camera: spread.camera, in: rect, of: view.size, samples: [24, 32])
+            XCTAssertGreaterThanOrEqual(shares.map(\.share).min() ?? 0, 0.8, "\(count)")
         }
     }
 

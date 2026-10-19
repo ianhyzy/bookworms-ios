@@ -19,9 +19,10 @@ import simd
 /// spread's last book is the last book read, the chain's last, which the spread puts down last,
 /// so no book rests on it (`PileSpread`'s `last`). It waits where it fell; as the camera comes
 /// to rest, it springs up close to the camera, its cover turned squarely to the viewer and large
-/// in the middle of the view (`snapTop(size:seenBy:aspect:)`), hangs there a beat, and slams
-/// down into its place, landing `snapLanding` after the camera stops
-/// (`snapPose(from:to:top:time:)`).
+/// in the middle of the spread's area (`snapTop(size:seenBy:in:of:)`), hangs there a beat, and
+/// slams down into its place, landing `snapLanding` after the camera stops
+/// (`snapPose(from:to:top:time:)`). The spread and the hanging book fill the part of the view
+/// that a recording shows, in a view wider than 9:16 such as a Mac's window (`area(in:)`).
 /// Out of the lamp's beam, the room lights it more (`DeskStage.light(_:boost:)`), so it stays
 /// lit rather than going dark (`boost(at:over:radius:)`).
 /// The poses are pure functions of time, so tests replay them.
@@ -68,10 +69,33 @@ enum DominoFinale {
     /// With Reduce Motion on, how long after the last book falls the camera cuts to the
     /// spread's view and the books appear in their places, in seconds.
     static let stillWait: Float = 1
-    /// The room the heading takes at the top of a view `width` wide, which the spread leaves:
-    /// 28 percent of the width, about 112 points on an iPhone and 300 pixels on a story
-    /// clip, since `DominoFinaleCard` scales with the width.
+    /// The room the heading takes at the top of the spread's area (`area(in:)`), `width` wide,
+    /// which the spread leaves: 28 percent of the width, about 112 points on an iPhone, 129 in
+    /// a Mac's default window, and 300 pixels on a story clip, since `DominoFinaleCard` scales
+    /// with the width.
     static func headingRoom(width: CGFloat) -> CGFloat { width * 0.28 }
+
+    /// The part of a view of `viewport` that the spread fills and the last book hangs in, in
+    /// points. In a view wider than 9:16, such as a Mac's window, it is the 9:16 frame that a
+    /// recording of the run shows of the finale (`DominoRecorder.crop(in:)`), so the video and
+    /// its image show every gathered book, and the live view frames them the same way, with
+    /// the table on either side. Otherwise, as on an iPhone, it is the whole view.
+    static func area(in viewport: PileViewport) -> CGRect {
+        let frame = DominoRecorder.crop(in: viewport)
+        return frame.width < viewport.size.width
+            ? frame : CGRect(origin: .zero, size: viewport.size)
+    }
+
+    /// Where the spread lays out its books in a view of `viewport`, in points: across the part
+    /// of `area(in:)` that the bars leave clear, 16 points in from its sides, below the
+    /// heading's room (`headingRoom(width:)`), and 24 points above the bottom bar.
+    static func spreadRect(in viewport: PileViewport) -> CGRect {
+        let area = area(in: viewport)
+        let clear = area.intersection(viewport.clear)
+        let top = viewport.insets.top + headingRoom(width: area.width)
+        return CGRect(
+            x: clear.minX + 16, y: top, width: clear.width - 32, height: clear.maxY - 24 - top)
+    }
 
     /// How long the last book's flourish takes, from its spring to its landing.
     static var snapTime: Float { snapRise + snapHang + snapDrop }
@@ -94,20 +118,31 @@ enum DominoFinale {
     static func peak(of index: Int) -> Float { rise + riseStep * Float(index % 4) }
 
     /// Where the last book, of `size` (see `BookShape.size`), hangs before it slams into its
-    /// place, seen by `camera` in a view of width-to-height `aspect`: in the middle of the view,
-    /// facing the camera squarely, head up, as near as fills `snapWidth` of the view's width or
-    /// `snapHeight` of its height, whichever comes first. A book facing the camera on its axis
-    /// shows as a rectangle, so its cover reads as if held up to the viewer. The book lies
-    /// wholly within the view, and even the smallest, 1.7 units tall, hangs about 4 units from
+    /// place, seen by `camera` in a view of `view` points: in the middle of `area`, the part of
+    /// the view the spread fills (`area(in:)`), facing the camera squarely, head up, as near as
+    /// fills `snapWidth` of the area's width or `snapHeight` of its height, whichever comes
+    /// first. Its cover lies parallel to the view, so it shows as a rectangle, as if held up to
+    /// the viewer, also where the area's middle lies off the camera's axis. The book lies
+    /// wholly within the area, and even the smallest, 1.7 units tall, hangs about 4 units from
     /// the camera, well past its near plane.
-    static func snapTop(size: SIMD3<Float>, seenBy camera: PileCamera, aspect: Float) -> Transform {
+    static func snapTop(
+        size: SIMD3<Float>, seenBy camera: PileCamera, in area: CGRect, of view: CGSize
+    ) -> Transform {
         let slope = tan(PileCamera.fieldOfView / 2)
+        let aspect = Float(view.width / view.height)
+        let share = SIMD2(Float(area.width / view.width), Float(area.height / view.height))
         let depth =
-            max(size.x / (snapWidth * aspect), size.y / snapHeight) / (2 * slope) + size.z / 2
+            max(size.x / (snapWidth * share.x * aspect), size.y / (snapHeight * share.y))
+            / (2 * slope) + size.z / 2
+        // The area's middle in normalized device coordinates, whose y grows upward.
+        let middle = SIMD2(
+            Float(2 * area.midX / view.width - 1), Float(1 - 2 * area.midY / view.height))
         let shown = camera.transform
         return Transform(
             scale: .one, rotation: shown.rotation,
-            translation: shown.translation + shown.rotation.act([0, 0, -depth]))
+            translation: shown.translation
+                + shown.rotation.act(
+                    [middle.x * aspect * slope * depth, middle.y * slope * depth, -depth]))
     }
 
     /// How many stops brighter the room lights the last book at `point`, over its `place`,
@@ -212,8 +247,8 @@ enum DominoFinale {
     /// axis meets the table, or as deep as `focus`, such as where the last book lands, and moves
     /// onto `focus` by `aimDelay`, so the camera centers on it as it pulls back, or holds still
     /// without one. It then moves straight to the spread's, easing in and out, and arrives with
-    /// the rest of the move, so the camera keeps the books in the middle of the view as they
-    /// gather. Any roll `from` has eases out.
+    /// the rest of the move, so the camera keeps the books where the spread's view frames them
+    /// as they gather. Any roll `from` has eases out.
     static func view(
         from: Transform, to: PileCamera, around focus: SIMD3<Float>? = nil, progress: Float
     ) -> Transform {
