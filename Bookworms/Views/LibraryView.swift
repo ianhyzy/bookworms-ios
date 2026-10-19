@@ -387,8 +387,8 @@ private struct LibraryBar: ViewModifier {
     }
 }
 
-/// On the iPhone, the library's status, such as "Last 12 months · 39 books" over "Synced 2:41
-/// PM", centered under the caption, between **View as** at the leading end and **Find a book**
+/// On the iPhone, the library's status, such as "Last 12 months · 39 books" over "Synced Oct 17,
+/// 2:41 PM", centered under the caption, between **View as** at the leading end and **Find a book**
 /// and **View options** in a glass capsule at the trailing end, as Mail shows a mailbox's status
 /// beside its filter button. A failed sync shows **Couldn't sync · Retry**, which syncs again.
 /// VoiceOver reads the status as the screen's heading, named "Library".
@@ -519,12 +519,12 @@ private struct ShelfModePicker: View {
     }
 }
 
-/// The library's sync status, such as "Synced 2:41 PM", "Syncing…", or "Couldn't sync", for
-/// the iPhone's footer and the Mac's subtitle. Read in the views that show it, so a sync
-/// updates only them.
+/// The library's sync status, such as "Synced Oct 17, 2:41 PM", "Syncing…", or "Couldn't
+/// sync", for the iPhone's footer and the Mac's subtitle. Read in the views that show it, so a
+/// sync updates only them.
 ///
-/// It names the time of day for a sync today and the date for an earlier one, which stays true
-/// without updating as time passes.
+/// It always names the sync's day, so it stays true without updating as time passes, such as
+/// in a window left open overnight.
 @MainActor
 struct LibrarySync {
     let model: AppModel
@@ -539,12 +539,13 @@ struct LibrarySync {
         return "Synced " + Self.time(of: synced)
     }
 
-    /// "2:41 PM" for a time today, and otherwise the date, such as "Oct 17, 2026".
+    /// The day and time, such as "Oct 17, 2:41 PM", for a time this year, and otherwise the
+    /// date, such as "Oct 17, 2025".
     nonisolated static func time(
         of date: Date, now: Date = .now, calendar: Calendar = .current
     ) -> String {
-        calendar.isDate(date, inSameDayAs: now)
-            ? date.formatted(date: .omitted, time: .shortened)
+        calendar.isDate(date, equalTo: now, toGranularity: .year)
+            ? date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
             : date.formatted(date: .abbreviated, time: .omitted)
     }
 }

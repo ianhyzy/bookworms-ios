@@ -273,17 +273,17 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(BookFinding.matches("Dune", in: series).map(\.id), [2, 1])
     }
 
-    func testSyncStatusNamesTodaysTimeAndEarlierDates() {
+    func testSyncStatusNamesTheDayAndTimeThisYearAndEarlierDates() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = losAngeles
-        let earlier = evening.addingTimeInterval(-60 * 60)
         let yesterday = evening.addingTimeInterval(-24 * 60 * 60)
-        XCTAssertEqual(
-            LibrarySync.time(of: earlier, now: evening, calendar: calendar),
-            earlier.formatted(date: .omitted, time: .shortened))
+        let lastYear = calendar.date(byAdding: .year, value: -1, to: evening)!
         XCTAssertEqual(
             LibrarySync.time(of: yesterday, now: evening, calendar: calendar),
-            yesterday.formatted(date: .abbreviated, time: .omitted))
+            yesterday.formatted(.dateTime.month(.abbreviated).day().hour().minute()))
+        XCTAssertEqual(
+            LibrarySync.time(of: lastYear, now: evening, calendar: calendar),
+            lastYear.formatted(date: .abbreviated, time: .omitted))
     }
 
     func testSlabThicknessStaysInTheComfortableRange() {
