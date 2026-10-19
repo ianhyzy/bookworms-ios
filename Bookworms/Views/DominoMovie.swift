@@ -70,17 +70,18 @@ struct DominoFinaleCard: View {
 /// (`crop(in:)`) over the wall's gradient, which shows around the scene, with the heading and
 /// the credit, into a pixel buffer from the encoder's pool. In a view wider than 9:16, such as
 /// a Mac's window, the frame shows the view's full height and pans across it after the run's
-/// subject, which the scene passes on each update: the falling front, which starts where the
-/// hand pushes the first book, then the finale (`DominoPan`). The video opens on the subject.
-/// Each frame request carries the frame's place, and its size stays fixed, so the heading and
-/// the credit stay put in the video, and the PNG shows the last frame's place. Once the GPU is
-/// done, the frame goes to the hardware encoder on the main actor, which expects frames in
-/// real time; frames the encoder has no room for wait for it in order, up to `backlogLimit`,
-/// past which every other one is dropped. The heading is `DominoFinaleCard`, where the live
-/// view shows it, and it fades in as the live one does. `DominoMovieTiming` picks the frames on
-/// each scene update, so a long run plays faster than live and the video stays within 30
-/// seconds, and times the hits that `ImpactFeedback` recorded, which are mixed into the
-/// soundtrack once the recording ends (`ImpactMix`).
+/// subject, which the scene passes on each update: where the Follow camera keeps the falling
+/// front, or the chain just ahead of the front with another view, then the finale
+/// (`DominoPan`). The video opens on the subject, at the hand and the first book. Each frame
+/// request carries the frame's place, and its size stays fixed, so the heading and the credit
+/// stay put in the video, and the PNG shows the last frame's place. Once the GPU is done, the
+/// frame goes to the hardware encoder on the main actor, which expects frames in real time;
+/// frames the encoder has no room for wait for it in order, up to `backlogLimit`, past which
+/// every other one is dropped. The heading is `DominoFinaleCard`, where the live view shows it,
+/// and it fades in as the live one does. `DominoMovieTiming` picks the frames on each scene
+/// update, so a long run plays faster than live and the video stays within 30 seconds, and
+/// times the hits that `ImpactFeedback` recorded, which are mixed into the soundtrack once the
+/// recording ends (`ImpactMix`).
 ///
 /// The recording arms once the chain stands, so its costs fall before the push (`arm()`). The
 /// writer is made and started, and Core Image compiles the frames' kernels, away from the main
@@ -733,9 +734,10 @@ final class DominoRecorder {
 /// follows a subject that moves at a steady speed `lag` seconds behind, so the scene aims that
 /// far ahead along the chain.
 struct DominoPan {
-    /// How fast each lag closes on its goal, per second: fast enough to turn with the chain at
-    /// a row's end within a few tenths of a second, at the fastest fronts measured across a
-    /// Mac window's overview, a year's and a month's, while it smooths the books' unevenness.
+    /// How fast each lag closes on its goal, per second. With the scene's subject led by
+    /// `lag`, it sets how quickly the frame turns with the chain at a row's end, within about
+    /// half a second, which keeps the fastest fronts measured across a Mac window's overview, a
+    /// year's and a month's, near the frame's middle.
     static let rate: Double = 10
 
     /// How long the frame trails a subject that moves at a steady speed, in seconds.
