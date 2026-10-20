@@ -593,14 +593,14 @@ final class DominoScene {
     /// the part of the view it frames, so the standing chain fills about two thirds of an
     /// iPhone's width and the fallen books keep room once the camera eases in
     /// (`followRoom`); and the Follow camera's opening view's.
-    private static let overviewRoom: Float = 0.9
+    nonisolated private static let overviewRoom: Float = 0.9
     /// The overview's turn about the table, in radians, from looking straight across the rows.
     /// Every other row stands with its spines toward the camera and the rows between with
     /// their fore edges toward it, so from straight ahead those rows show only page edges.
     /// From 20 degrees toward the lamp's side, the camera also sees each book's broad side,
     /// lit: the spine rows' front covers and the other rows' back boards, so every book reads
     /// as a book while it stands upright.
-    private static let overviewYaw: Float = 0.35
+    nonisolated private static let overviewYaw: Float = 0.35
     private static let openingRoom: Float = 0.9
     /// The most the overview camera eases in past the overview while the chain falls, as a
     /// share of the overview's zoom, so the fallen books keep their room in the view.
@@ -1105,7 +1105,7 @@ final class DominoScene {
     /// The plan of `chain` for a view of `viewport`, whose rows are as wide for their depth as
     /// the part of the view the cameras frame them in (`DominoFinale.clearArea(in:)`), or `nil`
     /// when that part is empty.
-    private static func plan(
+    nonisolated static func plan(
         _ chain: [(book: CloudBook, days: Int)], in viewport: PileViewport
     ) -> DominoPlan? {
         let clear = DominoFinale.clearArea(in: viewport)
@@ -1191,9 +1191,7 @@ final class DominoScene {
         aspect = Float(size.width / size.height)
         let rect = Self.frameRect(in: viewport)
         let outline = DominoLayout.outline(of: plan.slots)
-        overview = PileCamera(yaw: Self.overviewYaw)
-            .framing(outline, in: rect, of: size, zoomRange: 0.2...2.5)
-        overview.zoom *= Self.overviewRoom
+        overview = Self.overview(of: outline, in: viewport)
         var high = PileCamera(
             yaw: DominoCameraRig.openingYaw, pitch: DominoCameraRig.openingPitch
         )
@@ -1221,10 +1219,22 @@ final class DominoScene {
         follows = mode == .follow
     }
 
+    /// The overview of `outline`, a plan's books standing and fallen
+    /// (`DominoLayout.outline(of:)`), in a view of `viewport`: framed in `frameRect(in:)`, with
+    /// `overviewRoom` around them.
+    nonisolated static func overview(
+        of outline: [SIMD3<Float>], in viewport: PileViewport
+    ) -> PileCamera {
+        var camera = PileCamera(yaw: overviewYaw)
+            .framing(outline, in: frameRect(in: viewport), of: viewport.size, zoomRange: 0.2...2.5)
+        camera.zoom *= overviewRoom
+        return camera
+    }
+
     /// The part of `viewport` that the overview frames the books in: the part the run plays in,
     /// between the bars (`DominoFinale.clearArea(in:)`), with room around the books and more at
     /// the bottom.
-    private static func frameRect(in viewport: PileViewport) -> CGRect {
+    nonisolated private static func frameRect(in viewport: PileViewport) -> CGRect {
         let clear = DominoFinale.clearArea(in: viewport)
         return CGRect(
             x: clear.minX + 16, y: clear.minY + 8, width: clear.width - 32,

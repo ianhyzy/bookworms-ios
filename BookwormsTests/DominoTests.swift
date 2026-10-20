@@ -1140,6 +1140,30 @@ final class DominoTests: XCTestCase {
         XCTAssertEqual(DominoFinale.spreadRect(in: narrow).minX, 316, accuracy: 1e-9)
     }
 
+    func testTheOverviewShowsTheWholeChainInTheRecordingsFrameInAWideView() throws {
+        // The Mac's default window with the sidebar, whose frame spans x 431 to 893.
+        let mac = PileViewport(
+            size: CGSize(width: 1_180, height: 820),
+            insets: EdgeInsets(top: 52, leading: 144, bottom: 0, trailing: 0))
+        let frame = DominoFinale.area(in: mac)
+        let aspect = Float(mac.size.width / mac.size.height)
+        // A short chain, in even rows of the frame's shape, and the longest, in the worm's.
+        for count in [40, DominoLayout.maximumBooks] {
+            let books = (0..<count).map { book($0, day: $0 * 6) }
+            let plan = try XCTUnwrap(DominoScene.plan(DominoLayout.chain(books), in: mac))
+            let outline = DominoLayout.outline(of: plan.slots)
+            let overview = DominoScene.overview(of: outline, in: mac)
+            // Every book, standing or fallen, shows inside the frame and below the toolbar.
+            for point in outline {
+                let shown = overview.project(point, aspect: aspect)
+                let x = CGFloat(shown.x + 1) / 2 * mac.size.width
+                let y = CGFloat(1 - shown.y) / 2 * mac.size.height
+                XCTAssertTrue((frame.minX...frame.maxX).contains(x), "\(count) books: x \(x)")
+                XCTAssertTrue((52...frame.maxY).contains(y), "\(count) books: y \(y)")
+            }
+        }
+    }
+
     /// Whether two standing books' footprints overlap, taking each as wide as its height allows,
     /// by the separating axis test.
     private func overlap(_ a: DominoSlot, _ b: DominoSlot) -> Bool {
