@@ -541,6 +541,10 @@ final class DominoStatus {
 /// a little closer, to at most `followRoom` times the overview's zoom, and across the rows with
 /// the front where the path is deeper than the view. Follow hands the camera to
 /// `DominoCameraRig`, built once the books stand, which chases the falling front low and close.
+/// Both frame the chain in the part of the view that the run plays in, between the bars
+/// (`DominoFinale.clearArea(in:)`), which the path's rows are planned to fit: in a view wider
+/// than 9:16, such as a Mac's window, the 9:16 frame that the recording shows, so the video
+/// shows every book fall.
 /// Both cameras run while the chain runs, so switching between them blends from one moving view
 /// to the other, over a time that keeps the blend's turn and travel gentle. A pinch or drag
 /// takes over from either, from the view as it shows, until the next push. With Reduce Motion
@@ -589,14 +593,14 @@ final class DominoScene {
     /// the part of the view it frames, so the standing chain fills about two thirds of an
     /// iPhone's width and the fallen books keep room once the camera eases in
     /// (`followRoom`); and the Follow camera's opening view's.
-    private static let overviewRoom: Float = 0.9
+    nonisolated private static let overviewRoom: Float = 0.9
     /// The overview's turn about the table, in radians, from looking straight across the rows.
     /// Every other row stands with its spines toward the camera and the rows between with
     /// their fore edges toward it, so from straight ahead those rows show only page edges.
     /// From 20 degrees toward the lamp's side, the camera also sees each book's broad side,
     /// lit: the spine rows' front covers and the other rows' back boards, so every book reads
     /// as a book while it stands upright.
-    private static let overviewYaw: Float = 0.35
+    nonisolated private static let overviewYaw: Float = 0.35
     private static let openingRoom: Float = 0.9
     /// The most the overview camera eases in past the overview while the chain falls, as a
     /// share of the overview's zoom, so the fallen books keep their room in the view.
@@ -610,8 +614,10 @@ final class DominoScene {
     /// (see `blended(_:to:progress:)`).
     nonisolated private static let aimLead: Float = 0.6
     private static let coverWait = Duration.seconds(1.5)
-    /// The longest the first book of a setup from the desk waits for the camera, in seconds.
-    private static let setupLead: Float = 1.2
+    /// The longest the first book of a setup from the desk waits for the camera, in seconds,
+    /// and the longest the setup waits for books still sliding from a throw to come to rest.
+    private static let setupLead: Float = 0.5
+    private static let settleWait = Duration.seconds(1)
     /// How many books are built and stood up at a time.
     private static let batchSize = 16
     /// The cosine of the tilt under which a book counts as upright, about 6 degrees: more
@@ -665,9 +671,10 @@ final class DominoScene {
     /// Seconds the hand has shown, which time its halo's pulse.
     private var handClock: TimeInterval = 0
     private var key: Key?
-    /// The viewport the plan was framed for. The spread, the finale's heading, and an image of
-    /// the view keep it while the chain lasts, also once the sidebar shows or hides
-    /// (`DominoFinale.area(in:)`).
+    /// The viewport the plan was framed for, in the part of it that the run plays in
+    /// (`DominoFinale.area(in:)`). The spread and the finale's heading keep it while the chain
+    /// lasts, also once the sidebar shows or hides; the recording, its image, and the darkened
+    /// sides of a wider view keep it while the view keeps its size (see `DominoesView`).
     private(set) var plannedViewport: PileViewport?
     private var plan: [DominoSlot] = []
     private var extent = SIMD2<Float>.zero
@@ -731,6 +738,10 @@ final class DominoScene {
         /// The camera log's lines, and whether it has ended (see `logCamera`).
         private var cameraLog: [String] = []
         private var cameraLogEnded = false
+        /// The overlap log's lines, and the frames it checked in each phase (see
+        /// `logOverlaps`).
+        private var overlapLog: [String] = []
+        private var overlapFrames: [String: Int] = [:]
     #endif
     /// The camera and the table point under the fingers when they started moving the camera,
     /// whether they pinch, and the drag's translation then.
@@ -784,12 +795,21 @@ final class DominoScene {
         var moves: [DominoSetup.Move?]
         var landed: [Bool]
         /// The cobweb in front of each book, by the book's index, and when it started to fade
-        /// in, once the book has landed.
+        /// in, once the book has landed and the web hangs, and whether every web hangs.
         var webs: [Int: Entity] = [:]
         var fades: [Int: Float] = [:]
+        var hung = false
         #if DEBUG
-            /// The setup log's lines (see `logSetup`).
+            /// The setup log's lines (see `logSetup`), and when the setup was asked for.
             var log: [String] = []
+            let requested = ContinuousClock.now
+
+            /// Logs that the setup reached `stage`, with the seconds since it was asked for.
+            mutating func mark(_ stage: String) {
+                log.append(
+                    String(
+                        format: "%@,%.3f", stage, (ContinuousClock.now - requested) / .seconds(1)))
+            }
         #endif
 
         init(count: Int) {
@@ -822,28 +842,15 @@ final class DominoScene {
         /// (`DominoFinale.area(in:)`), and the view's size, in points.
         let area: CGRect
         let view: CGSize
-        /// Where a recording's frame centered as the last book fell, as a share of the view's
-        /// width, which it moves on from (`recordingSubject`).
-        let subject: CGFloat?
-        /// The books' flights into the spread, in its order, once they start to gather, and how
-        /// many have landed.
-        var flights: [Flight] = []
-        var landed = 0
+        /// Once the books start to gather, each book's index in the chain, in the spread's
+        /// order, their ways into the spread (`DominoFinale.Gather`), and which have landed.
+        var gathering: [Int] = []
+        var gather: DominoFinale.Gather?
+        var landed: [Bool] = []
 
         /// Whether the camera still moves to the spread's view.
         var movesCamera: Bool { clock < DominoFinale.moveTime }
     }
-    /// A book's flight into the spread, whose arc peaks `peak` above its ends. The last flight
-    /// is the flourish instead (`DominoFinale.snapPose`).
-    private struct Flight {
-        /// The book's index in the chain.
-        let book: Int
-        let from: Transform
-        let to: Transform
-        let start: Float
-        let peak: Float
-    }
-
     private struct Key: Equatable {
         let ids: [Int]
         let generation: Int
@@ -1083,16 +1090,8 @@ final class DominoScene {
         guard key != self.key || (spawned == 0 && viewport != plannedViewport) else {
             return true
         }
-        let size = viewport.size
-        let insets = viewport.insets
-        let safe = CGSize(
-            width: size.width - insets.leading - insets.trailing,
-            height: size.height - insets.top - insets.bottom)
-        guard safe.width > 0, safe.height > 0 else { return false }
+        guard let plan = Self.plan(chain, in: viewport) else { return false }
         reset(keeping: Set(key.ids))
-        // The table seen at the camera's pitch is deeper than the screen is tall.
-        let plan = DominoLayout.plan(
-            chain, aspect: Float(safe.width / safe.height) * sin(PileCamera.pitch))
         self.plan = plan.slots
         extent = plan.extent
         light(radius: max(6, simd_length(plan.extent) + 3))
@@ -1101,6 +1100,19 @@ final class DominoScene {
         plannedViewport = viewport
         loading.isLoading = !plan.slots.isEmpty
         return true
+    }
+
+    /// The plan of `chain` for a view of `viewport`, whose rows are as wide for their depth as
+    /// the part of the view the cameras frame them in (`DominoFinale.clearArea(in:)`), or `nil`
+    /// when that part is empty.
+    nonisolated static func plan(
+        _ chain: [(book: CloudBook, days: Int)], in viewport: PileViewport
+    ) -> DominoPlan? {
+        let clear = DominoFinale.clearArea(in: viewport)
+        guard clear.width > 0, clear.height > 0 else { return nil }
+        // The table seen at the camera's pitch is deeper than the screen is tall.
+        return DominoLayout.plan(
+            chain, aspect: Float(clear.width / clear.height) * sin(PileCamera.pitch))
     }
 
     /// Removes the books and their textures while the chain is out of sight. The next `setUp`
@@ -1150,6 +1162,8 @@ final class DominoScene {
         #if DEBUG
             cameraLog = []
             cameraLogEnded = false
+            overlapLog = []
+            overlapFrames = [:]
         #endif
         factory.release(keeping: ids)
         status.phase = .settingUp
@@ -1165,32 +1179,31 @@ final class DominoScene {
         stage.aim(pool: .zero, radius: radius)
     }
 
-    /// Frames every book of `plan`, standing or fallen (`DominoLayout.outline`), between the
-    /// bars of `viewport`, with room around them and more at the bottom, for the overview and,
-    /// from the side the Follow camera films from, for its opening view, and sets up the Follow
-    /// camera to compose between the bars.
+    /// Frames every book of `plan`, standing or fallen (`DominoLayout.outline`), in the part of
+    /// `viewport` the run plays in, between the bars (`DominoFinale.clearArea(in:)`), with room
+    /// around them and more at the bottom, for the overview and, from the side the Follow
+    /// camera films from, for its opening view, and sets up the overview to follow the front
+    /// and the Follow camera to compose there. In a view wider than 9:16, such as a Mac's
+    /// window, that is the recording's frame, so the view and the video show the same run.
     private func frame(_ plan: DominoPlan, in viewport: PileViewport) {
         let size = viewport.size
-        let insets = viewport.insets
+        let clear = DominoFinale.clearArea(in: viewport)
         aspect = Float(size.width / size.height)
-        let rect = frameRect(in: viewport)
+        let rect = Self.frameRect(in: viewport)
         let outline = DominoLayout.outline(of: plan.slots)
-        overview = PileCamera(yaw: Self.overviewYaw)
-            .framing(outline, in: rect, of: size, zoomRange: 0.2...2.5)
-        overview.zoom *= Self.overviewRoom
+        overview = Self.overview(of: outline, in: viewport)
         var high = PileCamera(
             yaw: DominoCameraRig.openingYaw, pitch: DominoCameraRig.openingPitch
         )
         .framing(outline, in: rect, of: size, zoomRange: 0.1...2.5)
         high.zoom *= Self.openingRoom
         opening = DominoCameraPose(eye: high.transform.translation, target: high.target)
-        // The view's width at the follow zoom fits the row with 10 percent to spare.
+        // The framed part's width at the follow zoom fits the row with 10 percent to spare.
         let tallest = plan.slots.map(\.size.y).max() ?? 0
         let span = (plan.path.rowLengths.max() ?? 0) + 2 * plan.path.radius + 2 * tallest
+        let shown = PileCamera.distance * 2 * tan(PileCamera.fieldOfView / 2) * aspect
         followZoom = min(
-            max(
-                overview.zoom,
-                PileCamera.distance * 2 * tan(PileCamera.fieldOfView / 2) * aspect * 0.9 / span),
+            max(overview.zoom, shown * Float(clear.width / size.width) * 0.9 / span),
             overview.zoom * Self.followRoom)
         view = overview
         handoff = nil
@@ -1201,25 +1214,31 @@ final class DominoScene {
         let width = Float(size.width)
         let height = Float(size.height)
         area = DominoCameraRig.Area(
-            low: [
-                2 * Float(insets.leading + 16) / width - 1,
-                1 - 2 * Float(size.height - insets.bottom - 8) / height,
-            ],
-            high: [
-                1 - 2 * Float(insets.trailing + 16) / width, 1 - 2 * Float(insets.top + 8) / height,
-            ])
+            low: [2 * Float(clear.minX + 16) / width - 1, 1 - 2 * Float(clear.maxY - 8) / height],
+            high: [2 * Float(clear.maxX - 16) / width - 1, 1 - 2 * Float(clear.minY + 8) / height])
         follows = mode == .follow
     }
 
-    /// The part of `viewport` that the overview frames the books in: between the bars, with room
-    /// around the books and more at the bottom.
-    private func frameRect(in viewport: PileViewport) -> CGRect {
-        let size = viewport.size
-        let insets = viewport.insets
+    /// The overview of `outline`, a plan's books standing and fallen
+    /// (`DominoLayout.outline(of:)`), in a view of `viewport`: framed in `frameRect(in:)`, with
+    /// `overviewRoom` around them.
+    nonisolated static func overview(
+        of outline: [SIMD3<Float>], in viewport: PileViewport
+    ) -> PileCamera {
+        var camera = PileCamera(yaw: overviewYaw)
+            .framing(outline, in: frameRect(in: viewport), of: viewport.size, zoomRange: 0.2...2.5)
+        camera.zoom *= overviewRoom
+        return camera
+    }
+
+    /// The part of `viewport` that the overview frames the books in: the part the run plays in,
+    /// between the bars (`DominoFinale.clearArea(in:)`), with room around the books and more at
+    /// the bottom.
+    nonisolated private static func frameRect(in viewport: PileViewport) -> CGRect {
+        let clear = DominoFinale.clearArea(in: viewport)
         return CGRect(
-            x: insets.leading + 16, y: insets.top + 8,
-            width: size.width - insets.leading - insets.trailing - 32,
-            height: size.height - insets.top - insets.bottom - 88)
+            x: clear.minX + 16, y: clear.minY + 8, width: clear.width - 32,
+            height: clear.height - 88)
     }
 
     /// The Follow camera for the books that stand and the cobwebs that hang between them, which
@@ -1340,7 +1359,8 @@ final class DominoScene {
     /// the book before the batch, wherever `DominoLayout.cobweb(days:)` finds the days between
     /// their finishes long enough. A book without parts cannot stand, so the days across its
     /// place count toward the web between its neighbors. Each web runs between the books'
-    /// facing top edges, from near their corners.
+    /// facing top edges, from near their corners. The webs' meshes generate at once rather
+    /// than one after another, which a long chain's many webs would otherwise wait on.
     private func makeCobwebs(_ batch: some Sequence<DominoSlot>, after first: DominoSlot?) async
         -> [Int: HangingCobweb]
     {
@@ -1352,7 +1372,7 @@ final class DominoScene {
             // Just under the top edge, so the threads leave the boards rather than float.
             return [middle - across, middle + across].map { [$0.x, size.y - 0.005, $0.y] }
         }
-        var cobwebs: [Int: HangingCobweb] = [:]
+        var webs: [(id: Int, web: Cobweb)] = []
         var near = first
         for far in batch where factory.parts[far.book.id] != nil {
             if let near, let density = DominoLayout.cobweb(days: far.day - near.day) {
@@ -1360,10 +1380,19 @@ final class DominoScene {
                     near: edge(near, facing: 1), far: edge(far, facing: -1), density: density,
                     seed: UInt64(bitPattern: Int64(near.book.id)) &* 0x9E37_79B9_7F4A_7C15
                         ^ UInt64(bitPattern: Int64(far.book.id)))
-                cobwebs[far.book.id] = await HangingCobweb(
-                    web, material: Self.silk, lighting: stage.lighting)
+                webs.append((far.book.id, web))
             }
             near = far
+        }
+        let lighting = stage.lighting
+        let building = webs.map { item in
+            Task { await HangingCobweb(item.web, material: Self.silk, lighting: lighting) }
+        }
+        var cobwebs: [Int: HangingCobweb] = [:]
+        await withTaskCancellationHandler {
+            for (item, task) in zip(webs, building) { cobwebs[item.id] = await task.value }
+        } onCancel: {
+            for task in building { task.cancel() }
         }
         return cobwebs
     }
@@ -1393,17 +1422,8 @@ final class DominoScene {
     ) {
         let chain = DominoLayout.chain(chained)
         let key = Key(ids: chain.map { $0.book.id }, generation: generation)
-        let size = viewport.size
-        let insets = viewport.insets
-        guard size.width - insets.leading - insets.trailing > 0,
-            size.height - insets.top - insets.bottom > 0
-        else { return }
+        guard let plan = Self.plan(chain, in: viewport) else { return }
         reset(keeping: Set(key.ids))
-        let plan = DominoLayout.plan(
-            chain,
-            aspect: Float(
-                (size.width - insets.leading - insets.trailing)
-                    / (size.height - insets.top - insets.bottom)) * sin(PileCamera.pitch))
         self.plan = plan.slots
         extent = plan.extent
         poolRadius = max(6, simd_length(plan.extent) + 3)
@@ -1467,39 +1487,41 @@ final class DominoScene {
         key = nil
     }
 
-    /// Gets the handed-over books ready to set themselves up: hangs the chain's cobwebs, unseen,
-    /// and waits, at most two seconds, until the books lie still. It then moves the books, the
-    /// camera, and the lamp's pool across the table by whole tiles, which the table does not
-    /// show, so the places lie clear of the books (`DominoSetup.offset(of:aspect:)`), and moves
-    /// the camera to a view of both the books and their places. With Reduce Motion on, the books
-    /// stand in their places at once instead, and the camera cuts to the overview.
+    /// Gets the handed-over books ready to set themselves up: waits, at most a second, until
+    /// the books lie still, then moves them, the camera, and the lamp's pool across the table by
+    /// whole tiles, which the table does not show, so the places lie clear of the books
+    /// (`DominoSetup.offset(of:aspect:)`), and moves the camera to a view of both the books and
+    /// their places, framed where the run plays (`DominoFinale.area(in:)`), whose shape the
+    /// move fits. The chain's cobwebs build while the books move (`hangCobwebs(key:)`). With
+    /// Reduce Motion on, the books stand in their places at once instead, once the cobwebs
+    /// hang, and the camera cuts to the overview.
     private func prepareArrangement(key: Key) async {
-        let webs = await makeCobwebs(slots.dropFirst(), after: slots.first)
-        guard !Task.isCancelled, self.key == key, arrangement != nil else { return }
-        for (index, slot) in slots.enumerated() {
-            guard var web = webs[slot.book.id] else { continue }
-            web.book = index - 1
-            web.root.components.set(OpacityComponent(opacity: 0))
-            shelf.addChild(web.root)
-            cobwebs.append(web)
-            arrangement?.webs[index] = web.root
-            status.cobwebs += 1
+        guard !reducesMotion else {
+            await hangCobwebs(key: key)
+            if self.key == key, arrangement != nil { finishArrangement() }
+            return
         }
-        guard !reducesMotion else { return finishArrangement() }
-        let still = ContinuousClock.now + .seconds(2)
+        let still = ContinuousClock.now + Self.settleWait
         while ContinuousClock.now < still, books.contains(where: Self.isMoving) {
             try? await Task.sleep(for: .milliseconds(50))
             guard !Task.isCancelled, self.key == key, arrangement != nil else { return }
         }
-        let sizes = books.indices.map(size(of:))
+        #if DEBUG
+            arrangement?.mark("still")
+        #endif
         let lying = books.indices.map {
             (
-                size: sizes[$0], lying: books[$0].transform,
+                size: size(of: $0), lying: books[$0].transform,
                 slot: DominoLayout.standingPose(of: slots[$0])
             )
         }
-        let offset = await Self.offset(of: lying, aspect: aspect)
+        let area = plannedViewport.map(DominoFinale.area(in:))
+        let offset = await Self.offset(
+            of: lying, aspect: area.map { Float($0.width / $0.height) } ?? aspect)
         guard !Task.isCancelled, self.key == key, arrangement != nil else { return }
+        #if DEBUG
+            arrangement?.mark("offset")
+        #endif
         for book in books { book.position += offset }
         var shown = camera.transform
         shown.translation += offset
@@ -1520,9 +1542,11 @@ final class DominoScene {
         if let viewport = plannedViewport {
             view = PileCamera(yaw: Self.overviewYaw)
                 .framing(
-                    points, in: frameRect(in: viewport), of: viewport.size, zoomRange: 0.05...2.5)
+                    points, in: Self.frameRect(in: viewport), of: viewport.size,
+                    zoomRange: 0.05...2.5)
         }
-        blend(from: .still(shown))
+        // Twice as fast as a switch of camera, keeping pace with the setup.
+        blend(from: .still(shown), pace: 2)
         let reach =
             points.map { simd_length(SIMD2($0.x, $0.z) - SIMD2(view.target.x, view.target.z)) }
             .max() ?? poolRadius
@@ -1530,6 +1554,36 @@ final class DominoScene {
         // The first book waits until the camera has come part of the way, so the places it
         // hops to show.
         arrangement?.time = -min((handoff?.duration ?? 0) * 0.5, Self.setupLead)
+        await hangCobwebs(key: key)
+    }
+
+    /// Builds the chain's cobwebs `batchSize` books at a time, in chain order, and hangs each
+    /// unseen, so the first books need not wait for the last webs. A web fades in once the book
+    /// behind it has landed, or as it hangs if that book has landed already. The setup ends
+    /// only once every web hangs.
+    private func hangCobwebs(key: Key) async {
+        for start in stride(from: 1, to: slots.count, by: Self.batchSize) {
+            let end = min(start + Self.batchSize, slots.count)
+            let webs = await makeCobwebs(slots[start..<end], after: slots[start - 1])
+            guard !Task.isCancelled, self.key == key, var arrangement else { return }
+            for index in start..<end {
+                guard var web = webs[slots[index].book.id] else { continue }
+                web.book = index - 1
+                web.root.components.set(OpacityComponent(opacity: 0))
+                shelf.addChild(web.root)
+                cobwebs.append(web)
+                status.cobwebs += 1
+                arrangement.webs[index] = web.root
+                if arrangement.landed[index], arrangement.fades[index] == nil {
+                    arrangement.fades[index] = arrangement.time ?? 0
+                }
+            }
+            self.arrangement = arrangement
+        }
+        #if DEBUG
+            arrangement?.mark("cobwebs")
+        #endif
+        arrangement?.hung = true
     }
 
     /// The offset `DominoSetup.offset(of:aspect:)` finds, away from the main actor.
@@ -1540,12 +1594,13 @@ final class DominoScene {
         DominoSetup.offset(of: books, aspect: aspect)
     }
 
-    /// Whether `book` still moves faster than a crawl.
+    /// Whether `book` still moves faster than a crawl: 3 cm a second, from which the desk's
+    /// friction stops a sliding book within millimeters.
     private static func isMoving(_ book: ModelEntity) -> Bool {
         guard book.components[PhysicsBodyComponent.self]?.mode == .dynamic,
             let motion = book.components[PhysicsMotionComponent.self]
         else { return false }
-        return simd_length(motion.linearVelocity) > 0.1 || simd_length(motion.angularVelocity) > 0.2
+        return simd_length(motion.linearVelocity) > 0.3 || simd_length(motion.angularVelocity) > 0.6
     }
 
     /// The size of the book at `index` as it was built.
@@ -1675,8 +1730,17 @@ final class DominoScene {
             }
         }
         self.arrangement = arrangement
+        #if DEBUG
+            logOverlaps("setup", at: time) {
+                books.indices.map { index in
+                    guard let move = arrangement.moves[index] else { return "lying" }
+                    return arrangement.landed[index]
+                        ? "standing" : move.isHopping(at: time) ? "hopping" : "turning"
+                }
+            }
+        #endif
         if arrangement.next == books.count, !arrangement.landed.contains(false),
-            arrangement.fades.isEmpty
+            arrangement.fades.isEmpty, arrangement.hung
         {
             finishArrangement()
         }
@@ -1689,6 +1753,7 @@ final class DominoScene {
         guard let arrangement else { return }
         #if DEBUG
             logSetup(arrangement)
+            writeOverlaps()
         #endif
         for (book, slot) in zip(books, slots) {
             book.transform = DominoLayout.standingPose(of: slot)
@@ -1993,76 +2058,13 @@ final class DominoScene {
         updateHand(by: deltaTime)
         updateFinale(by: deltaTime)
         recorder.advance(
-            by: deltaTime, phase: status.phase, progress: runProgress, paused: flying != nil,
-            subject: recordingSubject)
+            by: deltaTime, phase: status.phase, progress: runProgress, paused: flying != nil)
     }
 
     /// How far the chain has fallen along the path, from 0 at the first book to 1 at the last.
     private var runProgress: Float {
         guard let length = slots.last?.distance, length > 0 else { return 1 }
         return min(1, frontDistance / length)
-    }
-
-    /// Where a recording's frame centers across the view, as a share of its width, or `nil`
-    /// to leave it where it is (see `DominoRecorder`).
-    ///
-    /// While the Follow camera films, it is where that camera composes the front, so the frame
-    /// holds still while the camera keeps the front there. While another view shows, it is
-    /// the chain just ahead of the falling front, by as far as the front moves in the time the
-    /// frame trails a steady subject (`DominoPan.lag`), so the front shows near the frame's
-    /// middle, with room for the standing books it falls toward. It starts at the first book,
-    /// where the hand pushes it. A blend between the cameras moves from one to the other.
-    /// Once the last book falls, it is where that book lands (`landing`).
-    ///
-    /// In the finale, it moves from where it was as the last book fell (`Ending.subject`) to the
-    /// middle of the spread's area (`DominoFinale.area(in:)`), which the frame then shows
-    /// exactly, with every gathered book and the last book as it springs up. It moves across
-    /// the view, not with the camera, so a frame that already shows the area holds still. It
-    /// sets off at once and slows to arrive as the books lift, so the frame leaves the chain's
-    /// end, where it can show bare table beyond the last book, as soon as the last book falls,
-    /// and then holds still while the camera's move carries the books; the frame's own easing
-    /// smooths the start. With Reduce Motion on, it is the area's middle from the start, so the
-    /// frame arrives there in the still second before the camera cuts to the spread
-    /// (`DominoFinale.stillWait`), and the books appear inside it.
-    private var recordingSubject: CGFloat? {
-        func across(_ point: SIMD3<Float>) -> CGFloat? {
-            screenPoint(of: point, in: CGSize(width: 1, height: 1))?.x
-        }
-        if let ending {
-            let clock = reducesMotion ? DominoFinale.gatherDelay : ending.clock
-            let rest = CGFloat(1 - min(clock / DominoFinale.gatherDelay, 1))
-            let middle = ending.area.midX / max(ending.view.width, 1)
-            guard let start = ending.subject else { return middle }
-            return start + (middle - start) * (1 - rest * rest * rest)
-        }
-        // Until the Follow camera has made its establishing move, the front is the subject, so
-        // a push during that move still opens the video on the first book and the hand.
-        let follow = rig?.isEstablished == true ? followShare : 0
-        let composed = area.map {
-            CGFloat($0.low.x + ($0.high.x - $0.low.x) * DominoCameraRig.composition.x + 1) / 2
-        }
-        let point: SIMD3<Float>?
-        if next >= books.count {
-            point = landing
-        } else if follow < 1, started, let rig {
-            let ahead = rig.point(
-                at: rig.estimate - DominoCameraRig.focusBack + rig.pace * Float(DominoPan.lag))
-            point = [ahead.x, rig.tallest * DominoCameraRig.typicalHeight / 2, ahead.y]
-        } else {
-            point = nil
-        }
-        guard let composed, follow > 0 else { return point.flatMap(across) }
-        guard follow < 1 else { return composed }
-        return point.flatMap(across).map { $0 + (composed - $0) * CGFloat(follow) }
-    }
-
-    /// How much the Follow camera films, from 0 to 1: 1 while it films, 0 while another view
-    /// shows, and the share of a blend's time gone while it hands over between them.
-    private var followShare: Float {
-        let to: Float = follows && cameraMove == nil && mode == .follow ? 1 : 0
-        guard let handoff else { return to }
-        let from: Float = if case .live(.follow) = handoff.from { 1 } else { 0 }
-        return from + (to - from) * min(handoff.time / handoff.duration, 1)
     }
 
     /// How far along the path the chain's front has come: the next book's place, and as much
@@ -2386,10 +2388,10 @@ final class DominoScene {
         if reducesMotion {
             guard ending.clock >= DominoFinale.stillWait else { return }
             rest(on: ending.camera)
-            if ending.flights.isEmpty { ending.flights = flights(into: ending) }
-            for flight in ending.flights { books[flight.book].transform = flight.to }
-            ending.landed = ending.flights.count
-            if let first = ending.flights.first { land(books[first.book], firmly: false) }
+            let placed = places(in: ending)
+            for (book, place) in placed { books[book].transform = place }
+            ending.landed = Array(repeating: true, count: placed.count)
+            if let first = placed.first { land(books[first.book], firmly: false) }
             status.phase = .finished
             return
         }
@@ -2407,7 +2409,6 @@ final class DominoScene {
         let yaw = PileCamera(matching: camera.transform, fallback: view.target).yaw
         let placed = DominoFinale.turned(spread.slots, camera: spread.camera, by: yaw)
         let moves = follows && cameraMove == nil
-        let subject = recordingSubject
         handoff = nil
         cameraMove = nil
         // The overview shows the last book with the rest of the chain, so the move does not
@@ -2415,8 +2416,7 @@ final class DominoScene {
         ending = Ending(
             start: camera.transform, motion: moves ? motion : Motion(),
             focus: moves && mode == .follow ? landing : nil, slots: placed.slots,
-            camera: placed.camera, area: DominoFinale.area(in: viewport), view: viewport.size,
-            subject: subject)
+            camera: placed.camera, area: DominoFinale.area(in: viewport), view: viewport.size)
         if !reducesMotion, let book = placed.slots.last?.book { sharpenCover(of: book) }
     }
 
@@ -2489,51 +2489,52 @@ final class DominoScene {
         PileSpread(books, in: rect, of: size, seed: seed, last: last)
     }
 
-    /// The flights of the books into `ending`'s spread, from where they lie, which leaves them
-    /// kinematic.
-    private func flights(into ending: Ending) -> [Flight] {
-        let placed = ending.slots.compactMap { slot in
-            slots.firstIndex { $0.book.id == slot.book.id }.map { ($0, slot.transform) }
-        }
-        return placed.enumerated()
-            .map { order, place in
-                let book = books[place.0]
-                book.components[PhysicsBodyComponent.self]?.mode = .kinematic
-                book.components.set(PhysicsMotionComponent())
-                return Flight(
-                    book: place.0, from: book.transform, to: place.1,
-                    start: DominoFinale.start(of: order, count: placed.count),
-                    peak: DominoFinale.peak(of: order))
+    /// Each book's index in the chain and its place in `ending`'s spread, in the spread's
+    /// order, which leaves the books kinematic.
+    private func places(in ending: Ending) -> [(book: Int, place: Transform)] {
+        ending.slots.compactMap { slot in
+            guard let book = slots.firstIndex(where: { $0.book.id == slot.book.id }) else {
+                return nil
             }
+            books[book].components[PhysicsBodyComponent.self]?.mode = .kinematic
+            books[book].components.set(PhysicsMotionComponent())
+            return (book, slot.transform)
+        }
     }
 
-    /// Lifts the books off the desk once the gathering starts, flies them on, lands each in its
-    /// place with a soft knock, and the spread's last with a firm one, and ends the finale once
-    /// the last has landed.
+    /// Plans the books' ways into the spread from where they lie once the gathering starts
+    /// (`DominoFinale.Gather`), moves them on, lands each in its place with a soft knock, and
+    /// the spread's last, after its flourish, with a firm one, and ends the finale once the
+    /// last has landed.
     private func gather(_ ending: inout Ending) {
-        if ending.flights.isEmpty {
+        if ending.gather == nil {
             guard ending.clock >= DominoFinale.gatherDelay else { return }
-            ending.flights = flights(into: ending)
+            let placed = places(in: ending)
+            ending.gathering = placed.map(\.book)
+            ending.gather = DominoFinale.Gather(
+                placed.map { (books[$0.book].transform, $0.place, size(of: $0.book)) })
+            ending.landed = Array(repeating: false, count: placed.count)
             status.phase = .gathering
         }
-        let last = ending.flights.count - 1
-        for (order, flight) in ending.flights.enumerated().dropFirst(ending.landed) {
-            let time = ending.clock - flight.start
-            guard time > 0 else { break }
-            let book = books[flight.book]
-            let snaps = order == last
-            guard time >= (snaps ? DominoFinale.snapTime : DominoFinale.flightTime) else {
-                guard snaps else {
-                    book.transform = DominoFinale.pose(
-                        from: flight.from, to: flight.to, peak: flight.peak,
-                        progress: time / DominoFinale.flightTime)
+        guard let gather = ending.gather else { return }
+        let time = ending.clock - DominoFinale.gatherDelay
+        let last = gather.flights.count - 1
+        for (order, flight) in gather.flights.enumerated() where !ending.landed[order] {
+            let book = books[ending.gathering[order]]
+            if order == last, ending.clock >= DominoFinale.snapStart {
+                let snap = ending.clock - DominoFinale.snapStart
+                guard snap < DominoFinale.snapTime else {
+                    book.transform = flight.to
+                    stage.light(book, boost: 0)
+                    ending.landed[order] = true
+                    land(book, firmly: true)
                     continue
                 }
                 let top = DominoFinale.snapTop(
-                    size: size(of: flight.book), seenBy: ending.camera, in: ending.area,
-                    of: ending.view)
+                    size: size(of: ending.gathering[order]), seenBy: ending.camera,
+                    in: ending.area, of: ending.view)
                 book.transform = DominoFinale.snapPose(
-                    from: flight.from, to: flight.to, top: top, time: time)
+                    from: flight.hovering, to: flight.to, top: top, time: snap)
                 stage.light(
                     book,
                     boost: DominoFinale.boost(
@@ -2541,15 +2542,29 @@ final class DominoScene {
                         radius: poolRadius))
                 continue
             }
-            book.transform = flight.to
-            if snaps { stage.light(book, boost: 0) }
-            // Flights land in order, the flourish last, so the landed books are a prefix.
-            if order == ending.landed {
-                ending.landed += 1
-                land(book, firmly: snaps)
+            guard time < flight.landing else {
+                book.transform = flight.to
+                ending.landed[order] = true
+                land(book, firmly: false)
+                continue
             }
+            book.transform = flight.pose(at: time)
         }
-        if ending.landed == ending.flights.count { status.phase = .finished }
+        #if DEBUG
+            logOverlaps("finale", at: ending.clock) {
+                var states = Array(repeating: "lying", count: books.count)
+                for (order, book) in ending.gathering.enumerated() {
+                    states[book] = ending.landed[order] ? "placed" : time > 0 ? "flying" : "lying"
+                }
+                return states
+            }
+        #endif
+        if !ending.landed.contains(false) {
+            status.phase = .finished
+            #if DEBUG
+                writeOverlaps()
+            #endif
+        }
     }
 
     /// Plays a book's landing in the spread: a soft knock, or the flourish's deep knock and
@@ -2602,8 +2617,9 @@ final class DominoScene {
     }
 
     /// Blends the view from `source` to the camera in effect, taking long enough that the
-    /// blend turns and travels no faster than `handoffTurnRate` and `handoffSpeed` on average.
-    private func blend(from source: Shot) {
+    /// blend turns and travels no faster than `handoffTurnRate` and `handoffSpeed` on average,
+    /// or than `pace` times those.
+    private func blend(from source: Shot, pace: Float = 1) {
         guard !reducesMotion else {
             handoff = nil
             return
@@ -2615,7 +2631,8 @@ final class DominoScene {
             turn / Self.handoffTurnRate,
             simd_distance(from.translation, to.translation) / Self.handoffSpeed)
         handoff = (
-            source, 0, min(max(duration, Self.handoffTime.lowerBound), Self.handoffTime.upperBound)
+            source, 0,
+            min(max(duration, Self.handoffTime.lowerBound), Self.handoffTime.upperBound) / pace
         )
     }
 
@@ -2861,14 +2878,77 @@ final class DominoScene {
         /// plan in the frame it started, and, last, when the last book landed. A row without a
         /// lift is a check that found the book's way blocked, with the milliseconds it took.
         private func logSetup(_ arrangement: Arrangement) {
-            guard UserDefaults.standard.bool(forKey: "BookwormsSetupLog") else { return }
+            guard Self.logsSetup else { return }
             let lines =
                 ["book,due,start,held,lift,ms"] + arrangement.log
-                + [String(format: "landed,%.3f", arrangement.time ?? 0)]
+                + [
+                    String(format: "landed,%.3f", arrangement.time ?? 0),
+                    String(
+                        format: "ready,%.3f",
+                        (ContinuousClock.now - arrangement.requested) / .seconds(1)),
+                ]
             let url = URL.cachesDirectory.appending(path: "Bookworms/domino-setup.csv")
             try? FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try? lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        }
+
+        /// Whether `-BookwormsSetupLog YES` asks for the setup and overlap logs, read once.
+        private static let logsSetup = UserDefaults.standard.bool(forKey: "BookwormsSetupLog")
+        /// How far each book's box shrinks on every side before the overlap log tests it, in
+        /// units, so books that rest on each other, which the physics lets sink a hair, do not
+        /// count.
+        private static let overlapTolerance: Float = 0.02
+
+        /// Simulator hook: with `-BookwormsSetupLog YES`, tests every pair of books' boxes,
+        /// shrunk by `overlapTolerance`, for overlap, and logs each overlap with the `phase`,
+        /// such as `setup` or `finale`, `time` seconds into it, the two books' indices in the
+        /// chain, and what each was doing (`states`), which it asks for only with the flag.
+        /// `writeOverlaps()` writes the log.
+        private func logOverlaps(_ phase: String, at time: Float, states: () -> [String]) {
+            guard Self.logsSetup else { return }
+            overlapFrames[phase, default: 0] += 1
+            let states = states()
+            let boxes = books.indices.map {
+                DominoSetup.Box(
+                    books[$0].transform, size: size(of: $0), grow: -Self.overlapTolerance)
+            }
+            let bounds = boxes.map(\.bounds)
+            // Sweep and prune along x, so a frame tests only the pairs whose bounds meet in x.
+            let order = boxes.indices.sorted { bounds[$0].low.x < bounds[$1].low.x }
+            for (position, first) in order.enumerated() {
+                for second in order[(position + 1)...] {
+                    guard bounds[second].low.x < bounds[first].high.x else { break }
+                    guard bounds[first].overlaps(bounds[second]),
+                        boxes[first].overlaps(boxes[second])
+                    else { continue }
+                    let (low, high) = (min(first, second), max(first, second))
+                    overlapLog.append(
+                        "\(phase),\(String(format: "%.3f", time)),\(low),\(high),\(states[low]),\(states[high])"
+                    )
+                }
+            }
+        }
+
+        /// Writes the overlap log to `Library/Caches/Bookworms/domino-overlaps.csv`, with, for
+        /// each phase, the frames checked, the overlaps found, and the pairs of books that
+        /// overlapped.
+        private func writeOverlaps() {
+            guard Self.logsSetup else { return }
+            let summaries = overlapFrames.keys.sorted()
+                .map { phase in
+                    let lines = overlapLog.filter { $0.hasPrefix(phase + ",") }
+                    let pairs = Set(
+                        lines.map { $0.split(separator: ",")[2...3].joined(separator: ",") })
+                    return
+                        "summary,\(phase),frames,\(overlapFrames[phase] ?? 0),overlaps,\(lines.count),pairs,\(pairs.count)"
+                }
+            let url = URL.cachesDirectory.appending(path: "Bookworms/domino-overlaps.csv")
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? (["phase,time,first,second,firststate,secondstate"] + overlapLog + summaries)
+                .joined(separator: "\n")
+                .write(to: url, atomically: true, encoding: .utf8)
         }
 
         /// Simulator hook: `-BookwormsDominoPush <seconds>` pushes the next book whenever the

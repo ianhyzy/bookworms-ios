@@ -17,7 +17,7 @@ import simd
 ///
 /// 1. The book rights itself where it lies: it turns up onto its tail edge, about that edge's
 ///    lowest point, until it stands upright on its tail, as a book stands on a shelf.
-/// 2. It hops to its slot on an arc under the desk's gravity, turning about the vertical only, so
+/// 2. It hops to its slot on an arc under `hopGravity`, turning about the vertical only, so
 ///    it stays upright in the air. It carries across while it is high enough to clear the books
 ///    it passes over (`lift(from:to:size:over:)`) and drops the last stretch straight down onto
 ///    its slot, so it never sweeps through the books standing beside the slot.
@@ -32,7 +32,7 @@ enum DominoSetup {
     static let pileMargin: Float = 1.5
     /// How long a book takes to turn a quarter turn up onto its tail, in seconds: slowly enough
     /// that the books lying on it slide off rather than fly off.
-    static let quarterTurn: Float = 0.55
+    static let quarterTurn: Float = 0.35
     /// The share of a hop after which the book moves straight down onto its slot.
     static let arrival: Float = 0.8
     /// How far a hopping book's underside clears the tops of the books it passes over.
@@ -40,20 +40,24 @@ enum DominoSetup {
     /// The least and most a hop's arc rises above the line between its ends, at its middle.
     static let lifts: ClosedRange<Float> = 0.5...9
     /// The shortest a hop takes, in seconds, for a book that barely moves.
-    static let shortestHop: Float = 0.3
+    static let shortestHop: Float = 0.2
+    /// The gravity a hop's arc falls under, in units a second squared: twice the desk's, about
+    /// real gravity at the scene's scale of decimeters, so a hop is brisk and still falls as a
+    /// thrown book does.
+    static let hopGravity: Float = 2 * PileLayout.gravity
     /// The most time from one book's start to the next, and the latest the last book starts
     /// after the first while no book is held back, in seconds.
-    static let longestStep: Float = 0.2
-    static let spread: Float = 3.5
+    static let longestStep: Float = 0.1
+    static let spread: Float = 1.75
     /// The time step at which `Schedule` checks a move against the others, in seconds.
     static let checkStep: Float = 1.0 / 30
     /// The longest a book is held back while its way is blocked, in seconds, and how far into
     /// the setup books may still be held back, so a setup's time stays capped.
-    static let longestHold: Float = 1
-    static let latestStart: Float = spread + 1.5
+    static let longestHold: Float = 0.5
+    static let latestStart: Float = spread + 0.75
     /// How long a book whose way is blocked waits before its way is checked again, in seconds,
     /// so a held book costs a frame no planning while it waits.
-    static let retryStep: Float = 0.1
+    static let retryStep: Float = 0.05
     /// The longest time step a setup takes in one frame, in seconds, so a stalled frame slows
     /// the moves rather than skipping them.
     static let longestFrame: Float = 1.0 / 20
@@ -220,11 +224,11 @@ enum DominoSetup {
         }
 
         /// How long the hop takes: as long as a body thrown up by `lift` takes to come down under
-        /// the desk's gravity, so the arc falls as a book would, and at least `shortestHop`.
+        /// `hopGravity`, so the arc falls as a book would, and at least `shortestHop`.
         var hopTime: Float { Self.hopTime(lift: lift) }
 
         static func hopTime(lift: Float) -> Float {
-            max(shortestHop, (8 * lift / PileLayout.gravity).squareRoot())
+            max(shortestHop, (8 * lift / hopGravity).squareRoot())
         }
 
         /// When the book stands in its slot, in seconds since the setup started.
@@ -479,6 +483,17 @@ enum DominoSetup {
             center = pose.translation
             axes = simd_float3x3(pose.rotation)
             half = pointwiseMax(size / 2 + grow, .zero)
+        }
+
+        private init(center: SIMD3<Float>, axes: simd_float3x3, half: SIMD3<Float>) {
+            self.center = center
+            self.axes = axes
+            self.half = half
+        }
+
+        /// The box moved by `offset`.
+        func moved(by offset: SIMD3<Float>) -> Box {
+            Box(center: center + offset, axes: axes, half: half)
         }
 
         /// The box's bounds along the table's axes.

@@ -11,18 +11,20 @@ import simd
 /// the view as it shows, carried on by the camera's own motion for a moment (`coast`), so the
 /// camera neither stops dead nor drifts on with the camera mode. It first pulls back and cranes
 /// up about the point it looked at, which, after the Follow camera, moves onto where the last
-/// book lands, and from `aimDelay` turns its aim toward the spread, ahead of the books. `gatherDelay` seconds in, while the camera still
-/// moves, the books start to gather into a face-up spread (`PileSpread`): each lifts off the
-/// desk, flies in an arc to its place, turning face up on the way, and settles flat, one after
-/// another in the spread's order, so a book lands only after the books it rests on. Every book
-/// but the spread's last has landed `settleMargin` before the camera comes to rest. The
-/// spread's last book is the last book read, the chain's last, which the spread puts down last,
-/// so no book rests on it (`PileSpread`'s `last`). It waits where it fell; as the camera comes
-/// to rest, it springs up close to the camera, its cover turned squarely to the viewer and large
+/// book lands, and from `aimDelay` turns its aim toward the spread, ahead of the books.
+/// `gatherDelay` seconds in, while the camera still moves, the books start to gather into a
+/// face-up spread (`PileSpread`) along ways planned so that no book passes through another
+/// (`Gather`): they lift off the desk together, cross to over their places at heights apart,
+/// close in over them, and drop onto them in the spread's order. Every book but the spread's
+/// last has landed `settleMargin` before the camera comes to rest, whatever the count
+/// (`Gather.landed`). The spread's last book is the last book read, the chain's last, which the spread
+/// puts down last, so no book rests on it (`PileSpread`'s `last`). It hovers over its place;
+/// as the camera comes to rest, it springs up close to the camera, its cover turned squarely to the viewer and large
 /// in the middle of the spread's area (`snapTop(size:seenBy:in:of:)`), hangs there a beat, and
 /// slams down into its place, landing `snapLanding` after the camera stops
 /// (`snapPose(from:to:top:time:)`). The spread and the hanging book fill the part of the view
-/// that a recording shows, in a view wider than 9:16 such as a Mac's window (`area(in:)`).
+/// that the run plays in, the 9:16 frame that a recording shows in a view wider than that, such
+/// as a Mac's window (`area(in:)`).
 /// Out of the lamp's beam, the room lights it more (`DeskStage.light(_:boost:)`), so it stays
 /// lit rather than going dark (`boost(at:over:radius:)`).
 /// The poses are pure functions of time, so tests replay them.
@@ -31,16 +33,8 @@ enum DominoFinale {
     static let moveTime: Float = 6
     /// When the books start to gather, in seconds after the last book falls.
     static let gatherDelay: Float = 2.5
-    /// How long each book's flight takes, in seconds.
-    static let flightTime: Float = 1.4
-    /// The most time from one flight's start to the next, for a short chain.
-    static let longestStep: Float = 0.12
     /// How long before the camera comes to rest every book but the last has landed, in seconds.
     static let settleMargin: Float = 0.4
-    /// How high a flight's arc peaks above the higher of its ends, in units, and how much
-    /// higher every fourth book's does, so books in the air at once cross at different heights.
-    static let rise: Float = 2.6
-    static let riseStep: Float = 0.4
     /// When the camera's aim starts to turn from where the chain ended toward the spread, in
     /// seconds after the last book falls: a second before the books start to gather, so the aim
     /// leads them there.
@@ -75,23 +69,31 @@ enum DominoFinale {
     /// with the width.
     static func headingRoom(width: CGFloat) -> CGFloat { width * 0.28 }
 
-    /// The part of a view of `viewport` that the spread fills and the last book hangs in, in
-    /// points. In a view wider than 9:16, such as a Mac's window, it is the 9:16 frame that a
-    /// recording of the run shows of the finale (`DominoRecorder.crop(in:)`), so the video and
-    /// its image show every gathered book, and the live view frames them the same way, with
-    /// the table on either side. Otherwise, as on an iPhone, it is the whole view.
+    /// The part of a view of `viewport` that the whole run plays in, in points: the chain
+    /// stands, falls, and gathers there, the spread fills it, and the last book hangs in it.
+    /// In a view wider than 9:16, such as a Mac's window, it is the 9:16 frame that a recording
+    /// of the run shows (`DominoRecorder.crop(in:)`), so the video and its image show every
+    /// book fall and gather, and the live view frames them the same way, with the table on
+    /// either side. Otherwise, as on an iPhone, it is the whole view.
     static func area(in viewport: PileViewport) -> CGRect {
         let frame = DominoRecorder.crop(in: viewport)
         return frame.width < viewport.size.width
             ? frame : CGRect(origin: .zero, size: viewport.size)
     }
 
-    /// Where the spread lays out its books in a view of `viewport`, in points: across the part
-    /// of `area(in:)` that the bars leave clear, 16 points in from its sides, below the
-    /// heading's room (`headingRoom(width:)`), and 24 points above the bottom bar.
+    /// The part of `area(in:)` that the bars leave clear, in points, which the dominoes'
+    /// cameras frame the chain in (see `DominoScene`). On an iPhone, it is the part of the view
+    /// between the bars.
+    static func clearArea(in viewport: PileViewport) -> CGRect {
+        area(in: viewport).intersection(viewport.clear)
+    }
+
+    /// Where the spread lays out its books in a view of `viewport`, in points: across
+    /// `clearArea(in:)`, 16 points in from its sides, below the heading's room
+    /// (`headingRoom(width:)`), and 24 points above the bottom bar.
     static func spreadRect(in viewport: PileViewport) -> CGRect {
         let area = area(in: viewport)
-        let clear = area.intersection(viewport.clear)
+        let clear = clearArea(in: viewport)
         let top = viewport.insets.top + headingRoom(width: area.width)
         return CGRect(
             x: clear.minX + 16, y: top, width: clear.width - 32, height: clear.maxY - 24 - top)
@@ -100,22 +102,13 @@ enum DominoFinale {
     /// How long the last book's flourish takes, from its spring to its landing.
     static var snapTime: Float { snapRise + snapHang + snapDrop }
 
-    /// When the flight of the book at `index` of the spread's `count` starts, in seconds after
-    /// the last book falls: from `gatherDelay`, `longestStep` apart or closer, so every book but
-    /// the last lands `settleMargin` before the camera comes to rest. The last book springs so
-    /// that it lands `snapLanding` after.
-    static func start(of index: Int, count: Int) -> Float {
-        if index == count - 1 { return moveTime + snapLanding - snapTime }
-        let window = moveTime - settleMargin - gatherDelay - flightTime
-        return gatherDelay + Float(index) * min(longestStep, window / Float(max(count - 2, 1)))
-    }
+    /// When the last book springs, in seconds after the last book falls, so that it lands
+    /// `snapLanding` after the camera comes to rest.
+    static var snapStart: Float { moveTime + snapLanding - snapTime }
 
     /// How long the finale of `count` books takes, from the last book's fall to the landing of
     /// the spread's last book.
     static func duration(count: Int) -> Float { count == 0 ? 0 : moveTime + snapLanding }
-
-    /// How high the arc of the book at `index` peaks above the higher of its ends.
-    static func peak(of index: Int) -> Float { rise + riseStep * Float(index % 4) }
 
     /// Where the last book, of `size` (see `BookShape.size`), hangs before it slams into its
     /// place, seen by `camera` in a view of `view` points: in the middle of `area`, the part of
@@ -187,23 +180,7 @@ enum DominoFinale {
             translation: from.translation + velocity * carried)
     }
 
-    /// The pose `progress` of the way, from 0 to 1, from `from` to `to`: along the line between
-    /// them, lifted on a parabola that peaks `peak` above the higher end at the middle, turning
-    /// the shorter way, all eased with smootherstep so the book leaves and lands at rest.
-    static func pose(from: Transform, to: Transform, peak: Float, progress: Float)
-        -> Transform
-    {
-        let share = min(max(progress, 0), 1)
-        let eased = DominoCameraRig.ease(share)
-        let line = from.translation + (to.translation - from.translation) * eased
-        let top = max(from.translation.y, to.translation.y) + peak
-        let lift = (top - (from.translation.y + to.translation.y) / 2) * 4 * eased * (1 - eased)
-        return Transform(
-            scale: to.scale, rotation: turn(from.rotation, to: to.rotation, by: eased),
-            translation: line + [0, lift, 0])
-    }
-
-    /// The last book's pose `time` seconds into its flourish, from `from`, where it lay, to
+    /// The last book's pose `time` seconds into its flourish, from `from`, where it hovers, to
     /// `to`, its place: it springs up to `top`, fast at first and slowing to a stop there as it
     /// turns its cover to the camera, hangs a beat, drifting a little nearer and back, then
     /// slams down onto its place, speeding up hard all the way, as a book thrown down does. It
