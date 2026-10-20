@@ -14,10 +14,10 @@ import simd
 /// book lands, and from `aimDelay` turns its aim toward the spread, ahead of the books.
 /// `gatherDelay` seconds in, while the camera still moves, the books start to gather into a
 /// face-up spread (`PileSpread`) along ways planned so that no book passes through another
-/// (`Gather`): they lift off the desk together, cross to over the spread at heights apart,
-/// close in over their places, and drop onto them, each once the books it rests on have
-/// landed. Every book but the spread's last has landed `settleMargin` before the camera comes
-/// to rest. The spread's last book is the last book read, the chain's last, which the spread
+/// (`Gather`): they lift off the desk together, cross to over their places at heights apart,
+/// close in over them, and drop onto them in the spread's order. Every book but the spread's
+/// last has landed `settleMargin` before the camera comes to rest, whatever the count
+/// (`Gather.landed`). The spread's last book is the last book read, the chain's last, which the spread
 /// puts down last, so no book rests on it (`PileSpread`'s `last`). It hovers over its place;
 /// as the camera comes to rest, it springs up close to the camera, its cover turned squarely to the viewer and large
 /// in the middle of the spread's area (`snapTop(size:seenBy:in:of:)`), hangs there a beat, and

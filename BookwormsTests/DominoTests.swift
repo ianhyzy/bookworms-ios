@@ -817,10 +817,10 @@ final class DominoTests: XCTestCase {
                     .overlaps(
                         DominoFinale.Gather.level(places[index], at: flights[index].staging)))
         }
-        // It drops once they have landed, and every book but the last lands before the camera
+        // It drops no sooner than they do, and every book but the last lands before the camera
         // rests.
-        XCTAssertGreaterThanOrEqual(flights[2].drop, flights[0].landing)
-        XCTAssertGreaterThanOrEqual(flights[2].drop, flights[1].landing)
+        XCTAssertGreaterThanOrEqual(flights[2].drop, flights[0].drop)
+        XCTAssertGreaterThanOrEqual(flights[2].drop, flights[1].drop)
         let window = DominoFinale.moveTime - DominoFinale.settleMargin - DominoFinale.gatherDelay
         for flight in flights.dropLast() {
             XCTAssertLessThanOrEqual(flight.landing, window)
@@ -847,6 +847,62 @@ final class DominoTests: XCTestCase {
                 }
             }
             time += 1.0 / 120
+        }
+    }
+
+    func testEveryBookButTheLastLandsBeforeTheCameraRests() {
+        let window = DominoFinale.moveTime - DominoFinale.settleMargin - DominoFinale.gatherDelay
+        XCTAssertLessThanOrEqual(DominoFinale.Gather.landed, window)
+        // A staircase of fictional books, each resting on the one before, lying apart on the
+        // desk in the reverse order, and as many books as a long chain holds, lying in a row.
+        let size = SIMD3<Float>(1.4, 2.2, 0.2)
+        let stair = (0..<12)
+            .map { index in
+                (
+                    from: Transform(
+                        rotation: PileSpread.upright,
+                        translation: [Float(11 - index) * 2, size.z / 2, 8]),
+                    to: Transform(
+                        rotation: PileSpread.upright,
+                        translation: [0, size.z * (Float(index) + 0.5), -Float(index) * 0.6]),
+                    size: size
+                )
+            }
+        let row = (0..<300)
+            .map { index in
+                (
+                    from: Transform(
+                        rotation: PileSpread.upright,
+                        translation: [Float(index) * 1.6, size.z / 2, 40]),
+                    to: Transform(
+                        rotation: PileSpread.upright,
+                        translation: [
+                            Float(index % 20) * 1.6, size.z / 2, -Float(index / 20) * 2.4,
+                        ]
+                    ),
+                    size: size
+                )
+            }
+        for books in [stair, row] {
+            let flights = DominoFinale.Gather(books).flights
+            XCTAssertEqual(flights.last?.drop, .infinity)
+            for flight in flights.dropLast() {
+                XCTAssertLessThanOrEqual(flight.landing, DominoFinale.Gather.landed + 1e-4)
+            }
+        }
+        // The staircase never passes a book through another.
+        let flights = DominoFinale.Gather(stair).flights
+        var time: Float = 0
+        while time <= window {
+            let boxes = zip(flights, stair)
+                .map { DominoSetup.Box($0.pose(at: time), size: $1.size, grow: -0.01) }
+            for first in boxes.indices {
+                for second in boxes.indices where second > first {
+                    XCTAssertFalse(
+                        boxes[first].overlaps(boxes[second]), "\(time) \(first) \(second)")
+                }
+            }
+            time += 1.0 / 60
         }
     }
 

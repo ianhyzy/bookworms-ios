@@ -10,8 +10,7 @@ extension DominoFinale {
     static let settleTime: Float = 0.25
     static let closeTime: Float = 0.45
     static let dropTime: Float = 0.3
-    /// How long after the first drop the last drop due in the spread's order starts, before
-    /// drops wait for the books under them.
+    /// How long after the first drop the last drop starts, in the spread's order.
     static let dropSpread: Float = 0.4
     /// The lowest a book lifts, and how far above its place a book hovers before it drops, in
     /// units.
@@ -40,7 +39,8 @@ extension DominoFinale {
     /// Each book then settles to hover over where it waits, twice as far above the books its
     /// place rests on as it lies on them, the books close in over their places together, which
     /// moves books only toward the camera and keeps them apart, and each drops straight down
-    /// onto its place once the books under it have landed, in the spread's order.
+    /// onto its place, in the spread's order, no sooner than the books under it, which fall the
+    /// shorter way.
     ///
     /// The spread's last book hovers over its place and does not drop: its flourish takes it
     /// from there (`DominoFinale.snapPose`).
@@ -133,6 +133,11 @@ extension DominoFinale {
         /// When the books close in over their places.
         static var closing: Float {
             DominoFinale.liftTime + DominoFinale.crossTime + DominoFinale.settleTime
+        }
+
+        /// When the last book to drop has landed, for any number of books.
+        static var landed: Float {
+            closing + DominoFinale.closeTime + DominoFinale.dropSpread + DominoFinale.dropTime
         }
 
         /// The ways of `books`, in the spread's order, each from where it lies to its place,
@@ -259,23 +264,17 @@ extension DominoFinale {
                 knots = crossings(to: staging)
             }
 
-            // The drops: in the spread's order, each once the books under it have landed.
-            var drops = [Float](repeating: 0, count: count)
-            for index in books.indices {
-                var drop =
-                    Self.closing + DominoFinale.closeTime + DominoFinale.dropSpread
-                    * Float(index) / Float(max(count - 1, 1))
-                for under in underPlaced[index] {
-                    drop = max(drop, drops[under] + DominoFinale.dropTime)
-                }
-                drops[index] = drop
-            }
-            drops[count - 1] = .infinity
+            // The drops: in the spread's order, `dropSpread` across, so a book drops no sooner
+            // than the books under it, which fall the shorter way and stay under it.
             flights = books.indices.map { index in
                 Flight(
                     from: books[index].from, level: levels[index], knots: knots[index],
                     staging: staging[index], hover: Self.hover(over: books[index].to),
-                    to: books[index].to, drop: drops[index])
+                    to: books[index].to,
+                    drop: index == count - 1
+                        ? .infinity
+                        : Self.closing + DominoFinale.closeTime + DominoFinale.dropSpread
+                            * Float(index) / Float(max(count - 1, 1)))
             }
         }
 
