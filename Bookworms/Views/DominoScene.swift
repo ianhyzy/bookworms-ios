@@ -1723,13 +1723,13 @@ final class DominoScene {
         }
         self.arrangement = arrangement
         #if DEBUG
-            logOverlaps(
-                "setup", at: time,
-                states: books.indices.map { index in
+            logOverlaps("setup", at: time) {
+                books.indices.map { index in
                     guard let move = arrangement.moves[index] else { return "lying" }
                     return arrangement.landed[index]
                         ? "standing" : move.isHopping(at: time) ? "hopping" : "turning"
-                })
+                }
+            }
         #endif
         if arrangement.next == books.count, !arrangement.landed.contains(false),
             arrangement.fades.isEmpty, arrangement.hung
@@ -2608,11 +2608,13 @@ final class DominoScene {
             book.transform = flight.pose(at: time)
         }
         #if DEBUG
-            var states = Array(repeating: "lying", count: books.count)
-            for (order, book) in ending.gathering.enumerated() {
-                states[book] = ending.landed[order] ? "placed" : time > 0 ? "flying" : "lying"
+            logOverlaps("finale", at: ending.clock) {
+                var states = Array(repeating: "lying", count: books.count)
+                for (order, book) in ending.gathering.enumerated() {
+                    states[book] = ending.landed[order] ? "placed" : time > 0 ? "flying" : "lying"
+                }
+                return states
             }
-            logOverlaps("finale", at: ending.clock, states: states)
         #endif
         if !ending.landed.contains(false) {
             status.phase = .finished
@@ -2958,10 +2960,12 @@ final class DominoScene {
         /// Simulator hook: with `-BookwormsSetupLog YES`, tests every pair of books' boxes,
         /// shrunk by `overlapTolerance`, for overlap, and logs each overlap with the `phase`,
         /// such as `setup` or `finale`, `time` seconds into it, the two books' indices in the
-        /// chain, and what each was doing (`states`). `writeOverlaps()` writes the log.
-        private func logOverlaps(_ phase: String, at time: Float, states: [String]) {
+        /// chain, and what each was doing (`states`), which it asks for only with the flag.
+        /// `writeOverlaps()` writes the log.
+        private func logOverlaps(_ phase: String, at time: Float, states: () -> [String]) {
             guard Self.logsSetup else { return }
             overlapFrames[phase, default: 0] += 1
+            let states = states()
             let boxes = books.indices.map {
                 DominoSetup.Box(
                     books[$0].transform, size: size(of: $0), grow: -Self.overlapTolerance)
