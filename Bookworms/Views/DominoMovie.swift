@@ -75,14 +75,15 @@ struct DominoFinaleCard: View {
 /// (`crop(in:)`) over the wall's gradient, which shows around the scene, with the heading and
 /// the credit, into a pixel buffer from the encoder's pool. In a view wider than 9:16, such as
 /// a Mac's window, the frame shows the view's full height, where the scene plans and films the
-/// whole run (`DominoFinale.area(in:)`), so it holds still. Once the GPU is done, the frame
-/// goes to the hardware encoder on the main actor, which expects frames in real time;
-/// frames the encoder has no room for wait for it in order, up to `backlogLimit`, past which
-/// every other one is dropped. The heading is `DominoFinaleCard`, where the live view shows it,
-/// and it fades in as the live one does. `DominoMovieTiming` picks the frames on each scene
-/// update, so a long run plays faster than live and the recording stays within 30 seconds, and
-/// times the hits that `ImpactFeedback` recorded, which are mixed into the soundtrack once the
-/// recording ends (`ImpactMix`).
+/// whole run (`DominoFinale.area(in:)`), so it holds still while the view keeps its size; a
+/// resized view's frame moves with the darkened sides (`Tap.reframe(_:)`). Once the GPU is
+/// done, the frame goes to the hardware encoder on the main actor, which expects frames in
+/// real time; frames the encoder has no room for wait for it in order, up to `backlogLimit`,
+/// past which every other one is dropped. The heading is `DominoFinaleCard`, where the live
+/// view shows it, and it fades in as the live one does. `DominoMovieTiming` picks the frames on
+/// each scene update, so a long run plays faster than live and the recording stays within 30
+/// seconds, and times the hits that `ImpactFeedback` recorded, which are mixed into the
+/// soundtrack once the recording ends (`ImpactMix`).
 ///
 /// The recording arms once the chain stands, so its costs fall before the push (`arm()`). The
 /// writer is made and started, and Core Image compiles the frames' kernels, away from the main
@@ -111,8 +112,14 @@ final class DominoRecorder {
     /// Whether a recording runs past the push or is being written, so a clip may follow.
     private(set) var isRecording = false
 
-    /// The layout of the chain the view shows, which a recording takes as it arms.
-    @ObservationIgnored var layout: Layout?
+    /// The layout of the chain the view shows, which a recording takes as it arms. A
+    /// recording frames a new layout's view from its next frame, so that in a resized window
+    /// it frames the part of the view that the darkened sides leave clear.
+    @ObservationIgnored var layout: Layout? {
+        didSet {
+            if let layout, layout != oldValue { run?.tap.reframe(layout.viewport) }
+        }
+    }
 
     @ObservationIgnored private let feedback: ImpactFeedback
     @ObservationIgnored private weak var view: ARView?
@@ -187,11 +194,11 @@ final class DominoRecorder {
         let state = Mutex(State())
         let composer: FrameComposer
         let pool: CVMutablePixelBuffer.Pool
-        /// The frame's size in pixels, and the part of the view it shows, in points.
+        /// The frame's size in pixels.
         let size: CGSize
-        let crop: CGRect
-        /// The view's width in points.
-        let width: CGFloat
+        /// The part of the view the frame shows, and the view's width, in points, which
+        /// `reframe(_:)` updates when the view changes size.
+        let framing: Mutex<(crop: CGRect, width: CGFloat)>
         let heading: CIImage
         let credit: CIImage
         /// The wall's gradient, top to bottom, to stretch behind the render.
@@ -207,8 +214,7 @@ final class DominoRecorder {
             self.composer = composer
             self.pool = pool
             self.size = size
-            self.crop = crop
-            self.width = width
+            framing = Mutex((crop, width))
             self.heading = heading
             self.credit = credit
             self.wall = wall
@@ -268,6 +274,7 @@ final class DominoRecorder {
         /// another format may still compile kernels in the first frame the render thread draws.
         func warmUp(height: CGFloat) throws {
             let device = composer.device
+            let width = framing.withLock { $0.width }
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(
                 pixelFormat: .bgra8Unorm_srgb, width: Int(width), height: Int(height),
                 mipmapped: false)
@@ -287,10 +294,18 @@ final class DominoRecorder {
         /// The recording's frame of `render`, a render of the view at any scale, with the
         /// heading at `heading` opacity.
         private func frame(of render: CIImage, heading opacity: CGFloat) -> CIImage {
+            let (crop, width) = framing.withLock { $0 }
             let scale = render.extent.width / width
             return composer.frame(
                 of: render, crop: crop.applying(.init(scaleX: scale, y: scale)), size: size,
                 background: wall, overlays: [(heading, opacity), (credit, 1)])
+        }
+
+        /// Frames `viewport`'s view from the next frame on, where a resized view shows the
+        /// scene. The heading keeps the place it had as the recording armed.
+        func reframe(_ viewport: PileViewport) {
+            let crop = DominoRecorder.crop(in: viewport)
+            framing.withLock { $0 = (crop, viewport.size.width) }
         }
     }
 
@@ -342,8 +357,10 @@ final class DominoRecorder {
         /// The part of the view's width that the recording's frames show, from the push until
         /// the recording ends, as shares of the width, for the camera log.
         var shownSpan: ClosedRange<CGFloat>? {
-            guard let run, run.timing != nil, run.tap.width > 0 else { return nil }
-            return (run.tap.crop.minX / run.tap.width)...(run.tap.crop.maxX / run.tap.width)
+            guard let run, run.timing != nil else { return nil }
+            let (crop, width) = run.tap.framing.withLock { $0 }
+            guard width > 0 else { return nil }
+            return (crop.minX / width)...(crop.maxX / width)
         }
     #endif
 
@@ -390,7 +407,8 @@ final class DominoRecorder {
     /// theirs, unless that would leave out the bottom of the scene above the tab bar. A view
     /// wider than 9:16 shows its full height, centered on the part of the view that the bars
     /// leave clear as far as the view allows. That is where the chain stands, falls, and
-    /// gathers (`DominoFinale.area(in:)`), so the frame never moves.
+    /// gathers (`DominoFinale.area(in:)`), so the frame holds still while the view keeps its
+    /// size.
     nonisolated static func crop(in viewport: PileViewport) -> CGRect {
         let size = viewport.size
         let story = ShareAspect.story.size
@@ -462,6 +480,8 @@ final class DominoRecorder {
             }
             self.composer = composer
             run = Run(tap: tap, writer: writer, folder: folder, name: name)
+            // A view resized while the recording armed.
+            if let current = self.layout, current != layout { tap.reframe(current.viewport) }
             view.renderCallbacks.postProcess = { @Sendable context in tap.draw(context) }
             // A push that came while the recording armed starts it now.
             if let length = pendingStart { start(length: length) }

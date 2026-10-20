@@ -293,7 +293,8 @@ struct DominoesView: View {
     /// In a view wider than 9:16, such as a Mac's window, darkens the view on either side of the
     /// 9:16 frame that the video and **Image** show (`DominoRecorder.crop(in:)`), in which the
     /// chain sets up, falls, and gathers (`DominoFinale.area(in:)`), from the setup on. It
-    /// frames the view the recording frames (`framedViewport`), so its edges are the video's.
+    /// frames the view the recording frames (`framedViewport`), so its edges are the video's,
+    /// also after the window is resized (`DominoRecorder.layout`).
     /// It lets touches and scrolls through to the chain. A view that the frame fills, such as
     /// an iPhone's, shows none.
     @ViewBuilder private var shareFrame: some View {
