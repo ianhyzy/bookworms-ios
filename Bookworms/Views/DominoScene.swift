@@ -1587,12 +1587,13 @@ final class DominoScene {
         DominoSetup.offset(of: books, aspect: aspect)
     }
 
-    /// Whether `book` still moves faster than a crawl.
+    /// Whether `book` still moves faster than a crawl: 3 cm a second, from which the desk's
+    /// friction stops a sliding book within millimeters.
     private static func isMoving(_ book: ModelEntity) -> Bool {
         guard book.components[PhysicsBodyComponent.self]?.mode == .dynamic,
             let motion = book.components[PhysicsMotionComponent.self]
         else { return false }
-        return simd_length(motion.linearVelocity) > 0.1 || simd_length(motion.angularVelocity) > 0.2
+        return simd_length(motion.linearVelocity) > 0.3 || simd_length(motion.angularVelocity) > 0.6
     }
 
     /// The size of the book at `index` as it was built.
