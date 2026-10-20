@@ -671,9 +671,10 @@ final class DominoScene {
     /// Seconds the hand has shown, which time its halo's pulse.
     private var handClock: TimeInterval = 0
     private var key: Key?
-    /// The viewport the plan was framed for. The spread, the finale's heading, and an image of
-    /// the view keep it while the chain lasts, also once the sidebar shows or hides
-    /// (`DominoFinale.area(in:)`).
+    /// The viewport the plan was framed for, in the part of it that the run plays in
+    /// (`DominoFinale.area(in:)`). The spread and the finale's heading keep it while the chain
+    /// lasts, also once the sidebar shows or hides; the recording, its image, and the darkened
+    /// sides of a wider view keep it while the view keeps its size (see `DominoesView`).
     private(set) var plannedViewport: PileViewport?
     private var plan: [DominoSlot] = []
     private var extent = SIMD2<Float>.zero
