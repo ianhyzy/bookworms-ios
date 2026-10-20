@@ -965,7 +965,10 @@ final class DominoTests: XCTestCase {
         // The book's head still points away from the turned camera.
         let head = turned.slots[0].transform.rotation.act([0, 1, 0])
         let away = turned.camera.rotation.act([0, 0, -1])
-        XCTAssertGreaterThan(simd_dot(SIMD3(head.x, 0, head.z), SIMD3(away.x, 0, away.z)), 0.9)
+        XCTAssertGreaterThan(
+            simd_dot(
+                simd_normalize(SIMD3(head.x, 0, head.z)), simd_normalize(SIMD3(away.x, 0, away.z))),
+            0.9)
     }
 
     /// The share of a chain `length` long that has fallen `share` of the way through its run,

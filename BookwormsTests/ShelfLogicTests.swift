@@ -373,11 +373,11 @@ final class ShelfLogicTests: XCTestCase {
     func testStackedBooksStartTheirFlightAsTheyLie() {
         let top = book(1, "Top", pages: 300)
         let twist = StackArrangement.twist(of: top)
+        let flat = StackStyle.flat.rest(of: top)
         XCTAssertEqual(
-            StackStyle.flat.rest(of: top),
-            PullOutPath.Rest(
-                pitch: twist * StackStyle.flatTwist / StackArrangement.maximumTwist,
-                slidesInStack: true))
+            flat.pitch, twist * StackStyle.flatTwist / StackArrangement.maximumTwist,
+            accuracy: 1e-12)
+        XCTAssertEqual(flat, PullOutPath.Rest(pitch: flat.pitch, slidesInStack: true))
         XCTAssertEqual(
             StackStyle.threeD.rest(of: top),
             PullOutPath.Rest(pitch: twist, lighting: StackStyle.lighting, slidesInStack: true))

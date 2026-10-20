@@ -9,11 +9,9 @@ import simd
 /// slot lies clear of the books that are still lying when its book lands there.
 ///
 /// The books then go one after another in finish order, ever faster, `step(count:)` apart on
-/// average (`step(after:count:)`), so a large frame sets up within a few seconds, and never many
-/// in one frame
-/// (`nextStart(after:startedAt:step:)`). Each book's move (`Move`) starts from where the book
-/// lies at that moment, since the books still lying are rigid bodies that settle as books under
-/// them leave:
+/// average (`step(after:count:)`), so a large frame sets up within a few seconds. Each book's
+/// move (`Move`) starts from where the book lies at that moment, since the books still lying are
+/// rigid bodies that settle as books under them leave:
 ///
 /// 1. The book rights itself where it lies: it turns up onto its tail edge, about that edge's
 ///    lowest point, until it stands upright on its tail, as a book stands on a shelf.
@@ -80,15 +78,6 @@ enum DominoSetup {
     /// a chain standing up from above (`DominoLayout.entryShare(_:of:)`).
     static func step(after index: Int, count: Int) -> Float {
         Float(DominoLayout.entryGap(after: index, of: count, step: Double(step(count: count))))
-    }
-
-    /// When the next book is due after a book due at `due` starts at `time`: `step` after `due`,
-    /// or, for a book that started more than a step late, held back or slowed by a slow frame,
-    /// `step` after `time - step`. The books keep their pace while frames come faster than
-    /// they are due, but lag at most one step, so a late book never leaves a backlog that would
-    /// start many books in one frame: a frame starts at most two books more than are due in it.
-    static func nextStart(after due: Float, startedAt time: Float, step: Float) -> Float {
-        max(due, time - step) + step
     }
 
     // MARK: Placement

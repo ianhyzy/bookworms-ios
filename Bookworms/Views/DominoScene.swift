@@ -1613,8 +1613,9 @@ final class DominoScene {
     /// it lies then, moves the books under way, and lands each in its place with a soft knock,
     /// fading in the cobweb in front of it over `DominoLayout.webFade`. A blocked book's way is
     /// checked again every `DominoSetup.retryStep`, and once it has been blocked for
-    /// `DominoSetup.hold(at:)`, it goes regardless, so the setup's time stays capped; the books
-    /// after it keep their pace from then (`DominoSetup.nextStart(after:startedAt:step:)`).
+    /// `DominoSetup.hold(at:)`, it goes regardless, so the setup's time stays capped. Each check
+    /// moves the blocked book's turn on, so the books after it keep their pace from when it goes
+    /// and leave no backlog, and a frame starts the books due in it however many there are.
     /// Moving books are kinematic, and the books still lying are rigid bodies, so they settle as
     /// the books under them leave and a book that turns up among them shoves them aside.
     private func arrange(by deltaTime: TimeInterval) {
@@ -1670,9 +1671,7 @@ final class DominoScene {
             arrangement.moves[index] = move
             arrangement.heldSince = nil
             arrangement.next += 1
-            arrangement.nextStart = DominoSetup.nextStart(
-                after: arrangement.nextStart, startedAt: time,
-                step: DominoSetup.step(after: index, count: books.count))
+            arrangement.nextStart += DominoSetup.step(after: index, count: books.count)
             books[index].components[PhysicsBodyComponent.self]?.mode = .kinematic
             books[index].components.set(PhysicsMotionComponent())
         }
