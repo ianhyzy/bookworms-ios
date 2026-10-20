@@ -23,7 +23,8 @@ import simd
 /// in the middle of the spread's area (`snapTop(size:seenBy:in:of:)`), hangs there a beat, and
 /// slams down into its place, landing `snapLanding` after the camera stops
 /// (`snapPose(from:to:top:time:)`). The spread and the hanging book fill the part of the view
-/// that a recording shows, in a view wider than 9:16 such as a Mac's window (`area(in:)`).
+/// that the run plays in, the 9:16 frame that a recording shows in a view wider than that, such
+/// as a Mac's window (`area(in:)`).
 /// Out of the lamp's beam, the room lights it more (`DeskStage.light(_:boost:)`), so it stays
 /// lit rather than going dark (`boost(at:over:radius:)`).
 /// The poses are pure functions of time, so tests replay them.
@@ -68,23 +69,31 @@ enum DominoFinale {
     /// with the width.
     static func headingRoom(width: CGFloat) -> CGFloat { width * 0.28 }
 
-    /// The part of a view of `viewport` that the spread fills and the last book hangs in, in
-    /// points. In a view wider than 9:16, such as a Mac's window, it is the 9:16 frame that a
-    /// recording of the run shows of the finale (`DominoRecorder.crop(in:)`), so the video and
-    /// its image show every gathered book, and the live view frames them the same way, with
-    /// the table on either side. Otherwise, as on an iPhone, it is the whole view.
+    /// The part of a view of `viewport` that the whole run plays in, in points: the chain
+    /// stands, falls, and gathers there, the spread fills it, and the last book hangs in it.
+    /// In a view wider than 9:16, such as a Mac's window, it is the 9:16 frame that a recording
+    /// of the run shows (`DominoRecorder.crop(in:)`), so the video and its image show every
+    /// book fall and gather, and the live view frames them the same way, with the table on
+    /// either side. Otherwise, as on an iPhone, it is the whole view.
     static func area(in viewport: PileViewport) -> CGRect {
         let frame = DominoRecorder.crop(in: viewport)
         return frame.width < viewport.size.width
             ? frame : CGRect(origin: .zero, size: viewport.size)
     }
 
-    /// Where the spread lays out its books in a view of `viewport`, in points: across the part
-    /// of `area(in:)` that the bars leave clear, 16 points in from its sides, below the
-    /// heading's room (`headingRoom(width:)`), and 24 points above the bottom bar.
+    /// The part of `area(in:)` that the bars leave clear, in points, which the dominoes'
+    /// cameras frame the chain in (see `DominoScene`). On an iPhone, it is the part of the view
+    /// between the bars.
+    static func clearArea(in viewport: PileViewport) -> CGRect {
+        area(in: viewport).intersection(viewport.clear)
+    }
+
+    /// Where the spread lays out its books in a view of `viewport`, in points: across
+    /// `clearArea(in:)`, 16 points in from its sides, below the heading's room
+    /// (`headingRoom(width:)`), and 24 points above the bottom bar.
     static func spreadRect(in viewport: PileViewport) -> CGRect {
         let area = area(in: viewport)
-        let clear = area.intersection(viewport.clear)
+        let clear = clearArea(in: viewport)
         let top = viewport.insets.top + headingRoom(width: area.width)
         return CGRect(
             x: clear.minX + 16, y: top, width: clear.width - 32, height: clear.maxY - 24 - top)

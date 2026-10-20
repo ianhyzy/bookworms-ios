@@ -541,6 +541,10 @@ final class DominoStatus {
 /// a little closer, to at most `followRoom` times the overview's zoom, and across the rows with
 /// the front where the path is deeper than the view. Follow hands the camera to
 /// `DominoCameraRig`, built once the books stand, which chases the falling front low and close.
+/// Both frame the chain in the part of the view that the run plays in, between the bars
+/// (`DominoFinale.clearArea(in:)`), which the path's rows are planned to fit: in a view wider
+/// than 9:16, such as a Mac's window, the 9:16 frame that the recording shows, so the video
+/// shows every book fall.
 /// Both cameras run while the chain runs, so switching between them blends from one moving view
 /// to the other, over a time that keeps the blend's turn and travel gentle. A pinch or drag
 /// takes over from either, from the view as it shows, until the next push. With Reduce Motion
@@ -1088,16 +1092,8 @@ final class DominoScene {
         guard key != self.key || (spawned == 0 && viewport != plannedViewport) else {
             return true
         }
-        let size = viewport.size
-        let insets = viewport.insets
-        let safe = CGSize(
-            width: size.width - insets.leading - insets.trailing,
-            height: size.height - insets.top - insets.bottom)
-        guard safe.width > 0, safe.height > 0 else { return false }
+        guard let plan = Self.plan(chain, in: viewport) else { return false }
         reset(keeping: Set(key.ids))
-        // The table seen at the camera's pitch is deeper than the screen is tall.
-        let plan = DominoLayout.plan(
-            chain, aspect: Float(safe.width / safe.height) * sin(PileCamera.pitch))
         self.plan = plan.slots
         extent = plan.extent
         light(radius: max(6, simd_length(plan.extent) + 3))
@@ -1106,6 +1102,19 @@ final class DominoScene {
         plannedViewport = viewport
         loading.isLoading = !plan.slots.isEmpty
         return true
+    }
+
+    /// The plan of `chain` for a view of `viewport`, whose rows are as wide for their depth as
+    /// the part of the view the cameras frame them in (`DominoFinale.clearArea(in:)`), or `nil`
+    /// when that part is empty.
+    private static func plan(
+        _ chain: [(book: CloudBook, days: Int)], in viewport: PileViewport
+    ) -> DominoPlan? {
+        let clear = DominoFinale.clearArea(in: viewport)
+        guard clear.width > 0, clear.height > 0 else { return nil }
+        // The table seen at the camera's pitch is deeper than the screen is tall.
+        return DominoLayout.plan(
+            chain, aspect: Float(clear.width / clear.height) * sin(PileCamera.pitch))
     }
 
     /// Removes the books and their textures while the chain is out of sight. The next `setUp`
@@ -1172,15 +1181,17 @@ final class DominoScene {
         stage.aim(pool: .zero, radius: radius)
     }
 
-    /// Frames every book of `plan`, standing or fallen (`DominoLayout.outline`), between the
-    /// bars of `viewport`, with room around them and more at the bottom, for the overview and,
-    /// from the side the Follow camera films from, for its opening view, and sets up the Follow
-    /// camera to compose between the bars.
+    /// Frames every book of `plan`, standing or fallen (`DominoLayout.outline`), in the part of
+    /// `viewport` the run plays in, between the bars (`DominoFinale.clearArea(in:)`), with room
+    /// around them and more at the bottom, for the overview and, from the side the Follow
+    /// camera films from, for its opening view, and sets up the overview to follow the front
+    /// and the Follow camera to compose there. In a view wider than 9:16, such as a Mac's
+    /// window, that is the recording's frame, so the view and the video show the same run.
     private func frame(_ plan: DominoPlan, in viewport: PileViewport) {
         let size = viewport.size
-        let insets = viewport.insets
+        let clear = DominoFinale.clearArea(in: viewport)
         aspect = Float(size.width / size.height)
-        let rect = frameRect(in: viewport)
+        let rect = Self.frameRect(in: viewport)
         let outline = DominoLayout.outline(of: plan.slots)
         overview = PileCamera(yaw: Self.overviewYaw)
             .framing(outline, in: rect, of: size, zoomRange: 0.2...2.5)
@@ -1191,13 +1202,12 @@ final class DominoScene {
         .framing(outline, in: rect, of: size, zoomRange: 0.1...2.5)
         high.zoom *= Self.openingRoom
         opening = DominoCameraPose(eye: high.transform.translation, target: high.target)
-        // The view's width at the follow zoom fits the row with 10 percent to spare.
+        // The framed part's width at the follow zoom fits the row with 10 percent to spare.
         let tallest = plan.slots.map(\.size.y).max() ?? 0
         let span = (plan.path.rowLengths.max() ?? 0) + 2 * plan.path.radius + 2 * tallest
+        let shown = PileCamera.distance * 2 * tan(PileCamera.fieldOfView / 2) * aspect
         followZoom = min(
-            max(
-                overview.zoom,
-                PileCamera.distance * 2 * tan(PileCamera.fieldOfView / 2) * aspect * 0.9 / span),
+            max(overview.zoom, shown * Float(clear.width / size.width) * 0.9 / span),
             overview.zoom * Self.followRoom)
         view = overview
         handoff = nil
@@ -1208,25 +1218,19 @@ final class DominoScene {
         let width = Float(size.width)
         let height = Float(size.height)
         area = DominoCameraRig.Area(
-            low: [
-                2 * Float(insets.leading + 16) / width - 1,
-                1 - 2 * Float(size.height - insets.bottom - 8) / height,
-            ],
-            high: [
-                1 - 2 * Float(insets.trailing + 16) / width, 1 - 2 * Float(insets.top + 8) / height,
-            ])
+            low: [2 * Float(clear.minX + 16) / width - 1, 1 - 2 * Float(clear.maxY - 8) / height],
+            high: [2 * Float(clear.maxX - 16) / width - 1, 1 - 2 * Float(clear.minY + 8) / height])
         follows = mode == .follow
     }
 
-    /// The part of `viewport` that the overview frames the books in: between the bars, with room
-    /// around the books and more at the bottom.
-    private func frameRect(in viewport: PileViewport) -> CGRect {
-        let size = viewport.size
-        let insets = viewport.insets
+    /// The part of `viewport` that the overview frames the books in: the part the run plays in,
+    /// between the bars (`DominoFinale.clearArea(in:)`), with room around the books and more at
+    /// the bottom.
+    private static func frameRect(in viewport: PileViewport) -> CGRect {
+        let clear = DominoFinale.clearArea(in: viewport)
         return CGRect(
-            x: insets.leading + 16, y: insets.top + 8,
-            width: size.width - insets.leading - insets.trailing - 32,
-            height: size.height - insets.top - insets.bottom - 88)
+            x: clear.minX + 16, y: clear.minY + 8, width: clear.width - 32,
+            height: clear.height - 88)
     }
 
     /// The Follow camera for the books that stand and the cobwebs that hang between them, which
@@ -1410,17 +1414,8 @@ final class DominoScene {
     ) {
         let chain = DominoLayout.chain(chained)
         let key = Key(ids: chain.map { $0.book.id }, generation: generation)
-        let size = viewport.size
-        let insets = viewport.insets
-        guard size.width - insets.leading - insets.trailing > 0,
-            size.height - insets.top - insets.bottom > 0
-        else { return }
+        guard let plan = Self.plan(chain, in: viewport) else { return }
         reset(keeping: Set(key.ids))
-        let plan = DominoLayout.plan(
-            chain,
-            aspect: Float(
-                (size.width - insets.leading - insets.trailing)
-                    / (size.height - insets.top - insets.bottom)) * sin(PileCamera.pitch))
         self.plan = plan.slots
         extent = plan.extent
         poolRadius = max(6, simd_length(plan.extent) + 3)
@@ -1488,7 +1483,8 @@ final class DominoScene {
     /// the books lie still, then moves them, the camera, and the lamp's pool across the table by
     /// whole tiles, which the table does not show, so the places lie clear of the books
     /// (`DominoSetup.offset(of:aspect:)`), and moves the camera to a view of both the books and
-    /// their places. The chain's cobwebs build while the books move (`hangCobwebs(key:)`). With
+    /// their places, framed where the run plays (`DominoFinale.area(in:)`), whose shape the
+    /// move fits. The chain's cobwebs build while the books move (`hangCobwebs(key:)`). With
     /// Reduce Motion on, the books stand in their places at once instead, once the cobwebs
     /// hang, and the camera cuts to the overview.
     private func prepareArrangement(key: Key) async {
@@ -1511,7 +1507,9 @@ final class DominoScene {
                 slot: DominoLayout.standingPose(of: slots[$0])
             )
         }
-        let offset = await Self.offset(of: lying, aspect: aspect)
+        let area = plannedViewport.map(DominoFinale.area(in:))
+        let offset = await Self.offset(
+            of: lying, aspect: area.map { Float($0.width / $0.height) } ?? aspect)
         guard !Task.isCancelled, self.key == key, arrangement != nil else { return }
         #if DEBUG
             arrangement?.mark("offset")
@@ -1536,7 +1534,8 @@ final class DominoScene {
         if let viewport = plannedViewport {
             view = PileCamera(yaw: Self.overviewYaw)
                 .framing(
-                    points, in: frameRect(in: viewport), of: viewport.size, zoomRange: 0.05...2.5)
+                    points, in: Self.frameRect(in: viewport), of: viewport.size,
+                    zoomRange: 0.05...2.5)
         }
         // Twice as fast as a switch of camera, keeping pace with the setup.
         blend(from: .still(shown), pace: 2)

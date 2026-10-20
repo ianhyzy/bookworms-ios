@@ -1107,6 +1107,8 @@ final class DominoTests: XCTestCase {
             size: CGSize(width: 402, height: 874),
             insets: EdgeInsets(top: 176, leading: 0, bottom: 83, trailing: 0))
         XCTAssertEqual(DominoFinale.area(in: phone), CGRect(x: 0, y: 0, width: 402, height: 874))
+        // The chain is framed between the bars.
+        XCTAssertEqual(DominoFinale.clearArea(in: phone), phone.clear)
         let rect = DominoFinale.spreadRect(in: phone)
         XCTAssertEqual(rect.minX, 16, accuracy: 1e-9)
         XCTAssertEqual(rect.minY, 176 + 402 * 0.28, accuracy: 1e-9)
@@ -1121,6 +1123,9 @@ final class DominoTests: XCTestCase {
         // the 1,036 points right of the sidebar.
         let area = DominoFinale.area(in: mac)
         XCTAssertEqual(area, CGRect(x: 431.375, y: 0, width: 461.25, height: 820))
+        // The chain is framed in that frame below the toolbar.
+        XCTAssertEqual(
+            DominoFinale.clearArea(in: mac), CGRect(x: 431.375, y: 52, width: 461.25, height: 768))
         let wide = DominoFinale.spreadRect(in: mac)
         XCTAssertEqual(wide.minX, area.minX + 16, accuracy: 1e-9)
         XCTAssertEqual(wide.maxX, area.maxX - 16, accuracy: 1e-9)
