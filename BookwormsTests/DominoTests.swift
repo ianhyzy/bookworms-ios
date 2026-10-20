@@ -801,8 +801,24 @@ final class DominoTests: XCTestCase {
             XCTAssertGreaterThan(
                 flights[index].knots[0], flights[index + 1].knots[0] + books[index].size.z)
         }
-        // The book across the others' ends drops once they have landed, and every book but the
-        // last lands before the camera rests.
+        // The book across the others' ends lay under them, so it would arrive under them: it
+        // waits farther from the camera, clear of their places, while they wait over theirs.
+        let staged = flights[2].staging
+        XCTAssertEqual(staged.x, flights[2].to.translation.x, accuracy: 1e-4)
+        XCTAssertLessThan(staged.y, flights[2].to.translation.z - 0.4)
+        let places = books.map { DominoSetup.Box($0.to, size: $0.size) }
+        for index in [0, 1] {
+            XCTAssertEqual(
+                simd_distance(
+                    flights[index].staging,
+                    SIMD2(flights[index].to.translation.x, flights[index].to.translation.z)), 0)
+            XCTAssertFalse(
+                DominoFinale.Gather.level(places[2], at: staged)
+                    .overlaps(
+                        DominoFinale.Gather.level(places[index], at: flights[index].staging)))
+        }
+        // It drops once they have landed, and every book but the last lands before the camera
+        // rests.
         XCTAssertGreaterThanOrEqual(flights[2].drop, flights[0].landing)
         XCTAssertGreaterThanOrEqual(flights[2].drop, flights[1].landing)
         let window = DominoFinale.moveTime - DominoFinale.settleMargin - DominoFinale.gatherDelay
