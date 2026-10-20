@@ -75,11 +75,12 @@ final class PileMovieTests: XCTestCase {
         let raised = corners.map { camera.project($0 + [0, height, 0], aspect: aspect).y }
         XCTAssertGreaterThanOrEqual(raised.min()!, headingY - 1e-3)
         XCTAssertEqual(raised.min()!, headingY, accuracy: 1e-2)
-        // A camera too close to hide a book starts it just under the camera's height.
+        // A camera too close to hide the book it looks at starts it just under the camera's
+        // height.
         let close = PileCamera(target: [0, 0, 1], zoom: 20)
         XCTAssertEqual(
             PileMovieTiming.startHeight(
-                of: [[0, 0, 6]], camera: close, headingY: 0.99, aspect: aspect),
+                of: [[0, 0, 1]], camera: close, headingY: 0.99, aspect: aspect),
             close.transform.translation.y - 1, accuracy: 1e-3)
     }
 
@@ -182,7 +183,10 @@ final class PileMovieTests: XCTestCase {
             for: AVAssetReaderTrackOutput(track: video, outputSettings: nil))
         try reader.start()
         var count = 0
-        while try await samples.next() != nil { count += 1 }
+        // The reader also hands out marker buffers that hold no frames.
+        while let sample = try await samples.next() {
+            count += sample.withUnsafeSampleBuffer(\.numSamples)
+        }
         XCTAssertEqual(count, 33)
     }
 

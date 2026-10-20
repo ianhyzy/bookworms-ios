@@ -179,9 +179,11 @@ final class BookPileTests: XCTestCase {
                 XCTAssertLessThanOrEqual(ndc.x, 1)
             }
         }
-        // Its near corners meet the sidebar's edge and the view's, a margin inside them.
-        let nearLeft = project(tray.corners[3], aspect: aspect).x
-        let nearRight = project(tray.corners[2], aspect: aspect).x
+        // Its near side walls meet the sidebar's edge and the view's, a margin inside them, at
+        // the tallest pile's height, where the side walls stand.
+        let wall: SIMD3<Float> = [0, PileTray.tallestPile, 0]
+        let nearLeft = project(tray.corners[3] + wall, aspect: aspect).x
+        let nearRight = project(tray.corners[2] + wall, aspect: aspect).x
         XCTAssertEqual(nearLeft - leading, 1 - nearRight, accuracy: 0.001)
         XCTAssertLessThan(nearLeft - leading, 0.05)
         // Clamping keeps a point off the sidebar too.

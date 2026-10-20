@@ -104,7 +104,8 @@ struct PileCamera: Equatable {
 
     /// The least height at which a ball of `radius` over `point`, given as x and z on the table,
     /// lies wholly above the top of the view of a camera at `camera`, with this camera's field
-    /// of view; or `nil` when the top of the view does not slope down, so no height clears it.
+    /// of view; or `nil` when the top of the view does not slope down, as a view that looks
+    /// level or up shows the space above the table to the camera's height and beyond.
     ///
     /// The top of the view is the plane through the camera along the view's top edge. Its
     /// outward normal is the camera's up axis tipped back by half the field of view.
@@ -113,7 +114,8 @@ struct PileCamera: Equatable {
     ) -> Float? {
         let half = fieldOfView / 2
         let normal = camera.rotation.act([0, cos(half), sin(half)])
-        guard normal.y > 0.05 else { return nil }
+        let topEdge = camera.rotation.act([0, sin(half), -cos(half)])
+        guard normal.y > 0.05, topEdge.y < -0.05 else { return nil }
         let eye = camera.translation
         let across = normal.x * (point.x - eye.x) + normal.z * (point.y - eye.z)
         return eye.y + (radius - across) / normal.y

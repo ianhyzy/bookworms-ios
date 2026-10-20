@@ -184,7 +184,7 @@ final class SeriesLookTests: XCTestCase {
         let cache = try JSONDecoder()
             .decode(
                 LibrarySnapshot.self,
-                from: Data(#"{"accountID":"42","syncedAt":0,"books":[],"designs":[]}"#.utf8))
+                from: Data(#"{"accountID":"42","syncedAt":0,"books":[],"designs":{}}"#.utf8))
         XCTAssertTrue(cache.looks.isEmpty)
         var snapshot = cache
         snapshot.looks = [look().key: look()]

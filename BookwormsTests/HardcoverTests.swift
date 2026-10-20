@@ -488,7 +488,8 @@ final class HardcoverTests: XCTestCase {
         let client = HardcoverClient { request in
             if request.url?.path() == "/oauth2/token" {
                 await gate.wait()
-                return Self.respond(await status.value, "", to: request)
+                return Self.respond(
+                    await status.value, #"{"error":"invalid_grant"}"#, to: request)
             }
             guard request.value(forHTTPHeaderField: "Authorization") == "Bearer fictional-old"
             else { return Self.respond(401, "", to: request) }
@@ -511,8 +512,9 @@ final class HardcoverTests: XCTestCase {
         XCTAssertEqual(waited, "fictional-old")
         XCTAssertFalse(account.needsReconnect)
 
-        // A token endpoint that refuses the refresh grant can't renew the login.
-        await status.set(404)
+        // A token endpoint that answers `invalid_grant` refuses the refresh token, so the login
+        // can't be renewed.
+        await status.set(400)
         let refusal = await thrownError { try await account.accessToken() }
         XCTAssertEqual(refusal as? HardcoverError, .invalidToken)
         XCTAssertTrue(account.needsReconnect)

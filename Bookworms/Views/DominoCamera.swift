@@ -203,7 +203,8 @@ struct DominoCameraRig {
     /// and most, and how fast it turns on average within those, in radians per second: a bigger
     /// swing takes longer. Where the rows are long enough, every swing also leaves at least
     /// `dwell` seconds of each row and turn steady, so the camera never swings from one turn
-    /// straight into the next. A swing's middle comes `swingLead` seconds before the front
+    /// straight into the next; where they are too short for the least, a swing takes only the
+    /// time they leave, so it still ends before the next begins. A swing's middle comes `swingLead` seconds before the front
     /// reaches the middle of its turn.
     static let swingTimes: ClosedRange<Float> = 1.2...2.6
     static let swingRate: Float = 26 * .pi / 180
@@ -589,11 +590,18 @@ struct DominoCameraRig {
         }
         // The longest swing round a turn leaves `dwell` of the shorter of its rows, with that
         // row's turn, steady; the widest turns at `swingRate` for that long. Rows can differ in
-        // length, as the worm's do.
+        // length, as the worm's do. A faster turn's swing leads its turn by more of the path
+        // (`swingLead`), so it comes closer to the swing before it by the difference. Where the
+        // rows are too short for even the shortest swing, a swing takes no longer than its room,
+        // and turns less, so it still ends before the next begins.
+        func room(_ turn: Int) -> Float {
+            let after = path.period(turn + 1) - swingLead * (pace(turn + 1) - pace(turn))
+            guard turn > 0 else { return min(path.period(turn), after) }
+            return min(path.period(turn) - swingLead * (pace(turn) - pace(turn - 1)), after)
+        }
         func longest(_ turn: Int) -> Float {
-            let period = min(path.period(turn), path.period(turn + 1))
-            return min(
-                max(period / pace(turn) - dwell, swingTimes.lowerBound), swingTimes.upperBound)
+            let room = room(turn) / pace(turn)
+            return min(max(room - dwell, swingTimes.lowerBound), swingTimes.upperBound, room)
         }
         func widest(_ turn: Int) -> Float { swingRate * longest(turn) }
         // A swing turns the camera by a straight angle less both rows' angles from behind, so
