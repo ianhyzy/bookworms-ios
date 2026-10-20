@@ -841,9 +841,6 @@ final class DominoScene {
         /// (`DominoFinale.area(in:)`), and the view's size, in points.
         let area: CGRect
         let view: CGSize
-        /// Where a recording's frame centered as the last book fell, as a share of the view's
-        /// width, which it moves on from (`recordingSubject`).
-        let subject: CGFloat?
         /// Once the books start to gather, each book's index in the chain, in the spread's
         /// order, their ways into the spread (`DominoFinale.Gather`), and which have landed.
         var gathering: [Int] = []
@@ -2050,76 +2047,13 @@ final class DominoScene {
         updateHand(by: deltaTime)
         updateFinale(by: deltaTime)
         recorder.advance(
-            by: deltaTime, phase: status.phase, progress: runProgress, paused: flying != nil,
-            subject: recordingSubject)
+            by: deltaTime, phase: status.phase, progress: runProgress, paused: flying != nil)
     }
 
     /// How far the chain has fallen along the path, from 0 at the first book to 1 at the last.
     private var runProgress: Float {
         guard let length = slots.last?.distance, length > 0 else { return 1 }
         return min(1, frontDistance / length)
-    }
-
-    /// Where a recording's frame centers across the view, as a share of its width, or `nil`
-    /// to leave it where it is (see `DominoRecorder`).
-    ///
-    /// While the Follow camera films, it is where that camera composes the front, so the frame
-    /// holds still while the camera keeps the front there. While another view shows, it is
-    /// the chain just ahead of the falling front, by as far as the front moves in the time the
-    /// frame trails a steady subject (`DominoPan.lag`), so the front shows near the frame's
-    /// middle, with room for the standing books it falls toward. It starts at the first book,
-    /// where the hand pushes it. A blend between the cameras moves from one to the other.
-    /// Once the last book falls, it is where that book lands (`landing`).
-    ///
-    /// In the finale, it moves from where it was as the last book fell (`Ending.subject`) to the
-    /// middle of the spread's area (`DominoFinale.area(in:)`), which the frame then shows
-    /// exactly, with every gathered book and the last book as it springs up. It moves across
-    /// the view, not with the camera, so a frame that already shows the area holds still. It
-    /// sets off at once and slows to arrive as the books lift, so the frame leaves the chain's
-    /// end, where it can show bare table beyond the last book, as soon as the last book falls,
-    /// and then holds still while the camera's move carries the books; the frame's own easing
-    /// smooths the start. With Reduce Motion on, it is the area's middle from the start, so the
-    /// frame arrives there in the still second before the camera cuts to the spread
-    /// (`DominoFinale.stillWait`), and the books appear inside it.
-    private var recordingSubject: CGFloat? {
-        func across(_ point: SIMD3<Float>) -> CGFloat? {
-            screenPoint(of: point, in: CGSize(width: 1, height: 1))?.x
-        }
-        if let ending {
-            let clock = reducesMotion ? DominoFinale.gatherDelay : ending.clock
-            let rest = CGFloat(1 - min(clock / DominoFinale.gatherDelay, 1))
-            let middle = ending.area.midX / max(ending.view.width, 1)
-            guard let start = ending.subject else { return middle }
-            return start + (middle - start) * (1 - rest * rest * rest)
-        }
-        // Until the Follow camera has made its establishing move, the front is the subject, so
-        // a push during that move still opens the video on the first book and the hand.
-        let follow = rig?.isEstablished == true ? followShare : 0
-        let composed = area.map {
-            CGFloat($0.low.x + ($0.high.x - $0.low.x) * DominoCameraRig.composition.x + 1) / 2
-        }
-        let point: SIMD3<Float>?
-        if next >= books.count {
-            point = landing
-        } else if follow < 1, started, let rig {
-            let ahead = rig.point(
-                at: rig.estimate - DominoCameraRig.focusBack + rig.pace * Float(DominoPan.lag))
-            point = [ahead.x, rig.tallest * DominoCameraRig.typicalHeight / 2, ahead.y]
-        } else {
-            point = nil
-        }
-        guard let composed, follow > 0 else { return point.flatMap(across) }
-        guard follow < 1 else { return composed }
-        return point.flatMap(across).map { $0 + (composed - $0) * CGFloat(follow) }
-    }
-
-    /// How much the Follow camera films, from 0 to 1: 1 while it films, 0 while another view
-    /// shows, and the share of a blend's time gone while it hands over between them.
-    private var followShare: Float {
-        let to: Float = follows && cameraMove == nil && mode == .follow ? 1 : 0
-        guard let handoff else { return to }
-        let from: Float = if case .live(.follow) = handoff.from { 1 } else { 0 }
-        return from + (to - from) * min(handoff.time / handoff.duration, 1)
     }
 
     /// How far along the path the chain's front has come: the next book's place, and as much
@@ -2464,7 +2398,6 @@ final class DominoScene {
         let yaw = PileCamera(matching: camera.transform, fallback: view.target).yaw
         let placed = DominoFinale.turned(spread.slots, camera: spread.camera, by: yaw)
         let moves = follows && cameraMove == nil
-        let subject = recordingSubject
         handoff = nil
         cameraMove = nil
         // The overview shows the last book with the rest of the chain, so the move does not
@@ -2472,8 +2405,7 @@ final class DominoScene {
         ending = Ending(
             start: camera.transform, motion: moves ? motion : Motion(),
             focus: moves && mode == .follow ? landing : nil, slots: placed.slots,
-            camera: placed.camera, area: DominoFinale.area(in: viewport), view: viewport.size,
-            subject: subject)
+            camera: placed.camera, area: DominoFinale.area(in: viewport), view: viewport.size)
         if !reducesMotion, let book = placed.slots.last?.book { sharpenCover(of: book) }
     }
 
