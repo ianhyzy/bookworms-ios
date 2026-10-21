@@ -2655,9 +2655,10 @@ final class DominoScene {
             else { return }
             if move != .zero { moveFallen(by: move, in: &ending) }
             // The time the planning took comes out of the budget.
-            ending.gather = gather.paced(within: budget - (ending.clock - planned))
+            let paced = gather.paced(within: budget - (ending.clock - planned))
+            ending.gather = paced
             ending.gathered = ending.clock
-            ending.snapStart = max(DominoFinale.snapStart, ending.clock + gather.landed + 0.1)
+            ending.snapStart = max(DominoFinale.snapStart, ending.clock + paced.landed + 0.1)
             self.ending = ending
         }
     }
