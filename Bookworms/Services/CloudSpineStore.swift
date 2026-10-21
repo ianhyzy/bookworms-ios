@@ -338,7 +338,7 @@ actor CloudSpineStore: SpineStore {
             guard let phone = PhoneLibrary.load(), phone.accountID == accountID else { return nil }
             var snapshot = LibrarySnapshot(
                 accountID: phone.accountID, syncedAt: phone.syncedAt, books: phone.books,
-                designs: [:])
+                designs: [:], series: phone.series)
             do {
                 _ = try await checkedUserRecordName()
                 snapshot.designs = try await designs(accountID: phone.accountID, books: phone.books)
@@ -358,7 +358,8 @@ actor CloudSpineStore: SpineStore {
         return LibrarySnapshot(
             accountID: snapshot.accountID, syncedAt: snapshot.syncedAt, books: chosen,
             designs: try await designs(accountID: snapshot.accountID, books: books),
-            looks: try await looks(accountID: snapshot.accountID, books: chosen))
+            looks: try await looks(accountID: snapshot.accountID, books: chosen),
+            series: snapshot.series)
     }
 
     /// Returns the saved looks of the look groups of `books`, which carry their series links.

@@ -132,6 +132,79 @@ final class SeriesLookTests: XCTestCase {
                 book(8, by: "Co Writer, Ann Author", series: 9), book(9, series: 9)))
     }
 
+    func testSeriesLabelNamesTheLinkedElseTheShortestSeries() throws {
+        // Making Money's Hardcover series.
+        let discworld = SeriesMembership(
+            seriesID: 1018, name: "Discworld", position: 36, featured: true, compilation: false,
+            size: 41)
+        let moist = SeriesMembership(
+            seriesID: 10604, name: "Discworld - Moist von Lipwig", position: 2, featured: false,
+            compilation: false, size: 3)
+        let industrial = SeriesMembership(
+            seriesID: 10605, name: "Discworld - Industrial Revolution", position: 5,
+            featured: false, compilation: false, size: 6)
+        let makingMoney = book(
+            377256, title: "Making Money", by: "Terry Pratchett", series: 1018,
+            memberships: [discworld, moist, industrial])
+
+        let shortest = try XCTUnwrap(SeriesDesigns.shownSeries(of: makingMoney, link: nil))
+        XCTAssertEqual(SeriesDesigns.label(of: shortest), "Discworld - Moist von Lipwig 2 of 3")
+        let linked = try XCTUnwrap(
+            SeriesDesigns.shownSeries(of: makingMoney, link: link(377256, series: 10605)))
+        XCTAssertEqual(
+            SeriesDesigns.label(of: linked), "Discworld - Industrial Revolution 5 of 6")
+        XCTAssertEqual(
+            SeriesDesigns.shownSeries(of: makingMoney, link: link(377256, ownLook: true)), moist)
+        XCTAssertNil(
+            SeriesDesigns.shownSeries(of: makingMoney, link: link(377256, standsAlone: true)))
+        // A link to a series Hardcover no longer lists for the book names none.
+        XCTAssertNil(
+            SeriesDesigns.shownSeries(of: makingMoney, link: link(377256, series: 9999)))
+
+        // Without memberships, the featured series shows when it has a name.
+        var older = book(6, series: 1018)
+        XCTAssertNil(SeriesDesigns.shownSeries(of: older, link: nil))
+        older.seriesName = "Discworld"
+        XCTAssertEqual(
+            SeriesDesigns.shownSeries(of: older, link: nil).map(SeriesDesigns.label(of:)),
+            "Discworld Book 4")
+        XCTAssertNil(SeriesDesigns.shownSeries(of: book(7, memberships: []), link: nil))
+
+        // A place outside the series' size, or a size unknown, falls back to the position alone.
+        XCTAssertEqual(SeriesDesigns.place(in: membership(1, size: 3, position: 0)), "Book 0")
+        XCTAssertEqual(SeriesDesigns.place(in: membership(1, size: 3, position: 2.5)), "2.5 of 3")
+        XCTAssertEqual(SeriesDesigns.place(in: membership(1, size: 3, position: 4)), "Book 4")
+        XCTAssertNil(SeriesDesigns.place(in: membership(1, size: 3)))
+        XCTAssertEqual(SeriesDesigns.label(of: membership(1, size: 3)), "Series 1")
+    }
+
+    func testSeriesListingMarksTheReadersBooksInOrder() {
+        func entry(_ id: Int, _ position: Double) -> SeriesInfo.SeriesBook {
+            SeriesInfo.SeriesBook(
+                id: id, title: "Volume \(id)", position: position, releaseYear: nil,
+                coverURL: nil)
+        }
+        let info = SeriesInfo(
+            id: 10605, name: "Discworld - Industrial Revolution",
+            books: [entry(1, 1), entry(2, 2), entry(3, 3)])
+        // The reader's edition of the second book has its own ID; a novella sits between books.
+        let edition = book(20, memberships: [membership(10605, size: 3, position: 2)])
+        let novella = book(21, memberships: [membership(10605, size: 3, position: 2.5)])
+        let first = book(1, memberships: [membership(10605, size: 3, position: 1)])
+        let elsewhere = book(22, memberships: [membership(99, size: 3, position: 1)])
+        let library = [elsewhere, novella, edition, first]
+
+        let listing = SeriesEntry.listing(series: 10605, info: info, library: library)
+        XCTAssertEqual(listing.map(\.position), [1, 2, 2.5, 3])
+        XCTAssertEqual(listing.map(\.book?.id), [1, 20, 21, nil])
+
+        // Without Hardcover's list, the library's own books in the series show.
+        let older = book(23, series: 10605)
+        XCTAssertEqual(
+            SeriesEntry.listing(series: 10605, info: nil, library: library + [older]).map(\.id),
+            [1, 20, 21, 23])
+    }
+
     func testRecordNamesMatchTheAppleTVContract() {
         XCTAssertEqual(
             CloudContract.seriesLookRecordName(

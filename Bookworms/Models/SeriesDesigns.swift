@@ -21,7 +21,8 @@ struct SeriesLookKey: Codable, Hashable, Sendable {
 /// Generation follows the same rules (`SpineWorker`), so a group's books usually save matching
 /// designs anyway. The Apple TV app mirrors `styleSeries`, `lookKey`, and `subseries`; keep them
 /// in step, because the look key names the look's record, and keys that differ between the apps
-/// give one group two looks.
+/// give one group two looks. It also mirrors the series label (`shownSeries(of:link:)` and
+/// `label(of:)`), so both apps name the same series.
 enum SeriesDesigns {
     /// The series whose look `book` draws, with the book's position in it: the series its link
     /// names, else its shortest series, or `nil` for no series.
@@ -310,5 +311,40 @@ extension SpineDesignV1 {
     /// Whether the design copies another book's (`provenance` "series-reuse:<bookID>").
     var isSeriesReuse: Bool {
         provenance?.split(separator: " ").contains { $0.hasPrefix("series-reuse:") } == true
+    }
+}
+
+extension SeriesDesigns {
+    /// The series that `book`'s series label names: its style series (`styleSeries(of:link:)`),
+    /// the series its link names, else its shortest series, as the book's membership in it. A
+    /// book without memberships, from an older archive or cache, names its featured series.
+    /// `nil` when the book has no named series or its link takes it out of every series
+    /// (`SeriesLinkV1.standsAlone`).
+    static func shownSeries(of book: CloudBook, link: SeriesLinkV1?) -> SeriesMembership? {
+        guard let id = styleSeries(of: book, link: link)?.id else { return nil }
+        if let membership = book.seriesMemberships?.first(where: { $0.seriesID == id }) {
+            return membership
+        }
+        guard id == book.seriesID, let name = book.seriesName, !name.isEmpty else { return nil }
+        return SeriesMembership(
+            seriesID: id, name: name, position: book.seriesPosition, featured: true,
+            compilation: false)
+    }
+
+    /// A book's place in `series`, such as "5 of 6", or "Book 5" when the series' size is
+    /// unknown or doesn't include the position. `nil` without a position.
+    static func place(in series: SeriesMembership) -> String? {
+        guard let position = series.position else { return nil }
+        let number = position.formatted(.number.precision(.fractionLength(0...1)))
+        guard let size = series.size, position >= 1, position <= Double(size) else {
+            return "Book \(number)"
+        }
+        return "\(number) of \(size)"
+    }
+
+    /// A series label, such as "Discworld - Industrial Revolution 5 of 6": the series' name, then
+    /// the book's place in it (`place(in:)`) when known.
+    static func label(of series: SeriesMembership) -> String {
+        [series.name, place(in: series)].compactMap(\.self).joined(separator: " ")
     }
 }
