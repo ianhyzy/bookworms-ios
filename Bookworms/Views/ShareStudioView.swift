@@ -164,11 +164,27 @@ struct ShareStudioView: View {
             ?? readers.first
     }
 
-    /// The books `template` draws, with Top Five's `pins`. With friends, they come from the
-    /// comparison with `reader`, and there are none before the reader's library downloads.
+    /// The Hot Takes direction the image shows, and the picker with it: the chosen one, unless
+    /// only the other has takes in the shown frame (`HotTakeDirection.shown(hasTakes:)`). The
+    /// choice itself stays, so a frame with takes both ways shows it again.
+    private var shownDirection: HotTakeDirection {
+        guard template == .hotTakes else { return direction }
+        let frame = shownFrame
+        let reader = shownReader
+        return direction.shown { direction in
+            !books(
+                .hotTakes, frame: frame, bookID: nil, reader: reader, pins: [],
+                direction: direction
+            ).isEmpty
+        }
+    }
+
+    /// The books `template` draws, with Top Five's `pins` and Hot Takes' `direction`. With
+    /// friends, they come from the comparison with `reader`, and there are none before the
+    /// reader's library downloads.
     private func books(
         _ template: ShareTemplate, frame: TimeFrame, bookID: Int?, reader: SocialModel.Reader?,
-        pins: [Int]
+        pins: [Int], direction: HotTakeDirection
     ) -> [CloudBook] {
         if mode == .friends && reader?.match == nil { return [] }
         return template.books(
@@ -182,7 +198,10 @@ struct ShareStudioView: View {
         let bookID = template.isSingleBook ? bookID : nil
         let reader = shownReader
         let pins = template == .topFive ? self.pins.ids : []
-        var books = books(template, frame: frame, bookID: bookID, reader: reader, pins: pins)
+        let direction = shownDirection
+        var books = books(
+            template, frame: frame, bookID: bookID, reader: reader, pins: pins,
+            direction: direction)
         if template == .pile { books = Array(books.prefix(PileSnapshotRenderer.maximumBooks)) }
         // Only the drawn books' designs, so a design saved for another book changes nothing.
         let designs = books.map { model.design(for: $0) }
@@ -765,17 +784,13 @@ struct ShareStudioView: View {
             return ("No reviews\(suffix)", "Choose another time frame to share a review.")
         case .currentlyReading:
             return ("Not reading anything", "Books you're reading appear here \(nextSync).")
+        // Neither direction has takes in the frame, or the image would show the other one.
         case .hotTakes:
-            let other: HotTakeDirection = direction == .lovedMore ? .lovedLess : .lovedMore
-            if !ShareTemplate.hotTakes.books(from: library, in: frame, direction: other).isEmpty {
-                return (
-                    "No hot takes\(suffix)",
-                    "Choose \(other.title) to see this frame's other takes."
-                )
-            }
             if frame != .lifetime,
-                !ShareTemplate.hotTakes.books(from: library, in: .lifetime, direction: direction)
-                    .isEmpty
+                HotTakeDirection.allCases.contains(where: {
+                    !ShareTemplate.hotTakes.books(from: library, in: .lifetime, direction: $0)
+                        .isEmpty
+                })
             {
                 return (
                     "No hot takes\(suffix)",
@@ -845,14 +860,11 @@ struct ShareStudioView: View {
         case .hotTakes:
             let frame = shownFrame
             let suffix = frame == .lifetime ? "" : " in \(frame.title)"
-            let other: HotTakeDirection = direction == .lovedMore ? .lovedLess : .lovedMore
-            if !match.hotTakes(in: frame, direction: other).isEmpty {
-                return (
-                    "No hot takes\(suffix)",
-                    "Choose \(other.title) to see where \(name) rated higher or lower."
-                )
-            }
-            if frame != .lifetime, !match.hotTakes(in: .lifetime, direction: direction).isEmpty {
+            if frame != .lifetime,
+                HotTakeDirection.allCases.contains(where: {
+                    !match.hotTakes(in: .lifetime, direction: $0).isEmpty
+                })
+            {
                 return (
                     "No hot takes\(suffix)",
                     "Choose another time frame, such as \(TimeFrame.lifetime.title)."
@@ -1094,7 +1106,7 @@ struct ShareStudioView: View {
     @ViewBuilder
     private func options(hasNoBooks: Bool) -> some View {
         if template == .hotTakes {
-            Picker("Show", selection: $direction) {
+            Picker("Show", selection: Binding { shownDirection } set: { direction = $0 }) {
                 ForEach(HotTakeDirection.allCases) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)
@@ -1130,15 +1142,10 @@ struct ShareStudioView: View {
         mode == .mine && model.social.owner?.username != nil
     }
 
-    /// Whether the seed changes the image. It varies Year in Books' spine stacks, the Top Five
-    /// fan, a pile's arrangement, and the angle of 3D books; flat single covers ignore it.
-    private var showsShuffle: Bool {
-        switch template {
-        case .yearInBooks, .topFive, .pile: true
-        case .hotTakes, .justFinished, .review, .currentlyReading, .tasteMatch, .bookSwap:
-            coverStyle == .threeD
-        }
-    }
+    /// Whether **Shuffle** shows: for the templates whose layout the seed varies, Year in Books'
+    /// spine stacks, the Top Five fan, and a pile's arrangement. The other templates use the
+    /// seed only to turn a 3D book slightly, too little to offer as a choice.
+    private var showsShuffle: Bool { [.yearInBooks, .topFive, .pile].contains(template) }
 
     // MARK: - Rendering
 
@@ -1161,7 +1168,7 @@ struct ShareStudioView: View {
         let reader = request.readerID.flatMap(model.social.reader)
         let books = books(
             template, frame: request.frame, bookID: request.bookID, reader: reader,
-            pins: request.pins)
+            pins: request.pins, direction: request.direction)
         var input = ShareInput(
             template: template, aspect: request.aspect, books: books, frame: request.frame,
             coverStyle: request.coverStyle, direction: request.direction,

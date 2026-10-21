@@ -51,7 +51,7 @@ struct LibraryView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background { WalnutWall().ignoresSafeArea() }
                 .modifier(
-                    LibraryBar(pullOut: pullOut, options: options, showsAccount: $showsAccount)
+                    LibraryBar(pullOut: pullOut, options: options)
                 )
                 .navigationDestination(for: Int.self) { id in
                     PushedBookDetail(id: id, tab: .library)
@@ -160,9 +160,7 @@ struct LibraryView: View {
                     carousel(books)
                 }
                 #if os(iOS)
-                    LibraryFooter(
-                        options: options, pullOut: pullOut, findsBook: $findsBook,
-                        showsAccount: $showsAccount)
+                    LibraryFooter(options: options, pullOut: pullOut, findsBook: $findsBook)
                 #endif
             }
             .modifier(ShelfPullOutStage(pullOut: pullOut))
@@ -376,7 +374,6 @@ private struct LibraryBar: ViewModifier {
     let pullOut: ShelfPullOut
     /// **View options** and the status, or `nil` without a library or read books.
     let options: LibraryOptions?
-    @Binding var showsAccount: Bool
 
     @Environment(AppModel.self) private var model
 
@@ -424,9 +421,7 @@ private struct LibraryBar: ViewModifier {
                         ToolbarItem(placement: .primaryAction) {
                             ShelfModePicker(mode: options.$mode)
                         }
-                        ToolbarItem(placement: .primaryAction) {
-                            options.menu(showsAccount: $showsAccount)
-                        }
+                        ToolbarItem(placement: .primaryAction) { options.menu }
                     }
                 #endif
             }
@@ -445,7 +440,6 @@ private struct LibraryFooter: View {
     let options: LibraryOptions
     let pullOut: ShelfPullOut
     @Binding var findsBook: Bool
-    @Binding var showsAccount: Bool
 
     @Environment(AppModel.self) private var model
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -527,7 +521,7 @@ private struct LibraryFooter: View {
         HStack(spacing: 0) {
             Button("Find a book", systemImage: "magnifyingglass") { findsBook = true }
                 .frame(width: 44, height: 44)
-            options.menu(showsAccount: $showsAccount)
+            options.menu
                 .frame(width: 44, height: 44)
         }
         .labelStyle(.iconOnly)
@@ -637,9 +631,10 @@ private struct LibraryTimeChip: View {
 
 /// **View options**, Library's options, and its status. The menu follows Photos: **3D Books**
 /// for Stack, **Time**, **Sort by**, and **Remove Filters** while the time differs from its
-/// default, then **Sync Now** and **Hardcover Account…**. Its symbol fills while the time
-/// differs from its default, as Mail's filter button does, and VoiceOver reads its value as
-/// "Filtered". **View as** has its own control (`ShelfModePicker`).
+/// default. Its symbol fills while the time differs from its default, as Mail's filter button
+/// does, and VoiceOver reads its value as "Filtered". **View as** has its own control
+/// (`ShelfModePicker`). Syncing and the Hardcover account live in the account sheet, which the
+/// **Spines** tab's toolbar opens.
 @MainActor
 struct LibraryOptions {
     @Binding var mode: ShelfMode
@@ -659,9 +654,7 @@ struct LibraryOptions {
     var isFiltered: Bool { time != .last12Months }
 
     /// The **View options** menu.
-    func menu(showsAccount: Binding<Bool>) -> some View {
-        LibraryOptionsMenu(options: self, showsAccount: showsAccount)
-    }
+    var menu: some View { LibraryOptionsMenu(options: self) }
 
     /// The spans, and a **Year** menu of the years with read books.
     @ViewBuilder var timeChoices: some View {
@@ -680,9 +673,7 @@ struct LibraryOptions {
 
 private struct LibraryOptionsMenu: View {
     let options: LibraryOptions
-    @Binding var showsAccount: Bool
 
-    @Environment(AppModel.self) private var model
     /// How **Stack** draws its books, which `SpineCarousel` reads.
     @AppStorage("BookwormsStackStyle") private var stackStyle = StackStyle.flat
 
@@ -734,15 +725,6 @@ private struct LibraryOptionsMenu: View {
                 Button("Remove Filters", systemImage: "xmark.circle") {
                     options.time = .last12Months
                 }
-            }
-        }
-        Section {
-            Button("Sync Now", systemImage: "arrow.clockwise") {
-                Task { await model.syncLibrary() }
-            }
-            .disabled(model.isSyncingLibrary)
-            Button("Hardcover Account…", systemImage: "person.crop.circle") {
-                showsAccount = true
             }
         }
     }
