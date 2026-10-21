@@ -20,8 +20,10 @@ import simd
 ///    it passes over (`lift(from:to:size:over:)`) and drops the last stretch straight down onto
 ///    its slot, so it never sweeps through the books standing beside the slot.
 ///
-/// `Schedule` holds a book back while its way would cross a book that moves or stands, and
-/// raises its arc over books that stand in its way, so books never pass through each other.
+/// `Schedule` raises a book's arc over books that stand in its way. While its hop would cross a
+/// book that still moves, the book stands on its tail where it rose and waits there for its way
+/// to clear, and while even its turn would, it lies where it is, so books never pass through
+/// each other.
 enum DominoSetup {
     /// The period of the table's wood texture, in units (see `DeskStage`).
     static let tile = DeskStage.tile
@@ -30,7 +32,7 @@ enum DominoSetup {
     static let pileMargin: Float = 1.5
     /// How long a book takes to turn a quarter turn up onto its tail, in seconds: slowly enough
     /// that the books lying on it slide off rather than fly off.
-    static let quarterTurn: Float = 0.35
+    static let quarterTurn: Float = 0.28
     /// The share of a hop after which the book moves straight down onto its slot.
     static let arrival: Float = 0.8
     /// How far a hopping book's underside clears the tops of the books it passes over.
@@ -38,24 +40,28 @@ enum DominoSetup {
     /// The least and most a hop's arc rises above the line between its ends, at its middle.
     static let lifts: ClosedRange<Float> = 0.5...9
     /// The shortest a hop takes, in seconds, for a book that barely moves.
-    static let shortestHop: Float = 0.2
-    /// The gravity a hop's arc falls under, in units a second squared: twice the desk's, about
-    /// real gravity at the scene's scale of decimeters, so a hop is brisk and still falls as a
+    static let shortestHop: Float = 0.16
+    /// The gravity a hop's arc falls under, in units a second squared: 2.25 times the desk's,
+    /// about 1.25 g at the scene's scale of decimeters, so a hop is brisk and still falls as a
     /// thrown book does.
-    static let hopGravity: Float = 2 * PileLayout.gravity
+    static let hopGravity: Float = 2.25 * PileLayout.gravity
     /// The most time from one book's start to the next, and the latest the last book starts
     /// after the first while no book is held back, in seconds.
-    static let longestStep: Float = 0.1
-    static let spread: Float = 1.75
+    static let longestStep: Float = 0.08
+    static let spread: Float = 1.4
     /// The time step at which `Schedule` checks a move against the others, in seconds.
-    static let checkStep: Float = 1.0 / 30
+    static let checkStep: Float = 1.0 / 60
     /// The longest a book is held back while its way is blocked, in seconds, and how far into
     /// the setup books may still be held back, so a setup's time stays capped.
     static let longestHold: Float = 0.5
-    static let latestStart: Float = spread + 0.75
+    static let latestStart: Float = 2.5
     /// How long a book whose way is blocked waits before its way is checked again, in seconds,
     /// so a held book costs a frame no planning while it waits.
-    static let retryStep: Float = 0.05
+    static let retryStep: Float = 1.0 / 30
+    /// The longest a book stands on its tail, where it rose, waiting for its hop's way to clear,
+    /// in seconds, and the step by which `Schedule` tries longer waits.
+    static let longestWait: Float = 0.4
+    static let waitStep: Float = 1.0 / 30
     /// The longest time step a setup takes in one frame, in seconds, so a stalled frame slows
     /// the moves rather than skipping them.
     static let longestFrame: Float = 1.0 / 20
@@ -159,25 +165,32 @@ enum DominoSetup {
         let to: Transform
         /// How far the hop's arc rises above the line between its ends, at its middle.
         let lift: Float
+        /// How long the book stands on its tail where it rose before it hops, in seconds.
+        let wait: Float
         /// The bounds the book passes through on its way, standing in its slot included.
         let sweep: Bounds
 
         /// The move of a book of `size`, lying at `from`, starting at `start` toward its slot's
-        /// standing pose `to`, with an arc that rises `lift`.
+        /// standing pose `to`, with an arc that rises `lift`, after standing `wait` seconds
+        /// where it rose.
         ///
         /// The book turns about the axis that tips its tail-to-head axis straight up the
         /// shortest way, through the lowest point of its tail face, the edge it rests on. A book
         /// lying flat turns up about its tail edge's bottom, and a fallen domino rises back the
-        /// way it fell.
-        init(start: Float, from: Transform, size: SIMD3<Float>, to: Transform, lift: Float) {
+        /// way it fell. Unless `rights`, the book does not turn, and hops from where it lies.
+        init(
+            start: Float, from: Transform, size: SIMD3<Float>, to: Transform, lift: Float,
+            wait: Float = 0, rights: Bool = true
+        ) {
             self.start = start
             self.from = from
             self.size = size
             self.to = to
             self.lift = lift
+            self.wait = wait
             let up = SIMD3<Float>(0, 1, 0)
             let length = from.rotation.act([0, 1, 0])
-            angle = acos(min(max(simd_dot(length, up), -1), 1))
+            angle = rights ? acos(min(max(simd_dot(length, up), -1), 1)) : 0
             var axis = simd_cross(length, up)
             if simd_length(axis) < 1e-4 {
                 // Upright already, or on its head: any level axis across the book.
@@ -220,17 +233,19 @@ enum DominoSetup {
             max(shortestHop, (8 * lift / hopGravity).squareRoot())
         }
 
-        /// When the book stands in its slot, in seconds since the setup started.
-        var end: Float { start + rightingTime + hopTime }
+        /// When the book leaves the table, and when it stands in its slot, in seconds since the
+        /// setup started.
+        var leaves: Float { start + rightingTime + wait }
+        var end: Float { leaves + hopTime }
 
         /// Whether the book is in the air `time` seconds into the setup: from the end of its turn
-        /// until it stands in its slot.
+        /// and its wait until it stands in its slot.
         func isHopping(at time: Float) -> Bool {
-            time >= start + rightingTime && time < end
+            time >= leaves && time < end
         }
 
         /// The book's pose `time` seconds into the setup: lying until it starts, turning up onto
-        /// its tail, hopping, and then standing in its slot.
+        /// its tail, standing there through its wait, hopping, and then standing in its slot.
         func pose(at time: Float) -> Transform {
             let local = time - start
             guard local > 0 else { return from }
@@ -242,7 +257,8 @@ enum DominoSetup {
                 return Self.righted(
                     from, pivot: pivot, axis: axis, angle: angle * share * share * (3 - 2 * share))
             }
-            let progress = (local - righting) / hopTime
+            guard local > righting + wait else { return upright }
+            let progress = (local - righting - wait) / hopTime
             guard progress < 1 else { return to }
             return Self.hop(from: upright, to: to, size: size, lift: lift, progress: progress)
         }
@@ -398,17 +414,27 @@ enum DominoSetup {
         /// The arc first rises just high enough over the books it passes over
         /// (`lift(from:to:size:over:)`). Should the book still cross a book standing in its slot,
         /// on the way or once it stands, the arc rises higher, up to the most `lifts` allow.
+        /// Should its hop cross a book that still moves, the book stands on its tail, where it
+        /// rose, for up to `longestWait` before it hops, so the books after it need not wait for
+        /// it. Only a book whose turn up onto its tail would cross a moving book, or whose way no
+        /// such wait clears, gets `nil`.
         func move(
             from: Transform, size: SIMD3<Float>, to: Transform, at time: Float, among lying: [Box]
         ) -> Move? {
             let righted = Move(start: time, from: from, size: size, to: to, lift: lifts.lowerBound)
             var lift = DominoSetup.lift(
                 from: righted.upright, to: to, size: size, over: standing + lying)
+            var wait: Float = 0
             while true {
-                let move = Move(start: time, from: from, size: size, to: to, lift: lift)
+                let move = Move(start: time, from: from, size: size, to: to, lift: lift, wait: wait)
                 switch conflict(move) {
                 case nil: return move
-                case .moving: return nil
+                case .moving(let when):
+                    // A turn that meets a moving book cannot wait it out where it stands.
+                    guard when >= move.start + move.rightingTime, wait < longestWait else {
+                        return nil
+                    }
+                    wait = min(wait + waitStep, longestWait)
                 case .standing:
                     guard lift < lifts.upperBound else { return nil }
                     // Half again as high, at least 0.75 higher, so few checks reach the top.
@@ -425,8 +451,11 @@ enum DominoSetup {
             standingBounds.append(box.bounds)
         }
 
+        /// What a move crosses: a book that still moves, at a time in seconds since the setup
+        /// started, or one that stands.
         private enum Conflict {
-            case moving, standing
+            case moving(at: Float)
+            case standing
         }
 
         /// Whether `move` crosses an earlier book, while that book moves or once it stands,
@@ -451,7 +480,7 @@ enum DominoSetup {
                         continue
                     }
                     let book = Box(other.pose(at: time), size: other.size, grow: -0.01)
-                    if book.bounds.overlaps(bounds), book.overlaps(box) { return .moving }
+                    if book.bounds.overlaps(bounds), book.overlaps(box) { return .moving(at: time) }
                 }
                 guard time < last else { return nil }
                 time = min(time + checkStep, last)

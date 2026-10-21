@@ -248,9 +248,10 @@ final class DominoSetupTests: XCTestCase {
         }
         let moves = schedule.moves
         let end = moves.map(\.end).max() ?? 0
-        // Every book stands within a few seconds, and in order.
+        // Every book stands within a few seconds, in order, and few are let go regardless.
         XCTAssertLessThan(end, DominoSetup.latestStart + 3)
         XCTAssertEqual(moves.map(\.start), moves.map(\.start).sorted())
+        XCTAssertLessThanOrEqual(forced.count, 2)
         // No two books that move or stand overlap, apart from the books let go regardless.
         var sample: Float = 0
         while sample <= end {
@@ -265,12 +266,49 @@ final class DominoSetupTests: XCTestCase {
                         boxes[first].overlaps(boxes[second]), "\(sample) \(first) \(second)")
                 }
             }
-            sample += 1.0 / 30
+            sample += 1.0 / 60
         }
         // Each lands exactly in its slot.
         for (move, place) in zip(moves, places) {
             XCTAssertLessThan(
                 simd_distance(move.pose(at: move.end).translation, place.translation), 1e-3)
+        }
+    }
+
+    func testABookWhoseHopIsBlockedStandsAndWaits() {
+        let size = SIMD3<Float>(1.3, 2.2, 0.3)
+        let standing = DominoLayout.standing(heading: [1, 0])
+        // Two books that start together and would hop across each other's way at the same
+        // moment, the first along x and the second along z.
+        let first = DominoSetup.Move(
+            start: 0, from: lying(size, at: [-6, 0], yaw: 0), size: size,
+            to: Transform(rotation: standing, translation: [6, size.y / 2, 0]),
+            lift: DominoSetup.lifts.lowerBound)
+        var schedule = DominoSetup.Schedule()
+        schedule.commit(first)
+        guard
+            let move = schedule.move(
+                from: lying(size, at: [0, 6], yaw: .pi / 2), size: size,
+                to: Transform(
+                    rotation: DominoLayout.standing(heading: [0, -1]),
+                    translation: [0, size.y / 2, -6]), at: 0, among: [])
+        else { return XCTFail("The second book should wait standing rather than be held") }
+        // It turns up onto its tail at once, and stands there while the first is in the air.
+        XCTAssertGreaterThan(move.wait, 0)
+        XCTAssertLessThanOrEqual(move.wait, DominoSetup.longestWait)
+        let waiting = move.pose(at: move.start + move.rightingTime + move.wait / 2)
+        XCTAssertEqual(simd_distance(waiting.translation, move.upright.translation), 0, accuracy: 1e-5)
+        XCTAssertFalse(move.isHopping(at: move.start + move.rightingTime + move.wait / 2))
+        XCTAssertTrue(move.isHopping(at: move.leaves + 0.01))
+        XCTAssertEqual(move.end, move.leaves + move.hopTime, accuracy: 1e-5)
+        // The two never meet.
+        var time = move.start
+        while time <= max(move.end, first.end) {
+            XCTAssertFalse(
+                DominoSetup.Box(first.pose(at: time), size: size, grow: -0.01)
+                    .overlaps(DominoSetup.Box(move.pose(at: time), size: size, grow: -0.01)),
+                "\(time)")
+            time += 1.0 / 120
         }
     }
 
