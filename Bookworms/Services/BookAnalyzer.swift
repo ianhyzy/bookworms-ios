@@ -433,9 +433,11 @@ actor BookAnalyzer {
     }
 
     /// The options of the cover-lettering request to `model`, the designing model: a light
-    /// reasoning level when the model reasons, such as Private Cloud Compute. A session refuses
-    /// every request that sets a level for a model without `.reasoning`, as the backup model's
-    /// `ProviderModel` is, before the request reaches the model.
+    /// reasoning level when the model reasons, such as Private Cloud Compute or a backup model
+    /// with a thinking level, whose request carries the reader's level instead
+    /// (`ProviderModel`). A session refuses every request that sets a level for a model without
+    /// `.reasoning`, such as a backup model without a thinking level, before the request reaches
+    /// the model.
     static func readingOptions(for model: any LanguageModel) -> ContextOptions {
         ContextOptions(
             includeSchemaInPrompt: true,
