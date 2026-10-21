@@ -897,7 +897,10 @@ actor SpineWorker {
             else { throw CompanionError.providerRefused(reason) }
             return try await design(using: next)
         } catch CompanionError.providerRefused(let reason) {
-            if refusals.isLasting(after: reason), !backupRejected {
+            // After the run's move to a lower tier, that tier designs the book, as it designs
+            // every book after the refusal that moved the run.
+            if backupRejected { throw TierChanged() }
+            if refusals.isLasting(after: reason) {
                 _ = try await fallBack(from: model, rejection: reason, key: key, mode: mode)
             }
             throw CompanionError.providerRefused(reason)
