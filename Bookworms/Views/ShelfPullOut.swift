@@ -477,7 +477,7 @@ struct ShelfPullOutWait: ViewModifier {
 /// the walnut veil already darkens the tab bar's backdrop, and an edge effect that switched on
 /// as the details faded in would flip the tab bar's glass from light to dark in one frame. The
 /// top edge's effect, under the bar and the pinned section picker, shows once the details' text
-/// does, so text that scrolls under the picker never shows through it.
+/// does, so text that scrolls under the bar and the picker fades into the walnut.
 private struct ShelfPullOutLayer: View {
     let book: CloudBook
     let pullOut: ShelfPullOut
