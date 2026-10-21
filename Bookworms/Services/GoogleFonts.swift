@@ -46,6 +46,10 @@ actor GoogleFonts {
     private let root: URL
     private let session: URLSession
     private var catalogCache: (families: [String: Bool], fetchedAt: Date)?
+    /// The catalog and font file downloads in progress, which concurrent designs share
+    /// (`Task.sharedValue`).
+    private var catalogFetch: Task<[String: Bool], any Error>?
+    private var fileFetches: [URL: Task<Void, any Error>] = [:]
     private let catalogLifetime: TimeInterval = 7 * 24 * 60 * 60
     private let maximumBytes = 30 * 1024 * 1024
 
@@ -73,7 +77,15 @@ actor GoogleFonts {
         let directory = root.appending(path: CloudContract.digest("files-v2:\(family):\(weight)"))
         let file = directory.appending(path: "font.ttf")
         if !FileManager.default.fileExists(atPath: file.path) {
-            try await fetchFile(family: family, weight: weight, into: directory, file: file)
+            let fetch =
+                fileFetches[file]
+                ?? Task {
+                    defer { self.fileFetches[file] = nil }
+                    try await self.fetchFile(
+                        family: family, weight: weight, into: directory, file: file)
+                }
+            fileFetches[file] = fetch
+            try await fetch.sharedValue
         }
         let instances = Self.descriptors(at: file)
             .compactMap { descriptor -> (Int, String)? in
@@ -145,6 +157,7 @@ actor GoogleFonts {
     /// Uses the cached catalog while it is less than seven days old. Otherwise refetches it and
     /// falls back to the stale copy only when the refetch fails, then reuses that copy for 15
     /// minutes before refetching, so an outage does not delay every font load by a request.
+    /// Concurrent calls share one refetch.
     private func catalog() async throws -> [String: Bool] {
         let file = root.appending(path: "catalog.json")
         if catalogCache == nil, let data = try? Data(contentsOf: file),
@@ -157,6 +170,19 @@ actor GoogleFonts {
         if let catalogCache, -catalogCache.fetchedAt.timeIntervalSinceNow < catalogLifetime {
             return catalogCache.families
         }
+        let fetch =
+            catalogFetch
+            ?? Task {
+                defer { self.catalogFetch = nil }
+                return try await self.refetchCatalog(into: file)
+            }
+        catalogFetch = fetch
+        return try await fetch.sharedValue
+    }
+
+    /// Downloads the catalog into `file`, or returns the stale copy when the download fails, as
+    /// `catalog()` describes.
+    private func refetchCatalog(into file: URL) async throws -> [String: Bool] {
         do {
             let data = try await fetch(URL(string: "https://fonts.google.com/metadata/fonts")!)
             let families = try Self.decodeCatalog(data)

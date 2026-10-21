@@ -119,7 +119,7 @@ struct GenerationView: View {
     #if os(macOS)
         private static let chargingLabel = "Generate while idle"
         private static let chargingFooter =
-            "macOS runs generation when this Mac is idle, even with no Bookworms window open. The Apple TV picks up new designs through iCloud."
+            "macOS runs generation when this Mac is idle and plugged in, even with no Bookworms window open. The Apple TV picks up new designs through iCloud."
     #else
         private static let chargingLabel = "Generate while charging"
         private static let chargingFooter =

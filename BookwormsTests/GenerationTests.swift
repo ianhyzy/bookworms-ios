@@ -3,6 +3,7 @@ import CoreText
 import Foundation
 import FoundationModels
 import ImageIO
+import Synchronization
 import XCTest
 
 @testable import Bookworms
@@ -823,6 +824,186 @@ final class GenerationTests: XCTestCase {
                 XCTAssertEqual(stored.provenance, "series-reuse:7 model:local")
             }
             XCTAssertEqual(try run.stored()[7], source)
+        }
+    }
+
+    /// A run with the backup model designs up to `SpineWorker.backupConcurrency` books at once,
+    /// and a look group's books take turns. The first series' titles are in a script that
+    /// Georgia, the stub designs' face, lacks, so each of them designs anew instead of copying
+    /// the look; the second series' later book copies its look. The counts add up in every
+    /// status, and a book that fails fails alone.
+    func testBackupRunsDesignSeveralBooksAtOnceAndASeriesInTurn() async throws {
+        var books = (1...8)
+            .map {
+                LocalRun.book($0, title: "Lantern \($0)", cover: CoverStub.numbered($0))
+            }
+        // The first series' books stand among the others in the queue.
+        let series = [20, 21, 22]
+        for (index, title) in ["灯台守", "塩と雑音", "静かな軌道"].enumerated() {
+            books.insert(
+                LocalRun.book(
+                    series[index], title: title, cover: CoverStub.numbered(series[index]),
+                    series: 501, position: Double(index + 1)),
+                at: index * 3)
+        }
+        books += [
+            LocalRun.book(
+                30, title: "Static One", cover: CoverStub.numbered(30), series: 502, position: 1),
+            LocalRun.book(
+                31, title: "Static Two", cover: CoverStub.numbered(31), series: 502, position: 2),
+        ]
+        let stub = DesignStub(
+            delay: .milliseconds(150), failures: [5: CompanionError.invalidDesign])
+        let run = try LocalRun(books: books, designs: [])
+        defer { run.remove() }
+        let (statuses, saved) = await run.run(status: .backupStub, stub: stub)
+
+        let status = try XCTUnwrap(statuses.last)
+        XCTAssertEqual(status.phase, "Finished")
+        XCTAssertEqual(status.completed, 12)
+        XCTAssertEqual(status.failed, 1)
+        XCTAssertEqual(status.designed, 11)
+        XCTAssertEqual(status.fromSeries, 1)
+        XCTAssertEqual(status.queue, 0)
+        XCTAssertEqual(saved.count, 12)
+        XCTAssertEqual(try run.stored()[31]?.provenance, "series-reuse:30 model:custom/stub")
+        let mostAtOnce = await stub.mostAtOnce
+        XCTAssertEqual(mostAtOnce, SpineWorker.backupConcurrency)
+        let alongside = await stub.alongside
+        XCTAssertFalse(
+            alongside.contains { $0.intersection(series).count > 1 },
+            "Two books of one series were designed at once")
+        let designing = statuses.filter { $0.designingBook != nil }
+        XCTAssertFalse(designing.isEmpty)
+        for status in designing {
+            XCTAssertEqual(status.completed + status.failed + status.queue, books.count)
+            XCTAssertTrue(status.headline.hasSuffix(" of \(books.count)"), status.headline)
+        }
+    }
+
+    /// A rate limit from one book stops a backup run once: the run cancels the other books in
+    /// flight, starts no more, and saves or records nothing for them, so every book stays
+    /// queued for the next run, which waits for the provider's retry time.
+    func testARateLimitStopsTheRunAndCancelsTheOtherBooks() async throws {
+        let books = (1...8).map { LocalRun.book($0, cover: CoverStub.numbered($0)) }
+        let retry = Date().addingTimeInterval(120)
+        let limited = try XCTUnwrap(
+            BookAnalyzer.modelFailure(
+                ProviderError(
+                    provider: .google, status: 429, retryAfter: retry,
+                    message: "Resource exhausted.")))
+        let stub = DesignStub(
+            delay: .seconds(30), delays: [3: .milliseconds(300)], failures: [3: limited])
+        let run = try LocalRun(books: books, designs: [])
+        defer { run.remove() }
+        let start = ContinuousClock.now
+        let (statuses, saved) = await run.run(status: .backupStub, stub: stub)
+
+        XCTAssertLessThan(start.duration(to: .now), .seconds(10))
+        let status = try XCTUnwrap(statuses.last)
+        XCTAssertEqual(status.phase, "Paused")
+        XCTAssertEqual(status.retryAfter, retry)
+        XCTAssertEqual(status.completed, 0)
+        XCTAssertEqual(status.failed, 0)
+        XCTAssertEqual(status.queue, books.count)
+        XCTAssertEqual(saved, [])
+        let started = Set(await stub.started)
+        let cancelled = await stub.cancelled
+        XCTAssertTrue(started.contains(3))
+        XCTAssertTrue(started.isSubset(of: [1, 2, 3, 4]), "The run started books after the stop")
+        XCTAssertEqual(Set(cancelled), started.subtracting([3]))
+        XCTAssertEqual(cancelled.count, started.count - 1)
+        for book in books {
+            let due = await run.ledger.needsCheck(
+                recordName: LocalRun.recordName(book.id), workItemHash: LocalRun.workHash(book))
+            XCTAssertTrue(due, "Book \(book.id) was recorded")
+        }
+    }
+
+    /// Stop cancels every book in flight at once, and the run saves nothing from them.
+    func testStopCancelsEveryBookInFlight() async throws {
+        let books = (1...6).map { LocalRun.book($0, cover: CoverStub.numbered($0)) }
+        let stub = DesignStub(delay: .seconds(30))
+        let run = try LocalRun(books: books, designs: [])
+        defer { run.remove() }
+        let worker = run.worker(status: .backupStub, stub: stub)
+        let start = ContinuousClock.now
+        let reconcile = Task { await worker.reconcile(mode: .foreground) }
+        while await stub.inFlight.count < SpineWorker.backupConcurrency {
+            guard start.duration(to: .now) < .seconds(10) else {
+                return XCTFail("The run never had four books in flight")
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        reconcile.cancel()
+        await reconcile.value
+        XCTAssertLessThan(start.duration(to: .now), .seconds(10))
+
+        let (statuses, saved) = await LocalRun.updates(of: worker)
+        let status = try XCTUnwrap(statuses.last)
+        XCTAssertEqual(status.phase, "Stopped")
+        XCTAssertEqual(status.completed, 0)
+        XCTAssertEqual(status.failed, 0)
+        XCTAssertEqual(status.queue, books.count)
+        XCTAssertEqual(saved, [])
+        let cancelled = await stub.cancelled
+        XCTAssertEqual(cancelled.sorted(), [1, 2, 3, 4])
+        let started = await stub.started
+        XCTAssertEqual(started.count, 4)
+    }
+
+    /// Apple's tiers design one book at a time.
+    func testAppleTiersDesignOneBookAtATime() async throws {
+        let tiers = [
+            ModelStatus.local,
+            ModelStatus(
+                tier: .onDevice, isAvailable: true, unavailableReason: nil, coverReader: .onDevice),
+            ModelStatus(
+                tier: .privateCloudCompute, isAvailable: true, unavailableReason: nil,
+                coverReader: .designModel),
+        ]
+        for model in tiers {
+            let books = (1...5).map { LocalRun.book($0, cover: CoverStub.numbered($0)) }
+            let stub = DesignStub(delay: .milliseconds(30))
+            let run = try LocalRun(books: books, designs: [])
+            defer { run.remove() }
+            let (statuses, _) = await run.run(status: model, stub: stub)
+            XCTAssertEqual(statuses.last?.designed, 5, "\(model.tier)")
+            let mostAtOnce = await stub.mostAtOnce
+            XCTAssertEqual(mostAtOnce, 1, "\(model.tier)")
+        }
+    }
+
+    /// Concurrent designs that need one cover or one font family share its downloads: one
+    /// request for the cover, and one each for the Google Fonts catalog, the family's file list,
+    /// and its file.
+    func testConcurrentDesignsShareCoverAndFontDownloads() async throws {
+        SlowStub.reset()
+        let covers = CoverDownloader(protocolClasses: [SlowStub.self])
+        async let first = covers.fetch([SlowStub.cover])
+        async let second = covers.fetch([SlowStub.cover])
+        async let third = covers.fetch([SlowStub.cover])
+        let hashes = try await [first, second, third].map(\.hash)
+        XCTAssertEqual(Set(hashes).count, 1)
+        XCTAssertEqual(SlowStub.count("cover"), 1)
+
+        let folder = FileManager.default.temporaryDirectory
+            .appending(path: "bookworms-fonts-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [SlowStub.self]
+        let fonts = GoogleFonts(root: folder, configuration: configuration)
+        func load() async -> Bool {
+            (try? await fonts.download(family: SlowStub.family, weight: 400)) != nil
+        }
+        async let one = load()
+        async let two = load()
+        async let three = load()
+        // The file is not a font, so no load succeeds.
+        let loaded = await [one, two, three]
+        XCTAssertEqual(loaded, [false, false, false])
+        for kind in ["catalog", "manifest", "file"] {
+            XCTAssertEqual(SlowStub.count(kind), 1, kind)
         }
     }
 
@@ -1851,25 +2032,57 @@ private struct LocalRun {
             uppercase: false, provenance: provenance)
     }
 
+    /// A worker for this folder at `status`'s tier that reads covers from `CoverStub` and
+    /// downloads no font. `stub` stands in for the model's designs; without one, the analyzer
+    /// designs, as at local defaults.
+    func worker(status: ModelStatus = .local, stub: DesignStub? = nil) -> SpineWorker {
+        let offline = URLSessionConfiguration.ephemeral
+        offline.protocolClasses = [OfflineURLProtocol.self]
+        return SpineWorker(
+            store: LocalSpineStore(folder: folder), ledger: ledger,
+            analyzer: BookAnalyzer(
+                fonts: GoogleFonts(root: folder.appending(path: "fonts"), configuration: offline)),
+            covers: CoverDownloader(protocolClasses: [CoverStub.self]), modelStatus: status,
+            designBook: stub?.designBook)
+    }
+
     /// Runs a worker at local defaults once, which first redesigns the book `redesigning`
     /// names, and returns its final status and the designs it reported saving.
     func run(redesigning: (bookID: Int, remakesLook: Bool)? = nil) async throws -> (
         status: WorkerSnapshot, saved: [SpineDesignV1]
     ) {
-        let offline = URLSessionConfiguration.ephemeral
-        offline.protocolClasses = [OfflineURLProtocol.self]
-        let worker = SpineWorker(
-            store: LocalSpineStore(folder: folder), ledger: ledger,
-            analyzer: BookAnalyzer(
-                fonts: GoogleFonts(root: folder.appending(path: "fonts"), configuration: offline)),
-            covers: CoverDownloader(protocolClasses: [CoverStub.self]), modelStatus: .local)
+        let worker = worker()
         await worker.reconcile(mode: .foreground, redesigning: redesigning)
+        let (statuses, saved) = await Self.updates(of: worker)
+        guard let status = statuses.last else { throw CompanionError.invalidCloudData }
+        return (status, saved)
+    }
+
+    /// Runs a worker at `status`'s tier once, with `stub`'s designs, and returns every status
+    /// it published and the designs it reported saving.
+    func run(status: ModelStatus, stub: DesignStub) async -> (
+        statuses: [WorkerSnapshot], saved: [SpineDesignV1]
+    ) {
+        let worker = worker(status: status, stub: stub)
+        await worker.reconcile(mode: .foreground)
+        return await Self.updates(of: worker)
+    }
+
+    /// Reads a finished run's updates: its statuses through the one that ends the run, and the
+    /// designs it reported saving.
+    static func updates(of worker: SpineWorker) async -> (
+        statuses: [WorkerSnapshot], saved: [SpineDesignV1]
+    ) {
+        var statuses: [WorkerSnapshot] = []
         var saved: [SpineDesignV1] = []
         for await update in worker.updates {
             if case .saved(let design) = update { saved.append(design) }
-            if case .status(let status) = update, !status.isRunning { return (status, saved) }
+            if case .status(let status) = update {
+                statuses.append(status)
+                if !status.isRunning { break }
+            }
         }
-        throw CompanionError.invalidCloudData
+        return (statuses, saved)
     }
 
     /// The store's designs by book ID.
@@ -1884,7 +2097,8 @@ private struct LocalRun {
     func remove() { try? FileManager.default.removeItem(at: folder) }
 }
 
-/// Serves two solid-color PNG covers, and a 404 for any other URL.
+/// Serves solid-color PNG covers: three named ones and a numbered one per book (`numbered(_:)`),
+/// and a 404 for any other URL.
 private final class CoverStub: URLProtocol {
     static let defaultCover = URL(string: "https://covers.example.com/7.png")!
     static let secondCover = URL(string: "https://covers.example.com/8.png")!
@@ -1894,7 +2108,21 @@ private final class CoverStub: URLProtocol {
         defaultCover: png(red: 30), secondCover: png(red: 90), chosenCover: png(red: 200),
     ]
 
-    private static func png(red: UInt8) -> Data {
+    /// A cover of its own for book `number`.
+    static func numbered(_ number: Int) -> URL {
+        URL(string: "https://covers.example.com/book-\(number).png")!
+    }
+
+    private static func image(at url: URL) -> Data? {
+        if let image = images[url] { return image }
+        let name = url.deletingPathExtension().lastPathComponent
+        guard name.hasPrefix("book-"), let number = Int(name.dropFirst("book-".count)) else {
+            return nil
+        }
+        return png(red: UInt8(number % 256))
+    }
+
+    static func png(red: UInt8) -> Data {
         let side = 32
         var pixels = [UInt8](repeating: 255, count: side * side * 4)
         for offset in stride(from: 0, to: pixels.count, by: 4) {
@@ -1922,13 +2150,140 @@ private final class CoverStub: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        guard let url = request.url,
+        guard let url = request.url else { return }
+        let image = Self.image(at: url)
+        guard
             let response = HTTPURLResponse(
-                url: url, statusCode: Self.images[url] == nil ? 404 : 200, httpVersion: "HTTP/1.1",
+                url: url, statusCode: image == nil ? 404 : 200, httpVersion: "HTTP/1.1",
                 headerFields: ["Content-Type": "image/png"])
         else { return }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        if let data = Self.images[url] { client?.urlProtocol(self, didLoad: data) }
+        if let image { client?.urlProtocol(self, didLoad: image) }
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
+extension ModelStatus {
+    /// A backup model whose designs a `DesignStub` makes, on an endpoint that no request reaches.
+    fileprivate static let backupStub = ModelStatus(
+        tier: .backup, isAvailable: true, unavailableReason: nil, coverReader: .designModel,
+        designer: SpineDesigner(
+            provider: .custom, model: "stub", baseURL: "https://provider.localhost/v1"))
+}
+
+/// Stands in for the model's designs in a run. Each design waits `delay`, or its book's own
+/// delay, then throws its book's failure or returns a design in Georgia Bold, and the stub
+/// records which books it designed at once.
+private actor DesignStub {
+    private let delay: Duration
+    private let delays: [Int: Duration]
+    private let failures: [Int: any Error]
+    /// The books whose designs started, in order.
+    private(set) var started: [Int] = []
+    /// The books whose designs the run cancelled.
+    private(set) var cancelled: [Int] = []
+    private(set) var inFlight = Set<Int>()
+    /// The books in flight as each design started, the starting book included.
+    private(set) var alongside: [Set<Int>] = []
+
+    init(delay: Duration, delays: [Int: Duration] = [:], failures: [Int: any Error] = [:]) {
+        self.delay = delay
+        self.delays = delays
+        self.failures = failures
+    }
+
+    /// The most books in flight at once.
+    var mostAtOnce: Int { alongside.map(\.count).max() ?? 0 }
+
+    /// The stub as the worker's `designBook`.
+    nonisolated var designBook: SpineWorker.DesignBook {
+        { book, accountID, workItemHash, cover, model in
+            try await self.design(
+                book, accountID: accountID, workItemHash: workItemHash, cover: cover, model: model)
+        }
+    }
+
+    private func design(
+        _ book: CloudBook, accountID: String, workItemHash: String, cover: CoverImage,
+        model: ModelStatus
+    ) async throws -> SpineDesignV1 {
+        started.append(book.id)
+        inFlight.insert(book.id)
+        alongside.append(inFlight)
+        defer { inFlight.remove(book.id) }
+        do {
+            try await Task.sleep(for: delays[book.id] ?? delay)
+        } catch {
+            cancelled.append(book.id)
+            throw error
+        }
+        if let failure = failures[book.id] { throw failure }
+        return SpineDesignV1(
+            version: 1, accountID: accountID, bookID: book.id, workItemHash: workItemHash,
+            coverHash: cover.hash, generatorVersion: CloudContract.generatorVersion,
+            generatedAt: Date(), backgroundHex: "#101010", foregroundHex: "#F4EEE2",
+            accentHex: "#7A1F1F", typeface: "serif", weight: 700, uppercase: false,
+            fontPostScriptName: "Georgia-Bold", provenance: model.provenance)
+    }
+}
+
+/// Answers each request after a short wait, as a slow network does, so concurrent callers
+/// overlap: a cover, a Google Fonts catalog of fictional families, one family's file list, and
+/// a file that is not a font. It counts the requests by kind.
+private final class SlowStub: URLProtocol {
+    static let cover = URL(string: "https://covers.example.com/slow.png")!
+    static let family = "Stub Serif"
+    private static let requests = Mutex<[String: Int]>([:])
+
+    static func count(_ kind: String) -> Int { requests.withLock { $0[kind] ?? 0 } }
+    static func reset() { requests.withLock { $0 = [:] } }
+
+    private static func kind(of url: URL) -> String {
+        switch (url.host(), url.path()) {
+        case ("covers.example.com", _): "cover"
+        case ("fonts.google.com", "/metadata/fonts"): "catalog"
+        case ("fonts.google.com", "/download/list"): "manifest"
+        default: "file"
+        }
+    }
+
+    private static func body(for kind: String) -> Data {
+        switch kind {
+        case "cover": return CoverStub.png(red: 120)
+        case "catalog":
+            let families = [family] + (1...100).map { "Stub Family \($0)" }
+            return try! JSONSerialization.data(withJSONObject: [
+                "familyMetadataList": families.map { ["family": $0] }
+            ])
+        case "manifest":
+            return try! JSONSerialization.data(withJSONObject: [
+                "manifest": [
+                    "files": [["filename": "OFL.txt", "contents": "SIL OPEN FONT LICENSE"]],
+                    "fileRefs": [
+                        [
+                            "filename": "static/StubSerif-Regular.ttf",
+                            "url": "https://fonts.gstatic.com/stub-serif.ttf",
+                        ]
+                    ],
+                ]
+            ])
+        default: return Data("not a font".utf8)
+        }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url,
+            let response = HTTPURLResponse(
+                url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)
+        else { return }
+        let kind = Self.kind(of: url)
+        Self.requests.withLock { $0[kind, default: 0] += 1 }
+        Thread.sleep(forTimeInterval: 0.3)
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Self.body(for: kind))
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}

@@ -31,8 +31,9 @@ struct WorkerSnapshot: Sendable, Codable {
     var designed = 0
     /// The checked books that saved a copy of a series' design without a request.
     var fromSeries = 0
-    /// The book being designed. It stays set while a later pass checks the library, so the
-    /// bindery header keeps it in view; `designingBook` is `nil` then.
+    /// The book being designed, or with several books in flight, the one that started first. It
+    /// stays set while a later pass checks the library, so the bindery header keeps it in view;
+    /// `designingBook` is `nil` then.
     var currentBook: CloudBook?
     var error: String?
     var model: ModelStatus?
@@ -40,7 +41,9 @@ struct WorkerSnapshot: Sendable, Codable {
     var retryAfter: Date?
     var startedAt: Date?
     var lastRunAt: Date?
-    /// How long the run's latest books took to check, in seconds, oldest first.
+    /// The time between the run's latest finished books, in seconds, oldest first: each book's
+    /// own time when the run checks one book at a time, and the run's pace when it designs
+    /// several at once (`SpineWorker.backupConcurrency`).
     var durations: [TimeInterval] = []
     /// The time left after the pass's latest book, in seconds
     /// (`timeLeft(remaining:durations:elapsed:previous:)`).
@@ -212,7 +215,27 @@ enum WorkerUpdate: Sendable {
 ///
 /// Status and saved designs go out through `updates` in the order they happen. A run stops when
 /// its calling task is cancelled, for example when a background task expires.
+///
+/// At the backup tier a pass designs up to `backupConcurrency` books at once; Apple's tiers
+/// design one at a time. Each book's design runs in a child task, and the pass saves the
+/// finished books one at a time, in the order they finish, so a book's save, ledger entry, and
+/// counts never interleave with another's.
 actor SpineWorker {
+    /// Designs a book from its cover with a tier's model: the analyzer's design
+    /// (`BookAnalyzer.design(book:accountID:workItemHash:cover:using:)`), or a test's stand-in.
+    typealias DesignBook =
+        @Sendable (
+            _ book: CloudBook, _ accountID: String, _ workItemHash: String, _ cover: CoverImage,
+            _ model: ModelStatus
+        ) async throws -> SpineDesignV1
+
+    /// How many books a pass designs at once with the backup model, whose time per book is
+    /// mostly the wait for the provider's answer. A rate limit or another stop from any of them
+    /// stops the whole run (`disposition(of:)`). Apple's tiers design one book at a time:
+    /// Private Cloud Compute counts each request against a daily limit, and the on-device model
+    /// and local defaults run on this device.
+    static let backupConcurrency = 4
+
     enum Disposition: Equatable {
         /// Stop the run. The next attempt should start no earlier than the date, when known.
         case stopRun(retryAfter: Date?)
@@ -229,6 +252,7 @@ actor SpineWorker {
     private let store: any SpineStore
     private let ledger: WorkLedger
     private let analyzer: BookAnalyzer
+    private let designBook: DesignBook
     // One session per network policy for the worker's lifetime: a URLSession lives until it is
     // invalidated, so a downloader per run would leak one.
     private let covers: CoverDownloader
@@ -251,8 +275,17 @@ actor SpineWorker {
     /// the best one below the backup model after the backup's lasting rejection, including the
     /// same refusal of several books in a row (`newDesign`). `nil` between runs.
     private var runModel: ModelStatus?
-    /// The backup model's refusals of this run's latest books.
+    /// The backup model's refusals of this run's latest books, in the order their answers came.
     private var refusals = RefusalStreak()
+    /// Whether the backup model's lasting rejection moved this run, or is moving it, to a lower
+    /// tier. `fallBack` sets it before it reads that tier, so the other books in flight leave the
+    /// move to it and wait for the new tier (`TierChanged`).
+    private var backupRejected = false
+
+    /// Thrown for a book whose check began at the backup tier when the backup's lasting
+    /// rejection moved the run to a lower tier before the book's request could finish. The pass
+    /// checks the book again at that tier, in its place in the queue.
+    private struct TierChanged: Error {}
 
     /// Counts the backup model's refusals of consecutive books in a run with one message.
     ///
@@ -290,16 +323,24 @@ actor SpineWorker {
     ]
 
     /// Creates a worker that starts from `lastRun`, the saved outcome of the previous run. Tests
-    /// pass their own `ledger`, `analyzer`, and foreground `covers`, and pin `modelStatus`, which
-    /// every model read then returns, so a run's tier doesn't depend on the device.
+    /// pass their own `ledger`, `analyzer`, and foreground `covers`, pin `modelStatus`, which
+    /// every model read then returns, so a run's tier doesn't depend on the device, and pass
+    /// `designBook` to stand in for the model's designs.
     init(
         store: any SpineStore, lastRun: WorkerSnapshot = WorkerSnapshot(),
         ledger: WorkLedger = WorkLedger(), analyzer: BookAnalyzer = BookAnalyzer(),
-        covers: CoverDownloader = CoverDownloader(), modelStatus: ModelStatus? = nil
+        covers: CoverDownloader = CoverDownloader(), modelStatus: ModelStatus? = nil,
+        designBook: DesignBook? = nil
     ) {
         self.store = store
         self.ledger = ledger
         self.analyzer = analyzer
+        self.designBook =
+            designBook ?? { book, accountID, workItemHash, cover, model in
+                try await analyzer.design(
+                    book: book, accountID: accountID, workItemHash: workItemHash, cover: cover,
+                    using: model)
+            }
         self.covers = covers
         pinnedStatus = modelStatus
         snapshot = lastRun
@@ -335,6 +376,12 @@ actor SpineWorker {
     ///
     /// A call made while another run is in progress waits for that run, then runs, so a
     /// background task never completes while work it asked for is still in flight.
+    ///
+    /// At the backup tier, the run designs up to `backupConcurrency` books at once. Books of one
+    /// look group take turns, in rank order, so the group's first design decides its look before
+    /// the next book reads it. A stop from any book, such as a rate limit, stops the run once:
+    /// it cancels the other books in flight and saves nothing from them, and they stay queued
+    /// for the next run.
     func reconcile(mode: RunMode, redesigning: (bookID: Int, remakesLook: Bool)? = nil) async {
         // Overlapping runs are rare, and polling keeps the wait cancellable.
         while isRunning {
@@ -344,6 +391,7 @@ actor SpineWorker {
         redesign = redesigning
         runModel = nil
         refusals = RefusalStreak()
+        backupRejected = false
         snapshot = WorkerSnapshot(
             isRunning: true, model: snapshot.model, startedAt: Date(),
             lastRunAt: snapshot.lastRunAt)
@@ -421,7 +469,8 @@ actor SpineWorker {
             )
             let covers = mode == .foreground ? self.covers : backgroundCovers
             // Each book's time runs from the end of the one before, skipped books included, so
-            // the estimate's durations cover the same books its remaining count does.
+            // the estimate's durations cover the same books its remaining count does. With
+            // several books in flight, that is the time between finishes: the run's pace.
             var mark = ContinuousClock.now
             func timeBook() {
                 let now = ContinuousClock.now
@@ -434,100 +483,154 @@ actor SpineWorker {
                     elapsed: snapshot.startedAt.map { Date().timeIntervalSince($0) } ?? 0,
                     previous: snapshot.timeLeft)
             }
-            for book in queue {
-                try Task.checkCancellation()
-                let workHash = CloudContract.workItemHash(accountID: accountID, book: book)
-                let recordName = Self.recordName(accountID, book)
-                var redesigned = redesign?.bookID == book.id ? redesign : nil
-                // After the backup model's lasting rejection moved the run to a lower tier
-                // (`newDesign`), a book queued only to upgrade to the backup's tier is skipped
-                // without downloading its cover. A rejection of one book's request leaves the
-                // run's tier, so the other books still upgrade.
-                if redesigned == nil, let tier = runModel?.tier, tier < upgradeTier,
-                    !(await ledger.needsCheck(
-                        recordName: recordName, workItemHash: workHash,
-                        chosenCover: book.chosenCoverURL, runTier: tier))
-                {
-                    // Counted as checked, so the run's total holds.
-                    snapshot.completed += 1
-                    snapshot.queue -= 1
-                    timeBook()
-                    continue
+            // A look group's books take turns, in the queue's rank order, so the group's first
+            // design decides its look (`saveLook`) before the next book reads it.
+            let groups = queue.reduce(into: [Int: SeriesLookKey]()) { groups, book in
+                if book.seriesLink?.ownLook != true {
+                    groups[book.id] = SeriesDesigns.lookKey(of: book, link: book.seriesLink)
                 }
-                let start = mark
-                snapshot.phase = "Designing spines"
-                snapshot.currentBook = book
-                publish()
-                do {
-                    let outcome = try await design(
-                        for: book, covers: covers, workHash: workHash, context: context,
-                        redesign: redesigned, mode: mode)
-                    // `design` drops a redesign that would replace a better tier's design.
-                    if redesign == nil { redesigned = nil }
-                    if case .save(let made, let source, let replacing) = outcome {
-                        guard try await store.isStillCurrent(context, book: book) else {
-                            return true
-                        }
-                        try await store.save(made, replacing: redesigned != nil || replacing)
-                        continuation.yield(.saved(made))
-                        bookDesigns[book.id] = made
-                        checkedBooks.insert(book.id)
-                        if source == .new {
-                            await saveLook(
-                                from: made, for: book, replacing: redesigned?.remakesLook == true)
-                        }
-                        generationLog.info(
-                            "Book \(book.id, privacy: .private(mask: .hash)) designed in \(start.duration(to: .now), privacy: .public)"
-                        )
-                    }
-                    // A design from a better tier than the run's, such as a kept Private Cloud
-                    // Compute design, needs no recheck when that tier runs. A saved design that
-                    // awaits its font is checked again after a day.
-                    var awaitsFont = false
-                    if case .save(let made, _, _) = outcome { awaitsFont = made.awaitsFont }
-                    try await ledger.recordSuccess(
-                        recordName: recordName, workItemHash: workHash,
-                        coverHash: outcome.design.coverHash,
-                        chosenCover: book.chosenCoverURL,
-                        tier: runModel.map { max($0.tier, outcome.design.tier) },
-                        awaitsFont: awaitsFont)
-                    snapshot.completed += 1
-                    // A saved design moved to the book's new metadata counts as staying.
-                    if case .save(_, .new, _) = outcome { snapshot.designed += 1 }
-                    if case .save(_, .seriesCopy, _) = outcome { snapshot.fromSeries += 1 }
-                } catch {
-                    try Task.checkCancellation()
-                    // Error descriptions can carry a cover URL or quoted book content, which
-                    // identify what the user reads, so only the domain and code are public.
-                    let nsError = error as NSError
-                    generationLog.error(
-                        "Book \(book.id, privacy: .private(mask: .hash)) failed after \(start.duration(to: .now), privacy: .public): \(nsError.domain, privacy: .public) \(nsError.code, privacy: .public) \(String(describing: error), privacy: .private)"
-                    )
-                    let disposition = Self.disposition(of: error)
-                    if case .stopRun(let retryAfter) = disposition {
-                        stop(Self.message(for: error), retryAfter: retryAfter)
-                        return false
-                    }
-                    try await ledger.recordFailure(
-                        recordName: recordName, workItemHash: workHash,
-                        chosenCover: book.chosenCoverURL)
-                    snapshot.failed += 1
-                    guard disposition == .skipBook else {
-                        stop(Self.message(for: error), retryAfter: nil)
-                        return false
-                    }
-                    // A backup model's rejection, which needs the reader, stays in view.
-                    if snapshot.error == nil {
-                        snapshot.error =
-                            "Some books could not be designed. Bookworms tries them again tomorrow."
-                    }
-                }
-                if redesigned != nil { redesign = nil }
-                snapshot.queue -= 1
-                if stopForModel(await readModel(), mode: mode) { return false }
-                timeBook()
             }
-            snapshot.phase = "Finished"
+            let places = Dictionary(
+                queue.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: min)
+            var pending = queue
+            var inFlight: [CloudBook] = []
+            func waits(_ book: CloudBook) -> Bool {
+                groups[book.id].map { group in inFlight.contains { groups[$0.id] == group } }
+                    ?? false
+            }
+            return try await withThrowingTaskGroup(of: Checked.self) { group in
+                while true {
+                    while inFlight.count < concurrency,
+                        let index = pending.firstIndex(where: { !waits($0) })
+                    {
+                        try Task.checkCancellation()
+                        let book = pending.remove(at: index)
+                        let workHash = CloudContract.workItemHash(accountID: accountID, book: book)
+                        let redesigned = redesign?.bookID == book.id ? redesign : nil
+                        // After the backup model's lasting rejection moved the run to a lower
+                        // tier (`newDesign`), a book queued only to upgrade to the backup's tier
+                        // is skipped without downloading its cover. A rejection of one book's
+                        // request leaves the run's tier, so the other books still upgrade.
+                        if redesigned == nil, let tier = runModel?.tier, tier < upgradeTier,
+                            !(await ledger.needsCheck(
+                                recordName: Self.recordName(accountID, book),
+                                workItemHash: workHash, chosenCover: book.chosenCoverURL,
+                                runTier: tier))
+                        {
+                            // Counted as checked, so the run's total holds.
+                            snapshot.completed += 1
+                            snapshot.queue -= 1
+                            timeBook()
+                            continue
+                        }
+                        inFlight.append(book)
+                        snapshot.phase = "Designing spines"
+                        snapshot.currentBook = inFlight.first
+                        group.addTask {
+                            let start = ContinuousClock.now
+                            do {
+                                let outcome = try await self.design(
+                                    for: book, covers: covers, workHash: workHash,
+                                    context: context, redesign: redesigned, mode: mode)
+                                return (book, start, .success(outcome))
+                            } catch {
+                                return (book, start, .failure(error))
+                            }
+                        }
+                    }
+                    publish()
+                    guard let finished = try await group.next() else { break }
+                    let book = finished.book
+                    inFlight.removeAll { $0.id == book.id }
+                    if let next = inFlight.first { snapshot.currentBook = next }
+                    // A stopped run saves nothing more, not even a design that finished.
+                    try Task.checkCancellation()
+                    let workHash = CloudContract.workItemHash(accountID: accountID, book: book)
+                    let recordName = Self.recordName(accountID, book)
+                    // `design` drops a redesign that would replace a better tier's design.
+                    let redesigned = redesign?.bookID == book.id ? redesign : nil
+                    do {
+                        let outcome = try finished.outcome.get()
+                        if case .save(let made, let source, let replacing) = outcome {
+                            guard try await store.isStillCurrent(context, book: book) else {
+                                group.cancelAll()
+                                return true
+                            }
+                            try await store.save(made, replacing: redesigned != nil || replacing)
+                            continuation.yield(.saved(made))
+                            bookDesigns[book.id] = made
+                            checkedBooks.insert(book.id)
+                            if source == .new {
+                                await saveLook(
+                                    from: made, for: book,
+                                    replacing: redesigned?.remakesLook == true)
+                            }
+                            generationLog.info(
+                                "Book \(book.id, privacy: .private(mask: .hash)) designed in \(finished.start.duration(to: .now), privacy: .public)"
+                            )
+                        }
+                        // A design from a better tier than the run's, such as a kept Private
+                        // Cloud Compute design, needs no recheck when that tier runs. A saved
+                        // design that awaits its font is checked again after a day.
+                        var awaitsFont = false
+                        if case .save(let made, _, _) = outcome { awaitsFont = made.awaitsFont }
+                        try await ledger.recordSuccess(
+                            recordName: recordName, workItemHash: workHash,
+                            coverHash: outcome.design.coverHash,
+                            chosenCover: book.chosenCoverURL,
+                            tier: runModel.map { max($0.tier, outcome.design.tier) },
+                            awaitsFont: awaitsFont)
+                        snapshot.completed += 1
+                        // A saved design moved to the book's new metadata counts as staying.
+                        if case .save(_, .new, _) = outcome { snapshot.designed += 1 }
+                        if case .save(_, .seriesCopy, _) = outcome { snapshot.fromSeries += 1 }
+                    } catch is TierChanged {
+                        let place = places[book.id] ?? 0
+                        let later = pending.firstIndex { (places[$0.id] ?? 0) > place }
+                        pending.insert(book, at: later ?? pending.endIndex)
+                        continue
+                    } catch {
+                        try Task.checkCancellation()
+                        // Error descriptions can carry a cover URL or quoted book content, which
+                        // identify what the user reads, so only the domain and code are public.
+                        let nsError = error as NSError
+                        generationLog.error(
+                            "Book \(book.id, privacy: .private(mask: .hash)) failed after \(finished.start.duration(to: .now), privacy: .public): \(nsError.domain, privacy: .public) \(nsError.code, privacy: .public) \(String(describing: error), privacy: .private)"
+                        )
+                        // A stop cancels the other books in flight, and the group discards them
+                        // as it waits for them, so they stay queued for the next run.
+                        let disposition = Self.disposition(of: error)
+                        if case .stopRun(let retryAfter) = disposition {
+                            stop(Self.message(for: error), retryAfter: retryAfter)
+                            group.cancelAll()
+                            return false
+                        }
+                        try await ledger.recordFailure(
+                            recordName: recordName, workItemHash: workHash,
+                            chosenCover: book.chosenCoverURL)
+                        snapshot.failed += 1
+                        guard disposition == .skipBook else {
+                            stop(Self.message(for: error), retryAfter: nil)
+                            group.cancelAll()
+                            return false
+                        }
+                        // A backup model's rejection, which needs the reader, stays in view.
+                        if snapshot.error == nil {
+                            snapshot.error =
+                                "Some books could not be designed. Bookworms tries them again tomorrow."
+                        }
+                    }
+                    if redesigned != nil { redesign = nil }
+                    snapshot.queue -= 1
+                    if stopForModel(await readModel(), mode: mode) {
+                        group.cancelAll()
+                        return false
+                    }
+                    timeBook()
+                }
+                snapshot.phase = "Finished"
+                return false
+            }
         } catch {
             if Task.isCancelled {
                 snapshot.phase = "Stopped"
@@ -540,8 +643,14 @@ actor SpineWorker {
         return false
     }
 
+    /// A book whose design finished in a pass's child task, when the design started, and its
+    /// outcome or error, which the pass then saves or records.
+    private typealias Checked = (
+        book: CloudBook, start: ContinuousClock.Instant, outcome: Result<Outcome, any Error>
+    )
+
     /// What a run does with a book's design (`design(for:covers:workHash:context:redesign:mode:)`).
-    private enum Outcome {
+    private enum Outcome: Sendable {
         /// Leaves this design, iCloud's, in place.
         case keep(SpineDesignV1)
         /// Saves this design, from `source`. `replacing` tells whether it replaces the saved
@@ -550,7 +659,7 @@ actor SpineWorker {
         case save(SpineDesignV1, source: Source, replacing: Bool = false)
 
         /// Where a saved design comes from.
-        enum Source {
+        enum Source: Sendable {
             /// The book's saved design, moved to its new work-item hash.
             case moved
             /// A new copy of a series' design or look.
@@ -713,7 +822,8 @@ actor SpineWorker {
             }
         }
         let made = try await newDesign(
-            for: book, cover: cover, workHash: workHash, accountID: context.accountID, mode: mode)
+            for: book, cover: cover, workHash: workHash, accountID: context.accountID,
+            tier: runTier, mode: mode)
         // The backup model's lasting rejection moves the run to a weaker tier (`newDesign`), so
         // the redesign is checked again against the tier that made `made`. Without it, the tier
         // rule decides, as on any run, and the fallback's message stays in view.
@@ -752,38 +862,48 @@ actor SpineWorker {
     /// An HTTP 400 refusal fails only this book (`BookAnalyzer.modelFailure(_:)`), unless it is
     /// the third book in a row that the backup refuses with the same message
     /// (`RefusalStreak`). That refusal counts as a lasting rejection for later books, and the
-    /// three books keep their failures.
+    /// three books keep their failures. With several books in flight, the streak counts the
+    /// answers in the order they arrive.
+    ///
+    /// `tier` is the run's tier when this book's check began. When another book's lasting
+    /// rejection has moved the run below it, or is moving it, this throws `TierChanged`, and
+    /// the pass checks the book again at the new tier, which designs one book at a time. So the
+    /// run falls back once, however many books were in flight.
     private func newDesign(
         for book: CloudBook, cover: CoverImage, workHash: String, accountID: String,
-        mode: RunMode
+        tier: ModelTier, mode: RunMode
     ) async throws -> SpineDesignV1 {
         guard let model = runModel else { throw CompanionError.modelUnavailable }
+        if model.tier != tier || model.tier == .backup && backupRejected { throw TierChanged() }
         func design(using model: ModelStatus) async throws -> SpineDesignV1 {
-            try await analyzer.design(
-                book: book, accountID: accountID, workItemHash: workHash, cover: cover,
-                using: model)
+            try await designBook(book, accountID, workHash, cover, model)
         }
         guard model.tier == .backup else { return try await design(using: model) }
         // Held in memory for the request, so a rejection that arrives after the reader replaced
         // the key isn't remembered for the new one.
         let key = model.designer.provider.key.read()
-        // Any outcome but another refusal ends the streak.
-        var streak = refusals
-        refusals = RefusalStreak()
+        // Any outcome but another refusal ends the streak, which this request reads when its
+        // answer arrives.
         do {
-            return try await design(using: model)
+            let made = try await design(using: model)
+            refusals = RefusalStreak()
+            return made
         } catch CompanionError.providerRejected(let reason) {
+            refusals = RefusalStreak()
+            if backupRejected { throw TierChanged() }
             // A rejection of a replaced key fails only this book, and the run keeps its tier.
             guard
                 let next = try await fallBack(from: model, rejection: reason, key: key, mode: mode)
             else { throw CompanionError.providerRefused(reason) }
             return try await design(using: next)
         } catch CompanionError.providerRefused(let reason) {
-            if streak.isLasting(after: reason) {
+            if refusals.isLasting(after: reason), !backupRejected {
                 _ = try await fallBack(from: model, rejection: reason, key: key, mode: mode)
             }
-            refusals = streak
             throw CompanionError.providerRefused(reason)
+        } catch {
+            refusals = RefusalStreak()
+            throw error
         }
     }
 
@@ -797,6 +917,9 @@ actor SpineWorker {
         from model: ModelStatus, rejection: String, key: String?, mode: RunMode
     ) async throws -> ModelStatus? {
         guard model.designer.rememberRejection(rejection, sentKey: key) else { return nil }
+        // Set before the status read, so books in flight that the backup rejects meanwhile leave
+        // the move to this one (`newDesign`).
+        backupRejected = true
         var next = await analyzer.status(for: .appleOnly)
         next.backupUnavailableReason = rejection
         guard Self.modelStop(next, mode: mode) == nil else {
@@ -946,6 +1069,9 @@ actor SpineWorker {
             status = pinnedStatus
         } else if let runModel {
             status = await analyzer.status(of: runModel.tier, designer: runModel.designer)
+            // While a lasting rejection moves the run off the backup (`fallBack`), the backup's
+            // status reads as rejected, and the move picks the run's next tier.
+            if backupRejected, runModel.tier == .backup { return self.runModel ?? runModel }
             status.pccUnavailableReason = runModel.pccUnavailableReason
             status.backupUnavailableReason = runModel.backupUnavailableReason
             status.onDeviceUnavailableReason = runModel.onDeviceUnavailableReason
@@ -961,6 +1087,12 @@ actor SpineWorker {
     private func bestStatus() async -> ModelStatus {
         if let pinnedStatus { return pinnedStatus }
         return await analyzer.status()
+    }
+
+    /// How many books the pass designs at once: `backupConcurrency` at the backup tier until its
+    /// lasting rejection, and one at Apple's tiers.
+    private var concurrency: Int {
+        runModel?.tier == .backup && !backupRejected ? Self.backupConcurrency : 1
     }
 
     /// Stops the run when `status` says its model should get no more requests.

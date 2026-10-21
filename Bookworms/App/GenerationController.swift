@@ -4,13 +4,19 @@ import SwiftUI
 #if canImport(BackgroundTasks)
     import BackgroundTasks
 #endif
+#if os(macOS)
+    import IOKit.ps
+#endif
 
-/// Runs spine generation on request, while charging, and after a worklist change.
+/// Runs spine generation on request, in the background on external power, and after a worklist
+/// change.
 ///
 /// **Generate now** runs in the app and asks iOS to keep it going in the background with a
 /// continued-processing task. The charging task runs inside SwiftUI's background task, which
-/// cancels it on expiration. A silent push only schedules the charging task, because its
-/// 30-second window is too short for a design. `SpineWorker` lets one run proceed at a time.
+/// cancels it on expiration, as iOS expires it when the iPhone is unplugged. On the Mac it runs
+/// while the Mac is idle and draws AC power, and a switch to battery power cancels it. A silent
+/// push only schedules the charging task, because its 30-second window is too short for a
+/// design. `SpineWorker` lets one run proceed at a time.
 @MainActor
 @Observable
 final class GenerationController {
@@ -37,6 +43,11 @@ final class GenerationController {
     @ObservationIgnored private var userRun: Task<Void, Never>?
     #if os(macOS)
         @ObservationIgnored private var backgroundActivity: NSBackgroundActivityScheduler?
+        /// The idle run in progress, which a switch to battery power cancels.
+        @ObservationIgnored private var idleRun: Task<Void, Never>?
+        /// The notification of switches between AC and battery power, on the main run loop from
+        /// the first idle run on.
+        @ObservationIgnored private var powerSourceAlert: CFRunLoopSource?
     #else
         @ObservationIgnored private var continuedTask: BGContinuedProcessingTask?
     #endif
@@ -201,7 +212,8 @@ final class GenerationController {
     #if os(macOS)
         /// Asks macOS to run generation when the Mac is idle, or cancels the request when the
         /// user turned the preference off. The Mac app keeps running with no window open, so
-        /// the activity fires while it stays in the menu bar.
+        /// the activity fires while it stays in the menu bar. The run starts only on AC power
+        /// (`runIdleActivity()`).
         func scheduleChargingTask(hasNewWork: Bool = false) async {
             backgroundActivity?.invalidate()
             backgroundActivity = nil
@@ -214,11 +226,58 @@ final class GenerationController {
             activity.qualityOfService = .utility
             activity.schedule { completion in
                 Task { @MainActor in
-                    await GenerationController.shared.runChargingTask()
-                    completion(.finished)
+                    let result = await GenerationController.shared.runIdleActivity()
+                    completion(result)
                 }
             }
             backgroundActivity = activity
+        }
+
+        /// Runs the charging task while this Mac draws AC power, as iOS runs it only on external
+        /// power, and otherwise asks macOS to try again later. A switch to battery power during
+        /// the run cancels it (`powerSourceChanged()`); a **Generate now** run keeps going.
+        private func runIdleActivity() async -> NSBackgroundActivityScheduler.Result {
+            // An idle run in progress does the work, and schedules the next activity when it ends.
+            guard idleRun == nil else { return .finished }
+            guard Self.drawsACPower else { return .deferred }
+            watchPowerSource()
+            let run = Task { await runChargingTask() }
+            idleRun = run
+            await run.value
+            idleRun = nil
+            return .finished
+        }
+
+        /// Whether this Mac draws AC power. A Mac without a battery, such as a Mac mini, always
+        /// does. A Mac whose power source can't be read counts as drawing it, so a failed read
+        /// never turns idle generation off.
+        private static var drawsACPower: Bool {
+            guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+                let source = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue()
+            else { return true }
+            return source as String == kIOPMACPowerKey
+        }
+
+        /// Starts watching for switches between AC and battery power, once. The notification
+        /// fires only on those switches, not as the battery's charge changes, and arrives on the
+        /// main run loop.
+        private func watchPowerSource() {
+            guard powerSourceAlert == nil,
+                let alert = IOPSCreateLimitedPowerNotification(
+                    { _ in
+                        MainActor.assumeIsolated {
+                            GenerationController.shared.powerSourceChanged()
+                        }
+                    }, nil)?
+                    .takeRetainedValue()
+            else { return }
+            CFRunLoopAddSource(CFRunLoopGetMain(), alert, .commonModes)
+            powerSourceAlert = alert
+        }
+
+        /// Stops the idle run in progress when this Mac switches to battery power.
+        private func powerSourceChanged() {
+            if !Self.drawsACPower { idleRun?.cancel() }
         }
     #else
         /// Asks iOS to run generation while the iPhone charges and is idle on a network, or cancels

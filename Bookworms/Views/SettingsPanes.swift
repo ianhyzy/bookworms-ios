@@ -48,7 +48,7 @@
                     LaunchAtLoginToggle()
                 } footer: {
                     Text(
-                        "Bookworms keeps running in the menu bar after you close its window, and macOS runs generation when this Mac is idle. The Apple TV picks up new designs through iCloud."
+                        "Bookworms keeps running in the menu bar after you close its window, and macOS runs generation when this Mac is idle and plugged in. The Apple TV picks up new designs through iCloud."
                     )
                 }
             }
