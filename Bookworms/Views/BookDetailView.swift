@@ -430,6 +430,12 @@ enum DetailCard: Hashable {
         return counts.contains { $0 > 0 } ? counts : nil
     }
 
+    /// The card's identity in `CardGrid`: its contents, except that the **Series** card keeps one
+    /// identity when a pick changes its series, so the **Series** sheet it presents stays open.
+    var gridID: AnyHashable {
+        if case .series = self { "series" } else { self }
+    }
+
     /// Arranges `cards` in order in rows of one or two, leaving no holes. A wide card fills its
     /// own row, and the cards between wide ones pair up; when their number is odd, the first
     /// fills a row alone, since it can use the room. With `oneColumn`, each card fills a row.
@@ -749,10 +755,11 @@ private struct CardGrid: View {
     var body: some View {
         VStack(spacing: 12) {
             ForEach(
-                DetailCard.rows(cards, oneColumn: typeSize.isAccessibilitySize), id: \.self
+                DetailCard.rows(cards, oneColumn: typeSize.isAccessibilitySize),
+                id: \.gridIDs
             ) { row in
                 HStack(alignment: .top, spacing: 12) {
-                    ForEach(row, id: \.self) {
+                    ForEach(row, id: \.gridID) {
                         DetailCardView(card: $0, book: book, fillsRow: row.count == 1)
                     }
                 }
@@ -762,6 +769,11 @@ private struct CardGrid: View {
             }
         }
     }
+}
+
+extension [DetailCard] {
+    /// A row's identity in `CardGrid` (`DetailCard.gridID`).
+    fileprivate var gridIDs: [AnyHashable] { map(\.gridID) }
 }
 
 /// One card of a `CardGrid`. VoiceOver reads each card as one element.
