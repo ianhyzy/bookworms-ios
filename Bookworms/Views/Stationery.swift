@@ -18,11 +18,16 @@ enum Stationery {
     static let labelInkValue = ColorValue(red: 0x4E, green: 0x3E, blue: 0x2F)
     /// A date stamp's violet ink.
     static let stampInkValue = ColorValue(red: 0x2E, green: 0x2A, blue: 0x6B)
+    /// A ballpoint pen's blue-black ink, for handwriting.
+    static let penInkValue = ColorValue(red: 0x1B, green: 0x2A, blue: 0x55)
 
     static let stock = stockValue.color
     static let ink = inkValue.color
     static let labelInk = labelInkValue.color
     static let stampInk = stampInkValue.color
+    static let penInk = penInkValue.color
+    /// A date stamp's day, month, and year. Reading dates are days, kept at midnight GMT.
+    static let stampFormat = Date.FormatStyle(timeZone: .gmt).day().month(.abbreviated).year()
     /// A library card's printed rules: faint ink, decoration only.
     static let rule = inkValue.color.opacity(0.14)
     /// The red rule under a library card's heading, and a bookmark ribbon's cloth.

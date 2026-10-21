@@ -100,26 +100,50 @@ final class SpineFonts {
                 }
                 continue
             }
-            let task = loads[key] ?? download(family: family, design: design, key: key)
-            // Awaiting the task itself would ignore cancellation; the stream's iteration ends
-            // when the download finishes or the caller is cancelled.
-            let (finished, finish) = AsyncStream.makeStream(of: Never.self)
-            Task {
-                await task.value
-                finish.finish()
-            }
-            for await _ in finished {}
+            await wait(
+                for: loads[key]
+                    ?? download(
+                        family: family, weight: design.weight,
+                        postScriptName: design.fontPostScriptName, key: key))
         }
     }
 
-    /// Starts downloading `design`'s face and records the result under `key` when it ends.
-    private func download(family: String, design: SpineDesignV1, key: String) -> Task<Void, Never> {
+    /// Returns `family`'s face at `weight` for lettering that belongs to no spine, such as a
+    /// share card's handwriting, loading it first as `load(_:)` does, or `nil` when it can't
+    /// load or the calling task is cancelled.
+    func face(family: String, weight: Int) async -> FontFace? {
+        let key = "\(family):\(weight)"
+        if faces[key] == nil, !unusable.contains(key) {
+            await wait(
+                for: loads[key]
+                    ?? download(family: family, weight: weight, postScriptName: nil, key: key))
+        }
+        return faces[key]
+    }
+
+    /// Waits for `task` until it finishes or the calling task is cancelled.
+    private func wait(for task: Task<Void, Never>) async {
+        // Awaiting the task itself would ignore cancellation; the stream's iteration ends when
+        // the download finishes or the caller is cancelled.
+        let (finished, finish) = AsyncStream.makeStream(of: Never.self)
+        Task {
+            await task.value
+            finish.finish()
+        }
+        for await _ in finished {}
+    }
+
+    /// Starts downloading `family`'s face at `weight`, preferring the instance named
+    /// `postScriptName`, and records the result under `key` when it ends.
+    private func download(family: String, weight: Int, postScriptName: String?, key: String)
+        -> Task<Void, Never>
+    {
         let task = Task { [downloader] in
             do {
-                let font = try await downloader.download(family: family, weight: design.weight)
+                let font = try await downloader.download(family: family, weight: weight)
                 // A face with the italic trait or a slant never renders, whatever its name says.
                 if let descriptor = GoogleFonts.uprightDescriptor(
-                    preferring: [design.fontPostScriptName, font.postScriptName],
+                    preferring: [postScriptName, font.postScriptName],
                     in: GoogleFonts.descriptors(at: font.fileURL))
                 {
                     faces[key] = FontFace(
