@@ -58,8 +58,8 @@ struct HardcoverAccountView: View {
 
 /// The Hardcover account: why to connect, the device-code sign-in on a library card, and the
 /// signed-in account's bookplate with **Sync now** and **Sign out**. It shows when the library
-/// last synced, from Hardcover or, without a sign-in, from iCloud. The account sheet and the
-/// Mac's **Settings > Hardcover** show it.
+/// last synced, from Hardcover or, without a sign-in, from iCloud, whose library its own **Sync
+/// now** loads again. The account sheet and the Mac's **Settings > Hardcover** show it.
 ///
 /// Hardcover's approval page opens in Safari over this form, with the code already copied, and
 /// closes when polling sees the approval. The device flow has no redirect back to the app, which is
@@ -182,6 +182,8 @@ struct HardcoverAccountForm: View {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.secondary)
             }
+            Button("Sync now") { Task { await model.reload() } }
+                .disabled(model.isLoading)
         } header: {
             Text(model.isPreview ? "Preview library" : "iCloud library")
         } footer: {

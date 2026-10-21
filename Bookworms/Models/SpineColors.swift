@@ -220,6 +220,10 @@ extension SpineDesignV1 {
     /// The model tier that made this design, from its `modelToken`.
     var tier: ModelTier { ModelTier(modelToken: modelToken) }
 
+    /// The model that made this design, from its `modelToken`, as the Spines tab's **Saved
+    /// designs** and a book's **Style** name it (`ModelTier.designerName(modelToken:)`).
+    var madeBy: String { ModelTier.designerName(modelToken: modelToken) }
+
     /// The `provenance` token of a local-defaults design whose Google Fonts family couldn't
     /// download, such as while Google Fonts was unreachable, so it uses its style's system
     /// typeface (`BookAnalyzer.design(book:accountID:workItemHash:cover:using:)`).
