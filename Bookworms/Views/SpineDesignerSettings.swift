@@ -215,7 +215,14 @@ struct SpineDesignerSettings: View {
     /// updates the model rows and is checked against the key.
     private func commit() {
         let newModel = designer.provider != saved.provider || designer.model != saved.model
-        if newModel { showModel(confirmed: nil) }
+        if newModel {
+            // A model that the list doesn't name gets a level only once the provider confirms
+            // which levels it takes (`checkModel()`).
+            if DesignModels.bundled.model(designer.model, of: designer.provider) == nil {
+                designer.thinking = ""
+            }
+            showModel(confirmed: nil)
+        }
         guard designer != saved else { return }
         settingsChanged()
         if newModel { checkModel() }
