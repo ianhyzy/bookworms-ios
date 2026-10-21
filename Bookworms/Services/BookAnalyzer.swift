@@ -52,6 +52,23 @@ enum ModelTier: Int, Codable, Comparable, Sendable {
         case .local: "Default styling"
         }
     }
+
+    /// The model that a `provenance` model token names (`SpineDesignV1.modelToken`), such as
+    /// "Google Gemini (gemini-3.8-flash)" for "model:google/gemini-3.8-flash", "Apple on-device
+    /// model", or "Private Cloud Compute" without a token. It reads the token alone, never this
+    /// device's model settings, so every device names a design after the model that made it.
+    static func designerName(modelToken: String?) -> String {
+        let tier = ModelTier(modelToken: modelToken)
+        guard tier == .backup, let token = modelToken?.dropFirst("model:".count) else {
+            return tier.name(backup: .appleOnly)
+        }
+        let parts = token.split(separator: "/", maxSplits: 1).map(String.init)
+        guard parts.count == 2, let provider = SpineDesigner.Provider(rawValue: parts[0]) else {
+            return String(token)
+        }
+        let name = provider == .custom ? "OpenAI-compatible endpoint" : provider.name
+        return "\(name) (\(parts[1]))"
+    }
 }
 
 /// A model tier's availability and, for Private Cloud Compute, the user's daily quota, as the
@@ -286,8 +303,8 @@ actor BookAnalyzer {
     /// offline `URLError`, when the run should stop; `.providerRejected` when the backup model
     /// rejects its key, model name, or account (`ProviderError.isLasting`) or is not set up;
     /// `.providerRefused` when the backup model refuses this request with HTTP 400;
-    /// `.modelUnavailable` when the tier's model is unavailable; and `.invalidDesign` when this
-    /// book cannot get a valid design.
+    /// `.modelUnavailable` when the tier's model is unavailable or can't take the request; and
+    /// `.invalidDesign` when this book cannot get a valid design.
     func design(
         book: CloudBook, accountID: String, workItemHash: String, cover: CoverImage,
         using model: ModelStatus
@@ -352,8 +369,7 @@ actor BookAnalyzer {
         case .designModel:
             guard let model else { throw CompanionError.modelUnavailable }
             reading = try await Self.readLettering(
-                crop, model: model,
-                contextOptions: ContextOptions(includeSchemaInPrompt: true, reasoningLevel: .light))
+                crop, model: model, contextOptions: Self.readingOptions(for: model))
         case .onDevice:
             // The on-device model does not support reasoning levels.
             reading = try await Self.readLettering(
@@ -416,11 +432,22 @@ actor BookAnalyzer {
             provenance: tokens.isEmpty ? nil : tokens.joined(separator: " "))
     }
 
+    /// The options of the cover-lettering request to `model`, the designing model: a light
+    /// reasoning level when the model reasons, such as Private Cloud Compute. A session refuses
+    /// every request that sets a level for a model without `.reasoning`, as the backup model's
+    /// `ProviderModel` is, before the request reaches the model.
+    static func readingOptions(for model: any LanguageModel) -> ContextOptions {
+        ContextOptions(
+            includeSchemaInPrompt: true,
+            reasoningLevel: model.capabilities.contains(.reasoning) ? .light : nil)
+    }
+
     /// Maps a model framework error to the companion's error, or returns `nil` for other errors.
     ///
-    /// Quota, network, and service errors stop the run so it can resume later. Errors about
-    /// this book's content or the request's shape, such as a guardrail or an oversized context,
-    /// fail only this book.
+    /// Quota, network, and service errors stop the run so it can resume later, and so does a
+    /// request the model can't take at all, such as one that needs a capability the model lacks,
+    /// which would fail every book the same way. Errors about this book's content, such as a
+    /// guardrail or an oversized context, fail only this book.
     static func modelFailure(_ error: any Error) -> CompanionError? {
         switch error {
         case let error as PrivateCloudComputeLanguageModel.Error:
@@ -430,6 +457,9 @@ actor BookAnalyzer {
             switch error {
             case .rateLimited(let info): return .modelBusy(info.resetDate)
             case .timeout: return .modelBusy(nil)
+            case .unsupportedCapability, .unsupportedGenerationGuide,
+                .unsupportedTranscriptContent:
+                return .modelUnavailable
             default: return .invalidDesign
             }
         case let error as ProviderError:

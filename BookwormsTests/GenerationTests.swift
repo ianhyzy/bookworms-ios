@@ -34,6 +34,54 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(schema["required"] as? [String], ["ranked"])
     }
 
+    /// The backup model's cover-lettering request reaches the provider: a session refuses a
+    /// request with a reasoning level for a model without `.reasoning`, as `ProviderModel` is,
+    /// before it sends anything, which failed every book of a Gemini run. A stub answers for
+    /// Gemini, so no request leaves the device.
+    func testBackupModelRequestsReachTheProviderWithoutAReasoningLevel() async throws {
+        ProviderStub.requests = 0
+        URLProtocol.registerClass(ProviderStub.self)
+        defer { URLProtocol.unregisterClass(ProviderStub.self) }
+        let model = ProviderModel(
+            designer: SpineDesigner(
+                provider: .google, model: "gemini-3.8-flash",
+                baseURL: "https://\(ProviderStub.host)/v1beta"))
+        XCTAssertNil(BookAnalyzer.readingOptions(for: model).reasoningLevel)
+        let schema = try GenerationSchema(
+            root: DynamicGenerationSchema(
+                name: "Reading",
+                properties: [
+                    .init(
+                        name: "treatment",
+                        schema: DynamicGenerationSchema(
+                            name: "treatment", anyOf: BookAnalyzer.treatments))
+                ]),
+            dependencies: [])
+        let image = try XCTUnwrap(
+            CGContext(
+                data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 32,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?
+                .makeImage())
+        func ask(_ options: ContextOptions) async throws -> String {
+            try await LanguageModelSession(model: model)
+                .respond(schema: schema, contextOptions: options) {
+                    "Describe the title lettering."
+                    Attachment(image)
+                }
+                .content.value(String.self, forProperty: "treatment")
+        }
+        let answer = try await ask(BookAnalyzer.readingOptions(for: model))
+        XCTAssertEqual(answer, "plain")
+        XCTAssertEqual(ProviderStub.requests, 1)
+        do {
+            _ = try await ask(ContextOptions(includeSchemaInPrompt: true, reasoningLevel: .light))
+            XCTFail("The session should refuse a reasoning level for this model")
+        } catch LanguageModelError.unsupportedCapability {
+            XCTAssertEqual(ProviderStub.requests, 1, "The refused request never reached Gemini")
+        }
+    }
+
     func testProviderErrorsStopTheRunWhenEveryBookWouldFail() {
         func failure(_ status: Int, code: String? = nil) -> CompanionError? {
             BookAnalyzer.modelFailure(
@@ -161,15 +209,26 @@ final class GenerationTests: XCTestCase {
             LanguageModelError.refusal(.init(explanation: "", debugDescription: "")),
             LanguageModelError.contextSizeExceeded(
                 .init(contextSize: 1, tokenCount: 2, debugDescription: "")),
-            LanguageModelError.unsupportedCapability(
-                .init(capability: .vision, debugDescription: "")),
-            LanguageModelError.unsupportedGenerationGuide(
-                .init(schemaName: nil, debugDescription: "")),
         ]
         for error in perBook {
             guard case .invalidDesign = BookAnalyzer.modelFailure(error) else {
                 return XCTFail("\(error) should fail only the book")
             }
+        }
+        // A request the model can't take fails every book the same way, so it stops the run.
+        let everyBook: [any Error] = [
+            LanguageModelError.unsupportedCapability(
+                .init(capability: .reasoning, debugDescription: "")),
+            LanguageModelError.unsupportedGenerationGuide(
+                .init(schemaName: nil, debugDescription: "")),
+        ]
+        for error in everyBook {
+            guard case .modelUnavailable = BookAnalyzer.modelFailure(error) else {
+                return XCTFail("\(error) should stop the run")
+            }
+            XCTAssertEqual(
+                SpineWorker.disposition(of: BookAnalyzer.modelFailure(error)!),
+                .stopRun(retryAfter: nil))
         }
         XCTAssertNil(BookAnalyzer.modelFailure(URLError(.notConnectedToInternet)))
     }
@@ -893,6 +952,109 @@ final class GenerationTests: XCTestCase {
         )
     }
 
+    /// Every device names a design after the model token it records, never after its own model
+    /// settings, so a device without the Gemini key still credits Gemini's designs.
+    func testDesignsNameTheModelThatMadeThem() {
+        let book = LocalRun.book(7)
+        func design(_ provenance: String?, generator: String = CloudContract.generatorVersion)
+            -> SpineDesignV1
+        {
+            LocalRun.design(
+                for: book, coverHash: String(repeating: "c", count: 64), generator: generator,
+                provenance: provenance)
+        }
+        let gemini = design("model:google/gemini-3.8-flash")
+        XCTAssertEqual(gemini.madeBy, "Google Gemini (gemini-3.8-flash)")
+        XCTAssertEqual(design("series-reuse:8 model:google/gemini-3.8-flash").madeBy, gemini.madeBy)
+        XCTAssertEqual(
+            gemini.recolored(
+                SpineColors(
+                    background: ColorValue(hex: "#202020")!,
+                    foreground: ColorValue(hex: "#F4EEE2")!, accent: ColorValue(hex: "#7A1F1F")!)
+            )
+            .madeBy, gemini.madeBy, "Recoloring keeps the model")
+        XCTAssertEqual(
+            design("model:anthropic/claude-haiku-5-5").madeBy, "Anthropic (claude-haiku-5-5)")
+        XCTAssertEqual(
+            design("model:custom/qwen3-vl").madeBy, "OpenAI-compatible endpoint (qwen3-vl)")
+        XCTAssertEqual(design(nil).madeBy, "Private Cloud Compute")
+        XCTAssertEqual(design(ModelTier.onDeviceToken).madeBy, "Apple on-device model")
+        XCTAssertEqual(
+            design(nil, generator: "mac-foundation-models-v1").madeBy, "Apple on-device model")
+        XCTAssertEqual(design("model:local font:system").madeBy, "Default styling")
+        XCTAssertEqual(
+            design(nil, generator: CloudContract.appleTVGeneratorVersion).madeBy,
+            "Default styling")
+
+        // Best tier first, then the most designs.
+        let sources = GenerationView.designSources(
+            [design(ModelTier.onDeviceToken), gemini, design("model:local"), design(nil)]
+                + Array(repeating: design(ModelTier.onDeviceToken), count: 2)
+                + [design("model:anthropic/claude-haiku-5-5"), gemini])
+        XCTAssertEqual(
+            sources.map(\.name),
+            [
+                "Private Cloud Compute", "Google Gemini (gemini-3.8-flash)",
+                "Anthropic (claude-haiku-5-5)", "Apple on-device model", "Default styling",
+            ])
+        XCTAssertEqual(sources.map(\.count), [1, 2, 1, 3, 1])
+    }
+
+    /// **Redesign spine** designs the book anew at the run's tier, but never over a design from
+    /// a better tier, such as Gemini's on a device without the key: the design stays, and the
+    /// run says why.
+    func testRedesignsNeverReplaceABetterModelsDesign() async throws {
+        let book = LocalRun.book(7, cover: CoverStub.defaultCover)
+        let coverHash = CloudContract.digest(CoverStub.images[CoverStub.defaultCover]!)
+        let gemini = LocalRun.design(
+            for: book, coverHash: coverHash, provenance: "model:google/gemini-3.8-flash")
+        let better = try LocalRun(books: [book], designs: [gemini])
+        defer { better.remove() }
+        let (kept, keptSaves) = try await better.run(redesigning: (7, false))
+        XCTAssertEqual(keptSaves, [])
+        XCTAssertEqual(try better.stored()[7], gemini)
+        XCTAssertEqual(kept.failed, 0)
+        XCTAssertEqual(
+            kept.error,
+            "Google Gemini (gemini-3.8-flash) made this spine, so it stays. This \(ThisDevice.name) uses default styling, which never replaces a better model's design."
+        )
+
+        let same = LocalRun.design(for: book, coverHash: coverHash, provenance: "model:local")
+        let equal = try LocalRun(books: [book], designs: [same])
+        defer { equal.remove() }
+        let (redesigned, saved) = try await equal.run(redesigning: (7, false))
+        XCTAssertNil(redesigned.error)
+        XCTAssertEqual(redesigned.designed, 1)
+        let made = try XCTUnwrap(saved.first)
+        XCTAssertNotEqual(made.generatedAt, same.generatedAt)
+        XCTAssertEqual(try equal.stored()[7], made)
+    }
+
+    /// A redesign that the backup model's lasting rejection moved to a weaker tier keeps the
+    /// backup model's saved design or look, as a redesign from that tier would.
+    func testRedesignsCheckTheTierAgainAfterAFallback() {
+        let book = LocalRun.book(7)
+        let coverHash = String(repeating: "c", count: 64)
+        let gemini = LocalRun.design(
+            for: book, coverHash: coverHash, provenance: "model:google/gemini-3.8-flash")
+        let onDevice = LocalRun.design(
+            for: book, coverHash: coverHash, provenance: ModelTier.onDeviceToken)
+        func better(than tier: ModelTier, saved: SpineDesignV1?, look: SpineDesignV1? = nil)
+            -> SpineDesignV1?
+        {
+            SpineWorker.betterDesign(than: tier, saved: saved, remadeLook: look, newCover: false)
+        }
+        XCTAssertNil(better(than: .backup, saved: gemini), "The run's own tier gives way")
+        XCTAssertEqual(better(than: .onDevice, saved: gemini), gemini)
+        XCTAssertEqual(better(than: .local, saved: onDevice, look: gemini), onDevice)
+        XCTAssertEqual(better(than: .onDevice, saved: onDevice, look: gemini), gemini)
+        XCTAssertNil(better(than: .onDevice, saved: nil))
+        XCTAssertNil(
+            SpineWorker.betterDesign(
+                than: .local, saved: gemini, remadeLook: gemini, newCover: true),
+            "A cover the reader chose since gives way at any tier")
+    }
+
     func testTitleNoFamilyCoversUsesTheStyleSystemTypeface() throws {
         let palette = ["#1F3A5A", "#D8CBB0"].compactMap(ColorValue.init(hex:))
         let choice = BookAnalyzer.DesignChoice(
@@ -1592,6 +1754,32 @@ private final class OfflineURLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+/// Answers every request to `host` as Gemini's `generateContent` would, with a lettering answer
+/// of a plain typeset title, and counts the requests.
+private final class ProviderStub: URLProtocol {
+    static let host = "provider.localhost"
+    nonisolated(unsafe) static var requests = 0
+
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == host }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.requests += 1
+        let answer = #"{"treatment":"plain"}"#
+        let body = try! JSONSerialization.data(withJSONObject: [
+            "candidates": [["content": ["parts": [["text": answer]]]]]
+        ])
+        guard let url = request.url,
+            let response = HTTPURLResponse(
+                url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"])
+        else { return }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
 /// A local store's folder for a generation run at local defaults that reads covers from
 /// `CoverStub` and downloads no font.
 private struct LocalRun {
@@ -1663,9 +1851,11 @@ private struct LocalRun {
             uppercase: false, provenance: provenance)
     }
 
-    /// Runs a worker at local defaults once, and returns its final status and the designs it
-    /// reported saving.
-    func run() async throws -> (status: WorkerSnapshot, saved: [SpineDesignV1]) {
+    /// Runs a worker at local defaults once, which first redesigns the book `redesigning`
+    /// names, and returns its final status and the designs it reported saving.
+    func run(redesigning: (bookID: Int, remakesLook: Bool)? = nil) async throws -> (
+        status: WorkerSnapshot, saved: [SpineDesignV1]
+    ) {
         let offline = URLSessionConfiguration.ephemeral
         offline.protocolClasses = [OfflineURLProtocol.self]
         let worker = SpineWorker(
@@ -1673,7 +1863,7 @@ private struct LocalRun {
             analyzer: BookAnalyzer(
                 fonts: GoogleFonts(root: folder.appending(path: "fonts"), configuration: offline)),
             covers: CoverDownloader(protocolClasses: [CoverStub.self]), modelStatus: .local)
-        await worker.reconcile(mode: .foreground)
+        await worker.reconcile(mode: .foreground, redesigning: redesigning)
         var saved: [SpineDesignV1] = []
         for await update in worker.updates {
             if case .saved(let design) = update { saved.append(design) }
