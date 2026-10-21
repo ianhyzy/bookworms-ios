@@ -1,17 +1,17 @@
 import SwiftUI
 
-/// **Series**, from a book's **Series** card: the series the book's label names
-/// (`SeriesDesigns.shownSeries(of:link:)`) and its books in reading order, with the reader's
-/// books marked as read, reading, or on a shelf.
+/// **Series**, from a book's **Series** card: every series the book belongs to, each opening its
+/// books in reading order (`SeriesBooks`). A book in one series opens straight to its books.
 ///
-/// A book in more than one series lists them all first; choosing one saves it as the book's
-/// `SeriesLinkV1` (`SeriesRows.save(_:replacing:for:model:undoManager:)`), so every device shows
-/// it, and the book's spine joins that series' look as the **Series** menu under **Style** sets it.
-/// Choosing the book's shortest series restores the default. A choice shows at once and stays
-/// while it saves.
+/// A check button beside each series marks the series the book's label names
+/// (`SeriesDesigns.shownSeries(of:link:)`) and picks another one. A pick saves the book's
+/// `SeriesLinkV1` (`SeriesRows.save(_:replacing:for:model:undoManager:)`), so every device names
+/// it, and the book's spine joins that series' look as the **Series** menu under **Style** sets
+/// it. Picking the book's shortest series restores the default. A pick shows at once and stays
+/// while it saves; the buttons take no other pick until the save ends.
 struct SeriesSheet: View {
     /// The book as its details showed it. The sheet shows the library's current copy, so a saved
-    /// choice appears at once.
+    /// pick appears at once.
     let opened: CloudBook
     let undoManager: UndoManager?
 
@@ -30,68 +30,77 @@ struct SeriesSheet: View {
     var body: some View {
         let book = book
         let shown = SeriesDesigns.shownSeries(of: book, link: book.seriesLink)
-        var seen = Set<Int>()
-        let memberships = (book.seriesMemberships ?? [])
-            .filter {
-                seen.insert($0.seriesID).inserted
-            }
-        let selected = saving ?? shown?.seriesID
-        let series = memberships.first { $0.seriesID == selected } ?? shown
+        let all = Self.series(of: book, shown: shown)
         NavigationStack {
-            List {
-                if memberships.count > 1 {
-                    Section {
-                        Picker(
-                            "Series",
-                            selection: Binding {
-                                selected
-                            } set: {
-                                if let id = $0 { choose(id) }
-                            }
-                        ) {
-                            ForEach(memberships, id: \.seriesID) { membership in
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(membership.name)
-                                    if let place = SeriesDesigns.place(in: membership) {
-                                        Text(place).font(.footnote).foregroundStyle(.secondary)
-                                    }
+            Group {
+                if all.count > 1 {
+                    list(all, shown: saving ?? shown?.seriesID, of: book)
+                } else if let only = all.first {
+                    SeriesBooks(series: only, bookID: book.id)
+                }
+            }
+            .navigationDestination(for: SeriesMembership.self) {
+                SeriesBooks(series: $0, bookID: book.id).toolbar { done }
+            }
+            .toolbar { done }
+        }
+    }
+
+    private var done: some ToolbarContent {
+        ToolbarItem(placement: .confirmationAction) {
+            Button("Done") { dismiss() }
+        }
+    }
+
+    /// The book's series, each once, in Hardcover's order. A book without memberships, from an
+    /// older archive, has only the series its label names.
+    private static func series(of book: CloudBook, shown: SeriesMembership?) -> [SeriesMembership] {
+        var seen = Set<Int>()
+        let all = (book.seriesMemberships ?? []).filter { seen.insert($0.seriesID).inserted }
+        guard let shown, !seen.contains(shown.seriesID) else { return all }
+        return [shown] + all
+    }
+
+    /// Each series as a row that opens its books, after a check button that picks it.
+    private func list(_ all: [SeriesMembership], shown: Int?, of book: CloudBook) -> some View {
+        List {
+            Section {
+                ForEach(all, id: \.seriesID) { series in
+                    let isShown = series.seriesID == shown
+                    HStack(spacing: 12) {
+                        // Borderless, so a tap on the check picks without opening the series.
+                        Button {
+                            choose(series.seriesID)
+                        } label: {
+                            Image(systemName: isShown ? "checkmark.circle.fill" : "circle")
+                                .font(.title2)
+                                .foregroundStyle(
+                                    isShown ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(saving != nil)
+                        .accessibilityLabel("Name \(series.name) on this book")
+                        .accessibilityAddTraits(isShown ? .isSelected : [])
+                        NavigationLink(value: series) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(series.name)
+                                if let place = SeriesDesigns.place(in: series) {
+                                    Text(place).font(.footnote).foregroundStyle(.secondary)
                                 }
-                                .tag(Optional(membership.seriesID))
                             }
                         }
-                        .pickerStyle(.inline)
-                        .labelsHidden()
-                        .disabled(saving != nil)
-                    } header: {
-                        Text("Show this book in")
-                    } footer: {
-                        Text("Also sets the series under Style, whose look the spine shares.")
+                        .accessibilityHint("Shows the books in this series.")
                     }
                 }
-                if let series {
-                    let entries = SeriesEntry.listing(
-                        series: series.seriesID,
-                        info: model.library?.series?.first { $0.id == series.seriesID },
-                        library: model.books)
-                    Section {
-                        ForEach(entries) { SeriesEntryRow(entry: $0, currentID: book.id) }
-                    } header: {
-                        Text(series.name)
-                    } footer: {
-                        let read = entries.filter { $0.book?.hasBeenRead == true }.count
-                        Text("You've read \(read) of \(entries.count).")
-                    }
-                }
-            }
-            .navigationTitle("Series")
-            .navigationSubtitle(book.title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
+            } footer: {
+                Text(
+                    "The checked series names this book and sets its series under Style, whose look the spine shares. The shortest series is the default."
+                )
             }
         }
+        .navigationTitle("Series")
+        .navigationSubtitle(book.title)
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private func choose(_ seriesID: Int) {
@@ -107,6 +116,36 @@ struct SeriesSheet: View {
             await SeriesRows.save(
                 new, replacing: old, for: book, model: model, undoManager: undoManager)
             if saving == seriesID { saving = nil }
+        }
+    }
+}
+
+/// One series' books in reading order (`SeriesEntry.listing(series:info:library:)`), with the
+/// book whose details opened **Series** marked **This book**, then how many the reader has read.
+private struct SeriesBooks: View {
+    let series: SeriesMembership
+    let bookID: Int
+
+    @Environment(AppModel.self) private var model
+    /// Listed when the view appears, so rendering never sorts the library.
+    @State private var entries: [SeriesEntry] = []
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(entries) { SeriesEntryRow(entry: $0, currentID: bookID) }
+            } footer: {
+                let read = entries.filter { $0.book?.hasBeenRead == true }.count
+                Text("You've read \(read) of \(entries.count).")
+            }
+        }
+        .navigationTitle(series.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            entries = SeriesEntry.listing(
+                series: series.seriesID,
+                info: model.library?.series?.first { $0.id == series.seriesID },
+                library: model.books)
         }
     }
 }

@@ -967,8 +967,8 @@ private struct FactCard: View {
 }
 
 /// The **Series** card: the series the book's label names and the book's place in it. Selecting
-/// it opens **Series** (`SeriesSheet`), which lists the book's series to choose from and the
-/// chosen series' books in order.
+/// it opens **Series** (`SeriesSheet`), which lists the book's series, each opening its books in
+/// order, with a check button that picks the series the card names.
 private struct SeriesCard: View {
     let series: SeriesMembership
     let book: CloudBook
@@ -1432,13 +1432,13 @@ private struct SpineDesignCard: View {
 ///
 /// **Series** chooses the series whose look the book draws and whose name its **Series** card
 /// shows: by default its shortest series (`SeriesDesigns.styleSeries(of:link:)`), or another of
-/// its Hardcover series, or none. It shows when the book has a series or a link. `SeriesSheet`
-/// saves the same choice. **Changes apply to** chooses whether recoloring, **Reset colors**,
-/// and **Redesign spine** change the series' look or only this book, which then draws its own
-/// design. It shows when the book's look group has a saved look or another book
-/// (`AppModel.choosesEditScope(for:)`). A choice shows at once and stays while it saves; a failed
-/// save shows a toast and the saved choice again. The rows take no other choice until a save
-/// ends, so saves never overlap and the last choice is the one iCloud keeps.
+/// its Hardcover series, or none. It shows when the book has a series or a link. The check
+/// buttons in `SeriesSheet` save the same choice. **Changes apply to** chooses whether
+/// recoloring, **Reset colors**, and **Redesign spine** change the series' look or only this
+/// book, which then draws its own design. It shows when the book's look group has a saved look
+/// or another book (`AppModel.choosesEditScope(for:)`). A choice shows at once and stays while it
+/// saves; a failed save shows a toast and the saved choice again. The rows take no other choice
+/// until a save ends, so saves never overlap and the last choice is the one iCloud keeps.
 struct SeriesRows: View {
     /// A book's series choice, as the rows show it.
     struct Choice: Equatable {
