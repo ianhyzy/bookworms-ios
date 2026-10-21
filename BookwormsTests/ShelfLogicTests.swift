@@ -122,6 +122,7 @@ final class ShelfLogicTests: XCTestCase {
 
     func testDetailsShowOnlyTheFactsTheBookHas() {
         var full = book(1, "The Lantern Keeper", rating: 4.5, pages: 352)
+        full.seriesID = 7
         full.seriesName = "The Lantern Cycle"
         full.seriesPosition = 2
         full.publicationYear = 2021
@@ -141,7 +142,10 @@ final class ShelfLogicTests: XCTestCase {
                 .rating(
                     average: 4.12, count: 250, counts: [0, 0, 0, 0, 0, 0, 0, 120, 10, 120],
                     yours: 4.5),
-                .series(name: "The Lantern Cycle", position: 2),
+                .series(
+                    SeriesMembership(
+                        seriesID: 7, name: "The Lantern Cycle", position: 2, featured: true,
+                        compilation: false)),
                 .published(2021),
                 // Pages even for an audiobook: the book's length whatever the format. The
                 // format and its listening time belong to the Journal.
@@ -152,13 +156,12 @@ final class ShelfLogicTests: XCTestCase {
         var bare = book(2, "Unrated")
         bare.communityRating = 4
         bare.ratingsCount = 0
+        // A series needs a name to show.
         bare.seriesID = 12
-        XCTAssertEqual(DetailCard.details(of: bare, about: nil), [])
         bare.seriesPosition = 3
+        XCTAssertEqual(DetailCard.details(of: bare, about: nil), [])
         bare.publicationYear = 1999
-        XCTAssertEqual(
-            DetailCard.details(of: bare, about: nil),
-            [.series(name: nil, position: 3), .published(1999)])
+        XCTAssertEqual(DetailCard.details(of: bare, about: nil), [.published(1999)])
     }
 
     func testRatingCountsFillEveryHalfStar() {
@@ -222,7 +225,10 @@ final class ShelfLogicTests: XCTestCase {
     func testCardRowsPairHalfCardsWithoutHoles() {
         let about = DetailCard.about("A keeper tends the last lantern.")
         let rating = DetailCard.rating(average: 4, count: 10, counts: nil, yours: nil)
-        let series = DetailCard.series(name: "The Lantern Cycle", position: 2)
+        let series = DetailCard.series(
+            SeriesMembership(
+                seriesID: 7, name: "The Lantern Cycle", position: 2, featured: true,
+                compilation: false))
         let year = DetailCard.published(2021)
         let length = DetailCard.length("352 pages")
         let genres = DetailCard.genres(["Fantasy"])

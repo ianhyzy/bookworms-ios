@@ -2,10 +2,11 @@ import SwiftUI
 
 /// A book's details: a 3D model to turn with a drag and its title, with a section picker pinned
 /// under the bar that switches only the content below it: **Details** (the book's description
-/// and facts on a grid of cards), **Your reading** (the reader's reading dates on a date-due
-/// card, progress and format on cards, the review as a page, and for a finished book **Pin to
-/// Top Five**), and **Style** (**Change cover**, then the spine's design: its series, colors, and
-/// **Redesign spine**). In a wide Mac window, the book stands in a column of its own beside them.
+/// and facts on a grid of cards, whose **Series** card opens `SeriesSheet`), **Your reading**
+/// (the reader's reading dates on a date-due card, progress and format on cards, the review as a
+/// page, and for a finished book **Pin to Top Five**), and **Style** (**Change cover**, then the
+/// spine's design: its series, colors, and **Redesign spine**). In a wide Mac window, the book
+/// stands in a column of its own beside them.
 ///
 /// A book that shares its series' spine design changes the series under **Style**: the series
 /// look's or source's colors, and the cover and design of the source book
@@ -328,7 +329,8 @@ enum DetailCard: Hashable {
     /// Hardcover readers' average rating and how many ratings it averages, with the number of
     /// readers per half star (`ratingCounts(_:)`) when known, and the reader's own rating.
     case rating(average: Double, count: Int, counts: [Int]?, yours: Double?)
-    case series(name: String?, position: Double?)
+    /// The series the book's label names (`SeriesDesigns.shownSeries(of:link:)`).
+    case series(SeriesMembership)
     case published(Int)
     /// The page count, which describes the book in any format.
     case length(String)
@@ -370,11 +372,10 @@ enum DetailCard: Hashable {
                 average: average, count: count, counts: ratingCounts(book.ratingDistribution),
                 yours: book.rating)
         }
-        let inSeries = book.seriesName != nil || book.seriesPosition != nil
         let cards: [DetailCard?] = [
             about.map(DetailCard.about),
             rating,
-            inSeries ? .series(name: book.seriesName, position: book.seriesPosition) : nil,
+            SeriesDesigns.shownSeries(of: book, link: book.seriesLink).map(DetailCard.series),
             book.publicationYear.map(DetailCard.published),
             ShelfLabels.pages(of: book).map(DetailCard.length),
             genres.isEmpty ? nil : .genres(genres),
@@ -776,11 +777,8 @@ private struct DetailCardView: View {
         case .rating(let average, let count, let counts, let yours):
             RatingCard(
                 average: average, count: count, counts: counts, yours: yours, isWide: fillsRow)
-        case .series(let name, let position):
-            let number = position.map { "Book \($0.formatted())" }
-            FactCard(
-                title: "Series", systemImage: "books.vertical", value: name ?? number ?? "",
-                detail: name == nil ? nil : number)
+        case .series(let series):
+            SeriesCard(series: series, book: book)
         case .published(let year):
             FactCard(title: "Published", systemImage: "calendar", value: String(year))
         case .length(let pages):
@@ -965,6 +963,48 @@ private struct FactCard: View {
             }
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// The **Series** card: the series the book's label names and the book's place in it. Selecting
+/// it opens **Series** (`SeriesSheet`), which lists the book's series to choose from and the
+/// chosen series' books in order.
+private struct SeriesCard: View {
+    let series: SeriesMembership
+    let book: CloudBook
+
+    @Environment(\.undoManager) private var undoManager
+    @State private var showsSeries = false
+
+    var body: some View {
+        Button {
+            showsSeries = true
+        } label: {
+            FactCard(
+                title: "Series", systemImage: "books.vertical", value: series.name,
+                detail: SeriesDesigns.place(in: series)
+            )
+            .overlay(alignment: .topTrailing) {
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(cardNote)
+                    .padding(16)
+                    .accessibilityHidden(true)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Shows the book's series and the books in it.")
+        .sheet(isPresented: $showsSeries) {
+            SeriesSheet(book: book, undoManager: undoManager)
+                .preferredColorScheme(.dark)
+                .presentationSizing(.form)
+        }
+        #if DEBUG
+            // `-BookwormsSeriesSheet YES` opens the sheet, for Simulator and Mac checks.
+            .onAppear {
+                if UserDefaults.standard.bool(forKey: "BookwormsSeriesSheet") { showsSeries = true }
+            }
+        #endif
     }
 }
 
@@ -1390,15 +1430,16 @@ private struct SpineDesignCard: View {
 /// The **Series** menu and the **Changes apply to** choice of a book's spine design, saved as the book's
 /// `SeriesLinkV1` (`AppModel.setSeriesLink(for:linkedSeriesID:standsAlone:ownLook:)`).
 ///
-/// **Series** chooses the series whose look the book draws: by default its shortest series
-/// (`SeriesDesigns.styleSeries(of:link:)`), or another of its Hardcover series, or none. It shows
-/// when the book has a series or a link. **Changes apply to** chooses whether recoloring, **Reset colors**,
+/// **Series** chooses the series whose look the book draws and whose name its **Series** card
+/// shows: by default its shortest series (`SeriesDesigns.styleSeries(of:link:)`), or another of
+/// its Hardcover series, or none. It shows when the book has a series or a link. `SeriesSheet`
+/// saves the same choice. **Changes apply to** chooses whether recoloring, **Reset colors**,
 /// and **Redesign spine** change the series' look or only this book, which then draws its own
 /// design. It shows when the book's look group has a saved look or another book
 /// (`AppModel.choosesEditScope(for:)`). A choice shows at once and stays while it saves; a failed
 /// save shows a toast and the saved choice again. The rows take no other choice until a save
 /// ends, so saves never overlap and the last choice is the one iCloud keeps.
-private struct SeriesRows: View {
+struct SeriesRows: View {
     /// A book's series choice, as the rows show it.
     struct Choice: Equatable {
         enum Series: Hashable {
@@ -1509,18 +1550,27 @@ private struct SeriesRows: View {
         let old = saving ?? Choice(book.seriesLink)
         saving = new
         Task { [model, book, undoManager] in
-            do {
-                try await Self.save(new, for: book, model: model)
-                undoManager?
-                    .registerStyleChange("Change Series Choice") {
-                        try await Self.save(old, for: book, model: model)
-                    } redo: {
-                        try await Self.save(new, for: book, model: model)
-                    }
-            } catch {
-                model.toasts.show(.failure("Couldn't save the series choice"))
-            }
+            await Self.save(new, replacing: old, for: book, model: model, undoManager: undoManager)
             if saving == new { saving = nil }
+        }
+    }
+
+    /// Saves `new` as `book`'s series choice and registers its undo, which restores `old`. A
+    /// failed save shows a toast.
+    static func save(
+        _ new: Choice, replacing old: Choice, for book: CloudBook, model: AppModel,
+        undoManager: UndoManager?
+    ) async {
+        do {
+            try await save(new, for: book, model: model)
+            undoManager?
+                .registerStyleChange("Change Series Choice") {
+                    try await save(old, for: book, model: model)
+                } redo: {
+                    try await save(new, for: book, model: model)
+                }
+        } catch {
+            model.toasts.show(.failure("Couldn't save the series choice"))
         }
     }
 

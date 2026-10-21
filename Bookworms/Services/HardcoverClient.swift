@@ -316,7 +316,7 @@ actor HardcoverClient {
                 let books = Self.normalize(rows, previous: previousBooks)
                 return PhoneLibrary(
                     accountID: accountID, username: user.username, syncedAt: .now, books: books,
-                    series: try? await series(Set(books.compactMap(\.seriesID)), token: token))
+                    series: try? await series(Self.seriesIDs(of: books), token: token))
             }
         }
         throw HardcoverError.incomplete
@@ -340,8 +340,17 @@ actor HardcoverClient {
         return reply.books.aggregate?.count
     }
 
+    /// Every series the books belong to: each featured series and membership, so book details in
+    /// both apps can list whichever series a book's label names.
+    static func seriesIDs(of books: [CloudBook]) -> Set<Int> {
+        Set(
+            books.flatMap { book in
+                [book.seriesID].compactMap(\.self) + (book.seriesMemberships ?? []).map(\.seriesID)
+            })
+    }
+
     /// Returns the names and main books of the series `ids`, 50 series per request, each request
-    /// paced like library pages. The Apple TV shows them in book details.
+    /// paced like library pages. Book details in both apps list them.
     private func series(_ ids: Set<Int>, token: String) async throws -> [SeriesInfo] {
         struct Variables: Encodable { let ids: [Int] }
         let sorted = ids.sorted()

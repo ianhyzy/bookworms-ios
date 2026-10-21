@@ -278,7 +278,8 @@ actor LocalSpineStore: SpineStore {
             accountID: snapshot.accountID, syncedAt: snapshot.syncedAt, books: chosen,
             designs: LibrarySnapshot.latestDesigns(
                 try designs().values, accountID: snapshot.accountID, books: books),
-            looks: SeriesLookV1.keyed(try looks(), accountID: snapshot.accountID))
+            looks: SeriesLookV1.keyed(try looks(), accountID: snapshot.accountID),
+            series: snapshot.series)
     }
 
     func installWorklistSubscription() async throws {}
