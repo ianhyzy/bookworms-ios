@@ -122,6 +122,7 @@ final class ShelfLogicTests: XCTestCase {
 
     func testDetailsShowOnlyTheFactsTheBookHas() {
         var full = book(1, "The Lantern Keeper", rating: 4.5, pages: 352)
+        full.seriesID = 7
         full.seriesName = "The Lantern Cycle"
         full.seriesPosition = 2
         full.publicationYear = 2021
@@ -141,7 +142,10 @@ final class ShelfLogicTests: XCTestCase {
                 .rating(
                     average: 4.12, count: 250, counts: [0, 0, 0, 0, 0, 0, 0, 120, 10, 120],
                     yours: 4.5),
-                .series(name: "The Lantern Cycle", position: 2),
+                .series(
+                    SeriesMembership(
+                        seriesID: 7, name: "The Lantern Cycle", position: 2, featured: true,
+                        compilation: false)),
                 .published(2021),
                 // Pages even for an audiobook: the book's length whatever the format. The
                 // format and its listening time belong to the Journal.
@@ -152,13 +156,12 @@ final class ShelfLogicTests: XCTestCase {
         var bare = book(2, "Unrated")
         bare.communityRating = 4
         bare.ratingsCount = 0
+        // A series needs a name to show.
         bare.seriesID = 12
-        XCTAssertEqual(DetailCard.details(of: bare, about: nil), [])
         bare.seriesPosition = 3
+        XCTAssertEqual(DetailCard.details(of: bare, about: nil), [])
         bare.publicationYear = 1999
-        XCTAssertEqual(
-            DetailCard.details(of: bare, about: nil),
-            [.series(name: nil, position: 3), .published(1999)])
+        XCTAssertEqual(DetailCard.details(of: bare, about: nil), [.published(1999)])
     }
 
     func testRatingCountsFillEveryHalfStar() {
@@ -222,7 +225,10 @@ final class ShelfLogicTests: XCTestCase {
     func testCardRowsPairHalfCardsWithoutHoles() {
         let about = DetailCard.about("A keeper tends the last lantern.")
         let rating = DetailCard.rating(average: 4, count: 10, counts: nil, yours: nil)
-        let series = DetailCard.series(name: "The Lantern Cycle", position: 2)
+        let series = DetailCard.series(
+            SeriesMembership(
+                seriesID: 7, name: "The Lantern Cycle", position: 2, featured: true,
+                compilation: false))
         let year = DetailCard.published(2021)
         let length = DetailCard.length("352 pages")
         let genres = DetailCard.genres(["Fantasy"])
@@ -383,13 +389,16 @@ final class ShelfLogicTests: XCTestCase {
             PullOutPath.Rest(pitch: twist, lighting: StackStyle.lighting, slidesInStack: true))
     }
 
-    func testStackCameraLooksThroughANormalLens() {
-        // A 50 mm lens on a full-frame camera, across the area's diagonal.
-        let size = CGSize(width: 402, height: 740)
+    func testStackCameraSeesTheStackFromWhereTheReaderLooks() {
+        // A 100 mm lens on a full-frame camera, across the area's diagonal.
+        let size = CGSize(width: 402, height: 610)
         let distance = StackCamera.distance(viewing: size)
-        XCTAssertEqual(distance / hypot(402, 740), 50 / 43.27, accuracy: 1e-6)
-        // Farther than the area is tall, unlike a wide-angle lens.
-        XCTAssertGreaterThan(distance, size.height)
+        XCTAssertEqual(distance / hypot(402, 610), 100 / 43.27, accuracy: 1e-6)
+        // About 30 cm from an iPhone's stack, at its 6 points per millimeter.
+        XCTAssertEqual(distance / 6 / 10, 28, accuracy: 3)
+        // A 200-point-deep underside 60 points above the eye, two thin books up, shows a sliver
+        // of about 6 points, as a real book's would from there.
+        XCTAssertLessThan(StackCamera.surface(depth: 200, drop: 60, distance: distance), 6.5)
     }
 
     func testStackBoardRecedesAsThePinholeCameraSeesIt() {
@@ -497,6 +506,48 @@ final class ShelfLogicTests: XCTestCase {
             XCTAssertEqual(found.x, local.x, accuracy: 1e-9)
             XCTAssertEqual(found.y, local.y, accuracy: 1e-9)
         }
+    }
+
+    func testPulledBookSeesTheEyeAsItsBoxDidInItsPlace() {
+        // A 300-by-50-point place, 40 points below and 25 to the left of the eye, holding a
+        // turned book seen from 1,700 points in front of the spines.
+        let spine = CGSize(width: 300, height: 50)
+        let rest = PullOutPath.Rest(pitch: 0.1, distance: Double(1_700 / spine.width + 0.35))
+        let (scale, drawn, camera) = StackedBook.fit(spine: spine, aspect: 0.7, rest: rest)
+        let eye = CGPoint(x: 200, y: 400)
+        let slot = CGRect(x: 25, y: 415, width: spine.width, height: spine.height)
+        // The box measures the eye from its own frame: the drawn book, standing on the slot's
+        // bottom edge, centered across it.
+        let frame = CGRect(
+            x: slot.midX - drawn.width / 2, y: slot.maxY - drawn.height, width: drawn.width,
+            height: drawn.height)
+        let view = CGSize(width: drawn.height / scale, height: drawn.width / scale)
+        let box =
+            camera.eye(at: ScrollEye(point: eye, roll: -.pi / 2).point(inViewOf: view, framed: frame))
+            / Double(spine.width)
+        let place = StackedBook.eye(
+            eye, slot: slot, length: spine.width, scale: scale, drawn: drawn, camera: camera)
+        XCTAssertEqual(place.x, box.x, accuracy: 1e-9)
+        XCTAssertEqual(place.y, box.y, accuracy: 1e-9)
+        // Below the eye, toward the book's top board, and right of the book's middle, toward
+        // its tail.
+        XCTAssertGreaterThan(place.x, 0)
+        XCTAssertGreaterThan(place.y, 0)
+    }
+
+    @MainActor func testPullStartsWhereThePointerEasedTheBook() {
+        let tapped = book(1, "Tapped", pages: 300)
+        let pullOut = ShelfPullOut()
+        pullOut.pull(tapped, upright: false)
+        XCTAssertEqual(pullOut.progress, 0)
+        pullOut.close()
+        pullOut.nudgedID = tapped.id
+        pullOut.pull(tapped, upright: false)
+        XCTAssertEqual(pullOut.progress, PullOutPath.nudge)
+        // The gap's shadow follows the slide: none in the book's place, all once it is out.
+        XCTAssertEqual(PullOutPath.pull(at: 0), 0)
+        XCTAssertEqual(PullOutPath.pull(at: PullOutPath.pullEnd), 1)
+        XCTAssertLessThan(PullOutPath.pull(at: PullOutPath.nudge), 0.2)
     }
 
     func testShelvedDoorstoppersStandTallerAndThickerThanNovellas() {
@@ -891,6 +942,13 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertGreaterThan(slid.scale / start.scale, 1.1)
         XCTAssertEqual(slid.roll, -.pi / 2, accuracy: 0.0001)
         XCTAssertEqual(slid.yaw, start.yaw, accuracy: 0.0001)
+        // It lies level until the shelf starts to dim, so it never tilts across the books it
+        // has just left, then stands up.
+        let level = path.pose(at: PullOutPath.veilStart)
+        XCTAssertEqual(level.roll, -.pi / 2, accuracy: 0.0001)
+        XCTAssertEqual(level.yaw, start.yaw, accuracy: 0.0001)
+        XCTAssertGreaterThan(level.scale * level.height, slid.scale * slid.height)
+        XCTAssertGreaterThan(path.pose(at: PullOutPath.veilStart + 0.05).roll, -.pi / 2)
 
         let end = path.pose(at: 1)
         XCTAssertEqual(end.roll, 0, accuracy: 0.0001)

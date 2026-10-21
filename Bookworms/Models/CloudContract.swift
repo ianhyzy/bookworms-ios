@@ -699,10 +699,10 @@ extension SeriesLookV1 {
 /// A `SeriesLinkV1` record in the private database's default zone, named by
 /// `CloudContract.seriesLinkRecordName(accountID:bookID:)`, holds this JSON in its `payload` Bytes
 /// field; `chosenAt` uses `JSONEncoder`'s default date encoding. `linkedSeriesID` names the series
-/// whose look the book draws instead of its shortest one, `standsAlone` takes the book out of every
-/// series, and `ownLook` keeps the book's own design instead of its series' look. A choice that
-/// sets none of them deletes the record. Readers ignore a record that fails `validate()` or names
-/// another account or book than its record name.
+/// whose look the book draws, and whose name its details show, instead of its shortest one,
+/// `standsAlone` takes the book out of every series, and `ownLook` keeps the book's own design
+/// instead of its series' look. A choice that sets none of them deletes the record. Readers ignore
+/// a record that fails `validate()` or names another account or book than its record name.
 struct SeriesLinkV1: Codable, Sendable, Hashable {
     let version: Int
     let accountID: String
@@ -764,6 +764,10 @@ struct LibrarySnapshot: Codable, Sendable {
     var designs: [Int: SpineDesignV1]
     /// Valid series looks of the books' look groups, keyed by group.
     var looks: [SeriesLookKey: SeriesLookV1] = [:]
+    /// The series of the books from the library's last Hardcover download, which book details
+    /// list (`SeriesInfo`). `nil` when the library has none, such as a launch cache saved before
+    /// series were kept.
+    var series: [SeriesInfo]? = nil
 
     /// Keeps the newest valid design per book for `accountID` and `books`.
     ///
@@ -791,7 +795,7 @@ struct LibrarySnapshot: Codable, Sendable {
 }
 
 extension LibrarySnapshot {
-    /// Decodes a snapshot, including a launch cache saved before series looks existed.
+    /// Decodes a snapshot, including a launch cache saved before series looks or series existed.
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         accountID = try container.decode(String.self, forKey: .accountID)
@@ -801,6 +805,7 @@ extension LibrarySnapshot {
         looks =
             try container.decodeIfPresent([SeriesLookKey: SeriesLookV1].self, forKey: .looks)
             ?? [:]
+        series = try container.decodeIfPresent([SeriesInfo].self, forKey: .series)
     }
 }
 

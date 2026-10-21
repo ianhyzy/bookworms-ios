@@ -270,7 +270,7 @@ final class AppModel {
                 setLibrary(
                     LibrarySnapshot(
                         accountID: phone.accountID, syncedAt: phone.syncedAt, books: phone.books,
-                        designs: [:]))
+                        designs: [:], series: phone.series))
                 needsReload = true
             }
         }
