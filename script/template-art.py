@@ -272,19 +272,21 @@ def book_swap():
 
 
 def checkout_card():
-    # A checkout card lying on the desk: a printed heading and the handwritten year over a red
-    # rule, then ruled lines, each with a violet date stamp and a handwritten title.
+    # A checkout card lying on the desk: a heading filled in as a form is, the handwritten name,
+    # the printed words, and the handwritten year, over a red rule, then ruled lines, each with a
+    # violet date stamp and a handwritten title.
     stock, ink, red, stamp, pen = "#EFE3CC", "#2B2117", "#8E2B24", "#2E2A6B", "#1B2A55"
     parts = [
         rect(17.5, 12, 88, 130, "#000000", 3, 0.35),
         rect(16, 10, 88, 130, stock, 3),
-        bar(22, 19, 34, 4, ink),
-        bar(78, 17, 20, 5, pen),
-        rect(16, 27, 88, 1.4, red),
-        rect(44, 29, 1, 104, red),
+        bar(22, 15, 22, 4.5, pen),
+        bar(46, 17, 24, 2.4, ink, 0.75),
+        bar(73, 15, 14, 4.5, pen),
+        rect(16, 22, 88, 1.4, red),
+        rect(44, 24, 1, 109, red),
     ]
-    for row in range(9):
-        y = 38 + row * 10.5
+    for row in range(10):
+        y = 32 + row * 10.5
         parts.append(rect(16, y + 3, 88, 0.8, ink, 0, 0.25))
         if row < 7:
             parts += [

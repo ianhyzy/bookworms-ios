@@ -28,11 +28,11 @@ final class CheckoutCardTests: XCTestCase {
     }
 
     /// A card fills the height inside the margins, 1520 pixels on a Story with its reach, 1174
-    /// on Portrait, and 928 on Square, less 40 pixels of padding and the 4 rules of its heading,
-    /// column headings, and footer.
+    /// on Portrait, and 928 on Square, less 40 pixels of padding and the 2.7 rules of its
+    /// heading, column headings, and footer.
     func testRowsPerCardFollowTheSize() {
         XCTAssertEqual(layout(5, .story), CheckoutCardLayout(count: 5, height: 1520))
-        for (aspect, rows) in [(ShareAspect.story, 16), (.portrait, 11), (.square, 8)] {
+        for (aspect, rows) in [(ShareAspect.story, 17), (.portrait, 13), (.square, 9)] {
             let layout = layout(5, aspect)
             XCTAssertEqual(layout.rule, CheckoutCardLayout.largestRule, "\(aspect)")
             XCTAssertEqual(layout.rowsPerCard, rows, "\(aspect)")
@@ -43,17 +43,17 @@ final class CheckoutCardTests: XCTestCase {
     /// The profile link takes 80 of a Story's 100 pixels of reach, and a line with them, at
     /// the widest and the closest rules.
     func testProfileLinkShortensAStoryCard() {
-        XCTAssertEqual(layout(5, .story, username: "fictional").rowsPerCard, 15)
-        XCTAssertEqual(layout(267, .story, username: "fictional").rowsPerCard, 20)
-        XCTAssertEqual(layout(267, .story).rowsPerCard, 21)
-        XCTAssertEqual(layout(5, .portrait, username: "fictional").rowsPerCard, 11)
+        XCTAssertEqual(layout(5, .story, username: "fictional").rowsPerCard, 16)
+        XCTAssertEqual(layout(267, .story, username: "fictional").rowsPerCard, 21)
+        XCTAssertEqual(layout(44, .story).rowsPerCard, 22)
+        XCTAssertEqual(layout(5, .portrait, username: "fictional").rowsPerCard, 13)
     }
 
     /// A few more books than a card holds at the widest spacing close the rules up instead of
     /// starting a card for them.
     func testCloserRulesSaveACard() {
         let layout = layout(18, .story)
-        XCTAssertEqual(layout.rule, 66)
+        XCTAssertEqual(layout.rule, 70)
         XCTAssertEqual(layout.rowsPerCard, 18)
         XCTAssertEqual(layout.cards, [0..<18])
     }
@@ -62,10 +62,13 @@ final class CheckoutCardTests: XCTestCase {
     /// few cards as the closest rules allow, and spaces the rules as widely as that number of
     /// cards allows.
     func testLongFramesContinueOnMoreCards() {
-        XCTAssertEqual(layout(39, .story).rule, 60)
+        XCTAssertEqual(layout(39, .story).rule, 64)
         XCTAssertEqual(layout(39, .story).cards, [0..<20, 20..<39])
-        XCTAssertEqual(layout(267, .story).rule, CheckoutCardLayout.smallestRule)
+        XCTAssertEqual(layout(267, .story).rule, 62)
         XCTAssertEqual(layout(267, .story).cards.count, 13)
+        let linked = layout(267, .story, username: "fictional")
+        XCTAssertEqual(linked.rule, CheckoutCardLayout.smallestRule)
+        XCTAssertEqual(linked.cards.count, 13)
         for aspect in ShareAspect.allCases {
             for count in [1, 12, 39, 100, 267] {
                 let label = "\(count) books on \(aspect)"
@@ -83,9 +86,9 @@ final class CheckoutCardTests: XCTestCase {
                     .reachingInsets
                 let height = aspect.size.height - insets.top - insets.bottom
                 func cards(_ rule: CGFloat) -> Int {
-                    let rows =
-                        Int((height - 2 * CheckoutCardLayout.verticalPadding) / rule)
-                        - CheckoutCardLayout.reservedRules
+                    let rows = Int(
+                        (height - 2 * CheckoutCardLayout.verticalPadding) / rule
+                            - CheckoutCardLayout.reservedRules)
                     return (count + rows - 1) / rows
                 }
                 XCTAssertEqual(layout.cards.count, cards(CheckoutCardLayout.smallestRule), label)
@@ -112,6 +115,27 @@ final class CheckoutCardTests: XCTestCase {
         XCTAssertEqual(layout.books(on: 1, of: books).map(\.id), Array(21...39))
         XCTAssertEqual(layout.books(on: 9, of: books), layout.books(on: 1, of: books))
         XCTAssertEqual(layout.index(of: 9), 1)
+    }
+
+    /// The heading writes the reader's name, else their username, and prints "Reading record"
+    /// alone without a profile. A name too long for the line still draws.
+    @MainActor
+    func testHeadingWritesTheReadersName() throws {
+        func render(_ owner: ReaderProfile?) throws -> Data {
+            var input = ShareInput(
+                template: .checkoutCard, aspect: .portrait, books: Self.books(3),
+                frame: .year(2025))
+            input.owner = owner
+            return try XCTUnwrap(input.render()?.cgImage?.dataProvider?.data as Data?)
+        }
+        let unnamed = try render(nil)
+        let named = try render(ReaderProfile(id: 7, username: "averyreads", name: "Avery Quill"))
+        let username = try render(ReaderProfile(id: 7, username: "averyreads"))
+        let long = try render(
+            ReaderProfile(
+                id: 7, username: "averyreads",
+                name: "Avery Bartholomew Quillingsworth-Montgomery the Third"))
+        XCTAssertEqual(Set([unnamed, named, username, long]).count, 4)
     }
 
     /// Each card draws its own books at the image's size, and a card past the last draws the

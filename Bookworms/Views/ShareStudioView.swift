@@ -213,6 +213,7 @@ struct ShareStudioView: View {
                 template: template, aspect: aspect, books: books, username: request.username)
             request.cards = CheckoutCardLayout(input).cards.count
             request.card = min(card, max(request.cards - 1, 0))
+            request.owner = model.social.owner
         }
         return request
     }
@@ -1220,6 +1221,7 @@ struct ShareStudioView: View {
         } else if template == .checkoutCard {
             // A Checkout Card draws no covers or spines, only its handwriting.
             input.card = request.card
+            input.owner = request.owner
             input.handwriting = await model.fonts.face(
                 family: CheckoutCard.handFamily, weight: CheckoutCard.handWeight)
             guard !Task.isCancelled else { return }
@@ -1357,6 +1359,9 @@ private struct RenderRequest: Equatable {
     /// The designs of the books the image draws, in their order.
     var designs: [SpineDesignV1?]
     var loadedFaces: Int
+    /// The profile whose name Checkout Card writes (`ShareInput.owner`), so a newly read name
+    /// redraws it; `nil` for other templates.
+    var owner: ReaderProfile?
     /// The Checkout Card card the image draws, counting from 0, and how many cards the frame
     /// takes (`CheckoutCardLayout`); 0 for other templates.
     var card = 0

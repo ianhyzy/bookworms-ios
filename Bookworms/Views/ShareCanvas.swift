@@ -292,6 +292,9 @@ struct ShareInput {
     var card = 0
     /// Checkout Card's handwriting face, or `nil` for the fallback (`CheckoutCard.hand(_:size:)`).
     var handwriting: FontFace?
+    /// The sharer's Hardcover profile, whose name Checkout Card writes in its heading, or `nil`
+    /// to print the heading without one.
+    var owner: ReaderProfile?
 
     /// How far the card's content may reach into a story's bottom strip (`ShareAspect.reach`),
     /// less the room that the profile link takes there.
