@@ -6,10 +6,10 @@ import SwiftUI
 #endif
 
 /// The **Spines** tab, on paper: a bindery shelf of the latest designed spines over a gauge of
-/// the library's designs (`BinderyHeader`), generator progress, the designing model and its
-/// quota, and the charging preference. The toolbar opens the Hardcover account sheet, which
-/// shows where the library comes from and when it last synced. A spine on the shelf opens its
-/// book's details.
+/// the library's designs (`BinderyHeader`), generator progress, the models that made the saved
+/// designs (`SavedDesigns`), the model this device designs with and its quota, and the charging
+/// preference. The toolbar opens the Hardcover account sheet, which shows where the library
+/// comes from and when it last synced. A spine on the shelf opens its book's details.
 struct GenerationView: View {
     @Environment(AppModel.self) private var model
     @Environment(GenerationController.self) private var generation
@@ -36,6 +36,7 @@ struct GenerationView: View {
                     current: generation.status.currentBook, path: $path,
                     showsAccount: $showsAccount)
                 progress
+                if model.library != nil { SavedDesigns() }
                 designModel
                 Section {
                     Toggle(Self.chargingLabel, isOn: $generation.generatesWhileCharging)
@@ -263,14 +264,44 @@ struct GenerationView: View {
                 }
             #endif
         } header: {
-            Text("Design model").bookHeading()
+            Text("Design model on this \(ThisDevice.name)").bookHeading()
         } footer: {
-            #if NO_PCC
+            VStack(alignment: .leading, spacing: 6) {
+                #if NO_PCC
+                    Text(
+                        "Apple's on-device model designs spines by default, on this \(ThisDevice.name) and at no cost. For better results, you can use a model such as Google Gemini, Claude, or OpenAI's with your own API key."
+                    )
+                #endif
                 Text(
-                    "Apple's on-device model designs spines by default, on this \(ThisDevice.name) and at no cost. For better results, you can use a model such as Google Gemini, Claude, or OpenAI's with your own API key."
+                    "This \(ThisDevice.name) designs new spines with this model and replaces only designs from a weaker model. API keys stay on the device you add them to, so each device designs with its own model."
                 )
-            #endif
+            }
         }
+    }
+
+    /// The order in which a design from one model replaces another's, best first, as the
+    /// **Saved designs** footer states it. Builds without Private Cloud Compute (`NO_PCC`) name
+    /// only the models they can use.
+    static var tierOrder: String {
+        #if NO_PCC
+            "your model with an API key, then Apple's on-device model, then default styling"
+        #else
+            "Private Cloud Compute, then your model with an API key, then Apple's on-device model, then default styling"
+        #endif
+    }
+
+    /// The models that made `designs`, by `SpineDesignV1.madeBy`, with how many designs each
+    /// made: the best tier first, then the most designs.
+    static func designSources(_ designs: [SpineDesignV1]) -> [(name: String, count: Int)] {
+        var counts: [String: (tier: ModelTier, count: Int)] = [:]
+        for design in designs {
+            counts[design.madeBy, default: (design.tier, 0)].count += 1
+        }
+        return
+            counts.sorted {
+                ($0.value.tier, $0.value.count, $1.key) > ($1.value.tier, $1.value.count, $0.key)
+            }
+            .map { ($0.key, $0.value.count) }
     }
 
     /// The saved model choice, as **Choose model** shows it: Apple's on-device model or the
@@ -379,6 +410,36 @@ struct GenerationView: View {
         case .belowLimit: return "Not reached"
         case .approachingLimit: return "Almost reached" + reset
         case .limitReached: return "Reached" + reset
+        }
+    }
+}
+
+/// The **Saved designs** section: which models made the designs the library's books draw, with
+/// a count for each (`GenerationView.designSources(_:)`), and the rule by which one model's
+/// design replaces another's. Each design names its model in `provenance`, which syncs with it,
+/// so every device counts the same models, such as Google Gemini's designs on a device without
+/// that API key. It counts when the library or its designs change (`AppModel.designRevision`).
+private struct SavedDesigns: View {
+    @Environment(AppModel.self) private var model
+    @State private var sources: [(name: String, count: Int)] = []
+
+    var body: some View {
+        Section {
+            if sources.isEmpty {
+                Text("No designs yet").foregroundStyle(.secondary)
+            }
+            ForEach(sources, id: \.name) { source in
+                LabeledContent(source.name) { Text(source.count, format: .number) }
+            }
+        } header: {
+            Text("Saved designs").bookHeading()
+        } footer: {
+            Text(
+                "Designs sync through iCloud, so every device shows them, whichever device made them. A device replaces a design only with one from a better model: \(GenerationView.tierOrder)."
+            )
+        }
+        .onChange(of: model.designRevision, initial: true) {
+            sources = GenerationView.designSources(model.books.compactMap(model.design(for:)))
         }
     }
 }

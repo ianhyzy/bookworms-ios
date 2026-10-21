@@ -330,7 +330,8 @@ actor SpineWorker {
     /// design is current, as **Redesign spine** asks: it skips the ledger, the saved design, and
     /// series reuse. With `remakesLook`, the book's look group's saved look then takes
     /// the new design's colors and type (`SeriesLookV1.remade(from:at:)`). A book outside the
-    /// run's work, or without a cover, is not designed.
+    /// run's work, or without a cover, is not designed. A design or look from a better tier than
+    /// the run's stays, and the run says why (`design(for:covers:workHash:context:redesign:mode:)`).
     ///
     /// A call made while another run is in progress waits for that run, then runs, so a
     /// background task never completes while work it asked for is still in flight.
@@ -437,7 +438,7 @@ actor SpineWorker {
                 try Task.checkCancellation()
                 let workHash = CloudContract.workItemHash(accountID: accountID, book: book)
                 let recordName = Self.recordName(accountID, book)
-                let redesigned = redesign?.bookID == book.id ? redesign : nil
+                var redesigned = redesign?.bookID == book.id ? redesign : nil
                 // After the backup model's lasting rejection moved the run to a lower tier
                 // (`newDesign`), a book queued only to upgrade to the backup's tier is skipped
                 // without downloading its cover. A rejection of one book's request leaves the
@@ -460,7 +461,9 @@ actor SpineWorker {
                 do {
                     let outcome = try await design(
                         for: book, covers: covers, workHash: workHash, context: context,
-                        forced: redesigned != nil, mode: mode)
+                        redesign: redesigned, mode: mode)
+                    // `design` drops a redesign that would replace a better tier's design.
+                    if redesign == nil { redesigned = nil }
                     if case .save(let made, let source, let replacing) = outcome {
                         guard try await store.isStillCurrent(context, book: book) else {
                             return true
@@ -537,7 +540,7 @@ actor SpineWorker {
         return false
     }
 
-    /// What a run does with a book's design (`design(for:covers:workHash:context:forced:mode:)`).
+    /// What a run does with a book's design (`design(for:covers:workHash:context:redesign:mode:)`).
     private enum Outcome {
         /// Leaves this design, iCloud's, in place.
         case keep(SpineDesignV1)
@@ -567,8 +570,14 @@ actor SpineWorker {
     /// has a design from the run's tier or better, or a design whose colors the reader chose (see
     /// `SpineDesignV1.action(workItemHash:coverHash:readerChoseCover:fromChosenCover:runTier:drawsSeriesLook:upgradesSeriesLook:)`).
     /// A kept design whose book's metadata changed is saved again under the new work-item hash
-    /// when its face letters the book's title and author, and otherwise left as it is. `forced`
-    /// always makes a new design.
+    /// when its face letters the book's title and author, and otherwise left as it is.
+    ///
+    /// `redesign`, the reader's **Redesign spine** of this book, makes a new design at the run's
+    /// tier, except over a design from a better tier: the book's saved design or, when the
+    /// redesign remakes the series look, that look. Only a device with that tier, or a cover
+    /// the reader chose since (`SpineDesignV1.comesFromAnotherCover(than:readerChoseCover:fromChosenCover:)`),
+    /// replaces it, so the book is checked as on any run, and the run's message says why the
+    /// spine stays (`keptMessage(madeBy:runModel:)`).
     ///
     /// The saved design is checked before the cover downloads with `covers`. While the book
     /// shows its default cover and the reader chose no other cover since its last check on this
@@ -583,21 +592,18 @@ actor SpineWorker {
     /// author, as the app draws it; otherwise its own design follows the tier rule.
     private func design(
         for book: CloudBook, covers: CoverDownloader, workHash: String, context: WorkContext,
-        forced: Bool, mode: RunMode
+        redesign: (bookID: Int, remakesLook: Bool)?, mode: RunMode
     ) async throws -> Outcome {
-        // Looked up even when forced, so `saveLook` knows whether the group has a look.
+        // Looked up even for a redesign, so `saveLook` knows whether the group has a look.
         let savedLook = try await seriesLook(for: book, accountID: context.accountID)
         let runTier = runModel?.tier ?? .local
         let upgradesLook =
             savedLook.map { $0.isUpgraded(at: runTier) && isUpgradeSource(book, of: $0) } ?? false
         let look = upgradesLook ? nil : savedLook
-        // A ledger miss is not proof: another device may have saved this work already.
-        let saved: SpineDesignV1? =
-            if forced {
-                nil
-            } else {
-                try await store.savedDesign(accountID: context.accountID, bookID: book.id)
-            }
+        // A ledger miss is not proof: another device may have saved this work already. A
+        // redesign reads it too, to keep a better tier's design.
+        let saved = try await store.savedDesign(accountID: context.accountID, bookID: book.id)
+        var forced = redesign != nil
         let readerChoseCover = await ledger.readerChoseCover(
             recordName: Self.recordName(context.accountID, book),
             chosenCover: book.chosenCoverURL)
@@ -638,7 +644,7 @@ actor SpineWorker {
             }
             return design
         }
-        if let saved, book.chosenCoverURL == nil, !readerChoseCover {
+        if !forced, let saved, book.chosenCoverURL == nil, !readerChoseCover {
             switch try await savedAction(coverHash: saved.coverHash) {
             case .keep: return .keep(await kept(saved))
             case .save(let design): return .save(await kept(design), source: .moved)
@@ -647,6 +653,21 @@ actor SpineWorker {
         }
         let cover = try await covers.fetch(book.coverCandidates)
         let fromChosenCover = cover.url == book.chosenCoverURL
+        let newCover =
+            saved?
+            .comesFromAnotherCover(
+                than: cover.hash, readerChoseCover: readerChoseCover,
+                fromChosenCover: fromChosenCover) ?? readerChoseCover
+        let remadeLook =
+            redesign?.remakesLook == true
+            ? savedLook.map { $0.design(bookID: $0.sourceBookID) } : nil
+        if forced, !newCover,
+            let better = [saved, remadeLook].compactMap({ $0 }).first(where: { $0.tier > runTier })
+        {
+            forced = false
+            self.redesign = nil
+            snapshot.error = Self.keptMessage(madeBy: better.madeBy, runModel: runModel)
+        }
         // A saved design from another cover than the reader's choice gives way at any tier, and
         // so does an untracked copy on the book that upgrades its group's look, whose tier is
         // unknown.
@@ -768,15 +789,26 @@ actor SpineWorker {
     /// The Spines tab's message when the backup model's `rejection` moves runs to `next`.
     static func fallbackMessage(rejection: String, next: ModelStatus) -> String {
         let sentence = rejection.hasSuffix(".") ? rejection : rejection + "."
-        let tier =
-            switch next.tier {
-            case .privateCloudCompute: "Private Cloud Compute"
-            case .backup: next.designerName
-            case .onDevice: "Apple's on-device model"
-            case .local: "default styling"
-            }
         return
-            "\(sentence) Until you change the model settings, Bookworms uses \(tier). Generate now tries your model again."
+            "\(sentence) Until you change the model settings, Bookworms uses \(inSentence(next)). Generate now tries your model again."
+    }
+
+    /// The run's message when a redesign keeps a spine that `madeBy` (`SpineDesignV1.madeBy`),
+    /// a better tier than `runModel`'s, made.
+    static func keptMessage(madeBy: String, runModel: ModelStatus?) -> String {
+        let model = runModel.map { " uses \(inSentence($0)), which" } ?? ""
+        return
+            "\(madeBy) made this spine, so it stays. This \(ThisDevice.name)\(model) never replaces a better model's design."
+    }
+
+    /// `status`'s model as a message names it within a sentence.
+    static func inSentence(_ status: ModelStatus) -> String {
+        switch status.tier {
+        case .privateCloudCompute: "Private Cloud Compute"
+        case .backup: status.designerName
+        case .onDevice: "Apple's on-device model"
+        case .local: "default styling"
+        }
     }
 
     /// Returns the series look `book` draws: its look group's saved look, unless its link keeps

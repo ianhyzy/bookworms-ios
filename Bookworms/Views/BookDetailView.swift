@@ -736,6 +736,48 @@ private func caption(_ title: String, systemImage: String) -> some View {
         .foregroundStyle(cardNote)
 }
 
+/// A card's labeled row: the label beside its value when both fit on one line, otherwise the
+/// label above the value, so neither overlaps the other at any text size. When the value doesn't
+/// fit on one line under the label either, `fallback` stands in for it, such as a menu for a
+/// segmented control; by default the value itself, which then wraps.
+private struct CardRow<Value: View, Fallback: View>: View {
+    let title: String
+    let value: Value
+    let fallback: Fallback
+
+    init(
+        _ title: String, @ViewBuilder value: () -> Value, @ViewBuilder fallback: () -> Fallback
+    ) {
+        self.title = title
+        self.value = value()
+        self.fallback = fallback()
+    }
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                Text(title)
+                Spacer(minLength: 0)
+                value.fixedSize()
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                value.fixedSize()
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                fallback
+            }
+        }
+    }
+}
+
+extension CardRow where Fallback == Value {
+    init(_ title: String, @ViewBuilder value: () -> Value) {
+        self.init(title, value: value, fallback: value)
+    }
+}
+
 /// Cards in the rows that `DetailCard.rows(_:oneColumn:)` arranges: two columns, or one at
 /// accessibility text sizes. Each row is as tall as its tallest card.
 private struct CardGrid: View {
@@ -1113,7 +1155,8 @@ private struct GenresCard: View {
 }
 
 /// The **Spine design** card: the spine, the book's series choices (`SeriesRows`), the design's
-/// font, and its colors, which the reader can change, with **Redesign spine**.
+/// font, the model that made it (`SpineDesignV1.madeBy`), and its colors, which the reader can
+/// change, with **Redesign spine**.
 ///
 /// Each color opens the system color picker: on the iPhone in a sheet, and on the Mac from an
 /// inline color well, which opens the Colors panel. The card's spine shows picked colors at
@@ -1246,10 +1289,13 @@ private struct SpineDesignCard: View {
                         "The text needs more contrast with the background. Choose a lighter or darker color to save.",
                         systemImage: "exclamationmark.triangle")
                 }
-                LabeledContent("Font") {
+                CardRow("Font") {
                     Text(design.fontFamily ?? design.typeface.capitalized)
                         .font(look.font(size: 19))
                 }
+                // The design's own model token, which every device reads the same way, whichever
+                // model this device designs with.
+                CardRow("Model") { Text(design.madeBy) }
                 Divider()
                 let swatches =
                     typeSize.isAccessibilitySize
@@ -1291,7 +1337,9 @@ private struct SpineDesignCard: View {
                     .buttonStyle(.bordered)
                 }
                 if offersRedesign {
-                    RedesignButton(book: book, series: series != nil, requestedAt: $redesignedAt)
+                    RedesignButton(
+                        book: book, series: series != nil, design: design,
+                        requestedAt: $redesignedAt)
                 }
                 Divider()
             }
@@ -1437,54 +1485,90 @@ private struct SeriesRows: View {
         let memberships = (book.seriesMemberships ?? [])
             .filter { seen.insert($0.seriesID).inserted }
         if !memberships.isEmpty || book.seriesID != nil || book.seriesLink != nil {
-            LabeledContent("Series") {
-                Picker(
-                    "Series",
-                    selection: Binding {
-                        choice.series
-                    } set: {
-                        var new = choice
-                        new.series = $0
-                        choose(new)
-                    }
-                ) {
-                    Text(standardTitle(memberships)).tag(Choice.Series.standard)
-                    ForEach(memberships, id: \.seriesID) {
-                        Text(Self.title(of: $0)).tag(Choice.Series.linked($0.seriesID))
-                    }
-                    // A link to a series that Hardcover no longer lists for the book.
-                    if case .linked(let id) = choice.series,
-                        !memberships.contains(where: { $0.seriesID == id })
-                    {
-                        Text("Linked series").tag(choice.series)
-                    }
-                    Text("Not in a series").tag(Choice.Series.alone)
+            let series = Binding {
+                choice.series
+            } set: {
+                var new = choice
+                new.series = $0
+                choose(new)
+            }
+            let options = Group {
+                Text(standardTitle(memberships)).tag(Choice.Series.standard)
+                ForEach(memberships, id: \.seriesID) {
+                    Text(Self.title(of: $0)).tag(Choice.Series.linked($0.seriesID))
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
+                // A link to a series that Hardcover no longer lists for the book.
+                if case .linked(let id) = choice.series,
+                    !memberships.contains(where: { $0.seriesID == id })
+                {
+                    Text("Linked series").tag(choice.series)
+                }
+                Text("Not in a series").tag(Choice.Series.alone)
+            }
+            CardRow("Series") {
+                menu("Series", selection: series, title: title(of: choice.series, memberships)) {
+                    options
+                }
                 .disabled(saving != nil)
             }
         }
         if model.choosesEditScope(for: book) {
-            LabeledContent("Changes apply to") {
-                Picker(
-                    "Changes apply to",
-                    selection: Binding {
-                        choice.ownLook
-                    } set: {
-                        var new = choice
-                        new.ownLook = $0
-                        choose(new)
-                    }
-                ) {
-                    Text("Whole series").tag(false)
-                    Text("This book only").tag(true)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
+            let ownLook = Binding {
+                choice.ownLook
+            } set: {
+                var new = choice
+                new.ownLook = $0
+                choose(new)
+            }
+            let options = Group {
+                Text("Whole series").tag(false)
+                Text("This book only").tag(true)
+            }
+            CardRow("Changes apply to") {
+                Picker("Changes apply to", selection: ownLook) { options }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .disabled(saving != nil)
+            } fallback: {
+                // At accessibility text sizes, the segments don't fit beside each other.
+                menu(
+                    "Changes apply to", selection: ownLook,
+                    title: choice.ownLook ? "This book only" : "Whole series"
+                ) { options }
                 .disabled(saving != nil)
             }
+        }
+    }
+
+    /// A menu that chooses `selection` among `options` and shows `title`, the chosen option's
+    /// name, which wraps. A menu-style picker letters its choice in a control of fixed height,
+    /// so a long series name that wraps would overlap the rows below it.
+    private func menu<Value: Hashable, Options: View>(
+        _ label: String, selection: Binding<Value>, title: String,
+        @ViewBuilder options: () -> Options
+    ) -> some View {
+        Menu {
+            Picker(label, selection: selection, content: options)
+                .pickerStyle(.inline)
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(title).multilineTextAlignment(.leading)
+                Image(systemName: "chevron.up.chevron.down")
+                    .imageScale(.small)
+                    .accessibilityHidden(true)
+            }
+        }
+        .accessibilityLabel(label)
+        .accessibilityValue(title)
+    }
+
+    /// The name of `series`, the book's series choice, as its option in the **Series** menu.
+    private func title(of series: Choice.Series, _ memberships: [SeriesMembership]) -> String {
+        switch series {
+        case .standard: standardTitle(memberships)
+        case .linked(let id):
+            memberships.first { $0.seriesID == id }.map(Self.title(of:)) ?? "Linked series"
+        case .alone: "Not in a series"
         }
     }
 
@@ -1564,18 +1648,40 @@ private struct TopFivePinButton: View {
 /// while one runs. A run that ends after `requestedAt` while it is still set, because no new
 /// design arrived, leaves a note with the run's error, for example after a quota stop or when
 /// the cover did not load.
+///
+/// When this device's model ranks below the model that made `design`, the spine's current
+/// design, a note takes the button's place: a redesign here would replace a better model's
+/// design, which a run never does (`SpineWorker.reconcile(mode:redesigning:)`). After a cover
+/// change, `design` is `nil`, because the new cover is redesigned at any tier.
 private struct RedesignButton: View {
     let book: CloudBook
     /// Whether the redesign changes the book's whole series.
     let series: Bool
+    var design: SpineDesignV1? = nil
     /// When the reader asked for a new design, by this button or a new cover.
     @Binding var requestedAt: Date?
 
     @Environment(GenerationController.self) private var generation
 
     var body: some View {
+        content.task {
+            // The model status arrives when the Spines tab opens or a run starts.
+            if design != nil, generation.status.model == nil {
+                await generation.refreshModelStatus()
+            }
+        }
+    }
+
+    @ViewBuilder private var content: some View {
         if generation.status.isRunning {
             LabeledContent("Designing spines") { ProgressView() }
+        } else if let design, let device = generation.status.model, device.tier < design.tier {
+            Label(
+                "\(design.madeBy) made this design. This \(ThisDevice.name) uses \(SpineWorker.inSentence(device)), so redesign it on a device that uses \(design.madeBy).",
+                systemImage: "info.circle"
+            )
+            .font(.footnote)
+            .foregroundStyle(cardNote)
         } else {
             Button(series ? "Redesign spines" : "Redesign spine", systemImage: "wand.and.sparkles")
             {
