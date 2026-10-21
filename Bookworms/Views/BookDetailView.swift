@@ -1557,6 +1557,8 @@ private struct SeriesRows: View {
                     .imageScale(.small)
                     .accessibilityHidden(true)
             }
+            // In the tint, as a menu-style picker letters its choice.
+            .foregroundStyle(.tint)
         }
         .accessibilityLabel(label)
         .accessibilityValue(title)

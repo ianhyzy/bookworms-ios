@@ -31,74 +31,88 @@ struct GenerationView: View {
     var body: some View {
         @Bindable var generation = generation
         NavigationStack(path: $path) {
-            Form {
-                BinderyHeader(
-                    current: generation.status.currentBook, path: $path,
-                    showsAccount: $showsAccount)
-                progress
-                if model.library != nil { SavedDesigns() }
-                designModel
-                Section {
-                    Toggle(Self.chargingLabel, isOn: $generation.generatesWhileCharging)
-                } footer: {
-                    if generation.generatesWhileCharging, let warning = backgroundRefreshWarning {
-                        Text(warning)
-                    } else {
-                        Text(Self.chargingFooter)
+            ScrollViewReader { proxy in
+                Form {
+                    BinderyHeader(
+                        current: generation.status.currentBook, path: $path,
+                        showsAccount: $showsAccount)
+                    progress
+                    if model.library != nil { SavedDesigns().id(SavedDesigns.scrollID) }
+                    designModel
+                    Section {
+                        Toggle(Self.chargingLabel, isOn: $generation.generatesWhileCharging)
+                    } footer: {
+                        if generation.generatesWhileCharging, let warning = backgroundRefreshWarning
+                        {
+                            Text(warning)
+                        } else {
+                            Text(Self.chargingFooter)
+                        }
                     }
                 }
-            }
-            // The first section has no header, so the default top margin reads as a gap. Share
-            // uses the same margin.
-            .contentMargins(.top, 4, for: .scrollContent)
-            .scrollContentBackground(.hidden)
-            .background { PaperGround().ignoresSafeArea() }
-            .navigationDestination(for: Int.self) { id in
-                // Book details stand in the walnut room, which is dark in both appearances.
-                PushedBookDetail(id: id, tab: .spines)
-                    .environment(\.colorScheme, .dark)
-                    #if os(iOS)
-                        .toolbarColorScheme(.dark, for: .navigationBar)
-                    #endif
-                    .tint(ShelfPalette.lamp)
-            }
-            .navigationTitle("Spines")
-            // The tab bar already names the tab, so an inline title leaves the form more room.
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                Button("Hardcover account", systemImage: accountSymbol) { showsAccount = true }
-                    .accessibilityValue(accountNeedsAttention ? "Needs attention" : "")
-            }
-            .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
-            .task { await generation.refreshModelStatus() }
-            #if os(iOS)
-                .task { backgroundRefresh = UIApplication.shared.backgroundRefreshStatus }
-                .onChange(of: scenePhase) { _, phase in
-                    if phase == .active {
+                // The first section has no header, so the default top margin reads as a gap. Share
+                // uses the same margin.
+                .contentMargins(.top, 4, for: .scrollContent)
+                #if DEBUG
+                    // `-BookwormsSpinesScroll YES` scrolls **Saved designs** to the top a second after
+                    // the tab appears, for Simulator checks of the sections under the shelf.
+                    .task {
+                        guard UserDefaults.standard.bool(forKey: "BookwormsSpinesScroll") else {
+                            return
+                        }
+                        try? await Task.sleep(for: .seconds(1))
+                        proxy.scrollTo(SavedDesigns.scrollID, anchor: .top)
+                    }
+                #endif
+                .scrollContentBackground(.hidden)
+                .background { PaperGround().ignoresSafeArea() }
+                .navigationDestination(for: Int.self) { id in
+                    // Book details stand in the walnut room, which is dark in both appearances.
+                    PushedBookDetail(id: id, tab: .spines)
+                        .environment(\.colorScheme, .dark)
+                        #if os(iOS)
+                            .toolbarColorScheme(.dark, for: .navigationBar)
+                        #endif
+                        .tint(ShelfPalette.lamp)
+                }
+                .navigationTitle("Spines")
+                // The tab bar already names the tab, so an inline title leaves the form more room.
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    Button("Hardcover account", systemImage: accountSymbol) { showsAccount = true }
+                        .accessibilityValue(accountNeedsAttention ? "Needs attention" : "")
+                }
+                .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
+                .task { await generation.refreshModelStatus() }
+                #if os(iOS)
+                    .task { backgroundRefresh = UIApplication.shared.backgroundRefreshStatus }
+                    .onChange(of: scenePhase) { _, phase in
+                        if phase == .active {
+                            backgroundRefresh = UIApplication.shared.backgroundRefreshStatus
+                        }
+                    }
+                    .onReceive(
+                        NotificationCenter.default.publisher(
+                            for: UIApplication.backgroundRefreshStatusDidChangeNotification)
+                    ) { _ in
                         backgroundRefresh = UIApplication.shared.backgroundRefreshStatus
                     }
-                }
-                .onReceive(
-                    NotificationCenter.default.publisher(
-                        for: UIApplication.backgroundRefreshStatusDidChangeNotification)
-                ) { _ in
-                    backgroundRefresh = UIApplication.shared.backgroundRefreshStatus
-                }
-            #endif
-            #if DEBUG
-                // `-BookwormsShowAccount YES` opens the account sheet for Simulator checks, and
-                // on the Mac, `-BookwormsShowSettings YES` opens Settings.
-                .onAppear {
-                    if UserDefaults.standard.bool(forKey: "BookwormsShowAccount") {
-                        showsAccount = true
-                    }
-                    #if os(macOS)
-                        if UserDefaults.standard.bool(forKey: "BookwormsShowSettings") {
-                            openSettings()
+                #endif
+                #if DEBUG
+                    // `-BookwormsShowAccount YES` opens the account sheet for Simulator checks, and
+                    // on the Mac, `-BookwormsShowSettings YES` opens Settings.
+                    .onAppear {
+                        if UserDefaults.standard.bool(forKey: "BookwormsShowAccount") {
+                            showsAccount = true
                         }
-                    #endif
-                }
-            #endif
+                        #if os(macOS)
+                            if UserDefaults.standard.bool(forKey: "BookwormsShowSettings") {
+                                openSettings()
+                            }
+                        #endif
+                    }
+                #endif
+            }
         }
     }
 
@@ -420,6 +434,9 @@ struct GenerationView: View {
 /// so every device counts the same models, such as Google Gemini's designs on a device without
 /// that API key. It counts when the library or its designs change (`AppModel.designRevision`).
 private struct SavedDesigns: View {
+    /// The section's ID in the tab's form.
+    static let scrollID = "saved-designs"
+
     @Environment(AppModel.self) private var model
     @State private var sources: [(name: String, count: Int)] = []
 
