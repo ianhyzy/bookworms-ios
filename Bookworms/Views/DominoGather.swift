@@ -2,304 +2,713 @@ import RealityKit
 import simd
 
 extension DominoFinale {
-    /// How long each stage of the gathering takes, in seconds: the books lift off the desk
-    /// together, cross to over the spread, settle to the height they hover at, close in over
-    /// their places, and drop onto them one after another (`Gather`).
-    static let liftTime: Float = 0.5
-    static let crossTime: Float = 1
-    static let settleTime: Float = 0.25
-    static let closeTime: Float = 0.45
-    static let dropTime: Float = 0.3
-    /// How long after the first drop the last drop starts, in the spread's order.
-    static let dropSpread: Float = 0.4
-    /// The lowest a book lifts, and how far above its place a book hovers before it drops, in
-    /// units.
-    static let liftFloor: Float = 1.5
-    static let hoverHeight: Float = 1.5
-    /// How steeply a book climbs to pass over another, and comes down after, as the height it
-    /// would change over a whole crossing at that pace, in units: a book that must climb more
-    /// steeply starts climbing sooner.
-    static let steepest: Float = 6
-    /// The least gap between books that pass over and under each other in the air, in units.
-    static let airGap: Float = 0.1
+    /// The gravity the books' hops into the spread fall under: the desk's, so a book hops as a
+    /// book thrown on this desk falls.
+    static let gatherGravity: Float = PileLayout.gravity
+    /// The shortest and longest a book's hop into the spread takes, in seconds, and how much
+    /// longer a hop takes for each unit it carries across the table. Even the shortest hop
+    /// rises well clear of the books standing beside it before it tips.
+    static let hopTimes: ClosedRange<Float> = 0.75...1.25
+    static let hopPace: Float = 0.02
+    /// The shares of a hop until which the book springs straight up out from among the books
+    /// standing beside it, until which it stays upright, and after which it moves straight down
+    /// onto its place, lying as its place does, so it never sweeps through the books beside it.
+    static let springShare: Float = 0.2
+    static let tiltShare: Float = 0.25
+    static let gatherArrival: Float = 0.8
+    /// The most a hop's path bows to one side, as a share of the way across, and in units.
+    static let bowShare: Float = 0.1
+    static let longestBow: Float = 1.5
+    /// How long after a book lying on another starts to rise that other rises, at least, in
+    /// seconds, and how long after the books its place rests on land a book lands, at least.
+    static let riseGap: Float = 1.0 / 240
+    static let landGap: Float = 0.1
+    /// When the books out of view, and the books in view, may start to rise, in seconds after
+    /// the gathering starts: one after another, in the chain's order, over these spans.
+    static let hiddenStarts: ClosedRange<Float> = 0...0.25
+    static let shownStarts: ClosedRange<Float> = 0.3...0.9
+    /// The most a gathering may speed up to land in time, as a share of its pace.
+    static let fastest: Float = 1.6
+    /// The longest a book stands, once it has risen, before its hop, in seconds, varied from
+    /// book to book.
+    static let longestIdle: Float = 0.6
+
+    /// When each book may start to rise, in seconds after the gathering starts, for books in the
+    /// chain's order that each show in the view or not: the books out of view at once, so the
+    /// gathering gets going while the end of the chain still shows fallen, and the books in view
+    /// after them, each group one after another down the chain, as the chain fell.
+    static func starts(shown: [Bool]) -> [Float] {
+        let hidden = shown.filter { !$0 }.count
+        var counts = (hidden: 0, shown: 0)
+        return shown.map { isShown in
+            let (span, index, total) =
+                isShown
+                ? (shownStarts, counts.shown, shown.count - hidden)
+                : (hiddenStarts, counts.hidden, hidden)
+            if isShown { counts.shown += 1 } else { counts.hidden += 1 }
+            let share = total > 1 ? Float(index) / Float(total - 1) : 0
+            return span.lowerBound + (span.upperBound - span.lowerBound) * share
+        }
+    }
 
     /// The fallen books' ways into the spread, planned once as they start to gather, so that
     /// no book passes through another.
     ///
-    /// Every book lifts straight up off the desk at once, turning to lie level, each to its
-    /// own height: a book that lay on another rises higher than it, and books that lay close
-    /// to each other rise far enough apart to leave `airGap` between them. The books then
-    /// cross together, along straight lines across the table, to over their places, turning
-    /// to lie as their places do. Books that come close as they cross pass at heights apart:
-    /// taking the books from the lowest lift up, each climbs over the books before it wherever
-    /// it comes close to them (`knots`). A book can so arrive above a book its place rests on.
-    /// Every such pair waits apart instead: the books from a line across the table between the
-    /// two on cross to `clearing` beyond where their places meet, farther from the camera, into
-    /// the room the finale leaves its heading (`staging`), and the crossings are planned again.
-    /// Each book then settles to hover over where it waits, twice as far above the books its
-    /// place rests on as it lies on them, the books close in over their places together, which
-    /// moves books only toward the camera and keeps them apart, and each drops straight down
-    /// onto its place, in the spread's order, no sooner than the books under it, which fall the
-    /// shorter way.
+    /// The chain first rises back up the way it fell, as its fall played backward: each book
+    /// turns back up about the edge it fell on, as the setup's books right themselves
+    /// (`DominoSetup.Move`), no sooner than `starts(shown:)` lets it and once the books lying on
+    /// it have started to. A book lying on others higher than `tableReach` hops from where it
+    /// lies instead, and a book whose tail rests on another higher than `onTable` hops before
+    /// that book rises. Where two rising books would meet, as the desk's physics can leave fallen
+    /// books, one rises once the other stands, unless books would then wait on each other in a
+    /// loop. Each book then stands where it rose, a moment of
+    /// its own (`longestIdle`), until it hops into its place: it springs straight up out from
+    /// among the books standing beside it, then tips to lie as its place does as it carries
+    /// across on an arc that falls under `gatherGravity`, bowing a little to one side, and drops
+    /// the last stretch straight down onto its place. Each hop takes its own time, longer the
+    /// farther it carries, so the books land at their own pace rather than together.
     ///
-    /// The spread's last book hovers over its place and does not drop: its flourish takes it
-    /// from there (`DominoFinale.snapPose`).
+    /// The books are planned one at a time, first the book ready first whose place's books,
+    /// those it rests on and those that lie or stand there, are planned. Each hops as soon as
+    /// its way, checked every `checkStep` with room to spare in the air, meets none of the books
+    /// planned before it, nor the books still to hop, rising and standing, landing `landGap`
+    /// after the books its place rests on; while it would meet one, it waits longer, or hops a
+    /// little longer or shorter, and so higher or lower. A book that only books still to hop
+    /// block waits for them to go first. A gathering that would land later than `budget` speeds
+    /// up, by up to `fastest`, which keeps every book's way and so keeps them apart.
     struct Gather: Sendable {
         /// One book's way into its place. Times are seconds after the books start to gather.
         struct Flight: Sendable {
-            /// Where the book lies as it starts, and lying level, turned as it lay.
-            let from: Transform
-            let level: simd_quatf
-            /// The book's height every `1 / (knots.count - 1)` of the way across.
-            let knots: [Float]
-            /// Where across the table the crossing ends, over the book's place or farther from
-            /// the camera, and how high the book hovers over its place.
-            let staging: SIMD2<Float>
-            let hover: Float
-            /// The book's place, and when it starts to drop onto it, or `.infinity` for a book
-            /// that stays hovering.
+            /// The book's turn back up from where it lies, which starts as it rises and ends
+            /// with it standing upright where it rose (`DominoSetup.Move.upright`).
+            let rising: DominoSetup.Move
+            /// The book's place.
             let to: Transform
-            let drop: Float
+            /// When the book hops, and when it lands in its place, at the planned pace.
+            let hop: Float
+            let lands: Float
+            /// How far the hop's arc rises above the line between its ends, at its middle, and
+            /// how far the path bows to its left, across the table, at its middle.
+            let lift: Float
+            let bow: Float
+            /// How many times faster than planned the book moves.
+            let pace: Float
 
-            /// When the book lands in its place.
-            var landing: Float { drop + DominoFinale.dropTime }
-
-            /// The book hovering over its place, once the books have closed in.
-            var hovering: Transform {
-                Transform(
-                    scale: to.scale, rotation: to.rotation,
-                    translation: [to.translation.x, hover, to.translation.z])
-            }
+            /// Where the book lies as the books start to gather.
+            var from: Transform { rising.from }
+            /// When the book starts to rise, stands, hops, and lands.
+            var rise: Float { rising.start / pace }
+            var stands: Float { (rising.start + rising.rightingTime) / pace }
+            var start: Float { hop / pace }
+            var landing: Float { lands / pace }
 
             /// The book's pose `time` seconds after the books start to gather.
             func pose(at time: Float) -> Transform {
-                let ease = DominoCameraRig.ease
-                let lifted = DominoFinale.liftTime
-                let crossed = lifted + DominoFinale.crossTime
-                let settled = crossed + DominoFinale.settleTime
-                guard time > 0 else { return from }
-                if time < lifted {
-                    let share = ease(time / lifted)
-                    var point = from.translation
-                    point.y += (knots[0] - point.y) * share
-                    return Transform(
-                        scale: to.scale,
-                        rotation: DominoSetup.turn(from.rotation, to: level, by: share),
-                        translation: point)
+                let time = time * pace
+                guard time >= hop else {
+                    return rising.pose(at: min(time, rising.start + rising.rightingTime))
                 }
-                if time < crossed {
-                    let share = ease((time - lifted) / DominoFinale.crossTime)
-                    let start = SIMD2(from.translation.x, from.translation.z)
-                    let point = start + (staging - start) * share
-                    return Transform(
-                        scale: to.scale,
-                        rotation: DominoSetup.turn(level, to: to.rotation, by: share),
-                        translation: [point.x, height(at: share), point.y])
-                }
-                if time < settled {
-                    let share = ease((time - crossed) / DominoFinale.settleTime)
-                    let height = knots[knots.count - 1]
-                    return Transform(
-                        scale: to.scale, rotation: to.rotation,
-                        translation: [staging.x, height + (hover - height) * share, staging.y])
-                }
-                if time < drop {
-                    let share = ease(min((time - settled) / DominoFinale.closeTime, 1))
-                    let point =
-                        staging + (SIMD2(to.translation.x, to.translation.z) - staging) * share
-                    return Transform(
-                        scale: to.scale, rotation: to.rotation,
-                        translation: [point.x, hover, point.y])
-                }
-                // It falls as a dropped book does, gathering speed until it lands.
-                let share = min((time - drop) / DominoFinale.dropTime, 1)
-                var point = to.translation
-                point.y = hover + (point.y - hover) * share * share
-                return Transform(scale: to.scale, rotation: to.rotation, translation: point)
-            }
-
-            /// The book's height `share` of the way across, along straight lines between its
-            /// knots.
-            func height(at share: Float) -> Float {
-                let place = min(max(share, 0), 1) * Float(knots.count - 1)
-                let knot = min(Int(place), knots.count - 2)
-                return knots[knot] + (knots[knot + 1] - knots[knot]) * (place - Float(knot))
+                guard time < lands else { return to }
+                let share = (time - hop) / (lands - hop)
+                let upright = rising.upright
+                let across = DominoCameraRig.ease(
+                    min(
+                        max(
+                            (share - DominoFinale.springShare)
+                                / (DominoFinale.gatherArrival - DominoFinale.springShare), 0), 1))
+                let first = SIMD2(upright.translation.x, upright.translation.z)
+                let way = SIMD2(to.translation.x, to.translation.z) - first
+                let length = simd_length(way)
+                let side = length > 1e-4 ? SIMD2(-way.y, way.x) / length : .zero
+                let point = first + way * across + side * bow * sin(.pi * across)
+                let height =
+                    upright.translation.y + (to.translation.y - upright.translation.y) * share
+                    + 4 * lift * share * (1 - share)
+                let tilt = DominoCameraRig.ease(
+                    min(
+                        max(
+                            (share - DominoFinale.tiltShare)
+                                / (DominoFinale.gatherArrival - DominoFinale.tiltShare), 0), 1))
+                return Transform(
+                    scale: to.scale,
+                    rotation: DominoSetup.turn(upright.rotation, to: to.rotation, by: tilt),
+                    translation: [point.x, height, point.y])
             }
         }
 
         /// Each book's way, in the spread's order.
         let flights: [Flight]
 
-        /// When the books close in over their places.
-        static var closing: Float {
-            DominoFinale.liftTime + DominoFinale.crossTime + DominoFinale.settleTime
+        /// When the last book lands.
+        var landed: Float { flights.map(\.landing).max() ?? 0 }
+
+        private init(flights: [Flight]) { self.flights = flights }
+
+        /// The same ways, sped up as much as they must to land by `budget`, by up to `fastest`
+        /// as planned, as a gathering that started later than planned needs.
+        func paced(within budget: Float) -> Gather {
+            let last = flights.map(\.lands).max() ?? 0
+            let pace = last > budget ? min(last / max(budget, 1e-3), DominoFinale.fastest) : 1
+            guard pace > (flights.first?.pace ?? 1) else { return self }
+            return Gather(
+                flights: flights.map {
+                    Flight(
+                        rising: $0.rising, to: $0.to, hop: $0.hop, lands: $0.lands, lift: $0.lift,
+                        bow: $0.bow, pace: pace)
+                })
         }
 
-        /// When the last book to drop has landed, for any number of books.
-        static var landed: Float {
-            closing + DominoFinale.closeTime + DominoFinale.dropSpread + DominoFinale.dropTime
-        }
-
-        /// The ways of `books`, in the spread's order, each from where it lies to its place,
-        /// with its size (see `BookShape.size`). The last book stays hovering over its place.
-        init(_ books: [(from: Transform, to: Transform, size: SIMD3<Float>)]) {
+        /// The ways of `books`, in the spread's order, each from where it lies to its place, with
+        /// its size (see `BookShape.size`), none rising sooner than its `earliest`, in seconds
+        /// after the books start to gather, and every book landing by `budget`, if speeding up
+        /// allows.
+        init(
+            _ books: [(from: Transform, to: Transform, size: SIMD3<Float>)],
+            earliest: [Float]? = nil, budget: Float = .infinity
+        ) {
             let count = books.count
             guard count > 0 else {
-                flights = []
+                self.flights = []
                 return
             }
-            let levels = books.map { Self.level($0.from.rotation) }
-            // The most each book reaches above and below its middle as it crosses, turning.
-            let reaches = books.indices.map { index -> Float in
-                (0...8)
-                    .map { step -> Float in
-                        let turn = DominoSetup.turn(
-                            levels[index], to: books[index].to.rotation, by: Float(step) / 8)
-                        return DominoSetup.Box(Transform(rotation: turn), size: books[index].size)
-                            .bounds.high.y
-                    }
-                    .max() ?? 0
-            }
-            func apart(_ first: Int, _ second: Int) -> Float {
-                reaches[first] + reaches[second] + DominoFinale.airGap
-            }
+            let earliest = earliest ?? Array(repeating: 0, count: count)
             let lying = books.map { DominoSetup.Box($0.from, size: $0.size, grow: -0.01) }
             let places = books.map { DominoSetup.Box($0.to, size: $0.size, grow: -0.01) }
-            // Each book's books under it as it lies, and in the spread, where a book rests only
-            // on books before it.
-            let underLying = Self.under(lying)
-            let underPlaced = Self.under(places, earlierOnly: true)
-
-            // Each book's height every `1 / segments` of the way across to `staging`.
-            func crossings(to staging: [SIMD2<Float>]) -> [[Float]] {
-                let close = Self.closeness(books, staging: staging)
-                // The lift: a book above every book under it, and apart from the books it comes
-                // close to before the first knot of its crossing, which the crossing then keeps
-                // apart.
-                var lifts = [Float](repeating: .nan, count: count)
-                let firstKnot = 1 / Float(Self.segments)
-                for index in Self.upward(underLying) {
-                    var low = DominoFinale.liftFloor + reaches[index]
-                    for under in underLying[index] where !lifts[under].isNaN {
-                        low = max(low, lifts[under] + apart(index, under))
+            // A book whose tail rests on the table, or a little above it, turns back up once the
+            // books lying on it have started to. One lying higher on others hops from where it
+            // lies, and the books under a book that rests higher than `onTable` rise once it has
+            // sprung clear of them.
+            var above = Array(repeating: Set<Int>(), count: count)
+            for (upper, lowers) in Self.under(lying).enumerated() {
+                for lower in lowers { above[lower].insert(upper) }
+            }
+            let pivots = books.indices.map {
+                DominoSetup.Move(
+                    start: 0, from: books[$0].from, size: books[$0].size, to: books[$0].to,
+                    lift: 0
+                )
+                .pivot.y
+            }
+            let rights = pivots.map { $0 < Self.tableReach }
+            let leavesFirst = pivots.map { $0 > Self.onTable }
+            var risings = books.indices.map { index in
+                DominoSetup.Move(
+                    start: earliest[index], from: books[index].from, size: books[index].size,
+                    to: books[index].to, lift: 0, rights: rights[index])
+            }
+            var planned = [Flight?](repeating: nil, count: count)
+            // For each book, the books it rises once they stand.
+            var waitsFor = Array(repeating: Set<Int>(), count: count)
+            // When each book rises, after the books lying on it, those planned or not.
+            func rise() {
+                var risen = Set<Int>()
+                for book in Self.order(books.indices.map { above[$0].union(waitsFor[$0]) }) {
+                    var time = earliest[book]
+                    for other in waitsFor[book] {
+                        let rising = risings[other]
+                        time = max(
+                            time,
+                            rising.start + rising.rightingTime + DominoFinale.riseGap)
                     }
-                    let taken = close[index]
-                        .filter { $0.span.lowerBound <= firstKnot && !lifts[$0.other].isNaN }
-                        .map { (lifts[$0.other], apart(index, $0.other)) }
-                    lifts[index] = Self.lowest(from: low, clear: taken)
-                }
-                // The crossing: from the lowest lift up, each book climbs over the books before
-                // it wherever it comes close to them, and otherwise heads for its hovering height.
-                let segments = Self.segments
-                var knots = [[Float]](repeating: [], count: count)
-                for index in books.indices.sorted(by: { (lifts[$0], $0) < (lifts[$1], $1) }) {
-                    let hover = Self.hover(over: books[index].to)
-                    var path = [lifts[index]]
-                    for knot in 1...segments {
-                        // Pairs close anywhere along either segment that meets this knot.
-                        let low = Float(knot - 1) / Float(segments)
-                        let high = Float(min(knot + 1, segments)) / Float(segments)
-                        var least = DominoFinale.liftFloor + reaches[index]
-                        for pair in close[index]
-                        where !knots[pair.other].isEmpty && pair.span.lowerBound <= high
-                            && pair.span.upperBound >= low
-                        {
-                            least = max(least, knots[pair.other][knot] + apart(index, pair.other))
+                    for upper in above[book] where risen.contains(upper) || planned[upper] != nil {
+                        if let flight = planned[upper], leavesFirst[upper] {
+                            let spring =
+                                flight.hop + (flight.lands - flight.hop) * DominoFinale.springShare
+                            time = max(time, spring + DominoFinale.riseGap)
+                        } else if !leavesFirst[upper] {
+                            time = max(time, risings[upper].start + DominoFinale.riseGap)
+                        } else {
+                            time = max(
+                                time, risings[upper].start + DominoFinale.hopTimes.upperBound)
                         }
-                        let previous = path[knot - 1]
-                        path.append(
-                            max(previous + (hover - previous) / Float(segments - knot + 1), least))
                     }
-                    // Raise the path where it would turn sharply, never lower it, so it still
-                    // clears every book it passes over.
-                    let step = DominoFinale.steepest / Float(segments)
-                    for knot in stride(from: segments - 1, through: 1, by: -1) {
-                        path[knot] = max(path[knot], path[knot + 1] - step)
+                    if planned[book] == nil {
+                        risings[book] = DominoSetup.Move(
+                            start: time, from: books[book].from, size: books[book].size,
+                            to: books[book].to, lift: 0, rights: rights[book])
                     }
-                    for knot in 1...segments { path[knot] = max(path[knot], path[knot - 1] - step) }
-                    knots[index] = path
+                    risen.insert(book)
                 }
-                return knots
+            }
+            rise()
+            // Where a book rising back up would meet another, as the desk's physics can leave
+            // fallen books, it rises once the other stands: a book that would meet one still
+            // lying waits for it, and otherwise the later of the two to rise does.
+            for _ in 0..<3 {
+                let tracks = books.indices.map { Track(risings[$0], lying: lying[$0]) }
+                var later = false
+                for first in books.indices {
+                    for second in books.indices
+                    where second > first && tracks[first].reach.overlaps(tracks[second].reach) {
+                        let (one, other) = (tracks[first], tracks[second])
+                        let steps =
+                            min(
+                                one.start, other.start)...max(
+                                one.start + one.boxes.count, other.start + other.boxes.count)
+                        guard
+                            let step = steps.first(where: { step in
+                                let (a, b) = (one.at(step), other.at(step))
+                                return a.bounds.overlaps(b.bounds) && a.box.overlaps(b.box)
+                            })
+                        else { continue }
+                        let (waits, leads) =
+                            step < other.start
+                            ? (first, second)
+                            : step < one.start
+                                ? (second, first)
+                                : (risings[first].start, first) > (risings[second].start, second)
+                                    ? (first, second) : (second, first)
+                        // A book never waits on a book that waits on it, however far down.
+                        var seen: Set<Int> = [leads]
+                        var queue = [leads]
+                        while let next = queue.popLast() {
+                            for other in above[next].union(waitsFor[next])
+                            where seen.insert(other).inserted {
+                                queue.append(other)
+                            }
+                        }
+                        guard !seen.contains(waits) else { continue }
+                        later = waitsFor[waits].insert(leads).inserted || later
+                    }
+                }
+                guard later else { break }
+                rise()
+            }
+            let uprights = books.indices.map {
+                DominoSetup.Box(risings[$0].upright, size: books[$0].size, grow: -0.01)
+            }
+            // A book lands after the books its place rests on, and after the books that lay or
+            // stood where it lands have left, if any do: the chain moves clear of the spread
+            // first (`clearing(_:from:margin:)`).
+            let rests = Self.under(places, earlierOnly: true)
+            let covers = places.map { place -> Set<Int> in
+                let footprint = DominoSetup.Footprint(place)
+                return Set(
+                    books.indices.filter {
+                        footprint.overlaps(DominoSetup.Footprint(lying[$0]))
+                            || footprint.overlaps(DominoSetup.Footprint(uprights[$0]))
+                    })
+            }
+            let preferred = books.indices.map {
+                Self.hopTime(from: risings[$0].upright, books[$0], $0)
+            }
+            let bows = books.indices.map { Self.bow(from: risings[$0].upright, books[$0], $0) }
+            // Each book stands a moment of its own before it hops, so neighbors that rose
+            // together hop apart.
+            func ready(_ book: Int) -> Float {
+                let rising = risings[book]
+                return rising.start + rising.rightingTime
+                    + DominoFinale.longestIdle * Self.unit(book, 3)
+            }
+            // Every book's boxes, rising and standing until it is planned, then along its way.
+            var field = Field(count: count)
+            for book in books.indices {
+                field.set(Track(risings[book], lying: lying[book]), for: book)
+            }
+            // The books hop one at a time into the plan, each as soon as its way meets none of
+            // the books planned before it, nor the books still to hop, standing where they
+            // rose: the first book ready whose place's books have been planned goes next.
+            // A book whose way only books still to hop block waits for them to go first.
+            var left = Set(books.indices)
+            var deferred = Set<Int>()
+            while !left.isEmpty {
+                let free = left.filter { book in
+                    rests[book].allSatisfy { planned[$0] != nil }
+                        && covers[book].allSatisfy { $0 == book || planned[$0] != nil }
+                        && above[book].allSatisfy { !leavesFirst[$0] || planned[$0] != nil }
+                }
+                let choices = (free.isEmpty ? left : free).subtracting(deferred)
+                let forced = choices.isEmpty
+                guard
+                    let book = (forced ? (free.isEmpty ? left : free) : choices)
+                        .min(by: { (ready($0), $0) < (ready($1), $1) })
+                else { break }
+                guard
+                    let flight = Self.plan(
+                        book, earliest: ready(book), preferred: preferred[book], bow: bows[book],
+                        rising: risings[book], to: books[book].to, size: books[book].size,
+                        after: rests[book].compactMap { planned[$0]?.lands }, field: field,
+                        planned: planned.map { $0 != nil }, forced: forced)
+                else {
+                    deferred.insert(book)
+                    continue
+                }
+                planned[book] = flight
+                field.set(Track(flight, lying: lying[book], placed: places[book]), for: book)
+                left.remove(book)
+                deferred = []
+                if leavesFirst[book] {
+                    let before = risings
+                    rise()
+                    for other in left where risings[other].start != before[other].start {
+                        field.set(Track(risings[other], lying: lying[other]), for: other)
+                    }
+                }
+            }
+            self = Gather(flights: planned.compactMap { $0 }).paced(within: budget)
+        }
+
+        /// How far to move the fallen books across the table, by whole tiles of its wood
+        /// (`DominoSetup.tile`), which the table does not show, so that none of `lying` lies
+        /// within `margin` of any of `places`, where the books land: the shortest such move,
+        /// along x and z, or none when none within three tiles clears every place.
+        static func clearing(
+            _ lying: [DominoSetup.Box], from places: [DominoSetup.Box], margin: Float = 1
+        ) -> SIMD3<Float> {
+            let books = lying.map { DominoSetup.Footprint($0).grown(by: margin / 2) }
+            let spots = places.map { DominoSetup.Footprint($0).grown(by: margin / 2) }
+            var moves: [SIMD2<Float>] = []
+            for x in -3...3 {
+                for z in -3...3 { moves.append(SIMD2(Float(x), Float(z)) * DominoSetup.tile) }
+            }
+            for move in moves.sorted(by: { simd_length($0) < simd_length($1) }) {
+                let moved = books.map { $0.offset(by: move) }
+                if !moved.contains(where: { book in spots.contains { $0.overlaps(book) } }) {
+                    return [move.x, 0, move.y]
+                }
+            }
+            return .zero
+        }
+
+        /// Bounds that hold the whole way of `flight`, of a book of `size`, from where it stands
+        /// to its place, however it turns.
+        static func reach(of flight: Flight, size: SIMD3<Float>) -> DominoSetup.Bounds {
+            let ends = [flight.rising.upright.translation, flight.to.translation]
+            let radius = simd_length(size) / 2 + abs(flight.bow)
+            let low = ends.reduce(ends[0], pointwiseMin) - radius
+            var high = ends.reduce(ends[0], pointwiseMax) + radius
+            high.y += flight.lift
+            return DominoSetup.Bounds(low: [low.x, 0, low.z], high: high)
+        }
+
+        /// How near the table a book's tail must rest for the book to turn back up on it, in
+        /// units; a book lying higher, on other books, hops from where it lies. A book whose
+        /// tail rests higher than `onTable` stands on the book under it.
+        static let tableReach: Float = 0.5
+        static let onTable: Float = 0.3
+
+        /// How often a hop's way is checked against the others, and the step by which a book
+        /// waits longer while its way meets another, in seconds, and the longest it waits.
+        static let checkStep: Float = 1.0 / 120
+        static let waitStep: Float = 1.0 / 30
+        static let longestWait: Float = 3
+        /// How far a hopping book's box grows on every side as the planner checks it in the
+        /// air, in units, beyond how far it moves in a step, so books pass with room to spare.
+        static let margin: Float = 0.03
+
+        /// A book's boxes, shrunk a hair, and their bounds, on the planner's clock, every
+        /// `checkStep` from 0: still before `start`, one for each step while it moves, and
+        /// still after.
+        struct Track {
+            let start: Int
+            let boxes: [(box: DominoSetup.Box, bounds: DominoSetup.Bounds)]
+            let before: (box: DominoSetup.Box, bounds: DominoSetup.Bounds)
+            let after: (box: DominoSetup.Box, bounds: DominoSetup.Bounds)
+            /// Bounds that hold every box.
+            let reach: DominoSetup.Bounds
+
+            /// The track of a book that rises along `rising` from where it lies, `lying`, and
+            /// stands where it rose.
+            init(_ rising: DominoSetup.Move, lying: DominoSetup.Box) {
+                let flight = Flight(
+                    rising: rising, to: rising.upright, hop: .infinity, lands: .infinity,
+                    lift: 0, bow: 0, pace: 1)
+                let stood = rising.start + rising.rightingTime
+                self.init(
+                    from: rising.start, to: stood, size: rising.size, pose: flight.pose(at:),
+                    lying: lying,
+                    still: DominoSetup.Box(rising.upright, size: rising.size, grow: -0.01))
             }
 
-            // Where each crossing ends: over the book's place, unless two books whose places
-            // meet would arrive the wrong way up. Then every book from a line between the two on
-            // waits farther from the camera, just far enough that their places no longer meet,
-            // and the crossings are planned again.
-            // Their places grown by `clearing`, so books that swap heights there pass well apart.
-            let roomy = books.map { DominoSetup.Box($0.to, size: $0.size, grow: Self.clearing) }
-            let spots = books.map { SIMD2($0.to.translation.x, $0.to.translation.z) }
-            let ahead = Self.ahead(books)
-            let depths = spots.map { simd_dot($0, ahead) }
-            var lines: [(at: Float, shift: Float)] = []
-            var staging = spots
-            var knots = crossings(to: staging)
-            // ponytail: gives up after `stagings` rounds; every captured gathering took one.
-            for _ in 1..<Self.stagings {
-                let wrong = Self.wrongWayUp(
-                    roomy, under: underPlaced, staging: staging, knots: knots, depths: depths)
-                guard !wrong.isEmpty else { break }
-                // A pair shares a line already between the two, or adds one halfway. A line
-                // moves as far as its farthest pair needs.
-                var needs = [Float](repeating: 0, count: lines.count)
-                for (front, back) in wrong.sorted(by: { depths[$0.back] < depths[$1.back] }) {
-                    let line =
-                        lines.firstIndex { depths[front] <= $0.at && $0.at < depths[back] }
-                        ?? {
-                            lines.append(((depths[front] + depths[back]) / 2, 0))
-                            needs.append(0)
-                            return lines.count - 1
-                        }()
-                    needs[line] = max(
-                        needs[line],
-                        Self.clearance(
-                            roomy[back], at: staging[back], from: roomy[front],
-                            at: staging[front], along: ahead))
-                }
-                for line in lines.indices { lines[line].shift += needs[line] }
-                staging = spots.indices.map { index in
-                    spots[index] + ahead
-                        * lines.filter { depths[index] > $0.at }.map(\.shift).reduce(0, +)
-                }
-                knots = crossings(to: staging)
+            /// The track of a book along `flight`, from where it lies, `lying`, to its place,
+            /// `placed`.
+            init(_ flight: Flight, lying: DominoSetup.Box, placed: DominoSetup.Box) {
+                self.init(
+                    from: flight.rise, to: flight.landing, size: flight.rising.size,
+                    pose: flight.pose(at:), lying: lying, still: placed)
             }
 
-            // The drops: in the spread's order, `dropSpread` across, so a book drops no sooner
-            // than the books under it, which fall the shorter way and stay under it.
-            flights = books.indices.map { index in
-                Flight(
-                    from: books[index].from, level: levels[index], knots: knots[index],
-                    staging: staging[index], hover: Self.hover(over: books[index].to),
-                    to: books[index].to,
-                    drop: index == count - 1
-                        ? .infinity
-                        : Self.closing + DominoFinale.closeTime + DominoFinale.dropSpread
-                            * Float(index) / Float(max(count - 1, 1)))
+            private init(
+                from: Float, to: Float, size: SIMD3<Float>, pose: (Float) -> Transform,
+                lying: DominoSetup.Box, still: DominoSetup.Box
+            ) {
+                start = Int((from / checkStep).rounded(.down))
+                let end = max(Int((to / checkStep).rounded(.up)), start)
+                boxes = (start...end)
+                    .map { step in
+                        let box = DominoSetup.Box(
+                            pose(Float(step) * checkStep), size: size, grow: -0.01)
+                        return (box, box.bounds)
+                    }
+                before = (lying, lying.bounds)
+                after = (still, still.bounds)
+                reach = boxes.map(\.bounds)
+                    .reduce(before.bounds.union(after.bounds)) {
+                        $0.union($1)
+                    }
+            }
+
+            /// The box at step `step` of the planner's clock.
+            func at(_ step: Int) -> (box: DominoSetup.Box, bounds: DominoSetup.Bounds) {
+                step < start ? before : step - start < boxes.count ? boxes[step - start] : after
             }
         }
 
-        /// How many straight stretches a crossing's height follows.
-        static let segments = 16
+        /// The books' tracks on the planner's clock, kept by where their boxes lie across the
+        /// table, in squares `cell` units across, so a check finds the books near a box at once.
+        struct Field {
+            static let cell: Float = 3
+            typealias Entry = (box: DominoSetup.Box, bounds: DominoSetup.Bounds)
+            /// By square, each book's still boxes and the steps each holds for.
+            private var still: [Int64: [Int: [(steps: Range<Int>, entry: Entry)]]] = [:]
+            /// By step and square, each book's box while it moves.
+            private var moving: [Int: [Int64: [Int: Entry]]] = [:]
+            /// Each book's squares, still and by step.
+            private var stills: [Set<Int64>]
+            private var moves: [[(step: Int, square: Int64)]]
 
-        /// How high a book hovers over its place `to`: `hoverHeight` above it, and twice as
-        /// far apart from the books under it as it lies on them, so the spread hovers stacked
-        /// apart as it closes in.
-        static func hover(over to: Transform) -> Float {
-            DominoFinale.hoverHeight + 2 * to.translation.y
+            init(count: Int) {
+                stills = Array(repeating: [], count: count)
+                moves = Array(repeating: [], count: count)
+            }
+
+            /// The squares `bounds` covers.
+            private static func squares(_ bounds: DominoSetup.Bounds) -> [Int64] {
+                let low = (bounds.low / cell).rounded(.down)
+                let high = (bounds.high / cell).rounded(.down)
+                var squares: [Int64] = []
+                for x in Int(low.x)...Int(high.x) {
+                    for z in Int(low.z)...Int(high.z) {
+                        squares.append(Int64(x) << 32 | Int64(UInt32(bitPattern: Int32(z))))
+                    }
+                }
+                return squares
+            }
+
+            /// Keeps `track` as `book`'s, in place of any it had.
+            mutating func set(_ track: Track, for book: Int) {
+                for square in stills[book] { still[square]?[book] = nil }
+                for (step, square) in moves[book] { moving[step]?[square]?[book] = nil }
+                stills[book] = []
+                moves[book] = []
+                let end = track.start + track.boxes.count
+                for (steps, entry) in [
+                    (0..<track.start, track.before), (end..<Int.max, track.after),
+                ] {
+                    for square in Self.squares(entry.bounds) {
+                        still[square, default: [:]][book, default: []].append((steps, entry))
+                        stills[book].insert(square)
+                    }
+                }
+                for (offset, entry) in track.boxes.enumerated() {
+                    let step = track.start + offset
+                    for square in Self.squares(entry.bounds) {
+                        moving[step, default: [:]][square, default: [:]][book] = entry
+                        moves[book].append((step, square))
+                    }
+                }
+            }
+
+            /// Whether `box` meets, at `step`, a book other than the one `skipping`, of those
+            /// `only` lets through: `nil` when none, and otherwise whether that book stays still
+            /// from then on.
+            func meets(
+                _ box: DominoSetup.Box, at step: Int, skipping book: Int, only: (Int) -> Bool
+            ) -> Bool? {
+                let bounds = box.bounds
+                let low = (bounds.low / Self.cell).rounded(.down)
+                let high = (bounds.high / Self.cell).rounded(.down)
+                let now = moving[step]
+                for x in Int(low.x)...Int(high.x) {
+                    for z in Int(low.z)...Int(high.z) {
+                        let square = Int64(x) << 32 | Int64(UInt32(bitPattern: Int32(z)))
+                        if let found = meets(
+                            box, bounds, in: square, now, at: step, skipping: book, only: only)
+                        {
+                            return found
+                        }
+                    }
+                }
+                return nil
+            }
+
+            private func meets(
+                _ box: DominoSetup.Box, _ bounds: DominoSetup.Bounds, in square: Int64,
+                _ now: [Int64: [Int: Entry]]?, at step: Int, skipping book: Int,
+                only: (Int) -> Bool
+            ) -> Bool? {
+                do {
+                    for (other, entry) in now?[square] ?? [:]
+                    where other != book && only(other) && entry.bounds.overlaps(bounds)
+                        && entry.box.overlaps(box)
+                    {
+                        _ = entry
+                        return false
+                    }
+                    for (other, entries) in still[square] ?? [:] where other != book && only(other)
+                    {
+                        for (steps, entry) in entries
+                        where steps.contains(step) && entry.bounds.overlaps(bounds)
+                            && entry.box.overlaps(box)
+                        {
+                            return steps.upperBound == .max
+                        }
+                    }
+                }
+                return nil
+            }
         }
 
-        /// `rotation` turned the shortest way to lie level, front cover up: a book lying on its
-        /// front cover turns over about its width.
-        static func level(_ rotation: simd_quatf) -> simd_quatf {
-            let up = SIMD3<Float>(0, 1, 0)
-            let front = rotation.act([0, 0, 1])
-            let angle = acos(min(max(simd_dot(front, up), -1), 1))
-            let axis = simd_cross(front, up)
-            guard simd_length(axis) > 1e-5 else {
-                return angle < 1
-                    ? rotation : simd_quatf(angle: .pi, axis: rotation.act([1, 0, 0])) * rotation
+        /// The hop of the `book`th, of `size`, from `rising`'s upright pose to `to`: as soon
+        /// after `earliest` as its way meets none of the other books' tracks in `field`, those
+        /// `planned` and those still to hop, landing `DominoFinale.landGap` after the landings
+        /// it lands `after`. Each wait also tries the hop a little longer and a little shorter than
+        /// `preferred`. When only books still to hop block it however long it waits, up to
+        /// `longestWait`, there is none, so they can go first, unless `forced`; a hop that
+        /// planned books block goes as soon as it may, as a last resort.
+        static func plan(
+            _ book: Int, earliest: Float, preferred: Float, bow: Float, rising: DominoSetup.Move,
+            to: Transform, size: SIMD3<Float>, after: [Float], field: Field, planned: [Bool],
+            forced: Bool
+        ) -> Flight? {
+            // Hops start and last whole steps of the planner's clock.
+            let times = [preferred, preferred + 0.15, preferred - 0.15]
+                .map {
+                    (min(
+                        max($0, DominoFinale.hopTimes.lowerBound), DominoFinale.hopTimes.upperBound)
+                        / checkStep)
+                        .rounded()
+                }
+            let landing = (after.max() ?? -.infinity) + DominoFinale.landGap
+            func flight(_ start: Float, _ steps: Float) -> Flight {
+                let time = steps * checkStep
+                return Flight(
+                    rising: rising, to: to, hop: start * checkStep,
+                    lands: (start + steps) * checkStep,
+                    lift: DominoFinale.gatherGravity * time * time / 8, bow: bow, pace: 1)
             }
-            return simd_quatf(angle: angle, axis: simd_normalize(axis)) * rotation
+            /// Whether `hop` meets any other book, of those planned unless `all`, and whether it
+            /// meets a book that stays still from then on, in its place or standing, which no
+            /// wait gets past.
+            func meets(_ hop: Flight, all: Bool) -> (meets: Bool, still: Bool) {
+                let first = Int((hop.hop / checkStep).rounded())
+                let last = Int((hop.lands / checkStep).rounded())
+                let sprung = hop.hop + (hop.lands - hop.hop) * DominoFinale.springShare
+                let carried = hop.hop + (hop.lands - hop.hop) * DominoFinale.gatherArrival
+                var pose = hop.pose(at: Float(first) * checkStep)
+                for step in first...last {
+                    let time = Float(step) * checkStep
+                    let next = hop.pose(at: time + checkStep)
+                    // Room to spare in the air, as far as it moves in a step, so it passes
+                    // others between the checks too; it springs up beside the books standing
+                    // by it and comes down onto the books under its place.
+                    let room =
+                        time >= sprung && time < carried
+                        ? margin + simd_distance(next.translation, pose.translation) : -0.01
+                    let box = DominoSetup.Box(pose, size: size, grow: room)
+                    pose = next
+                    if let still = field.meets(
+                        box, at: step, skipping: book, only: { all || planned[$0] })
+                    {
+                        return (true, still)
+                    }
+                }
+                return (false, false)
+            }
+            func first(all: Bool) -> Flight? {
+                var start = (earliest / checkStep).rounded(.up)
+                let latest = start + (longestWait / checkStep).rounded()
+                while start <= latest {
+                    var still = true
+                    for steps in times where (start + steps) * checkStep >= landing {
+                        let hop = flight(start, steps)
+                        let meeting = meets(hop, all: all)
+                        guard meeting.meets else { return hop }
+                        still = still && meeting.still
+                    }
+                    // A book that stays still in its way stays there however long it waits.
+                    if still, start * checkStep >= landing { return nil }
+                    start += (waitStep / checkStep).rounded()
+                }
+                return nil
+            }
+            if let hop = first(all: true) { return hop }
+            if !forced, first(all: false) != nil { return nil }
+            let start = (max(earliest, landing - preferred) / checkStep).rounded(.up)
+            return flight(start, (preferred / checkStep).rounded())
+        }
+
+        /// The books in an order in which each comes after the books it waits for, by `after`:
+        /// as soon as it may, and, where books wait on each other in a loop, the first of them
+        /// first.
+        static func order(_ after: [Set<Int>]) -> [Int] {
+            var waiting = after.map(\.count)
+            var before = Array(repeating: [Int](), count: after.count)
+            for (book, others) in after.enumerated() {
+                for other in others { before[other].append(book) }
+            }
+            var ready = Array(after.indices.filter { waiting[$0] == 0 }.reversed())
+            var order: [Int] = []
+            var placed = Array(repeating: false, count: after.count)
+            var next = 0
+            while order.count < after.count {
+                if ready.isEmpty {
+                    // A loop: the first book not yet placed goes next.
+                    while placed[next] { next += 1 }
+                    ready.append(next)
+                }
+                let book = ready.removeLast()
+                guard !placed[book] else { continue }
+                placed[book] = true
+                order.append(book)
+                for later in before[book] {
+                    waiting[later] -= 1
+                    if waiting[later] == 0, !placed[later] { ready.append(later) }
+                }
+            }
+            return order
+        }
+
+        /// How long the hop of `book`, the `index`th in the spread's order, from `upright` takes
+        /// before any repair: longer the farther it carries, varied by up to 15 percent either
+        /// way.
+        static func hopTime(
+            from upright: Transform, _ book: (from: Transform, to: Transform, size: SIMD3<Float>),
+            _ index: Int
+        ) -> Float {
+            let way = simd_distance(
+                SIMD2(upright.translation.x, upright.translation.z),
+                SIMD2(book.to.translation.x, book.to.translation.z))
+            let base = DominoFinale.hopTimes.lowerBound + DominoFinale.hopPace * way
+            let time = base * (0.85 + 0.3 * unit(index, 1))
+            return min(
+                max(time, DominoFinale.hopTimes.lowerBound), DominoFinale.hopTimes.upperBound)
+        }
+
+        /// How far the hop of `book`, the `index`th in the spread's order, from `upright` bows
+        /// to its left: up to `bowShare` of the way across, to either side, and at most
+        /// `longestBow`.
+        static func bow(
+            from upright: Transform, _ book: (from: Transform, to: Transform, size: SIMD3<Float>),
+            _ index: Int
+        ) -> Float {
+            let way = simd_distance(
+                SIMD2(upright.translation.x, upright.translation.z),
+                SIMD2(book.to.translation.x, book.to.translation.z))
+            return min(DominoFinale.bowShare * way, DominoFinale.longestBow)
+                * (2 * unit(index, 2) - 1)
+        }
+
+        /// A number from 0 to 1 that varies from book to book, the same for each `index` and
+        /// `salt`.
+        static func unit(_ index: Int, _ salt: Int) -> Float {
+            var value =
+                UInt64(truncatingIfNeeded: index) &* 0x9E37_79B9_7F4A_7C15
+                ^ UInt64(truncatingIfNeeded: salt) &* 0xC2B2_AE3D_27D4_EB4F
+            value ^= value >> 31
+            value &*= 0xBF58_476D_1CE4_E5B9
+            value ^= value >> 27
+            return Float(value >> 40) / Float(1 << 24)
         }
 
         /// For each of `boxes`, the boxes it rests on, of the boxes before it when
@@ -329,136 +738,6 @@ extension DominoFinale {
                 lift += 0.05
             }
             return false
-        }
-
-        /// How many times the gathering plans the crossings, moving books apart, at most, and
-        /// how far apart, in units, it keeps two books whose places meet when they wait the
-        /// wrong way up.
-        static let stagings = 12
-        static let clearing: Float = 0.03
-
-        /// The direction across the table, as x and z, from the spread's side near the camera
-        /// to its far side: the way the books' heads point, on average, as they lie head away
-        /// from the camera.
-        static func ahead(_ books: [(from: Transform, to: Transform, size: SIMD3<Float>)])
-            -> SIMD2<Float>
-        {
-            let heads = books.reduce(SIMD2<Float>.zero) { total, book in
-                let head = book.to.rotation.act([0, 1, 0])
-                return total + SIMD2(head.x, head.z)
-            }
-            return simd_length(heads) > 1e-4 ? simd_normalize(heads) : [0, -1]
-        }
-
-        /// The pairs of books whose `places` meet where their crossings end, at `staging`, and
-        /// whose crossings, `knots`, end with the lower place's book the higher, nearer the
-        /// camera first by their `depths`. A book rests on the books `under` it.
-        static func wrongWayUp(
-            _ places: [DominoSetup.Box], under: [[Int]], staging: [SIMD2<Float>],
-            knots: [[Float]], depths: [Float]
-        ) -> [(front: Int, back: Int)] {
-            under.enumerated()
-                .flatMap { upper, lowers in
-                    lowers.filter { lower in
-                        knots[lower][knots[lower].count - 1]
-                            >= knots[upper][knots[upper].count - 1]
-                            && level(places[upper], at: staging[upper])
-                                .overlaps(level(places[lower], at: staging[lower]))
-                    }
-                    .map { depths[$0] <= depths[upper] ? ($0, upper) : (upper, $0) }
-                }
-        }
-
-        /// How much farther along `ahead` the `back` box, at `spot` across the table, moves to
-        /// clear the `front` box, at `other`, both lying at one height.
-        static func clearance(
-            _ back: DominoSetup.Box, at spot: SIMD2<Float>, from front: DominoSetup.Box,
-            at other: SIMD2<Float>, along ahead: SIMD2<Float>
-        ) -> Float {
-            let still = level(front, at: other)
-            var need: Float = 0.02
-            while level(back, at: spot + ahead * need).overlaps(still), need < 4 { need += 0.02 }
-            return need
-        }
-
-        /// `box` moved to lie at height 0 over `spot` across the table.
-        static func level(_ box: DominoSetup.Box, at spot: SIMD2<Float>) -> DominoSetup.Box {
-            box.moved(by: [spot.x - box.center.x, -box.center.y, spot.y - box.center.z])
-        }
-
-        /// For each book, the books that come close to it as they cross together, and the
-        /// shares of the way across over which they are close: within the circles that hold
-        /// them whichever way they turn.
-        static func closeness(
-            _ books: [(from: Transform, to: Transform, size: SIMD3<Float>)],
-            staging: [SIMD2<Float>]
-        ) -> [[(other: Int, span: ClosedRange<Float>)]] {
-            let radii = books.map { simd_length(SIMD2($0.size.x, $0.size.y)) / 2 }
-            let starts = books.map { SIMD2($0.from.translation.x, $0.from.translation.z) }
-            var close = Array(
-                repeating: [(other: Int, span: ClosedRange<Float>)](), count: books.count)
-            for first in books.indices {
-                for second in books.indices where second > first {
-                    let reach = radii[first] + radii[second] + 0.05
-                    guard
-                        let span = Self.span(
-                            from: starts[first] - starts[second],
-                            to: staging[first] - staging[second], within: reach)
-                    else { continue }
-                    close[first].append((second, span))
-                    close[second].append((first, span))
-                }
-            }
-            return close
-        }
-
-        /// The shares of the way, from 0 to 1, over which an offset moving evenly from `start`
-        /// to `end` lies within `reach` of zero, if any.
-        static func span(from start: SIMD2<Float>, to end: SIMD2<Float>, within reach: Float)
-            -> ClosedRange<Float>?
-        {
-            let way = end - start
-            let a = simd_length_squared(way)
-            let b = 2 * simd_dot(start, way)
-            let c = simd_length_squared(start) - reach * reach
-            guard a > 1e-9 else { return c < 0 ? 0...1 : nil }
-            let discriminant = b * b - 4 * a * c
-            guard discriminant > 0 else { return nil }
-            let root = discriminant.squareRoot()
-            let (low, high) = (max((-b - root) / (2 * a), 0), min((-b + root) / (2 * a), 1))
-            return low <= high ? low...high : nil
-        }
-
-        /// The books in an order in which every book comes after the books in `under` it.
-        static func upward(_ under: [[Int]]) -> [Int] {
-            var over = Array(repeating: [Int](), count: under.count)
-            for (index, books) in under.enumerated() {
-                for book in books { over[book].append(index) }
-            }
-            var waiting = under.map(\.count)
-            var ready = Array(under.indices.filter { waiting[$0] == 0 }.reversed())
-            var order: [Int] = []
-            while let index = ready.popLast() {
-                order.append(index)
-                for book in over[index] {
-                    waiting[book] -= 1
-                    if waiting[book] == 0 { ready.append(book) }
-                }
-            }
-            // Books lying on each other in a loop, which the desk's physics can leave, go last.
-            let placed = Set(order)
-            return order + under.indices.filter { !placed.contains($0) }
-        }
-
-        /// The lowest height from `low` up that keeps at least each `taken` gap from each
-        /// taken height.
-        static func lowest(from low: Float, clear taken: [(height: Float, gap: Float)]) -> Float {
-            var height = low
-            for (other, gap) in taken.sorted(by: { $0.height - $0.gap < $1.height - $1.gap })
-            where other + gap > height && other - gap < height {
-                height = other + gap
-            }
-            return height
         }
     }
 }

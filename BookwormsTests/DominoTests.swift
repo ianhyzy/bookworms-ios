@@ -568,18 +568,22 @@ final class DominoTests: XCTestCase {
 
     // MARK: Finale
 
-    func testTheLastBookSpringsAsTheCameraSettles() {
-        // The books start to gather 2 to 3 seconds after the last book falls, while the camera
-        // moves.
-        XCTAssertTrue((2...3).contains(DominoFinale.gatherDelay))
-        XCTAssertLessThan(DominoFinale.gatherDelay, DominoFinale.moveTime)
-        // The last book springs as the camera settles, reaches the camera once it rests, and
-        // lands just after, once the books have closed in over their places.
+    func testTheLastBookRisesAsTheCameraSettles() {
+        // The books start to gather within a second of the last book's fall, while the camera
+        // moves, and a book that starts last still lands before the camera rests,
+        // without speeding up.
+        XCTAssertLessThan(DominoFinale.restDelay, DominoFinale.longestRest)
+        XCTAssertLessThanOrEqual(DominoFinale.longestRest, 1)
+        XCTAssertLessThanOrEqual(
+            DominoFinale.longestRest + DominoFinale.shownStarts.upperBound
+                + DominoFinale.hopTimes.upperBound,
+            DominoFinale.moveTime - DominoFinale.settleMargin)
+        // The last book rises as the camera settles, has risen once it rests, and lands just
+        // after, quicker than a second.
         let start = DominoFinale.snapStart
         XCTAssertLessThan(start, DominoFinale.moveTime)
         XCTAssertGreaterThanOrEqual(start + DominoFinale.snapRise, DominoFinale.moveTime)
-        XCTAssertGreaterThan(
-            start, DominoFinale.gatherDelay + DominoFinale.Gather.closing + DominoFinale.closeTime)
+        XCTAssertLessThan(DominoFinale.snapTime, 0.6)
         XCTAssertEqual(
             start + DominoFinale.snapTime, DominoFinale.moveTime + DominoFinale.snapLanding,
             accuracy: 1e-5)
@@ -587,7 +591,7 @@ final class DominoTests: XCTestCase {
             DominoFinale.duration(count: 12), start + DominoFinale.snapTime, accuracy: 1e-5)
     }
 
-    func testTheLastBookSpringsHangsAndLandsHard() {
+    func testTheLastBookRisesPulsesAndLandsHard() {
         let from = Transform(
             rotation: simd_quatf(angle: 1.2, axis: simd_normalize([0.3, 1, 0.2])),
             translation: [-6, 0.1, 4])
@@ -605,8 +609,8 @@ final class DominoTests: XCTestCase {
             (SIMD3(1.9, 2.4, 0.4), mac.size, DominoFinale.area(in: mac)),
         ]
         for (size, view, area) in cases {
-            // It hangs in the middle of the area, facing the camera squarely, head up, near
-            // enough to fill the area's width or height as far as fits, and well past the near
+            // It rises to the middle of the area, facing the camera squarely, head up, near
+            // enough to fill a share of the area's width or height, and well past the near
             // plane.
             let top = DominoFinale.snapTop(size: size, seenBy: camera, in: area, of: view)
             let aspect = Float(view.width / view.height)
@@ -632,8 +636,8 @@ final class DominoTests: XCTestCase {
                 DominoFinale.snapPose(from: from, to: to, top: top, time: time)
             }
             XCTAssertEqual(simd_distance(pose(0).translation, from.translation), 0, accuracy: 1e-5)
-            // It reaches the top of its spring, its cover to the camera, and hangs there a
-            // beat, drifting no nearer than keeps it in view.
+            // It reaches the top of its rise, its cover to the camera, and pulses once toward
+            // the camera and back.
             let rise = DominoFinale.snapRise
             XCTAssertEqual(
                 simd_distance(pose(rise).translation, top.translation), 0, accuracy: 1e-4)
@@ -643,8 +647,13 @@ final class DominoTests: XCTestCase {
                 let hanging = pose(rise + DominoFinale.snapHang * share)
                 XCTAssertEqual(
                     abs(simd_dot(hanging.rotation.vector, top.rotation.vector)), 1, accuracy: 1e-5)
-                XCTAssertLessThan(simd_distance(hanging.translation, top.translation), 0.3)
+                XCTAssertLessThan(
+                    simd_distance(hanging.translation, top.translation),
+                    DominoFinale.pulseReach + 1e-3)
             }
+            let pulse = pose(rise + DominoFinale.snapHang / 2).translation - top.translation
+            XCTAssertEqual(simd_length(pulse), DominoFinale.pulseReach, accuracy: 1e-3)
+            XCTAssertGreaterThan(simd_dot(pulse, top.rotation.act([0, 0, 1])), 0)
             // It drops into its place and lands at full speed, flat for the last third of the
             // drop and never below its place: the drop's last hundredth of a second covers far
             // more ground than its first.
@@ -681,7 +690,6 @@ final class DominoTests: XCTestCase {
         // By `aimDelay`, the book shows in the middle of the view as the camera pulls back.
         XCTAssertGreaterThan(simd_length(shown(0)), 0.05)
         XCTAssertLessThan(simd_length(shown(DominoFinale.aimDelay)), 1e-3)
-        XCTAssertLessThan(simd_length(shown(DominoFinale.gatherDelay)), 0.1)
         // It still ends on the spread's view.
         let end = DominoFinale.view(from: from, to: to, around: last, progress: 1)
         XCTAssertEqual(
@@ -772,181 +780,230 @@ final class DominoTests: XCTestCase {
         XCTAssertGreaterThan(climb, 0)
     }
 
-    /// Fictional books lying as a fallen chain does, each partly on the next, and their places
-    /// in a small spread: two books side by side, a third across their far ends, and the
-    /// spread's last, which hovers for its flourish, in a row of its own.
-    private func gathering() -> [(from: Transform, to: Transform, size: SIMD3<Float>)] {
-        let size = SIMD3<Float>(1.4, 2.2, 0.2)
-        let along = simd_quatf(angle: .pi / 2, axis: [0, 1, 0]) * PileSpread.upright
-        let lying = (0..<4)
+    /// A fallen chain of `count` fictional books, in rows of ten along x, each tipped forward
+    /// 65 degrees about its leading bottom edge, and their places in a spread around `spread`,
+    /// across the table: rows of five side by side, with every other row lying across the ends
+    /// of the rows either side.
+    private func gathering(_ count: Int, spread: SIMD2<Float>) -> [(
+        from: Transform, to: Transform, size: SIMD3<Float>
+    )] {
+        let size = SIMD3<Float>(1.4, 2.2, 0.3)
+        let tip = simd_quatf(angle: -65 * .pi / 180, axis: [0, 0, 1])
+        let standing = DominoLayout.standing(heading: [1, 0])
+        return (0..<count)
             .map { index in
-                Transform(
-                    rotation: along,
-                    translation: [Float(index) * 1.1, size.z * (Float(3 - index) + 0.5), 0.5])
+                let (row, column) = (index / 10, index % 10)
+                // The leading bottom edge, and the middle seen from it, tipped.
+                let edge = SIMD3<Float>(Float(column) * 0.9 + size.z / 2, 0, Float(row) * 3)
+                let middle = tip.act([-size.z / 2, size.y / 2, 0])
+                let lying = Transform(rotation: tip * standing, translation: edge + middle)
+                let (layer, place) = (index % 2, index / 2)
+                let x = spread.x + Float(place % 5) * 1.6 + Float(layer) * 0.8
+                let z = spread.y - Float(place / 5) * 4.2 - Float(layer) * 2
+                let to = Transform(
+                    rotation: PileSpread.upright,
+                    translation: [x, size.z * (Float(layer) + 0.5), z])
+                return (lying, to, size)
             }
-        let places = [
-            Transform(rotation: PileSpread.upright, translation: [-0.75, size.z / 2, 0]),
-            Transform(rotation: PileSpread.upright, translation: [0.75, size.z / 2, 0]),
-            Transform(rotation: PileSpread.upright, translation: [0, size.z * 1.5, -1.8]),
-            Transform(rotation: PileSpread.upright, translation: [0, size.z / 2, 3]),
-        ]
-        return zip(lying, places).map { ($0, $1, size) }
+            // The spread's order: every book after the books its place rests on.
+            .sorted { $0.to.translation.y < $1.to.translation.y }
     }
 
-    func testTheBooksGatherWithoutPassingThroughEachOther() {
-        let books = gathering()
-        let flights = DominoFinale.Gather(books).flights
-        // Each book lying on another lifts higher than it, at least a book's thickness higher.
-        for index in 0..<3 {
-            XCTAssertGreaterThan(
-                flights[index].knots[0], flights[index + 1].knots[0] + books[index].size.z)
+    /// Fails where any two of `books`, along `flights`, overlap, checked every `step` from the
+    /// first start to the last landing, other than books both still lying where the chain fell
+    /// or both in their places.
+    private func assertApart(
+        _ flights: [DominoFinale.Gather.Flight],
+        _ books: [(from: Transform, to: Transform, size: SIMD3<Float>)], step: Float,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let end = flights.map(\.landing).max() ?? 0
+        var time: Float = 0
+        while time <= end + step {
+            let boxes = zip(flights, books)
+                .map { DominoSetup.Box($0.pose(at: time), size: $1.size, grow: -0.01) }
+            let lying = flights.map { time <= $0.rise }
+            let placed = flights.map { time >= $0.landing }
+            for first in boxes.indices {
+                for second in boxes.indices where second > first {
+                    if lying[first] && lying[second] || placed[first] && placed[second] {
+                        continue
+                    }
+                    XCTAssertFalse(
+                        boxes[first].overlaps(boxes[second]), "\(time) \(first) \(second)",
+                        file: file, line: line)
+                }
+            }
+            time += step
         }
-        // The book across the others' ends lay under them, so it would arrive under them: it
-        // waits farther from the camera, clear of their places, while they wait over theirs.
-        let staged = flights[2].staging
-        XCTAssertEqual(staged.x, flights[2].to.translation.x, accuracy: 1e-4)
-        XCTAssertLessThan(staged.y, flights[2].to.translation.z - 0.4)
+    }
+
+    func testTheChainMovesClearOfTheSpread() {
+        // A chain lying where its spread lies.
+        let books = gathering(20, spread: [0, 2])
+        let lying = books.map { DominoSetup.Box($0.from, size: $0.size) }
         let places = books.map { DominoSetup.Box($0.to, size: $0.size) }
-        for index in [0, 1] {
-            XCTAssertEqual(
-                simd_distance(
-                    flights[index].staging,
-                    SIMD2(flights[index].to.translation.x, flights[index].to.translation.z)), 0)
-            XCTAssertFalse(
-                DominoFinale.Gather.level(places[2], at: staged)
-                    .overlaps(
-                        DominoFinale.Gather.level(places[index], at: flights[index].staging)))
+        let move = DominoFinale.Gather.clearing(lying, from: places)
+        XCTAssertNotEqual(move, .zero)
+        XCTAssertEqual(move.y, 0)
+        for value in [move.x, move.z] {
+            XCTAssertEqual(value.remainder(dividingBy: DominoSetup.tile), 0, accuracy: 1e-4)
         }
-        // It drops no sooner than they do, and every book but the last lands before the camera
-        // rests.
-        XCTAssertGreaterThanOrEqual(flights[2].drop, flights[0].drop)
-        XCTAssertGreaterThanOrEqual(flights[2].drop, flights[1].drop)
-        let window = DominoFinale.moveTime - DominoFinale.settleMargin - DominoFinale.gatherDelay
-        for flight in flights.dropLast() {
-            XCTAssertLessThanOrEqual(flight.landing, window)
+        XCTAssertLessThanOrEqual(simd_length(move), DominoSetup.tile * 1.5)
+        // Moved, no book lies on a place.
+        for book in lying {
+            let moved = DominoSetup.Footprint(book.moved(by: move))
+            for place in places { XCTAssertFalse(moved.overlaps(DominoSetup.Footprint(place))) }
+        }
+        // A chain already clear stays put.
+        let clear = gathering(20, spread: [0, -12])
+        XCTAssertEqual(
+            DominoFinale.Gather.clearing(
+                clear.map { DominoSetup.Box($0.from, size: $0.size) },
+                from: clear.map { DominoSetup.Box($0.to, size: $0.size) }), .zero)
+    }
+
+    func testTheBooksRiseAndHopIntoPlaceWithoutPassingThroughEachOther() {
+        let books = gathering(20, spread: [-2, -10])
+        let flights = DominoFinale.Gather(books).flights
+        for (flight, book) in zip(flights, books) {
+            // Each book rises back up where it fell, stands, then hops into its place.
+            XCTAssertLessThanOrEqual(flight.rise, flight.stands)
+            XCTAssertLessThanOrEqual(flight.stands, flight.start)
+            XCTAssertEqual(flight.pose(at: flight.stands).rotation.act([0, 1, 0]).y, 1, accuracy: 1e-3)
+            XCTAssertEqual(
+                flight.pose(at: flight.start).translation.y, book.size.y / 2, accuracy: 0.01)
+            XCTAssertTrue(DominoFinale.hopTimes.contains(flight.landing - flight.start))
             XCTAssertEqual(
                 simd_distance(flight.pose(at: flight.landing).translation, flight.to.translation),
                 0, accuracy: 1e-4)
         }
-        // The spread's last book hovers over its place, lying as it will, until its flourish.
-        let last = flights[3]
-        XCTAssertEqual(last.drop, .infinity)
+        // A book lands after the books its place rests on.
+        let places = books.map { DominoSetup.Box($0.to, size: $0.size, grow: -0.01) }
+        for (book, lowers) in DominoFinale.Gather.under(places, earlierOnly: true).enumerated() {
+            for lower in lowers {
+                XCTAssertGreaterThanOrEqual(
+                    flights[book].landing, flights[lower].landing + DominoFinale.landGap - 1e-4)
+            }
+        }
+        // Every book lands well before the camera rests, and no two books ever overlap.
+        XCTAssertLessThanOrEqual(
+            flights.map(\.landing).max() ?? 0,
+            DominoFinale.moveTime - DominoFinale.settleMargin - DominoFinale.longestRest)
+        assertApart(flights, books, step: 1.0 / 120)
+    }
+
+    func testTheBooksGatherAtTheirOwnPace() {
+        let books = gathering(40, spread: [-2, -12])
+        let flights = DominoFinale.Gather(books).flights
+        // The books neither hop nor land together: their hops last their own times, and few
+        // books share a frame for either.
+        let durations = flights.map { $0.landing - $0.start }
+        XCTAssertGreaterThan((durations.max() ?? 0) - (durations.min() ?? 0), 0.15)
+        XCTAssertGreaterThan(Set(flights.map { ($0.start * 30).rounded() }).count, flights.count / 2)
+        XCTAssertGreaterThan(
+            Set(flights.map { ($0.landing * 30).rounded() }).count, flights.count / 2)
+        // Their ways bow to either side.
+        XCTAssertTrue(flights.contains { $0.bow > 0.1 })
+        XCTAssertTrue(flights.contains { $0.bow < -0.1 })
+        assertApart(flights, books, step: 1.0 / 60)
+    }
+
+    func testTheBooksOutOfViewStartFirst() {
+        let shown = [false, false, true, false, true, true]
+        let starts = DominoFinale.starts(shown: shown)
+        let hidden = zip(shown, starts).filter { !$0.0 }.map(\.1)
+        let seen = zip(shown, starts).filter { $0.0 }.map(\.1)
+        // The books out of view start at once, one after another down the chain, and the books
+        // in view after them, in the same order.
+        XCTAssertEqual(hidden.first, DominoFinale.hiddenStarts.lowerBound)
+        XCTAssertEqual(hidden, hidden.sorted())
+        XCTAssertEqual(seen, seen.sorted())
+        XCTAssertLessThan(hidden.max() ?? 0, seen.min() ?? 0)
+        XCTAssertEqual(seen.last ?? 0, DominoFinale.shownStarts.upperBound, accuracy: 1e-5)
+        // A gathering's books rise no sooner than their starts.
+        let books = gathering(6, spread: [-2, -10])
+        let earliest: [Float] = [0.5, 0.6, 0.7, 0.8, 0.9, 1]
+        let flights = DominoFinale.Gather(books, earliest: earliest).flights
+        for (flight, earliest) in zip(flights, earliest) {
+            XCTAssertGreaterThanOrEqual(flight.rise, earliest - 1e-4)
+        }
+    }
+
+    func testEveryBookLandsBeforeTheCameraRests() {
+        let budget = DominoFinale.moveTime - DominoFinale.settleMargin - DominoFinale.longestRest
+        for count in [12, 120] {
+            let books = gathering(count, spread: [-2, -12])
+            let starts = DominoFinale.starts(shown: books.indices.map { $0 >= count - 8 })
+            let flights = DominoFinale.Gather(books, earliest: starts, budget: budget).flights
+            for flight in flights {
+                XCTAssertLessThanOrEqual(flight.landing, budget + 1e-3, "\(count)")
+            }
+        }
+    }
+
+    func testAHopSpringsUpTipsAndDropsStraightOntoItsPlace() {
+        let books = gathering(2, spread: [-2, -10])
+        let flight = DominoFinale.Gather(books).flights[0]
+        let time = flight.landing - flight.start
+        func pose(_ share: Float) -> Transform { flight.pose(at: flight.start + time * share) }
+        let base = pose(0)
+        // It springs straight up, upright, until `springShare`, and stays upright until
+        // `tiltShare`.
+        for share: Float in [0.05, 0.1, DominoFinale.springShare] {
+            XCTAssertEqual(pose(share).translation.x, base.translation.x, accuracy: 1e-4)
+            XCTAssertEqual(pose(share).translation.z, base.translation.z, accuracy: 1e-4)
+            XCTAssertGreaterThan(pose(share).translation.y, base.translation.y)
+        }
         XCTAssertEqual(
-            simd_distance(last.pose(at: window).translation, last.hovering.translation), 0,
-            accuracy: 1e-4)
-        XCTAssertGreaterThan(last.hover, last.to.translation.y + books[3].size.z)
-        // No two books ever overlap, from where they lie to where they land.
-        var time: Float = 0
-        while time <= window {
-            let boxes = zip(flights, books)
-                .map { DominoSetup.Box($0.pose(at: time), size: $1.size, grow: -0.01) }
-            for first in boxes.indices {
-                for second in boxes.indices where second > first {
-                    XCTAssertFalse(
-                        boxes[first].overlaps(boxes[second]), "\(time) \(first) \(second)")
-                }
-            }
-            time += 1.0 / 120
+            abs(simd_dot(pose(DominoFinale.tiltShare).rotation.vector, base.rotation.vector)), 1,
+            accuracy: 1e-5)
+        // Its middle falls under the desk's gravity, its arc rising its lift.
+        func height(_ share: Float) -> Float { pose(share).translation.y }
+        let step: Float = 0.1
+        let curve =
+            (height(0.5 + step) - 2 * height(0.5) + height(0.5 - step)) / (step * time)
+            / (step * time)
+        XCTAssertEqual(curve, -DominoFinale.gatherGravity, accuracy: 0.5)
+        XCTAssertEqual(flight.lift, DominoFinale.gatherGravity * time * time / 8, accuracy: 1e-3)
+        // From `gatherArrival` on, it lies as its place does and drops straight down onto it.
+        for share: Float in [DominoFinale.gatherArrival, 0.9, 0.99] {
+            XCTAssertEqual(pose(share).translation.x, flight.to.translation.x, accuracy: 1e-4)
+            XCTAssertEqual(pose(share).translation.z, flight.to.translation.z, accuracy: 1e-4)
+            XCTAssertGreaterThan(pose(share).translation.y, flight.to.translation.y)
+            XCTAssertEqual(
+                abs(simd_dot(pose(share).rotation.vector, flight.to.rotation.vector)), 1,
+                accuracy: 1e-5)
         }
-    }
-
-    func testEveryBookButTheLastLandsBeforeTheCameraRests() {
-        let window = DominoFinale.moveTime - DominoFinale.settleMargin - DominoFinale.gatherDelay
-        XCTAssertLessThanOrEqual(DominoFinale.Gather.landed, window)
-        // A staircase of fictional books, each resting on the one before, lying apart on the
-        // desk in the reverse order, and as many books as a long chain holds, lying in a row.
-        let size = SIMD3<Float>(1.4, 2.2, 0.2)
-        let stair = (0..<12)
-            .map { index in
-                (
-                    from: Transform(
-                        rotation: PileSpread.upright,
-                        translation: [Float(11 - index) * 2, size.z / 2, 8]),
-                    to: Transform(
-                        rotation: PileSpread.upright,
-                        translation: [0, size.z * (Float(index) + 0.5), -Float(index) * 0.6]),
-                    size: size
-                )
-            }
-        let row = (0..<300)
-            .map { index in
-                (
-                    from: Transform(
-                        rotation: PileSpread.upright,
-                        translation: [Float(index) * 1.6, size.z / 2, 40]),
-                    to: Transform(
-                        rotation: PileSpread.upright,
-                        translation: [
-                            Float(index % 20) * 1.6, size.z / 2, -Float(index / 20) * 2.4,
-                        ]
-                    ),
-                    size: size
-                )
-            }
-        for books in [stair, row] {
-            let flights = DominoFinale.Gather(books).flights
-            XCTAssertEqual(flights.last?.drop, .infinity)
-            for flight in flights.dropLast() {
-                XCTAssertLessThanOrEqual(flight.landing, DominoFinale.Gather.landed + 1e-4)
-            }
-        }
-        // The staircase never passes a book through another.
-        let flights = DominoFinale.Gather(stair).flights
-        var time: Float = 0
-        while time <= window {
-            let boxes = zip(flights, stair)
-                .map { DominoSetup.Box($0.pose(at: time), size: $1.size, grow: -0.01) }
-            for first in boxes.indices {
-                for second in boxes.indices where second > first {
-                    XCTAssertFalse(
-                        boxes[first].overlaps(boxes[second]), "\(time) \(first) \(second)")
-                }
-            }
-            time += 1.0 / 60
-        }
-    }
-
-    func testAFlightLiftsLevelAndLandsFromAbove() {
-        let from = Transform(
-            rotation: simd_quatf(angle: 0.3, axis: [1, 0, 0]) * PileSpread.upright,
-            translation: [-6, 0.4, 4])
-        let flight =
-            DominoFinale.Gather([
-                (
-                    from, Transform(rotation: PileSpread.upright, translation: [3, 0.1, -2]),
-                    [1.4, 2.2, 0.2]
-                ),
-                (
-                    Transform(translation: [20, 0.1, 20]), Transform(translation: [-20, 0.1, -20]),
-                    [1.4, 2.2, 0.2]
-                ),
-            ])
-            .flights[0]
-        XCTAssertEqual(simd_distance(flight.pose(at: 0).translation, from.translation), 0)
-        // It lifts straight up, lying level front cover up by the top of the lift.
-        let lifted = flight.pose(at: DominoFinale.liftTime)
-        XCTAssertEqual(lifted.translation.x, from.translation.x, accuracy: 1e-4)
-        XCTAssertEqual(lifted.translation.z, from.translation.z, accuracy: 1e-4)
-        XCTAssertEqual(lifted.rotation.act([0, 0, 1]).y, 1, accuracy: 1e-4)
-        XCTAssertGreaterThanOrEqual(lifted.translation.y, DominoFinale.liftFloor)
-        // It drops straight down onto its place, gathering speed, and lands there.
-        let above = flight.pose(at: flight.drop)
-        XCTAssertEqual(above.translation.x, flight.to.translation.x, accuracy: 1e-4)
-        XCTAssertEqual(above.translation.z, flight.to.translation.z, accuracy: 1e-4)
-        let early =
-            flight.hover - flight.pose(at: flight.drop + DominoFinale.dropTime / 2).translation.y
-        let late =
-            flight.pose(at: flight.drop + DominoFinale.dropTime / 2).translation.y
-            - flight.to.translation.y
-        XCTAssertGreaterThan(late, early)
         XCTAssertEqual(
             simd_distance(flight.pose(at: flight.landing).translation, flight.to.translation), 0,
             accuracy: 1e-5)
+    }
+
+    func testAGatheringThatWouldLandLateSpeedsUp() {
+        let books = gathering(10, spread: [-2, -10])
+        let unhurried = DominoFinale.Gather(books).flights
+        let landed = unhurried.map(\.landing).max() ?? 0
+        let hurried = DominoFinale.Gather(books, budget: landed / 1.25).flights
+        // Every time comes sooner by the same share, along the same ways.
+        for (slow, fast) in zip(unhurried, hurried) {
+            XCTAssertEqual(fast.landing, slow.landing / 1.25, accuracy: 1e-3)
+            XCTAssertEqual(fast.rise, slow.rise / 1.25, accuracy: 1e-3)
+            XCTAssertEqual(fast.lift, slow.lift, accuracy: 1e-4)
+            XCTAssertEqual(
+                simd_distance(
+                    fast.pose(at: fast.start + 0.1 / 1.25).translation,
+                    slow.pose(at: slow.start + 0.1).translation), 0, accuracy: 1e-4)
+        }
+        // A gathering that starts late speeds up the same way.
+        let late = DominoFinale.Gather(books).paced(within: landed / 1.25).flights
+        for (planned, paced) in zip(hurried, late) {
+            XCTAssertEqual(paced.landing, planned.landing, accuracy: 1e-4)
+        }
+        // It speeds up by at most `fastest`.
+        let rushed = DominoFinale.Gather(books, budget: 0.5).flights
         XCTAssertEqual(
-            abs(
-                simd_dot(flight.pose(at: flight.landing).rotation.vector, flight.to.rotation.vector)
-            ),
-            1, accuracy: 1e-5)
+            rushed.map(\.landing).max() ?? 0, landed / DominoFinale.fastest, accuracy: 1e-3)
     }
 
     func testTheSpreadTurnsWithTheCamera() {
