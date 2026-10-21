@@ -11,6 +11,7 @@ import SwiftUI
 enum ShareTemplate: String, CaseIterable, Identifiable {
     case yearInBooks, topFive, hotTakes, pile, justFinished, review
     case currentlyReading, tasteMatch, bookSwap
+    case checkoutCard
 
     var id: Self { self }
 
@@ -25,6 +26,7 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         case .currentlyReading: "Currently Reading"
         case .tasteMatch: "Taste Match"
         case .bookSwap: "Book Swap"
+        case .checkoutCard: "Checkout Card"
         }
     }
 
@@ -39,6 +41,7 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         case .currentlyReading: "bookmark"
         case .tasteMatch: "person.2"
         case .bookSwap: "arrow.left.arrow.right"
+        case .checkoutCard: "list.bullet.rectangle.portrait"
         }
     }
 
@@ -49,8 +52,9 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
     /// Whether the card features one book, which the reader can choose.
     var isSingleBook: Bool { self == .justFinished || self == .review || self == .currentlyReading }
 
-    /// Whether the card draws covers that can be 3D books or flat. A pile's books are always 3D.
-    var hasCoverStyle: Bool { self != .pile }
+    /// Whether the card draws covers that can be 3D books or flat. A pile's books are always 3D,
+    /// and Checkout Card draws no covers.
+    var hasCoverStyle: Bool { self != .pile && self != .checkoutCard }
 
     /// Whether the card shows the reader's ratings, which the studio can hide. Hot Takes is
     /// about ratings, so it always shows them.
@@ -284,6 +288,10 @@ struct ShareInput {
     /// The sharer's Hardcover username, which a **My reading** image letters as a profile link
     /// in its bottom margin (`ShareProfileLink`), or `nil` for none.
     var username: String?
+    /// Which of Checkout Card's cards to draw, counting from 0 (`CheckoutCardLayout`).
+    var card = 0
+    /// Checkout Card's handwriting face, or `nil` for the fallback (`CheckoutCard.hand(_:size:)`).
+    var handwriting: FontFace?
 
     /// How far the card's content may reach into a story's bottom strip (`ShareAspect.reach`),
     /// less the room that the profile link takes there.
@@ -347,6 +355,7 @@ struct ShareCanvas: View {
             case .review: ReviewCard(input: input)
             case .tasteMatch: TasteMatchCard(input: input)
             case .bookSwap: BookSwapCard(input: input)
+            case .checkoutCard: CheckoutCard(input: input)
             }
         }
         .frame(width: input.aspect.size.width, height: input.aspect.size.height)
