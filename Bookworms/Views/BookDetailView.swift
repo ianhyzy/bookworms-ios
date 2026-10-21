@@ -185,15 +185,19 @@ struct BookDetailView: View {
                 debugScroll.scrollTo(y: offset)
             }
         #endif
-        // Hides text that scrolls under the bar and the pinned picker. The soft style lets the
-        // book's title read through the picker's unselected segments.
-        .scrollEdgeEffectStyle(.hard, for: .top)
+        // Fades text that scrolls under the bar and the pinned picker into the walnut. The hard
+        // style's opaque backing would draw a band of the system's background, ending in a line,
+        // across only the scroll view, which in the Mac's wide layout is the text column.
+        .scrollEdgeEffectStyle(.soft, for: .top)
         .safeAreaBar(edge: .top) {
             Picker("Section", selection: $tab) {
                 ForEach(DetailTab.allCases) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            // The soft edge is weakest at the bar's bottom, so the picker carries its own glass,
+            // as the bar's buttons do, to keep the title from reading through its segments.
+            .glassEffect(.regular, in: .capsule)
             .padding(.horizontal, 20)
             .padding(.vertical, 8)
         }
