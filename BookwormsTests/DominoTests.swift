@@ -995,6 +995,11 @@ final class DominoTests: XCTestCase {
                     fast.pose(at: fast.start + 0.1 / 1.25).translation,
                     slow.pose(at: slow.start + 0.1).translation), 0, accuracy: 1e-4)
         }
+        // A gathering that starts late speeds up the same way.
+        let late = DominoFinale.Gather(books).paced(within: landed / 1.25).flights
+        for (planned, paced) in zip(hurried, late) {
+            XCTAssertEqual(paced.landing, planned.landing, accuracy: 1e-4)
+        }
         // It speeds up by at most `fastest`.
         let rushed = DominoFinale.Gather(books, budget: 0.5).flights
         XCTAssertEqual(

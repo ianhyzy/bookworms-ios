@@ -2436,6 +2436,8 @@ final class DominoScene {
         ending.clock += Float(deltaTime)
         if reducesMotion {
             guard ending.clock >= DominoFinale.stillWait else { return }
+            gatherTask?.cancel()
+            gatherTask = nil
             rest(on: ending.camera)
             let placed = places(in: ending)
             for (book, place) in placed { books[book].transform = place }
@@ -2644,11 +2646,16 @@ final class DominoScene {
         #if DEBUG
             logGather(hops, earliest: earliest, budget: budget)
         #endif
+        let planned = ending.clock
         gatherTask = Task {
             let (move, gather) = await Self.plan(hops, earliest: earliest, budget: budget)
-            guard !Task.isCancelled, var ending = self.ending else { return }
+            // Reduce Motion, turned on meanwhile, has laid the books out already.
+            guard !Task.isCancelled, !reducesMotion, status.phase == .gathering,
+                var ending = self.ending
+            else { return }
             if move != .zero { moveFallen(by: move, in: &ending) }
-            ending.gather = gather
+            // The time the planning took comes out of the budget.
+            ending.gather = gather.paced(within: budget - (ending.clock - planned))
             ending.gathered = ending.clock
             ending.snapStart = max(DominoFinale.snapStart, ending.clock + gather.landed + 0.1)
             self.ending = ending

@@ -425,18 +425,25 @@ enum DominoSetup {
             var lift = DominoSetup.lift(
                 from: righted.upright, to: to, size: size, over: standing + lying)
             var wait: Float = 0
+            // The turn up onto the tail is the same whatever the lift and the wait, so once it
+            // has been checked clear, later checks start after it.
+            var checked = time
             while true {
                 let move = Move(start: time, from: from, size: size, to: to, lift: lift, wait: wait)
-                switch conflict(move) {
+                switch conflict(move, from: checked) {
                 case nil: return move
                 case .moving(let when):
-                    // A turn that meets a moving book cannot wait it out where it stands.
-                    guard when >= move.start + move.rightingTime, wait < longestWait else {
+                    // A book that meets a moving book while it turns up, or while it stands,
+                    // cannot wait it out where it stands.
+                    guard when >= move.leaves, wait < longestWait else { return nil }
+                    checked = move.start + move.rightingTime
+                    wait = min(wait + waitStep, longestWait)
+                case .standing(let when):
+                    // Nor can a higher arc clear a book its turn meets.
+                    guard when >= move.start + move.rightingTime, lift < lifts.upperBound else {
                         return nil
                     }
-                    wait = min(wait + waitStep, longestWait)
-                case .standing:
-                    guard lift < lifts.upperBound else { return nil }
+                    checked = move.start + move.rightingTime
                     // Half again as high, at least 0.75 higher, so few checks reach the top.
                     lift = min(lift + max(0.75, lift / 2), lifts.upperBound)
                 }
@@ -451,22 +458,22 @@ enum DominoSetup {
             standingBounds.append(box.bounds)
         }
 
-        /// What a move crosses: a book that still moves, at a time in seconds since the setup
-        /// started, or one that stands.
+        /// What a move crosses, and when, in seconds since the setup started: a book that still
+        /// moves, or one that stands.
         private enum Conflict {
             case moving(at: Float)
-            case standing
+            case standing(at: Float)
         }
 
         /// Whether `move` crosses an earlier book, while that book moves or once it stands,
         /// sampled every `checkStep` until every book it can meet stands. Boxes shrink by a
         /// hair, so books that touch, as neighbors on a turn nearly do, do not count. At each
         /// sample, a book whose whole way lies clear of the moving book's bounds costs no pose.
-        private func conflict(_ move: Move) -> Conflict? {
+        private func conflict(_ move: Move, from start: Float) -> Conflict? {
             let near = moves.indices.filter { moves[$0].sweep.overlaps(move.sweep) }
             guard !near.isEmpty else { return nil }
             let last = near.map { moves[$0].end }.reduce(move.end, max)
-            var time = move.start
+            var time = start
             while true {
                 let box = Box(move.pose(at: time), size: move.size, grow: -0.01)
                 let bounds = box.bounds
@@ -475,7 +482,7 @@ enum DominoSetup {
                     guard other.sweep.overlaps(bounds) else { continue }
                     if time >= other.end {
                         if standingBounds[index].overlaps(bounds), standing[index].overlaps(box) {
-                            return .standing
+                            return .standing(at: time)
                         }
                         continue
                     }

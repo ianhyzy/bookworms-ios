@@ -142,6 +142,22 @@ extension DominoFinale {
         /// When the last book lands.
         var landed: Float { flights.map(\.landing).max() ?? 0 }
 
+        private init(flights: [Flight]) { self.flights = flights }
+
+        /// The same ways, sped up as much as they must to land by `budget`, by up to `fastest`
+        /// as planned, as a gathering that started later than planned needs.
+        func paced(within budget: Float) -> Gather {
+            let last = flights.map(\.lands).max() ?? 0
+            let pace = last > budget ? min(last / max(budget, 1e-3), DominoFinale.fastest) : 1
+            guard pace > (flights.first?.pace ?? 1) else { return self }
+            return Gather(
+                flights: flights.map {
+                    Flight(
+                        rising: $0.rising, to: $0.to, hop: $0.hop, lands: $0.lands, lift: $0.lift,
+                        bow: $0.bow, pace: pace)
+                })
+        }
+
         /// The ways of `books`, in the spread's order, each from where it lies to its place, with
         /// its size (see `BookShape.size`), none rising sooner than its `earliest`, in seconds
         /// after the books start to gather, and every book landing by `budget`, if speeding up
@@ -329,14 +345,7 @@ extension DominoFinale {
                     }
                 }
             }
-            let flights = planned.compactMap { $0 }
-            let last = flights.map(\.lands).max() ?? 0
-            let pace = last > budget ? min(last / budget, DominoFinale.fastest) : 1
-            self.flights = flights.map {
-                Flight(
-                    rising: $0.rising, to: $0.to, hop: $0.hop, lands: $0.lands, lift: $0.lift,
-                    bow: $0.bow, pace: pace)
-            }
+            self = Gather(flights: planned.compactMap { $0 }).paced(within: budget)
         }
 
         /// How far to move the fallen books across the table, by whole tiles of its wood
