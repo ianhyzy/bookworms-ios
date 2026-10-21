@@ -34,7 +34,7 @@ final class ShelfPullOut {
     /// How the book lies in its place, which the hidden spine reports with `home`.
     var rest = PullOutPath.Rest()
     /// Where **Stack**'s camera sits across from the book in its place (`PullOutPath.eye`),
-    /// which a 3D stacked book reports as it is pulled, or `nil` until it does.
+    /// which a 3D stacked book's place reports while the book is pulled, or `nil` until it does.
     var eye: SIMD2<Double>?
     /// The frame of **Shelf**'s lamp in global coordinates, which the lamp reports. While a book
     /// is out, the flight draws the lamp over the book, so the book keeps the light its spine had.
@@ -66,6 +66,9 @@ final class ShelfPullOut {
     /// The book that **Space** peeks at on the Mac (`peek(_:)`), while it slides partway out
     /// of its place and back.
     private(set) var peekID: CloudBook.ID?
+    /// The book that the pointer eases a little way out of its place (`SpineButton`), which a
+    /// pull starts from and a return ends at, so the book never snaps back into its place first.
+    @ObservationIgnored var nudgedID: CloudBook.ID?
     /// Set by the book's **Share**, so the details stay while the Share tab shows.
     @ObservationIgnored var keepsForShare = false
     /// Counts pulls and returns, so a completion from an earlier one changes nothing.
@@ -83,7 +86,7 @@ final class ShelfPullOut {
         home = nil
         eye = nil
         pose = .resting
-        progress = 0
+        progress = start(of: book.id)
         showsText = false
         isReturning = false
         roomID = book.id
@@ -151,7 +154,7 @@ final class ShelfPullOut {
         isReturning = true
         withAnimation(.easeIn(duration: 0.2)) { showsText = false }
         withAnimation(Self.closing, completionCriteria: .logicallyComplete) {
-            progress = 0
+            progress = start(of: book?.id)
         } completion: { [self] in
             guard self.revision == revision else { return }
             close(keepingRoom: true)
@@ -160,6 +163,12 @@ final class ShelfPullOut {
             withAnimation(.linear(duration: StackRoom.closingDuration)) { closing = 1 }
             AccessibilityNotification.ScreenChanged(nil).post()
         }
+    }
+
+    /// Where the book with `id` lies in its place: eased out a little while the pointer rests on
+    /// it (`PullOutPath.nudge`).
+    private func start(of id: CloudBook.ID?) -> Double {
+        id != nil && id == nudgedID ? PullOutPath.nudge : 0
     }
 
     /// Puts the book back in its place at once, without the flight, and closes its details.
@@ -200,8 +209,10 @@ final class ShelfPullOut {
 ///    stage's height, and to turn from the way it lay (`Rest`) to the details' pose, while a book
 ///    from **Stack** stands up from lying on its back. On **Shelf**, the float and the turn start
 ///    before the slide has quite ended, so the book never stops, but only once it is almost out
-///    of its place. On **Stack**, they wait for the slide to end, so the book never moves across
-///    its neighbors while it is still between them.
+///    of its place. On **Stack**, the float waits for the slide to end, so the book never moves
+///    across its neighbors while it is still between them, and the turn waits until the shelf
+///    starts to dim: the book first comes on toward the reader, lying level, and only then stands
+///    up, so it never tilts across the books it has just left.
 /// 3. Once the book is on its way, the shelf dims behind it.
 ///
 /// The return retraces the same path. Progress outside 0...1 leaves the book at that end.
@@ -240,7 +251,8 @@ struct PullOutPath {
     static let pullEnd = 0.3
     /// The progress at which the float to the stage begins.
     static let floatStart = 0.22
-    /// The progress at which the book starts to turn, with its shading fully faded in.
+    /// The progress at which a book from **Shelf** starts to turn, with its shading fully faded
+    /// in. A book from **Stack** turns from `veilStart`.
     static let turnStart = 0.24
     /// The progress at which the shelf starts to dim.
     static let veilStart = 0.45
@@ -307,9 +319,9 @@ struct PullOutPath {
     }
 
     func pose(at progress: Double) -> Pose {
-        let pull = Self.phase(progress, from: 0, to: Self.pullEnd, .easeInOut)
+        let pull = Self.pull(at: progress)
         let floatStart = upright ? Self.floatStart : Self.pullEnd
-        let turnStart = floatStart + Self.turnStart - Self.floatStart
+        let turnStart = upright ? Self.turnStart : Self.veilStart
         let float = Self.phase(progress, from: floatStart, to: 1, Self.floatCurve)
         let turn = Self.phase(progress, from: turnStart, to: 1, .easeInOut)
         let lift = Self.phase(progress, from: Self.veilStart, to: 1, .easeInOut)
@@ -381,7 +393,7 @@ struct PullOutPath {
     static func slide(
         at progress: Double, length: CGFloat, thickness: CGFloat, extent: CGFloat, rest: Rest
     ) -> (offset: CGSize, scale: CGFloat) {
-        let pull = phase(progress, from: 0, to: pullEnd, .easeInOut)
+        let pull = Self.pull(at: progress)
         // Growing by `pullScale` moves the book that much nearer the camera, which sits
         // `distance` lengths away.
         let distance = rest.distance ?? BookProjection.standardDistance
@@ -393,7 +405,13 @@ struct PullOutPath {
     /// How much larger an upright spine looks at `progress`, while it slides out of its place
     /// toward the reader.
     static func uprightScale(at progress: Double) -> CGFloat {
-        1 + (pullScale - 1) * phase(progress, from: 0, to: pullEnd, .easeInOut)
+        1 + (pullScale - 1) * pull(at: progress)
+    }
+
+    /// How far the book has slid out of its place at `progress`, from 0 in its place to 1 once
+    /// it is out.
+    static func pull(at progress: Double) -> Double {
+        phase(progress, from: 0, to: pullEnd, .easeInOut)
     }
 
     /// How far `curve` has gone at `progress` through the part of the flight from `start` to
@@ -470,7 +488,10 @@ private struct ShelfPullOutLayer: View {
             BookDetailView(
                 book: book,
                 hostedBook: HostedBook(
-                    place: { [pullOut] in pullOut.stage = $0 },
+                    // The return flies from the stage where **Back** found the book. On the
+                    // iPhone, the bar hides then, which moves the details' layout up and would
+                    // otherwise carry the book with it.
+                    place: { [pullOut] in if !pullOut.isReturning { pullOut.stage = $0 } },
                     // The return starts from the pose on screen and ignores the rest of a coast,
                     // which could otherwise carry the book past a fore-edge-on pose and flip the
                     // spine it turns back to.

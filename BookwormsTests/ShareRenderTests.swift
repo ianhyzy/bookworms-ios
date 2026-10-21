@@ -484,6 +484,16 @@ final class ShareRenderTests: XCTestCase {
         XCTAssertEqual(HotTakesCard.signed(1.5), "+1.5")
     }
 
+    /// A Hot Takes choice without takes gives way to the other direction only when that one has
+    /// some, so the preview never goes blank over the choice.
+    func testHotTakesShowTheOnlyDirectionWithTakes() {
+        let onlyLess: (HotTakeDirection) -> Bool = { $0 == .lovedLess }
+        XCTAssertEqual(HotTakeDirection.lovedMore.shown(hasTakes: onlyLess), .lovedLess)
+        XCTAssertEqual(HotTakeDirection.lovedLess.shown(hasTakes: onlyLess), .lovedLess)
+        XCTAssertEqual(HotTakeDirection.lovedMore.shown { _ in true }, .lovedMore, "Both have takes")
+        XCTAssertEqual(HotTakeDirection.lovedLess.shown { _ in false }, .lovedLess, "Neither has")
+    }
+
     /// Taste Match, Book Swap, and Hot Takes with another reader draw at every size, with flat
     /// and 3D covers, a long name, and a reader without a profile photo. The other reader rates
     /// the fixture's rated books but one 1.5 stars lower, plus two books the owner doesn't have.

@@ -2,10 +2,11 @@ import SwiftUI
 
 /// A book's details: a 3D model to turn with a drag and its title, with a section picker pinned
 /// under the bar that switches only the content below it: **Details** (the book's description
-/// and facts on a grid of cards), **Your reading** (the reader's reading dates on a date-due
-/// card, progress and format on cards, the review as a page, and for a finished book **Pin to
-/// Top Five**), and **Style** (**Change cover**, then the spine's design: its series, colors, and
-/// **Redesign spine**). In a wide Mac window, the book stands in a column of its own beside them.
+/// and facts on a grid of cards, whose **Series** card opens `SeriesSheet`), **Your reading**
+/// (the reader's reading dates on a date-due card, progress and format on cards, the review as a
+/// page, and for a finished book **Pin to Top Five**), and **Style** (**Change cover**, then the
+/// spine's design: its series, colors, and **Redesign spine**). In a wide Mac window, the book
+/// stands in a column of its own beside them.
 ///
 /// A book that shares its series' spine design changes the series under **Style**: the series
 /// look's or source's colors, and the cover and design of the source book
@@ -328,7 +329,8 @@ enum DetailCard: Hashable {
     /// Hardcover readers' average rating and how many ratings it averages, with the number of
     /// readers per half star (`ratingCounts(_:)`) when known, and the reader's own rating.
     case rating(average: Double, count: Int, counts: [Int]?, yours: Double?)
-    case series(name: String?, position: Double?)
+    /// The series the book's label names (`SeriesDesigns.shownSeries(of:link:)`).
+    case series(SeriesMembership)
     case published(Int)
     /// The page count, which describes the book in any format.
     case length(String)
@@ -370,11 +372,10 @@ enum DetailCard: Hashable {
                 average: average, count: count, counts: ratingCounts(book.ratingDistribution),
                 yours: book.rating)
         }
-        let inSeries = book.seriesName != nil || book.seriesPosition != nil
         let cards: [DetailCard?] = [
             about.map(DetailCard.about),
             rating,
-            inSeries ? .series(name: book.seriesName, position: book.seriesPosition) : nil,
+            SeriesDesigns.shownSeries(of: book, link: book.seriesLink).map(DetailCard.series),
             book.publicationYear.map(DetailCard.published),
             ShelfLabels.pages(of: book).map(DetailCard.length),
             genres.isEmpty ? nil : .genres(genres),
@@ -427,6 +428,12 @@ enum DetailCard: Hashable {
             counts[Int((bucket.rating * 2).rounded()) - 1] += bucket.count
         }
         return counts.contains { $0 > 0 } ? counts : nil
+    }
+
+    /// The card's identity in `CardGrid`: its contents, except that the **Series** card keeps one
+    /// identity when a pick changes its series, so the **Series** sheet it presents stays open.
+    var gridID: AnyHashable {
+        if case .series = self { "series" } else { self }
     }
 
     /// Arranges `cards` in order in rows of one or two, leaving no holes. A wide card fills its
@@ -736,6 +743,48 @@ private func caption(_ title: String, systemImage: String) -> some View {
         .foregroundStyle(cardNote)
 }
 
+/// A card's labeled row: the label beside its value when both fit on one line, otherwise the
+/// label above the value, so neither overlaps the other at any text size. When the value doesn't
+/// fit on one line under the label either, `fallback` stands in for it, such as a menu for a
+/// segmented control; by default the value itself, which then wraps.
+private struct CardRow<Value: View, Fallback: View>: View {
+    let title: String
+    let value: Value
+    let fallback: Fallback
+
+    init(
+        _ title: String, @ViewBuilder value: () -> Value, @ViewBuilder fallback: () -> Fallback
+    ) {
+        self.title = title
+        self.value = value()
+        self.fallback = fallback()
+    }
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                Text(title)
+                Spacer(minLength: 0)
+                value.fixedSize()
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                value.fixedSize()
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                fallback
+            }
+        }
+    }
+}
+
+extension CardRow where Fallback == Value {
+    init(_ title: String, @ViewBuilder value: () -> Value) {
+        self.init(title, value: value, fallback: value)
+    }
+}
+
 /// Cards in the rows that `DetailCard.rows(_:oneColumn:)` arranges: two columns, or one at
 /// accessibility text sizes. Each row is as tall as its tallest card.
 private struct CardGrid: View {
@@ -748,10 +797,11 @@ private struct CardGrid: View {
     var body: some View {
         VStack(spacing: 12) {
             ForEach(
-                DetailCard.rows(cards, oneColumn: typeSize.isAccessibilitySize), id: \.self
+                DetailCard.rows(cards, oneColumn: typeSize.isAccessibilitySize),
+                id: \.gridIDs
             ) { row in
                 HStack(alignment: .top, spacing: 12) {
-                    ForEach(row, id: \.self) {
+                    ForEach(row, id: \.gridID) {
                         DetailCardView(card: $0, book: book, fillsRow: row.count == 1)
                     }
                 }
@@ -761,6 +811,11 @@ private struct CardGrid: View {
             }
         }
     }
+}
+
+extension [DetailCard] {
+    /// A row's identity in `CardGrid` (`DetailCard.gridID`).
+    fileprivate var gridIDs: [AnyHashable] { map(\.gridID) }
 }
 
 /// One card of a `CardGrid`. VoiceOver reads each card as one element.
@@ -776,11 +831,8 @@ private struct DetailCardView: View {
         case .rating(let average, let count, let counts, let yours):
             RatingCard(
                 average: average, count: count, counts: counts, yours: yours, isWide: fillsRow)
-        case .series(let name, let position):
-            let number = position.map { "Book \($0.formatted())" }
-            FactCard(
-                title: "Series", systemImage: "books.vertical", value: name ?? number ?? "",
-                detail: name == nil ? nil : number)
+        case .series(let series):
+            SeriesCard(series: series, book: book)
         case .published(let year):
             FactCard(title: "Published", systemImage: "calendar", value: String(year))
         case .length(let pages):
@@ -968,6 +1020,48 @@ private struct FactCard: View {
     }
 }
 
+/// The **Series** card: the series the book's label names and the book's place in it. Selecting
+/// it opens **Series** (`SeriesSheet`), which lists the book's series, each opening its books in
+/// order, with a check button that picks the series the card names.
+private struct SeriesCard: View {
+    let series: SeriesMembership
+    let book: CloudBook
+
+    @Environment(\.undoManager) private var undoManager
+    @State private var showsSeries = false
+
+    var body: some View {
+        Button {
+            showsSeries = true
+        } label: {
+            FactCard(
+                title: "Series", systemImage: "books.vertical", value: series.name,
+                detail: SeriesDesigns.place(in: series)
+            )
+            .overlay(alignment: .topTrailing) {
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(cardNote)
+                    .padding(16)
+                    .accessibilityHidden(true)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Shows the book's series and the books in it.")
+        .sheet(isPresented: $showsSeries) {
+            SeriesSheet(book: book, undoManager: undoManager)
+                .preferredColorScheme(.dark)
+                .presentationSizing(.form)
+        }
+        #if DEBUG
+            // `-BookwormsSeriesSheet YES` opens the sheet, for Simulator and Mac checks.
+            .onAppear {
+                if UserDefaults.standard.bool(forKey: "BookwormsSeriesSheet") { showsSeries = true }
+            }
+        #endif
+    }
+}
+
 /// The description, cut to six lines, with **More** to show the rest in place when it runs
 /// longer. A hidden copy at full height detects whether the six lines cut it off.
 private struct AboutCard: View {
@@ -1113,7 +1207,8 @@ private struct GenresCard: View {
 }
 
 /// The **Spine design** card: the spine, the book's series choices (`SeriesRows`), the design's
-/// font, and its colors, which the reader can change, with **Redesign spine**.
+/// font, the model that made it (`SpineDesignV1.madeBy`), and its colors, which the reader can
+/// change, with **Redesign spine**.
 ///
 /// Each color opens the system color picker: on the iPhone in a sheet, and on the Mac from an
 /// inline color well, which opens the Colors panel. The card's spine shows picked colors at
@@ -1246,10 +1341,13 @@ private struct SpineDesignCard: View {
                         "The text needs more contrast with the background. Choose a lighter or darker color to save.",
                         systemImage: "exclamationmark.triangle")
                 }
-                LabeledContent("Font") {
+                CardRow("Font") {
                     Text(design.fontFamily ?? design.typeface.capitalized)
                         .font(look.font(size: 19))
                 }
+                // The design's own model token, which every device reads the same way, whichever
+                // model this device designs with.
+                CardRow("Model") { Text(design.madeBy) }
                 Divider()
                 let swatches =
                     typeSize.isAccessibilitySize
@@ -1291,7 +1389,9 @@ private struct SpineDesignCard: View {
                     .buttonStyle(.bordered)
                 }
                 if offersRedesign {
-                    RedesignButton(book: book, series: series != nil, requestedAt: $redesignedAt)
+                    RedesignButton(
+                        book: book, series: series != nil, design: design,
+                        requestedAt: $redesignedAt)
                 }
                 Divider()
             }
@@ -1390,15 +1490,16 @@ private struct SpineDesignCard: View {
 /// The **Series** menu and the **Changes apply to** choice of a book's spine design, saved as the book's
 /// `SeriesLinkV1` (`AppModel.setSeriesLink(for:linkedSeriesID:standsAlone:ownLook:)`).
 ///
-/// **Series** chooses the series whose look the book draws: by default its shortest series
-/// (`SeriesDesigns.styleSeries(of:link:)`), or another of its Hardcover series, or none. It shows
-/// when the book has a series or a link. **Changes apply to** chooses whether recoloring, **Reset colors**,
-/// and **Redesign spine** change the series' look or only this book, which then draws its own
-/// design. It shows when the book's look group has a saved look or another book
-/// (`AppModel.choosesEditScope(for:)`). A choice shows at once and stays while it saves; a failed
-/// save shows a toast and the saved choice again. The rows take no other choice until a save
-/// ends, so saves never overlap and the last choice is the one iCloud keeps.
-private struct SeriesRows: View {
+/// **Series** chooses the series whose look the book draws and whose name its **Series** card
+/// shows: by default its shortest series (`SeriesDesigns.styleSeries(of:link:)`), or another of
+/// its Hardcover series, or none. It shows when the book has a series or a link. The check
+/// buttons in `SeriesSheet` save the same choice. **Changes apply to** chooses whether
+/// recoloring, **Reset colors**, and **Redesign spine** change the series' look or only this
+/// book, which then draws its own design. It shows when the book's look group has a saved look
+/// or another book (`AppModel.choosesEditScope(for:)`). A choice shows at once and stays while it
+/// saves; a failed save shows a toast and the saved choice again. The rows take no other choice
+/// until a save ends, so saves never overlap and the last choice is the one iCloud keeps.
+struct SeriesRows: View {
     /// A book's series choice, as the rows show it.
     struct Choice: Equatable {
         enum Series: Hashable {
@@ -1437,54 +1538,92 @@ private struct SeriesRows: View {
         let memberships = (book.seriesMemberships ?? [])
             .filter { seen.insert($0.seriesID).inserted }
         if !memberships.isEmpty || book.seriesID != nil || book.seriesLink != nil {
-            LabeledContent("Series") {
-                Picker(
-                    "Series",
-                    selection: Binding {
-                        choice.series
-                    } set: {
-                        var new = choice
-                        new.series = $0
-                        choose(new)
-                    }
-                ) {
-                    Text(standardTitle(memberships)).tag(Choice.Series.standard)
-                    ForEach(memberships, id: \.seriesID) {
-                        Text(Self.title(of: $0)).tag(Choice.Series.linked($0.seriesID))
-                    }
-                    // A link to a series that Hardcover no longer lists for the book.
-                    if case .linked(let id) = choice.series,
-                        !memberships.contains(where: { $0.seriesID == id })
-                    {
-                        Text("Linked series").tag(choice.series)
-                    }
-                    Text("Not in a series").tag(Choice.Series.alone)
+            let series = Binding {
+                choice.series
+            } set: {
+                var new = choice
+                new.series = $0
+                choose(new)
+            }
+            let options = Group {
+                Text(standardTitle(memberships)).tag(Choice.Series.standard)
+                ForEach(memberships, id: \.seriesID) {
+                    Text(Self.title(of: $0)).tag(Choice.Series.linked($0.seriesID))
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
+                // A link to a series that Hardcover no longer lists for the book.
+                if case .linked(let id) = choice.series,
+                    !memberships.contains(where: { $0.seriesID == id })
+                {
+                    Text("Linked series").tag(choice.series)
+                }
+                Text("Not in a series").tag(Choice.Series.alone)
+            }
+            CardRow("Series") {
+                menu("Series", selection: series, title: title(of: choice.series, memberships)) {
+                    options
+                }
                 .disabled(saving != nil)
             }
         }
         if model.choosesEditScope(for: book) {
-            LabeledContent("Changes apply to") {
-                Picker(
-                    "Changes apply to",
-                    selection: Binding {
-                        choice.ownLook
-                    } set: {
-                        var new = choice
-                        new.ownLook = $0
-                        choose(new)
-                    }
-                ) {
-                    Text("Whole series").tag(false)
-                    Text("This book only").tag(true)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
+            let ownLook = Binding {
+                choice.ownLook
+            } set: {
+                var new = choice
+                new.ownLook = $0
+                choose(new)
+            }
+            let options = Group {
+                Text("Whole series").tag(false)
+                Text("This book only").tag(true)
+            }
+            CardRow("Changes apply to") {
+                Picker("Changes apply to", selection: ownLook) { options }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .disabled(saving != nil)
+            } fallback: {
+                // At accessibility text sizes, the segments don't fit beside each other.
+                menu(
+                    "Changes apply to", selection: ownLook,
+                    title: choice.ownLook ? "This book only" : "Whole series"
+                ) { options }
                 .disabled(saving != nil)
             }
+        }
+    }
+
+    /// A menu that chooses `selection` among `options` and shows `title`, the chosen option's
+    /// name, which wraps. A menu-style picker letters its choice in a control of fixed height,
+    /// so a long series name that wraps would overlap the rows below it.
+    private func menu<Value: Hashable, Options: View>(
+        _ label: String, selection: Binding<Value>, title: String,
+        @ViewBuilder options: () -> Options
+    ) -> some View {
+        Menu {
+            Picker(label, selection: selection, content: options)
+                .pickerStyle(.inline)
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(title).multilineTextAlignment(.leading)
+                Image(systemName: "chevron.up.chevron.down")
+                    .imageScale(.small)
+                    .accessibilityHidden(true)
+            }
+            // In the tint, as a menu-style picker letters its choice.
+            .foregroundStyle(.tint)
+        }
+        .accessibilityLabel(label)
+        .accessibilityValue(title)
+    }
+
+    /// The name of `series`, the book's series choice, as its option in the **Series** menu.
+    private func title(of series: Choice.Series, _ memberships: [SeriesMembership]) -> String {
+        switch series {
+        case .standard: standardTitle(memberships)
+        case .linked(let id):
+            memberships.first { $0.seriesID == id }.map(Self.title(of:)) ?? "Linked series"
+        case .alone: "Not in a series"
         }
     }
 
@@ -1509,18 +1648,27 @@ private struct SeriesRows: View {
         let old = saving ?? Choice(book.seriesLink)
         saving = new
         Task { [model, book, undoManager] in
-            do {
-                try await Self.save(new, for: book, model: model)
-                undoManager?
-                    .registerStyleChange("Change Series Choice") {
-                        try await Self.save(old, for: book, model: model)
-                    } redo: {
-                        try await Self.save(new, for: book, model: model)
-                    }
-            } catch {
-                model.toasts.show(.failure("Couldn't save the series choice"))
-            }
+            await Self.save(new, replacing: old, for: book, model: model, undoManager: undoManager)
             if saving == new { saving = nil }
+        }
+    }
+
+    /// Saves `new` as `book`'s series choice and registers its undo, which restores `old`. A
+    /// failed save shows a toast.
+    static func save(
+        _ new: Choice, replacing old: Choice, for book: CloudBook, model: AppModel,
+        undoManager: UndoManager?
+    ) async {
+        do {
+            try await save(new, for: book, model: model)
+            undoManager?
+                .registerStyleChange("Change Series Choice") {
+                    try await save(old, for: book, model: model)
+                } redo: {
+                    try await save(new, for: book, model: model)
+                }
+        } catch {
+            model.toasts.show(.failure("Couldn't save the series choice"))
         }
     }
 
@@ -1564,18 +1712,40 @@ private struct TopFivePinButton: View {
 /// while one runs. A run that ends after `requestedAt` while it is still set, because no new
 /// design arrived, leaves a note with the run's error, for example after a quota stop or when
 /// the cover did not load.
+///
+/// When this device's model ranks below the model that made `design`, the spine's current
+/// design, a note takes the button's place: a redesign here would replace a better model's
+/// design, which a run never does (`SpineWorker.reconcile(mode:redesigning:)`). After a cover
+/// change, `design` is `nil`, because the new cover is redesigned at any tier.
 private struct RedesignButton: View {
     let book: CloudBook
     /// Whether the redesign changes the book's whole series.
     let series: Bool
+    var design: SpineDesignV1? = nil
     /// When the reader asked for a new design, by this button or a new cover.
     @Binding var requestedAt: Date?
 
     @Environment(GenerationController.self) private var generation
 
     var body: some View {
+        content.task {
+            // The model status arrives when the Spines tab opens or a run starts.
+            if design != nil, generation.status.model == nil {
+                await generation.refreshModelStatus()
+            }
+        }
+    }
+
+    @ViewBuilder private var content: some View {
         if generation.status.isRunning {
             LabeledContent("Designing spines") { ProgressView() }
+        } else if let design, let device = generation.status.model, device.tier < design.tier {
+            Label(
+                "\(design.madeBy) made this design. This \(ThisDevice.name) uses \(SpineWorker.inSentence(device)), so redesign it on a device that uses \(design.madeBy).",
+                systemImage: "info.circle"
+            )
+            .font(.footnote)
+            .foregroundStyle(cardNote)
         } else {
             Button(series ? "Redesign spines" : "Redesign spine", systemImage: "wand.and.sparkles")
             {

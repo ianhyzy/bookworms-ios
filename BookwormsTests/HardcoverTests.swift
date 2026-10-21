@@ -589,8 +589,8 @@ final class HardcoverTests: XCTestCase {
             XCTAssertFalse(body.contains("mutation"))
             if body.contains("query Account") { return Self.respond(200, Self.me, to: request) }
             if body.contains("query PhoneSeries") {
-                // Only the featured series of each book, as the Apple TV asks.
-                XCTAssertTrue(body.contains(#""ids":[9]"#))
+                // Every series of each book, as the Apple TV asks.
+                XCTAssertTrue(body.contains(#""ids":[7,9]"#))
                 return Self.respond(200, Self.seriesPage, to: request)
             }
             XCTAssertTrue(body.contains(#""user":4242"#))
