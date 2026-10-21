@@ -6,15 +6,16 @@ import XCTest
 final class CheckoutCardTests: XCTestCase {
     /// `count` fictional books finished in 2025, in finish order.
     private static func books(_ count: Int) -> [CloudBook] {
-        (0..<count).map { index in
-            CloudBook(
-                id: index + 1,
-                title: index == 2
-                    ? "An Unusually Long Fictional Title That Keeps Going: With a Subtitle"
-                    : "Fictional Book \(index + 1)",
-                author: "Author \(index + 1)", coverURL: nil, detailCoverURL: nil,
-                finished: String(format: "2025-%02d-%02d", index / 28 % 12 + 1, index % 28 + 1))
-        }
+        (0..<count)
+            .map { index in
+                CloudBook(
+                    id: index + 1,
+                    title: index == 2
+                        ? "An Unusually Long Fictional Title That Keeps Going: With a Subtitle"
+                        : "Fictional Book \(index + 1)",
+                    author: "Author \(index + 1)", coverURL: nil, detailCoverURL: nil,
+                    finished: String(format: "2025-%02d-%02d", index / 28 % 12 + 1, index % 28 + 1))
+            }
     }
 
     private func layout(_ count: Int, _ aspect: ShareAspect, username: String? = nil)
@@ -39,9 +40,12 @@ final class CheckoutCardTests: XCTestCase {
         }
     }
 
-    /// The profile link takes 80 of a Story's 100 pixels of reach, and a line with them.
+    /// The profile link takes 80 of a Story's 100 pixels of reach, and a line with them, at
+    /// the widest and the closest rules.
     func testProfileLinkShortensAStoryCard() {
         XCTAssertEqual(layout(5, .story, username: "fictional").rowsPerCard, 15)
+        XCTAssertEqual(layout(267, .story, username: "fictional").rowsPerCard, 20)
+        XCTAssertEqual(layout(267, .story).rowsPerCard, 21)
         XCTAssertEqual(layout(5, .portrait, username: "fictional").rowsPerCard, 11)
     }
 
@@ -96,6 +100,18 @@ final class CheckoutCardTests: XCTestCase {
 
     func testNoBooksTakeNoCards() {
         XCTAssertEqual(layout(0, .story).cards, [])
+        XCTAssertEqual(layout(0, .story).books(on: 0, of: []), [])
+    }
+
+    /// Each card holds its own books, which the share text links, and a card past the last
+    /// holds the last card's.
+    func testEachCardHoldsItsOwnBooks() {
+        let books = Self.books(39)
+        let layout = layout(39, .story)
+        XCTAssertEqual(layout.books(on: 0, of: books).map(\.id), Array(1...20))
+        XCTAssertEqual(layout.books(on: 1, of: books).map(\.id), Array(21...39))
+        XCTAssertEqual(layout.books(on: 9, of: books), layout.books(on: 1, of: books))
+        XCTAssertEqual(layout.index(of: 9), 1)
     }
 
     /// Each card draws its own books at the image's size, and a card past the last draws the
@@ -117,7 +133,8 @@ final class CheckoutCardTests: XCTestCase {
         XCTAssertNotEqual(first, last)
         XCTAssertEqual(try render(card: 9), last)
         for aspect in [ShareAspect.portrait, .square] {
-            XCTAssertNotEqual(try render(card: 0, aspect: aspect), try render(card: 3, aspect: aspect))
+            XCTAssertNotEqual(
+                try render(card: 0, aspect: aspect), try render(card: 3, aspect: aspect))
         }
     }
 }

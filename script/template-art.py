@@ -2,7 +2,8 @@
 """Draws the Share tab's template tiles as SVG image sets in the asset catalog.
 
 Each tile is a small dark card, as every share image is dark, in the shape of a Portrait image
-(4:5), with the template's layout in cream and gold: `template.<ShareTemplate raw value>`. The
+(4:5), with the template's layout in cream and gold: `template.<ShareTemplate raw value>`.
+Checkout Card's tile keeps the card stock and inks of its image (`Stationery`) instead. The
 books keep book proportions and stand upright or lie flat. They tilt in the card's plane only
 where the card tilts them: fanned like a hand of cards in Top Five, or lying turned on the
 Desk's table.

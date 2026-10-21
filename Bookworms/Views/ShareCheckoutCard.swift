@@ -50,6 +50,14 @@ struct CheckoutCardLayout: Equatable {
             count: input.books.count,
             height: input.aspect.size.height - insets.top - insets.bottom)
     }
+
+    /// The index of card `card`, or of the last card when there are fewer.
+    func index(of card: Int) -> Int { min(max(card, 0), max(cards.count - 1, 0)) }
+
+    /// The books of `books`, laid out in order, that card `card` holds (`index(of:)`).
+    func books(on card: Int, of books: [CloudBook]) -> [CloudBook] {
+        cards.isEmpty ? [] : Array(books[cards[index(of: card)]])
+    }
 }
 
 /// The checkout card from a library book's pocket, filled in with a time frame's books: aged
@@ -86,8 +94,8 @@ struct CheckoutCard: View {
 
     var body: some View {
         let layout = CheckoutCardLayout(input)
-        let index = min(max(input.card, 0), max(layout.cards.count - 1, 0))
-        let books = layout.cards.isEmpty ? [] : Array(input.books[layout.cards[index]])
+        let index = layout.index(of: input.card)
+        let books = layout.books(on: index, of: input.books)
         ZStack {
             ShareBlotter()
             card(

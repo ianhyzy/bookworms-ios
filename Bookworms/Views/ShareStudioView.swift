@@ -1189,7 +1189,7 @@ struct ShareStudioView: View {
     private func render(_ request: RenderRequest) async {
         let template = request.template
         let reader = request.readerID.flatMap(model.social.reader)
-        let books = books(
+        var books = books(
             template, frame: request.frame, bookID: request.bookID, reader: reader,
             pins: request.pins)
         var input = ShareInput(
@@ -1222,6 +1222,8 @@ struct ShareStudioView: View {
                 family: CheckoutCard.handFamily, weight: CheckoutCard.handWeight)
             guard !Task.isCancelled else { return }
             rendered = input.render()
+            // The share text links only the books on the card shared.
+            books = CheckoutCardLayout(input).books(on: request.card, of: books)
         } else {
             // The books drawn with covers. Year in Books draws covers only for its records.
             let covered =
