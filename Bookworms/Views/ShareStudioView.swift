@@ -52,6 +52,8 @@ struct ShareStudioView: View {
     @State private var direction = HotTakeDirection.lovedMore
     @State private var showsRatings = true
     @State private var seed: UInt64 = 0
+    /// The Checkout Card card to show, counting from 0 (`CheckoutCardLayout`).
+    @State private var card = 0
     @AppStorage(TopFivePins.key) private var pins = TopFivePins()
     /// The years and months with finished books, kept with the library so the body need not
     /// recompute them.
@@ -119,6 +121,7 @@ struct ShareStudioView: View {
             _seed = State(
                 initialValue: defaults.string(forKey: "BookwormsShareSeed").flatMap { UInt64($0) }
                     ?? 0)
+            _card = State(initialValue: max(defaults.integer(forKey: "BookwormsShareCard") - 1, 0))
         #endif
     }
 
@@ -191,7 +194,7 @@ struct ShareStudioView: View {
         // one of their own books arrives.
         let loadedFaces =
             template == .pile ? 0 : designs.count { model.fonts.face(for: $0) != nil }
-        return RenderRequest(
+        var request = RenderRequest(
             template: template, aspect: aspect, frame: frame, bookID: bookID,
             coverStyle: coverStyle, direction: direction, showsRatings: showsRatings, seed: seed,
             pins: pins, syncedAt: model.library?.syncedAt, readerID: reader?.id,
@@ -200,6 +203,15 @@ struct ShareStudioView: View {
             socialRevision: mode == .friends ? model.social.revision : 0,
             hasScore: template == .tasteMatch && reader?.match?.score != nil,
             covers: books.map(\.coverCandidates.first), designs: designs, loadedFaces: loadedFaces)
+        if template == .checkoutCard {
+            // The image draws one card at a time; a card that a smaller frame no longer has
+            // shows its last.
+            let input = ShareInput(
+                template: template, aspect: aspect, books: books, username: request.username)
+            request.cards = CheckoutCardLayout(input).cards.count
+            request.card = min(card, max(request.cards - 1, 0))
+        }
+        return request
     }
 
     var body: some View {
@@ -478,7 +490,7 @@ struct ShareStudioView: View {
     /// Draws covers as 3D books when on and flat when off: a round, untinted glass button whose
     /// cube is filled while on, so it doesn't read as the screen's main action. Year in Books on
     /// Square shows no covers, so it disables the button, and Desk, whose books are always 3D,
-    /// hides it.
+    /// and Checkout Card, which draws no covers, hide it.
     private var coverToggle: some View {
         let isOn = coverStyle == .threeD
         let help = coverStyleNote ?? "Draws covers as 3D books"
@@ -504,6 +516,7 @@ struct ShareStudioView: View {
     private var coverStyleNote: String? {
         switch template {
         case .pile: "Desk books are always 3D."
+        case .checkoutCard: "Checkout Card draws no covers."
         case .yearInBooks where aspect == .square: "Year in Books shows no covers on Square."
         case .yearInBooks:
             "Year in Books draws covers only for its records, which show when they fit."
@@ -526,6 +539,13 @@ struct ShareStudioView: View {
         }
         if template.usesTimeFrame && !periods.years.isEmpty {
             Section("Time frame") { frameControls }
+        }
+        if template == .checkoutCard, let cards = renderedRequest?.cards, cards > 1 {
+            Section {
+                cardStepper(cards: cards)
+            } footer: {
+                Text("This time frame fills \(cards) cards. Share sends the card shown.")
+            }
         }
         if template == .topFive && !periods.years.isEmpty {
             Section {
@@ -1035,6 +1055,15 @@ struct ShareStudioView: View {
     private func choose(_ frame: TimeFrame?) {
         self.frame = frame
         bookID = nil
+        card = 0
+    }
+
+    /// Steps through Checkout Card's `cards` cards, which the preview shows one at a time.
+    private func cardStepper(cards: Int) -> some View {
+        let shown = min(card, cards - 1)
+        return Stepper(value: Binding { shown } set: { card = $0 }, in: 0...(cards - 1)) {
+            Text("Card \(shown + 1) of \(cards)")
+        }
     }
 
     // MARK: - Book and options
@@ -1135,6 +1164,7 @@ struct ShareStudioView: View {
     private var showsShuffle: Bool {
         switch template {
         case .yearInBooks, .topFive, .pile: true
+        case .checkoutCard: false
         case .hotTakes, .justFinished, .review, .currentlyReading, .tasteMatch, .bookSwap:
             coverStyle == .threeD
         }
@@ -1185,6 +1215,13 @@ struct ShareStudioView: View {
             } catch is CancellationError {
                 return
             } catch {}
+        } else if template == .checkoutCard {
+            // A Checkout Card draws no covers or spines, only its handwriting.
+            input.card = request.card
+            input.handwriting = await model.fonts.face(
+                family: CheckoutCard.handFamily, weight: CheckoutCard.handWeight)
+            guard !Task.isCancelled else { return }
+            rendered = input.render()
         } else {
             // The books drawn with covers. Year in Books draws covers only for its records.
             let covered =
@@ -1206,6 +1243,7 @@ struct ShareStudioView: View {
         var name = template.title
         if template.usesTimeFrame && !template.isSingleBook { name += " " + input.period }
         if let reader = input.social?.reader { name += " with \(reader.shortName)" }
+        if request.cards > 1 { name += " (card \(request.card + 1) of \(request.cards))" }
         image = rendered.map { ShareImage(image: $0, name: name, books: books) }
         failed = !request.isEmpty && rendered == nil
         renderedRequest = request
@@ -1228,7 +1266,7 @@ struct ShareStudioView: View {
         private var choices: [AnyHashable] {
             [
                 mode, template, aspect, frameSetting, bookID, coverStyle, direction, showsRatings,
-                seed, pins.ids, readerID, showsProfileLink,
+                seed, pins.ids, readerID, showsProfileLink, card,
             ]
         }
     #endif
@@ -1315,6 +1353,10 @@ private struct RenderRequest: Equatable {
     /// The designs of the books the image draws, in their order.
     var designs: [SpineDesignV1?]
     var loadedFaces: Int
+    /// The Checkout Card card the image draws, counting from 0, and how many cards the frame
+    /// takes (`CheckoutCardLayout`); 0 for other templates.
+    var card = 0
+    var cards = 0
 
     /// Whether the image has nothing to draw.
     var isEmpty: Bool { covers.isEmpty && !hasScore }
@@ -1607,7 +1649,8 @@ private struct TopFivePinPicker: View {
     /// `-BookwormsShareAspect <story|portrait|square>`,
     /// `-BookwormsShareFrame <year:2025|month:2025-08|lifetime>`, `-BookwormsShareBook <id>`,
     /// `-BookwormsShareCover <threeD|flat>`, `-BookwormsShareDirection <lovedMore|lovedLess>`,
-    /// and `-BookwormsShareSeed <n>` set its options, and `-BookwormsShareSamples <n>` adds
+    /// `-BookwormsShareSeed <n>`, and Checkout Card's `-BookwormsShareCard <n>`, counting from
+    /// 1, set its options, and `-BookwormsShareSamples <n>` adds
     /// fictional reviews and current reads (`samples(_:)`). Each render is then written, with
     /// the credit that sharing adds, to `Library/Caches/Bookworms/share-debug.png`;
     /// `-BookwormsShareBatch` renders a list of option sets in one launch

@@ -827,9 +827,6 @@ private struct DateDueCard: View {
     @ScaledMetric private var labelColumn: CGFloat = 104
     @Environment(\.dynamicTypeSize) private var typeSize
 
-    /// A date stamp's day, month, and year. Reading dates are days, kept at midnight GMT.
-    static let stampFormat = Date.FormatStyle(timeZone: .gmt).day().month(.abbreviated).year()
-
     var body: some View {
         CardStockSheet(ruleSpacing: line) {
             VStack(alignment: .leading, spacing: 0) {
@@ -884,7 +881,7 @@ private struct DateDueCard: View {
                 .foregroundStyle(Stationery.labelInk)
                 .frame(width: stacked ? nil : labelColumn, alignment: .leading)
             if let stamp {
-                Text(stamp.formatted(Self.stampFormat).uppercased())
+                Text(stamp.formatted(Stationery.stampFormat).uppercased())
                     .font(.system(.body, design: .monospaced, weight: .semibold))
                     .foregroundStyle(Stationery.stampInk)
                     .lineLimit(1)

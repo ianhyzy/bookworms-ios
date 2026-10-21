@@ -270,6 +270,29 @@ def book_swap():
     return parts
 
 
+def checkout_card():
+    # A checkout card lying on the desk: a printed heading and the handwritten year over a red
+    # rule, then ruled lines, each with a violet date stamp and a handwritten title.
+    stock, ink, red, stamp, pen = "#EFE3CC", "#2B2117", "#8E2B24", "#2E2A6B", "#1B2A55"
+    parts = [
+        rect(17.5, 12, 88, 130, "#000000", 3, 0.35),
+        rect(16, 10, 88, 130, stock, 3),
+        bar(22, 19, 34, 4, ink),
+        bar(78, 17, 20, 5, pen),
+        rect(16, 27, 88, 1.4, red),
+        rect(44, 29, 1, 104, red),
+    ]
+    for row in range(9):
+        y = 38 + row * 10.5
+        parts.append(rect(16, y + 3, 88, 0.8, ink, 0, 0.25))
+        if row < 7:
+            parts += [
+                bar(21, y - 1.5, 19, 2.6, stamp, 0.9),
+                bar(49, y - 2.5, [44, 30, 50, 36, 26, 42, 34][row], 3, pen),
+            ]
+    return parts
+
+
 TEMPLATES = {
     "yearInBooks": year_in_books,
     "topFive": top_five,
@@ -280,6 +303,7 @@ TEMPLATES = {
     "currentlyReading": currently_reading,
     "tasteMatch": taste_match,
     "bookSwap": book_swap,
+    "checkoutCard": checkout_card,
 }
 
 for name, draw in TEMPLATES.items():
