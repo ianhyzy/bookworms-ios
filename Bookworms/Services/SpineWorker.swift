@@ -577,7 +577,8 @@ actor SpineWorker {
     /// redesign remakes the series look, that look. Only a device with that tier, or a cover
     /// the reader chose since (`SpineDesignV1.comesFromAnotherCover(than:readerChoseCover:fromChosenCover:)`),
     /// replaces it, so the book is checked as on any run, and the run's message says why the
-    /// spine stays (`keptMessage(madeBy:runModel:)`).
+    /// spine stays (`keptMessage(madeBy:runModel:)`). The same check runs again against the
+    /// new design's tier when the backup model's lasting rejection lowered it (`newDesign`).
     ///
     /// The saved design is checked before the cover downloads with `covers`. While the book
     /// shows its default cover and the reader chose no other cover since its last check on this
@@ -661,8 +662,9 @@ actor SpineWorker {
         let remadeLook =
             redesign?.remakesLook == true
             ? savedLook.map { $0.design(bookID: $0.sourceBookID) } : nil
-        if forced, !newCover,
-            let better = [saved, remadeLook].compactMap({ $0 }).first(where: { $0.tier > runTier })
+        if forced,
+            let better = Self.betterDesign(
+                than: runTier, saved: saved, remadeLook: remadeLook, newCover: newCover)
         {
             forced = false
             self.redesign = nil
@@ -712,7 +714,28 @@ actor SpineWorker {
         }
         let made = try await newDesign(
             for: book, cover: cover, workHash: workHash, accountID: context.accountID, mode: mode)
+        // The backup model's lasting rejection moves the run to a weaker tier (`newDesign`), so
+        // the redesign is checked again against the tier that made `made`. Without it, the tier
+        // rule decides, as on any run, and the fallback's message stays in view.
+        if forced,
+            Self.betterDesign(
+                than: made.tier, saved: saved, remadeLook: remadeLook, newCover: newCover) != nil
+        {
+            self.redesign = nil
+            if let saved, saved.outlasts(made, replacing: replacing) {
+                return .keep(await kept(saved))
+            }
+        }
         return .save(made, source: .new, replacing: replacing)
+    }
+
+    /// The design that keeps a redesign at `tier` from replacing the book's `saved` design and
+    /// the group's `remadeLook`: whichever of them comes from a better tier. A cover the reader
+    /// chose since (`newCover`) lets the redesign replace both.
+    static func betterDesign(
+        than tier: ModelTier, saved: SpineDesignV1?, remadeLook: SpineDesignV1?, newCover: Bool
+    ) -> SpineDesignV1? {
+        newCover ? nil : [saved, remadeLook].compactMap { $0 }.first { $0.tier > tier }
     }
 
     /// Designs `book` at the run's tier.

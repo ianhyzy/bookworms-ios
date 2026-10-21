@@ -1030,6 +1030,31 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(try equal.stored()[7], made)
     }
 
+    /// A redesign that the backup model's lasting rejection moved to a weaker tier keeps the
+    /// backup model's saved design or look, as a redesign from that tier would.
+    func testRedesignsCheckTheTierAgainAfterAFallback() {
+        let book = LocalRun.book(7)
+        let coverHash = String(repeating: "c", count: 64)
+        let gemini = LocalRun.design(
+            for: book, coverHash: coverHash, provenance: "model:google/gemini-3.8-flash")
+        let onDevice = LocalRun.design(
+            for: book, coverHash: coverHash, provenance: ModelTier.onDeviceToken)
+        func better(than tier: ModelTier, saved: SpineDesignV1?, look: SpineDesignV1? = nil)
+            -> SpineDesignV1?
+        {
+            SpineWorker.betterDesign(than: tier, saved: saved, remadeLook: look, newCover: false)
+        }
+        XCTAssertNil(better(than: .backup, saved: gemini), "The run's own tier gives way")
+        XCTAssertEqual(better(than: .onDevice, saved: gemini), gemini)
+        XCTAssertEqual(better(than: .local, saved: onDevice, look: gemini), onDevice)
+        XCTAssertEqual(better(than: .onDevice, saved: onDevice, look: gemini), gemini)
+        XCTAssertNil(better(than: .onDevice, saved: nil))
+        XCTAssertNil(
+            SpineWorker.betterDesign(
+                than: .local, saved: gemini, remadeLook: gemini, newCover: true),
+            "A cover the reader chose since gives way at any tier")
+    }
+
     func testTitleNoFamilyCoversUsesTheStyleSystemTypeface() throws {
         let palette = ["#1F3A5A", "#D8CBB0"].compactMap(ColorValue.init(hex:))
         let choice = BookAnalyzer.DesignChoice(
