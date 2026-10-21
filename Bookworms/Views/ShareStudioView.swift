@@ -164,21 +164,6 @@ struct ShareStudioView: View {
             ?? readers.first
     }
 
-    /// The Hot Takes direction the image shows, and the picker with it: the chosen one, unless
-    /// only the other has takes in the shown frame (`HotTakeDirection.shown(hasTakes:)`). The
-    /// choice itself stays, so a frame with takes both ways shows it again.
-    private var shownDirection: HotTakeDirection {
-        guard template == .hotTakes else { return direction }
-        let frame = shownFrame
-        let reader = shownReader
-        return direction.shown { direction in
-            !books(
-                .hotTakes, frame: frame, bookID: nil, reader: reader, pins: [],
-                direction: direction
-            ).isEmpty
-        }
-    }
-
     /// The books `template` draws, with Top Five's `pins` and Hot Takes' `direction`. With
     /// friends, they come from the comparison with `reader`, and there are none before the
     /// reader's library downloads.
@@ -198,7 +183,6 @@ struct ShareStudioView: View {
         let bookID = template.isSingleBook ? bookID : nil
         let reader = shownReader
         let pins = template == .topFive ? self.pins.ids : []
-        let direction = shownDirection
         var books = books(
             template, frame: frame, bookID: bookID, reader: reader, pins: pins,
             direction: direction)
@@ -295,6 +279,18 @@ struct ShareStudioView: View {
                 template = .topFive
             } else if !mode.templates.contains(template) {
                 template = mode == .mine ? .topFive : mode.templates[0]
+            }
+        }
+        .onChange(of: request, initial: true) { _, request in
+            // Only an empty Hot Takes image looks at the other direction, so the body sorts no
+            // more books than the image draws.
+            guard request.template == .hotTakes, request.isEmpty else { return }
+            let reader = shownReader
+            direction = direction.shown { direction in
+                !books(
+                    .hotTakes, frame: request.frame, bookID: nil, reader: reader, pins: [],
+                    direction: direction
+                ).isEmpty
             }
         }
         .task(id: shownReader?.id) {
@@ -784,7 +780,7 @@ struct ShareStudioView: View {
             return ("No reviews\(suffix)", "Choose another time frame to share a review.")
         case .currentlyReading:
             return ("Not reading anything", "Books you're reading appear here \(nextSync).")
-        // Neither direction has takes in the frame, or the image would show the other one.
+        // Neither direction has takes in the frame, or the studio would have switched.
         case .hotTakes:
             if frame != .lifetime,
                 HotTakeDirection.allCases.contains(where: {
@@ -1106,7 +1102,7 @@ struct ShareStudioView: View {
     @ViewBuilder
     private func options(hasNoBooks: Bool) -> some View {
         if template == .hotTakes {
-            Picker("Show", selection: Binding { shownDirection } set: { direction = $0 }) {
+            Picker("Show", selection: $direction) {
                 ForEach(HotTakeDirection.allCases) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)

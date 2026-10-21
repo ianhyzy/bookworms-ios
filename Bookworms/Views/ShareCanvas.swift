@@ -199,9 +199,9 @@ enum HotTakeDirection: String, CaseIterable, Identifiable {
         }
     }
 
-    /// The direction Hot Takes shows for this choice: the choice itself, unless it has no takes
-    /// and the other direction has some, so a choice with nothing to show never leaves the
-    /// image blank. `hasTakes` says whether a direction has any takes for the chosen books.
+    /// The direction Hot Takes switches to from this one: the other direction when this one has
+    /// no takes and the other has some, so a choice with nothing to show never leaves the image
+    /// blank, else this one. `hasTakes` says whether a direction has takes for the chosen books.
     func shown(hasTakes: (Self) -> Bool) -> Self {
         let other: Self = self == .lovedMore ? .lovedLess : .lovedMore
         return !hasTakes(self) && hasTakes(other) ? other : self

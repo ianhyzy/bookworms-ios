@@ -182,11 +182,8 @@ struct HardcoverAccountForm: View {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.secondary)
             }
-            // Signed in, the account's own **Sync now** syncs instead.
-            if !account.isSignedIn {
-                Button("Sync now") { Task { await model.syncLibrary() } }
-                    .disabled(model.isSyncingLibrary)
-            }
+            Button("Sync now") { Task { await model.reload() } }
+                .disabled(model.isLoading)
         } header: {
             Text(model.isPreview ? "Preview library" : "iCloud library")
         } footer: {
