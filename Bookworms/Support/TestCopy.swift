@@ -26,14 +26,15 @@ enum TestCopy {
             let app = NSApplication.shared
             if let icon = grayscale(app.applicationIconImage) { app.applicationIconImage = icon }
             // SwiftUI owns the windows' titles and subtitles, so each window gets a title bar
-            // accessory, which SwiftUI leaves alone: the windows open at launch now, and later
-            // ones when they first show.
+            // accessory, which SwiftUI leaves alone. AppKit updates its windows after each
+            // event, so rescanning them then labels every window opened since, even one that
+            // opens behind another. A labeled window costs a rescan one accessory check, and only
+            // test copies rescan.
             app.windows.forEach(label)
             NotificationCenter.default.addObserver(
-                forName: NSWindow.didChangeOcclusionStateNotification, object: nil, queue: .main
-            ) { notification in
-                let window = notification.object as? NSWindow
-                MainActor.assumeIsolated { window.map(label) }
+                forName: NSApplication.didUpdateNotification, object: app, queue: .main
+            ) { _ in
+                MainActor.assumeIsolated { NSApplication.shared.windows.forEach(label) }
             }
         }
 
