@@ -919,6 +919,10 @@ actor BookAnalyzer {
             throw CompanionError.fontServiceUnavailable(nil)
         } catch let error as GoogleFonts.Unavailable {
             throw CompanionError.fontServiceUnavailable(error.retryAfter)
+        } catch let error as CancellationError {
+            // A stopped run's wait for a shared download (`Task.sharedValue`) says nothing
+            // about the family.
+            throw error
         } catch {
             return nil
         }

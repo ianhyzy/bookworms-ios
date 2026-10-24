@@ -4,13 +4,19 @@ import SwiftUI
 #if canImport(BackgroundTasks)
     import BackgroundTasks
 #endif
+#if os(macOS)
+    import IOKit.ps
+#endif
 
-/// Runs spine generation on request, while charging, and after a worklist change.
+/// Runs spine generation on request, in the background on external power, and after a worklist
+/// change.
 ///
 /// **Generate now** runs in the app and asks iOS to keep it going in the background with a
 /// continued-processing task. The charging task runs inside SwiftUI's background task, which
-/// cancels it on expiration. A silent push only schedules the charging task, because its
-/// 30-second window is too short for a design. `SpineWorker` lets one run proceed at a time.
+/// cancels it on expiration, as iOS expires it when the iPhone is unplugged. On the Mac it runs
+/// while the Mac is idle and draws AC power, and a switch to battery power cancels it. A silent
+/// push only schedules the charging task, because its 30-second window is too short for a
+/// design. `SpineWorker` lets one run proceed at a time.
 @MainActor
 @Observable
 final class GenerationController {
@@ -37,6 +43,11 @@ final class GenerationController {
     @ObservationIgnored private var userRun: Task<Void, Never>?
     #if os(macOS)
         @ObservationIgnored private var backgroundActivity: NSBackgroundActivityScheduler?
+        /// The idle run in progress, which a switch to battery power cancels.
+        @ObservationIgnored private var idleRun: Task<Void, Never>?
+        /// The notification of switches between AC and battery power, on the main run loop from
+        /// the first idle run on.
+        @ObservationIgnored private var powerSourceAlert: CFRunLoopSource?
     #else
         @ObservationIgnored private var continuedTask: BGContinuedProcessingTask?
     #endif
@@ -198,10 +209,22 @@ final class GenerationController {
         return nil
     }
 
+    /// The power source a Mac reports, or `unknown` when the read fails.
+    enum PowerSource { case ac, battery, unknown }
+
+    /// Whether an idle Mac run may start or keep going. It needs AC power and a watch on the
+    /// power source (`watching`) that stops it on a switch to battery power. An unknown power
+    /// source counts as battery power, so a failed read or watch defers a run that hasn't
+    /// started, and a failed read stops one under way.
+    nonisolated static func idleRunMayProceed(power: PowerSource, watching: Bool) -> Bool {
+        power == .ac && watching
+    }
+
     #if os(macOS)
         /// Asks macOS to run generation when the Mac is idle, or cancels the request when the
         /// user turned the preference off. The Mac app keeps running with no window open, so
-        /// the activity fires while it stays in the menu bar.
+        /// the activity fires while it stays in the menu bar. The run starts only on AC power
+        /// (`runIdleActivity()`).
         func scheduleChargingTask(hasNewWork: Bool = false) async {
             backgroundActivity?.invalidate()
             backgroundActivity = nil
@@ -214,11 +237,70 @@ final class GenerationController {
             activity.qualityOfService = .utility
             activity.schedule { completion in
                 Task { @MainActor in
-                    await GenerationController.shared.runChargingTask()
-                    completion(.finished)
+                    let result = await GenerationController.shared.runIdleActivity()
+                    completion(result)
                 }
             }
             backgroundActivity = activity
+        }
+
+        /// Runs the charging task while this Mac draws AC power and watches for a switch to
+        /// battery power, as iOS runs it only on external power, and otherwise asks macOS to try
+        /// again later (`idleRunMayProceed(power:watching:)`). A switch to battery power during
+        /// the run cancels it (`powerSourceChanged()`); a **Generate now** run keeps going.
+        private func runIdleActivity() async -> NSBackgroundActivityScheduler.Result {
+            // An idle run in progress does the work, and schedules the next activity when it ends.
+            guard idleRun == nil else { return .finished }
+            // Watching first means a switch after the read still reaches `powerSourceChanged()`.
+            let watching = watchPowerSource()
+            guard Self.idleRunMayProceed(power: Self.powerSource, watching: watching) else {
+                return .deferred
+            }
+            let run = Task { await runChargingTask() }
+            idleRun = run
+            await run.value
+            idleRun = nil
+            return .finished
+        }
+
+        /// The power source this Mac draws from. A Mac without a battery, such as a Mac mini,
+        /// reports AC power.
+        private static var powerSource: PowerSource {
+            guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+                let source = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue()
+            else { return .unknown }
+            return source as String == kIOPMACPowerKey ? .ac : .battery
+        }
+
+        /// Starts watching for switches between AC and battery power, once, and returns whether
+        /// the notification is installed. A failed setup tries again at the next idle run. The
+        /// notification fires only on those switches, not as the battery's charge changes, and
+        /// arrives on the main run loop.
+        private func watchPowerSource() -> Bool {
+            guard powerSourceAlert == nil else { return true }
+            guard
+                let alert = IOPSCreateLimitedPowerNotification(
+                    { _ in
+                        MainActor.assumeIsolated {
+                            GenerationController.shared.powerSourceChanged()
+                        }
+                    }, nil)?
+                    .takeRetainedValue()
+            else {
+                generationLog.error("Power source notification failed; idle runs wait")
+                return false
+            }
+            CFRunLoopAddSource(CFRunLoopGetMain(), alert, .commonModes)
+            powerSourceAlert = alert
+            return true
+        }
+
+        /// Stops the idle run in progress when this Mac switches to battery power or its power
+        /// source can't be read.
+        private func powerSourceChanged() {
+            if !Self.idleRunMayProceed(power: Self.powerSource, watching: true) {
+                idleRun?.cancel()
+            }
         }
     #else
         /// Asks iOS to run generation while the iPhone charges and is idle on a network, or cancels

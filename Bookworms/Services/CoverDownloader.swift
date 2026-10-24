@@ -37,6 +37,8 @@ actor CoverDownloader {
     private let session: URLSession
     private let maximumBytes = 12 * 1024 * 1024
     private static let maximumPixels = 100_000_000
+    /// Downloads in progress by candidate list, which books that share a cover share.
+    private var fetches: [[URL]: Task<CoverImage, any Error>] = [:]
 
     /// Creates a downloader. `allowsExpensiveNetwork` is `false` for background runs, so they
     /// wait for Wi-Fi instead of spending cellular data. Tests pass `protocolClasses` to serve
@@ -58,13 +60,21 @@ actor CoverDownloader {
     ///
     /// Tries the next candidate only when a cover is missing or unreadable. A network error or a
     /// temporary server error (HTTP 408, 429, or 5xx) propagates as a `URLError`, so a brief
-    /// outage does not swap in the other URL and change the cover hash.
+    /// outage does not swap in the other URL and change the cover hash. Concurrent calls with
+    /// the same candidates share one download (`Task.sharedValue`).
     func fetch(_ urls: [URL]) async throws -> CoverImage {
-        let (url, data) = try await fetchData(urls)
-        guard let image = Self.image(from: data, maximumPixelSize: 1024) else {
-            throw CompanionError.invalidCover
-        }
-        return CoverImage(image: image, hash: CloudContract.digest(data), url: url)
+        let fetch =
+            fetches[urls]
+            ?? Task {
+                defer { self.fetches[urls] = nil }
+                let (url, data) = try await self.fetchData(urls)
+                guard let image = Self.image(from: data, maximumPixelSize: 1024) else {
+                    throw CompanionError.invalidCover
+                }
+                return CoverImage(image: image, hash: CloudContract.digest(data), url: url)
+            }
+        fetches[urls] = fetch
+        return try await fetch.sharedValue
     }
 
     /// Downloads the first usable candidate's bytes after checking that they decode as an image,
@@ -139,5 +149,24 @@ actor CoverDownloader {
                 .flatMap(CGImageSourceGetType) != nil
         else { throw CompanionError.invalidCover }
         return data
+    }
+}
+
+extension Task where Failure == any Error {
+    /// The task's value for one of the callers that share it, such as several books' designs
+    /// waiting for one download. A cancelled caller stops waiting at once with
+    /// `CancellationError`, and the task runs on for the others.
+    var sharedValue: Success {
+        get async throws {
+            // Awaiting the task itself would ignore the caller's cancellation; the stream's
+            // iteration ends when the task finishes or the caller is cancelled.
+            let (results, deliver) = AsyncStream.makeStream(of: Result<Success, any Error>.self)
+            Task<Void, Never> {
+                deliver.yield(await self.result)
+                deliver.finish()
+            }
+            for await result in results { return try result.get() }
+            throw Swift.CancellationError()
+        }
     }
 }
