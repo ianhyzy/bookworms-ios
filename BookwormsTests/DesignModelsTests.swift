@@ -79,11 +79,13 @@ final class DesignModelsTests: XCTestCase {
         XCTAssertEqual(current.model, google.id)
         XCTAssertEqual(current.baseURL, "https://generativelanguage.googleapis.com/v1beta")
         XCTAssertEqual(current.thinking, google.thinkingDefault)
-        // An unlisted model keeps its ID and sends no level until the provider confirms one.
+        // An unlisted model keeps its ID and sends no level, even one saved for the provider.
         defaults.set("gemini-fictional-model", forKey: "SpineDesignerModel")
+        defaults.set("low", forKey: "SpineDesignerThinking.google")
         current = SpineDesigner.current
         XCTAssertEqual(current.model, "gemini-fictional-model")
         XCTAssertEqual(current.thinking, "")
+        XCTAssertFalse(ProviderModel(designer: current).capabilities.contains(.reasoning))
         // A saved level stays while the model takes it, and switching providers restores it.
         current.model = google.id
         current.thinking = try XCTUnwrap(google.thinking?.last)
@@ -93,6 +95,9 @@ final class DesignModelsTests: XCTestCase {
         XCTAssertEqual(
             SpineDesigner.thinking(saved: "fictional-level", provider: .google, model: google.id),
             google.thinkingDefault, "A level the model doesn't take becomes its default")
+        XCTAssertEqual(
+            SpineDesigner.thinking(saved: "", provider: .google, model: google.id),
+            google.thinkingDefault, "Choosing a listed model after a custom one gets its default")
         XCTAssertEqual(
             SpineDesigner.thinking(saved: "low", provider: .custom, model: "local-model"), "",
             "The custom endpoint sends no level")
@@ -114,33 +119,48 @@ final class DesignModelsTests: XCTestCase {
 
         ModelStub.reply = (200, #"{"name":"models/gemini-fictional","thinking":true}"#)
         let gemini = await check(.google, "gemini-fictional", path: "v1beta")
-        XCTAssertEqual(gemini, .available(thinking: ["low", "medium", "high"]))
+        XCTAssertEqual(gemini, .available)
         XCTAssertEqual(ModelStub.last?.url?.path, "/v1beta/models/gemini-fictional")
         XCTAssertEqual(ModelStub.last?.httpMethod, "GET")
         XCTAssertEqual(
             ModelStub.last?.value(forHTTPHeaderField: "x-goog-api-key"), "fictional-key")
 
-        ModelStub.reply = (200, #"{"name":"models/gemini-plain","thinking":false}"#)
-        let plain = await check(.google, "gemini-plain", path: "v1beta")
-        XCTAssertEqual(plain, .available(thinking: []))
-
-        ModelStub.reply = (
-            200,
-            #"{"id":"claude-fictional","capabilities":{"thinking":{"supported":true},"effort":{"supported":true,"low":{"supported":true},"medium":{"supported":true},"high":{"supported":true},"xhigh":null,"max":{"supported":false}}}}"#
-        )
+        ModelStub.reply = (200, #"{"id":"claude-fictional"}"#)
         let claude = await check(.anthropic, "claude-fictional", path: "v1")
-        XCTAssertEqual(claude, .available(thinking: ["low", "medium", "high"]))
+        XCTAssertEqual(claude, .available)
         XCTAssertEqual(ModelStub.last?.url?.path, "/v1/models/claude-fictional")
         XCTAssertEqual(ModelStub.last?.value(forHTTPHeaderField: "x-api-key"), "fictional-key")
         XCTAssertNotNil(ModelStub.last?.value(forHTTPHeaderField: "anthropic-version"))
 
-        // OpenAI's model details never say whether a model reasons.
         ModelStub.reply = (200, #"{"id":"gpt-fictional","object":"model","owned_by":"openai"}"#)
         let openAI = await check(.openAI, "gpt-fictional", path: "v1")
-        XCTAssertEqual(openAI, .available(thinking: nil))
+        XCTAssertEqual(openAI, .available)
         XCTAssertEqual(
             ModelStub.last?.value(forHTTPHeaderField: "Authorization"), "Bearer fictional-key")
-        XCTAssertEqual(ModelStub.requests, 4, "Each check sends one request")
+        XCTAssertEqual(ModelStub.requests, 3, "Each check sends one request")
+    }
+
+    /// A custom model ID gets no thinking level, even when its model details say that it thinks,
+    /// as Gemini 2.5's do although it rejects `thinkingLevel`, which would fail every request. Its
+    /// model declares no reasoning, so its requests set no level.
+    func testACustomModelThatThinksGetsNoThinkingLevel() async {
+        ModelStub.reset()
+        URLProtocol.registerClass(ModelStub.self)
+        defer { URLProtocol.unregisterClass(ModelStub.self) }
+        let id = "gemini-2.5-fictional"
+        ModelStub.reply = (200, #"{"name":"models/gemini-2.5-fictional","thinking":true}"#)
+        let designer = SpineDesigner(
+            provider: .google, model: id, baseURL: "https://\(ModelStub.host)/v1beta",
+            thinking: SpineDesigner.thinking(saved: "low", provider: .google, model: id))
+        let check = await ProviderHTTP.check(designer, key: "fictional-key")
+        XCTAssertEqual(check, .available)
+        XCTAssertEqual(designer.thinking, "")
+        XCTAssertFalse(ProviderModel(designer: designer).capabilities.contains(.reasoning))
+        for provider in presets {
+            XCTAssertEqual(
+                SpineDesigner.thinking(saved: "low", provider: provider, model: "fictional-model"),
+                "", "\(provider)")
+        }
     }
 
     func testTheCheckReportsAMissingModelOrRejectedKeyAndOtherwiseSaysNothing() async {

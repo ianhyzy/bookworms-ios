@@ -8,8 +8,9 @@ import SwiftUI
 /// A preset provider's **Model name** picker lists `DesignModels`, with a star on the
 /// recommended model, and **Custom…**, which shows a field for any model ID; a saved ID that the
 /// list doesn't name shows as **Custom…** with its ID. The custom endpoint has only the field.
-/// **Thinking** appears when the chosen model has thinking levels, from the provider's model
-/// details or else the list, and saves for each provider.
+/// **Thinking** appears only for a model that the list names with thinking levels, and saves for
+/// each provider; a custom model ID sends no level
+/// (`SpineDesigner.thinking(saved:provider:model:)`).
 ///
 /// A field saves when it loses focus, on Return, and when the screen or window closes, so typing
 /// neither reads the Keychain nor rechecks the model for each character. Keys go straight to this
@@ -126,7 +127,7 @@ struct SpineDesignerSettings: View {
         }
         .onAppear {
             hasKey = designer.provider.key.read() != nil
-            showModel(confirmed: nil)
+            showModel()
             checkModel()
         }
         // **Back** and closing the Settings window save what was typed.
@@ -215,38 +216,22 @@ struct SpineDesignerSettings: View {
     /// updates the model rows and is checked against the key.
     private func commit() {
         let newModel = designer.provider != saved.provider || designer.model != saved.model
-        if newModel {
-            // A model that the list doesn't name gets a level only once the provider confirms
-            // which levels it takes (`checkModel()`).
-            if DesignModels.bundled.model(designer.model, of: designer.provider) == nil {
-                designer.thinking = ""
-            }
-            showModel(confirmed: nil)
-        }
+        if newModel { showModel() }
         guard designer != saved else { return }
         settingsChanged()
         if newModel { checkModel() }
     }
 
     /// Matches the rows to the chosen model: the picker selects a listed model, else
-    /// **Custom…**, and **Thinking** offers the levels that the provider's answer confirms
-    /// (`confirmed`), else the list's. A level the model doesn't take becomes its default.
-    private func showModel(confirmed: [String]?) {
+    /// **Custom…**, and **Thinking** offers the list's levels for it, so a model that the list
+    /// doesn't name shows no **Thinking** and sends no level. A level the model doesn't take
+    /// becomes its default.
+    private func showModel() {
         let listed = DesignModels.bundled.model(designer.model, of: designer.provider)
         customModel = listed == nil
-        let levels: [String]?
-        if confirmed?.isEmpty == true {
-            levels = []
-        } else if let listed {
-            levels = listed.thinking ?? confirmed ?? []
-        } else {
-            levels = confirmed
-        }
-        // A model that the list doesn't name keeps its level until the provider's answer says
-        // which levels it takes.
-        thinkingLevels = levels ?? []
-        guard let levels, !levels.contains(designer.thinking) else { return }
-        designer.thinking = levels.isEmpty ? "" : listed?.thinkingDefault ?? levels.first ?? ""
+        thinkingLevels = listed?.thinking ?? []
+        designer.thinking = SpineDesigner.thinking(
+            saved: designer.thinking, provider: designer.provider, model: designer.model)
     }
 
     /// Asks the provider whether the saved key can use the chosen preset model, and notes when
@@ -265,12 +250,11 @@ struct SpineDesignerSettings: View {
                 designer.model == checked.model
             else { return }
             switch result {
-            case .available(let thinking?): showModel(confirmed: thinking)
             case .unavailable:
                 availabilityNote = "This key can't use \(checked.model); choose another model."
             case .keyRejected:
                 availabilityNote = "\(checked.provider.name) didn't accept this key."
-            case .available(nil), nil: break
+            case .available, nil: break
             }
         }
     }

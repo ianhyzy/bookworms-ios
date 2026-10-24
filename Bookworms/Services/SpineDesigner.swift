@@ -63,9 +63,9 @@ struct SpineDesigner: Hashable, Sendable {
     var model: String
     var baseURL: String
     /// The thinking level that each request asks for, in the provider's own words, such as
-    /// Gemini's `thinkingLevel` "low" or Anthropic's effort "medium"; empty for a model without
-    /// thinking levels and for the custom endpoint, whose requests set none. `ProviderModel`
-    /// declares reasoning only when it is set.
+    /// Gemini's `thinkingLevel` "low" or Anthropic's effort "medium"; empty, so requests set
+    /// none, unless `DesignModels` lists the model with thinking levels. `ProviderModel` declares
+    /// reasoning only when it is set.
     var thinking = ""
 
     private static let providerKey = "SpineDesignerProvider"
@@ -98,17 +98,17 @@ struct SpineDesigner: Hashable, Sendable {
                 model: model))
     }
 
-    /// The thinking level for `model`: `saved`, unless `DesignModels` lists the model without
-    /// that level, which gives the listed model's default. A model that the list doesn't name
-    /// keeps `saved`, which Settings sets only after the provider confirms the model thinks.
-    /// Without a saved level, as in settings saved before thinking levels, a listed model starts
-    /// at its default and any other at none. The custom endpoint never sets one.
+    /// The thinking level for `model`: `saved` when `DesignModels` lists the model with that
+    /// level, else the listed model's default. A model that the list doesn't name, or names
+    /// without levels, gets none, as does the custom endpoint, which has no list: a model can
+    /// think yet reject a level, as Gemini 2.5 rejects `thinkingLevel`, which would fail every
+    /// request.
     static func thinking(saved: String?, provider: Provider, model: String) -> String {
-        guard provider != .apple, provider != .custom else { return "" }
-        let listed = DesignModels.bundled.model(model, of: provider)
-        guard let saved else { return listed?.thinkingDefault ?? "" }
-        guard let listed, !saved.isEmpty else { return saved }
-        return listed.thinking?.contains(saved) == true ? saved : listed.thinkingDefault ?? ""
+        guard let listed = DesignModels.bundled.model(model, of: provider),
+            let levels = listed.thinking
+        else { return "" }
+        if let saved, levels.contains(saved) { return saved }
+        return listed.thinkingDefault ?? ""
     }
 
     func save() {
@@ -263,10 +263,9 @@ struct DesignModels: Sendable {
 /// What a provider's get-model endpoint says about the chosen model and key
 /// (`ProviderHTTP.check(_:key:)`).
 enum ModelCheck: Equatable, Sendable {
-    /// The key can use the model. `thinking` lists the thinking levels that the answer confirms,
-    /// cheapest first, or is empty when it says the model doesn't think; `nil` when the answer
-    /// doesn't say, as OpenAI's never does.
-    case available(thinking: [String]?)
+    /// The key can use the model. Its thinking levels come only from `DesignModels`, because a
+    /// model that its details say thinks may still reject a level.
+    case available
     /// The provider answered 403 or 404: this key can't use the model.
     case unavailable
     /// The provider rejected the key itself.
@@ -537,35 +536,11 @@ enum ProviderHTTP {
         else { return nil }
         let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         switch status {
-        case 200..<300: return .available(thinking: thinkingLevels(in: json, provider: provider))
+        case 200..<300: return .available
         case 403, 404: return .unavailable
         case 401: return .keyRejected
         case 400 where errorCode(in: json) == "API_KEY_INVALID": return .keyRejected
         default: return nil
-        }
-    }
-
-    /// The thinking levels that a get-model answer confirms, cheapest first: with Gemini's
-    /// `thinking` flag, the levels that current Gemini text models take, and with
-    /// Anthropic's `capabilities`, its supported effort levels. Empty when the answer says the
-    /// model doesn't think; `nil` when it doesn't say.
-    private static func thinkingLevels(in json: [String: Any]?, provider: SpineDesigner.Provider)
-        -> [String]?
-    {
-        func supported(_ value: Any?) -> Bool {
-            (value as? [String: Any])?["supported"] as? Bool == true
-        }
-        switch provider {
-        case .google:
-            guard let thinks = json?["thinking"] as? Bool else { return nil }
-            return thinks ? ["low", "medium", "high"] : []
-        case .anthropic:
-            guard let capabilities = json?["capabilities"] as? [String: Any] else { return nil }
-            let effort = capabilities["effort"] as? [String: Any]
-            guard supported(capabilities["thinking"]), supported(effort) else { return [] }
-            return ["low", "medium", "high", "xhigh", "max"].filter { supported(effort?[$0]) }
-        default:
-            return nil
         }
     }
 
