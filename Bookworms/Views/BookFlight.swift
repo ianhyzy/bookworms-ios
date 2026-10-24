@@ -301,6 +301,9 @@ final class BookLifter {
         /// Where the details draw the book, in normalized device coordinates, and the view's
         /// width-to-height aspect.
         var frame: (center: SIMD2<Float>, height: Float, aspect: Float)?
+        /// How far the details' drift moves the book from `frame`'s center, in normalized device
+        /// coordinates.
+        var float = SIMD2<Float>.zero
         var turn = BookPose.resting
         /// The camera's and the veil's share of the way to the details.
         var share: Float = 0
@@ -467,10 +470,19 @@ final class BookLifter {
         fly()
     }
 
+    /// Moves the lifted book `shift` points from where `place(_:in:)` put it, in a view `size`
+    /// big, as the details' drift moves their book on every frame.
+    func float(_ shift: CGSize, in size: CGSize) {
+        guard lifted != nil, size.width > 0, size.height > 0 else { return }
+        lifted?.float =
+            SIMD2(Float(shift.width / size.width), -Float(shift.height / size.height)) * 2
+        fly()
+    }
+
     /// Turns the lifted book to `pose` at once, as a drag turns the details' own book.
     ///
     /// The book takes new materials only when a face's shade changes by a level of 8-bit color,
-    /// since the details' slow drift turns it a little on every frame.
+    /// since the details' slow drift turns it a little at each step (`Drift.swayInterval`).
     func turn(_ pose: BookPose) {
         guard let lifted, lifted.turn != pose else { return }
         self.lifted?.turn = pose
@@ -668,7 +680,8 @@ final class BookLifter {
         guard let lifted, let clear = lifted.clear else { return }
         let target = lifted.frame.map { frame in
             PileCamera.detailPose(
-                seenFrom: camera.transform, center: frame.center, height: frame.height,
+                seenFrom: camera.transform, center: frame.center + lifted.float,
+                height: frame.height,
                 size: lifted.size, pose: lifted.turn, aspect: frame.aspect)
         }
         lifted.book.transform = BookFlight.pose(

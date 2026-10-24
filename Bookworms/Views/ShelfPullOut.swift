@@ -5,9 +5,10 @@ import SwiftUI
 ///
 /// The tapped spine, the flying book, and the shelf's bars share this state. The spine hides
 /// while its book is out, leaving a shadowed gap, and reports the gap's frame. The details'
-/// transparent stand-in reports the frame of their book stage and the pose a drag gives their
-/// book. One value, `progress`, drives the flight, and `PullOutPath` turns it into the book's
-/// place, size, and pose, so **Back** during the flight reverses it from where it is.
+/// transparent stand-in reports the frame of their book stage, the pose a drag gives their
+/// book, and how far its drift moves it. One value, `progress`, drives the flight, and
+/// `PullOutPath` turns it into the book's place, size, and pose, so **Back** during the flight
+/// reverses it from where it is.
 @MainActor
 @Observable
 final class ShelfPullOut {
@@ -44,6 +45,10 @@ final class ShelfPullOut {
     var lampWarmth = ShelfLamp.warmth
     /// The details' book stage in global coordinates, which `HostedBook.place` reports.
     var stage: CGRect?
+    /// How far the details' drift moves the book from `stage`, which `HostedBook.float` reports
+    /// on every frame of the drift. Only `PullOutFloat` reads it, so a frame of the drift
+    /// updates only the book's offset.
+    var float = CGSize.zero
     /// The pose the details give their book, which `HostedBook.turn` reports.
     var pose = BookPose.resting
     /// The flight's progress: 0 with the book in its place, 1 in the details' stage.
@@ -86,6 +91,7 @@ final class ShelfPullOut {
         home = nil
         eye = nil
         pose = .resting
+        float = .zero
         progress = start(of: book.id)
         showsText = false
         isReturning = false
@@ -151,6 +157,9 @@ final class ShelfPullOut {
         guard book != nil, !isReturning else { return }
         revision &+= 1
         let revision = revision
+        // The return flies from where the drift has taken the book.
+        stage = stage?.offsetBy(dx: float.width, dy: float.height)
+        float = .zero
         isReturning = true
         withAnimation(.easeIn(duration: 0.2)) { showsText = false }
         withAnimation(Self.closing, completionCriteria: .logicallyComplete) {
@@ -187,6 +196,7 @@ final class ShelfPullOut {
             isOut = false
             home = nil
             stage = nil
+            float = .zero
             progress = 0
             showsText = false
             isReturning = false
@@ -472,12 +482,13 @@ struct ShelfPullOutWait: ViewModifier {
 /// The pulled-out book's flight and details, over the shelf.
 ///
 /// The details join the hierarchy at the tap, hidden, since the book flies to their stand-in's
-/// frame. They fade in once the book lands, and their stand-in then places and turns the flying
-/// book, so the book scrolls and turns with them. Their bottom scroll edge effect stays hidden:
-/// the walnut veil already darkens the tab bar's backdrop, and an edge effect that switched on
-/// as the details faded in would flip the tab bar's glass from light to dark in one frame. The
-/// top edge's effect, under the bar and the pinned section picker, shows once the details' text
-/// does, so text that scrolls under the bar and the picker fades into the walnut.
+/// frame. They fade in once the book lands, and their stand-in then places, floats, and turns
+/// the flying book, so the book scrolls, drifts, and turns with them. Their bottom scroll edge
+/// effect stays hidden: the walnut veil already darkens the tab bar's backdrop, and an edge
+/// effect that switched on as the details faded in would flip the tab bar's glass from light to
+/// dark in one frame. The top edge's effect, under the bar and the pinned section picker, shows
+/// once the details' text does, so text that scrolls under the bar and the picker fades into
+/// the walnut.
 private struct ShelfPullOutLayer: View {
     let book: CloudBook
     let pullOut: ShelfPullOut
@@ -492,6 +503,7 @@ private struct ShelfPullOutLayer: View {
                     // iPhone, the bar hides then, which moves the details' layout up and would
                     // otherwise carry the book with it.
                     place: { [pullOut] in if !pullOut.isReturning { pullOut.stage = $0 } },
+                    float: { [pullOut] in if !pullOut.isReturning { pullOut.float = $0 } },
                     // The return starts from the pose on screen and ignores the rest of a coast,
                     // which could otherwise carry the book past a fore-edge-on pose and flip the
                     // spine it turns back to.
@@ -551,7 +563,8 @@ private struct PullOutFlightHost: View {
                         pullOut.stage?.applying(shift)
                         ?? CGRect(x: home.midX, y: home.midY - length / 2, width: 0, height: length)
                     PullOutFlight(
-                        book: current, look: model.look(for: current), cover: cover,
+                        pullOut: pullOut, book: current, look: model.look(for: current),
+                        cover: cover,
                         path: PullOutPath(
                             home: home, upright: pullOut.upright, stage: stage,
                             pose: pullOut.pose, aspect: Book3DView.aspect(of: cover),
@@ -583,6 +596,7 @@ private struct PullOutFlightHost: View {
 /// SwiftUI animates `progress`, and the body samples `path` at each value, so the book follows
 /// the path rather than a straight blend of its endpoints.
 private struct PullOutFlight: View, Animatable {
+    let pullOut: ShelfPullOut
     let book: CloudBook
     let look: SpineLook
     let cover: UIImage?
@@ -613,6 +627,7 @@ private struct PullOutFlight: View, Animatable {
         )
         .scaleEffect(pose.scale)
         .rotationEffect(.radians(pose.roll))
+        .modifier(PullOutFloat(pullOut: pullOut))
         .position(pose.center)
         // The stack draws a book that slides out inside it until the book is clear.
         .opacity(path.rest.slidesInStack && progress < PullOutPath.pullEnd ? 0 : 1)
@@ -651,5 +666,17 @@ private struct PullOutFlight: View, Animatable {
             }
         }
         .transaction { $0.animation = nil }
+    }
+}
+
+/// Moves the flying book by the details' drift (`ShelfPullOut.float`). It reads the drift alone,
+/// so a frame of the drift updates only this offset, and it moves the drawn book by fractions
+/// of a pixel, where layout would step the slow drift a whole pixel at a time.
+private struct PullOutFloat: ViewModifier {
+    let pullOut: ShelfPullOut
+
+    func body(content: Content) -> some View {
+        let float = pullOut.float
+        content.visualEffect { content, _ in content.offset(float) }
     }
 }
