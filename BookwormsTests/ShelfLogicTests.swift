@@ -523,7 +523,8 @@ final class ShelfLogicTests: XCTestCase {
             height: drawn.height)
         let view = CGSize(width: drawn.height / scale, height: drawn.width / scale)
         let box =
-            camera.eye(at: ScrollEye(point: eye, roll: -.pi / 2).point(inViewOf: view, framed: frame))
+            camera.eye(
+                at: ScrollEye(point: eye, roll: -.pi / 2).point(inViewOf: view, framed: frame))
             / Double(spine.width)
         let place = StackedBook.eye(
             eye, slot: slot, length: spine.width, scale: scale, drawn: drawn, camera: camera)
@@ -811,6 +812,25 @@ final class ShelfLogicTests: XCTestCase {
             XCTAssertLessThanOrEqual(abs(sample.translation.width), Drift.horizontalAmplitude)
             XCTAssertLessThanOrEqual(abs(sample.translation.height), Drift.verticalAmplitude)
             XCTAssertLessThanOrEqual(abs(sample.yaw), Drift.swayAmplitude)
+        }
+    }
+
+    func testDriftSwayStepsEverySwayIntervalAndStaysClose() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let drift = Drift(start: start)
+        func at(_ seconds: Double) -> Date { start.addingTimeInterval(seconds) }
+        // A step holds the sway from its start, so the book redraws once a step.
+        let step = 123 * Drift.swayInterval
+        XCTAssertEqual(
+            drift.sway(at: at(step + 0.2 * Drift.swayInterval)),
+            drift.sway(at: at(step + 0.8 * Drift.swayInterval)))
+        XCTAssertEqual(
+            drift.sway(at: at(step + 0.5 * Drift.swayInterval)), drift.offset(at: at(step)).yaw,
+            accuracy: 1e-12)
+        // It never lags the sway by more than about 0.0006 radians, through the ramp and after.
+        for seconds in stride(from: 0.0, through: 120, by: 0.013) {
+            XCTAssertEqual(
+                drift.sway(at: at(seconds)), drift.offset(at: at(seconds)).yaw, accuracy: 0.00065)
         }
     }
 

@@ -102,6 +102,7 @@ private func isWorklistChange(_ userInfo: [AnyHashable: Any]) -> Bool {
     final class AppDelegate: NSObject, NSApplicationDelegate {
         func applicationDidFinishLaunching(_ notification: Notification) {
             MainActor.assumeIsolated {
+                TestCopy.markIfActive()
                 finishLaunching { NSApplication.shared.registerForRemoteNotifications() }
                 UIApplication.reportMemoryPressure()
                 Task { await GenerationController.shared.scheduleChargingTask() }

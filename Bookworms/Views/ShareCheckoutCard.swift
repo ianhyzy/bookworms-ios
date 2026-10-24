@@ -5,16 +5,20 @@ import SwiftUI
 /// starting the next.
 ///
 /// A card fills the space inside the image's margins (`ShareInput.reachingInsets`). Its heading
-/// takes two rules, and the column headings and the footer one each; every other rule holds one
-/// book. The rules are `largestRule` apart when the books fit on as few cards that way as at
-/// `smallestRule`, and otherwise as far apart as that fewest number of cards allows, in 2-pixel
-/// steps. Handwriting letters at a fixed share of the rule (`CheckoutCard.handScale`), so
-/// `smallestRule` sets the smallest handwriting.
+/// takes `headingRules`, its column headings `columnHeadingRules`, and its footer one rule;
+/// every other rule holds one book. The rules are `largestRule` apart when the books fit on as
+/// few cards that way as at `smallestRule`, and otherwise as far apart as that fewest number of
+/// cards allows, in 2-pixel steps. Handwriting letters at a fixed share of the rule
+/// (`CheckoutCard.handScale`), so `smallestRule` sets the smallest handwriting.
 struct CheckoutCardLayout: Equatable {
     static let largestRule: CGFloat = 72
     static let smallestRule: CGFloat = 58
+    /// The heading's height, in rules.
+    static let headingRules: CGFloat = 1.1
+    /// The column headings' height, in rules.
+    static let columnHeadingRules: CGFloat = 0.6
     /// The rules that the heading, the column headings, and the footer take.
-    static let reservedRules = 4
+    static let reservedRules = headingRules + columnHeadingRules + 1
     /// The room above the heading and below the footer, in pixels.
     static let verticalPadding: CGFloat = 20
 
@@ -28,7 +32,7 @@ struct CheckoutCardLayout: Equatable {
     /// Lays out `count` books on cards `height` pixels tall.
     init(count: Int, height: CGFloat) {
         func rows(_ rule: CGFloat) -> Int {
-            max(1, Int((height - 2 * Self.verticalPadding) / rule) - Self.reservedRules)
+            max(1, Int((height - 2 * Self.verticalPadding) / rule - Self.reservedRules))
         }
         func cardCount(_ rule: CGFloat) -> Int { (count + rows(rule) - 1) / rows(rule) }
         let fewest = cardCount(Self.smallestRule)
@@ -61,10 +65,11 @@ struct CheckoutCardLayout: Equatable {
 }
 
 /// The checkout card from a library book's pocket, filled in with a time frame's books: aged
-/// card stock lying on the desk, with a printed heading and ruled columns, each book's finish
-/// date stamped in violet ink and its title written by hand, oldest first. It uses the stock,
-/// inks, stamp, and red heading rule of the date-due card on a book's **Your reading**
-/// (`Stationery`).
+/// card stock lying on the desk, with a heading filled in as a form is, such as "Avery Quill's
+/// reading record — 2025" with the name and the frame written by hand, and ruled columns, each
+/// book's finish date stamped in violet ink and its title written by hand, oldest first. It
+/// uses the stock, inks, stamp, and red heading rule of the date-due card on a book's
+/// **Your reading** (`Stationery`).
 ///
 /// A frame with more books than a card holds continues on more cards (`CheckoutCardLayout`).
 /// The image draws the card that `ShareInput.card` names, and its footer numbers it, such as
@@ -157,24 +162,47 @@ struct CheckoutCard: View {
         .overlay { shape.strokeBorder(.black.opacity(0.12), lineWidth: 1.5) }
     }
 
-    /// The printed heading and, written beside it, the time frame, over the red rule.
+    /// The heading, one line of a form over the red rule: the reader's Hardcover name written
+    /// before the printed "'s reading record —", then the time frame written after it. Without
+    /// `ShareInput.owner`, it prints "Reading record —". A long name shrinks a little, then
+    /// gives way to its first word, then ends with an ellipsis, so the frame always shows.
     private func heading(rule: CGFloat) -> some View {
-        HStack(alignment: .lastTextBaseline) {
-            Text("Reading record")
-                .font(.system(size: rule * 0.5, weight: .bold).smallCaps())
-                .tracking(2)
-                .foregroundStyle(Stationery.ink)
-            Spacer(minLength: rule * 0.5)
+        let size = rule * 0.88
+        let printed = Font.system(size: rule * 0.42, weight: .medium)
+        // One pen in one sitting, so the name and the frame share an ink; each sits a little
+        // off level, as an entry does.
+        let unit = { ShareStyle.unit(0, input.owner?.id ?? 0, $0) }
+        let ink = Stationery.penInk.opacity(0.92 + 0.08 * unit(1))
+        return HStack(alignment: .lastTextBaseline, spacing: 0) {
+            if let owner = input.owner {
+                let forms = [owner.displayName, owner.shortName]
+                ShareFittingText(
+                    forms: forms[0] == forms[1] ? [forms[0]] : forms, size: size, minimumScale: 0.8
+                ) {
+                    Self.hand(input.handwriting, size: $0)
+                }
+                .foregroundStyle(ink)
+                .rotationEffect(.degrees((unit(2) - 0.5) * 2), anchor: .leading)
+                .offset(y: (unit(3) - 0.5) * rule * 0.08)
+                Text("’s reading record —").font(printed).fixedSize()
+                    .padding(.leading, rule * 0.08)
+            } else {
+                Text("Reading record —").font(printed).fixedSize()
+            }
             Text(input.period)
-                .font(Self.hand(input.handwriting, size: rule * 1.05))
-                .foregroundStyle(Stationery.penInk)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-                .rotationEffect(.degrees(-2))
+                .font(Self.hand(input.handwriting, size: size))
+                .foregroundStyle(ink)
+                .fixedSize()
+                .rotationEffect(.degrees(-1.5 + (unit(4) - 0.5) * 1.6), anchor: .leading)
+                .offset(y: (unit(5) - 0.5) * rule * 0.08)
+                .padding(.leading, rule * (0.18 + 0.12 * unit(6)))
+            Spacer(minLength: 0)
         }
+        .foregroundStyle(Stationery.labelInk)
         .padding(.horizontal, Self.side)
-        .padding(.bottom, rule * 0.22)
-        .frame(height: rule * 2, alignment: .bottom)
+        // Writing sits on the line, as the entries' does.
+        .padding(.bottom, rule * 0.16)
+        .frame(height: rule * CheckoutCardLayout.headingRules, alignment: .bottom)
         .overlay(alignment: .bottom) { Rectangle().fill(Stationery.red).frame(height: 3) }
     }
 
@@ -189,7 +217,7 @@ struct CheckoutCard: View {
         .foregroundStyle(Stationery.labelInk)
         .padding(.horizontal, Self.side)
         .padding(.bottom, rule * 0.18)
-        .frame(height: rule, alignment: .bottom)
+        .frame(height: rule * CheckoutCardLayout.columnHeadingRules, alignment: .bottom)
         .overlay(alignment: .bottom) {
             Rectangle().fill(Stationery.inkValue.color.opacity(0.4)).frame(height: 3)
         }

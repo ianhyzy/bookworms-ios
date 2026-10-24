@@ -185,15 +185,19 @@ struct BookDetailView: View {
                 debugScroll.scrollTo(y: offset)
             }
         #endif
-        // Hides text that scrolls under the bar and the pinned picker. The soft style lets the
-        // book's title read through the picker's unselected segments.
-        .scrollEdgeEffectStyle(.hard, for: .top)
+        // Fades text that scrolls under the bar and the pinned picker into the walnut. The hard
+        // style's opaque backing would draw a band of the system's background, ending in a line,
+        // across only the scroll view, which in the Mac's wide layout is the text column.
+        .scrollEdgeEffectStyle(.soft, for: .top)
         .safeAreaBar(edge: .top) {
             Picker("Section", selection: $tab) {
                 ForEach(DetailTab.allCases) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            // The soft edge is weakest at the bar's bottom, so the picker carries its own glass,
+            // as the bar's buttons do, to keep the title from reading through its segments.
+            .glassEffect(.regular, in: .capsule)
             .padding(.horizontal, 20)
             .padding(.vertical, 8)
         }
@@ -484,9 +488,12 @@ struct BookPose: Equatable {
 /// Where a host behind `BookDetailView` draws the details' book, and how it turns.
 struct HostedBook {
     /// Receives the frame of the book's height, `TurningBook.bookHeight` points tall and
-    /// centered where the details center their book, in global coordinates, whenever it moves,
-    /// including as it drifts.
+    /// centered where the details center their book, in global coordinates, whenever the
+    /// details' layout moves it.
     let place: (CGRect) -> Void
+    /// Receives how far the drift moves the book from that frame, in points with y down, on
+    /// every frame of the drift. A host moves its book by it without laying the book out again.
+    let float: (CGSize) -> Void
     /// Receives the pose the details' book would show, drift included, whenever it changes.
     let turn: (BookPose) -> Void
     /// Whether the host's book has landed in the details, which starts its drift. The drift
@@ -503,9 +510,11 @@ struct HostedBook {
 /// The coast and the drift are functions of time that `TimelineView` samples, rather than
 /// SwiftUI animations, so a drag that interrupts a coast starts from the pose on screen. The
 /// drift adds to the dragged or coasting pose, so a drag neither stops nor restarts it. The
-/// timeline renders the drift alone at most 30 times a second, enough for its slow motion,
-/// and pauses while the book's stage is scrolled out of view. The drag claims touches that
-/// start on the book, so the page scrolls from the text below.
+/// timeline runs at the display's rate and pauses while the book's stage is scrolled out of
+/// view. Each frame moves the book by a render-only offset, in fractions of a pixel, which
+/// updates nothing else; the book's faces redraw only when its pose changes, which the drift's
+/// sway changes `Drift.swayInterval` apart. The drag claims touches that start on the book, so
+/// the page scrolls from the text below.
 private struct TurningBook: View {
     nonisolated static let bookHeight: CGFloat = 380
 
@@ -532,33 +541,32 @@ private struct TurningBook: View {
 
     var body: some View {
         let drifts = drift != nil && isOnScreen
-        TimelineView(
-            .animation(
-                minimumInterval: coast == nil ? 1.0 / 30 : nil, paused: coast == nil && !drifts)
-        ) { context in
+        TimelineView(.animation(paused: coast == nil && !drifts)) { context in
             let turned = coast?.pose(at: context.date) ?? pose
-            let float = drift?.offset(at: context.date)
-            let shown = BookPose(yaw: turned.yaw + (float?.yaw ?? 0), pitch: turned.pitch)
-            let shift = float?.translation ?? .zero
+            let sway = drift?.sway(at: context.date) ?? 0
+            let shown = BookPose(yaw: turned.yaw + sway, pitch: turned.pitch)
+            let shift = drift?.offset(at: context.date).translation ?? .zero
             if let host {
                 Color.clear
                     .frame(height: Self.bookHeight)
-                    // Inside the offset, so the reported frame drifts with it.
                     .onGeometryChange(for: CGRect.self) {
                         $0.frame(in: .global)
                     } action: {
                         host.place($0)
                     }
-                    .offset(shift)
+                    .onChange(of: shift, initial: true) { host.float(shift) }
                     .onChange(of: shown, initial: true) { host.turn(shown) }
                     .accessibilityElement()
                     .accessibilityLabel("\(book.title), by \(book.author)")
             } else {
+                // Between turns, the book's inputs stay the same, so only the offset updates.
                 Book3DView(
                     book: book, look: look, cover: cover, height: Self.bookHeight,
                     yaw: shown.yaw, pitch: shown.pitch
                 )
-                .offset(shift)
+                // Layout rounds to whole pixels, which would step the slow drift a pixel at a
+                // time; a visual effect moves the drawn book by fractions of one.
+                .visualEffect { content, _ in content.offset(shift) }
             }
         }
         .frame(maxWidth: .infinity)
@@ -690,9 +698,20 @@ struct Drift: Equatable {
     static let horizontalAmplitude = 0.01 * TurningBook.bookHeight
     static let swayAmplitude = Double.pi / 90
     static let rampDuration = 4.0
+    /// How long the book holds each step of its sway (`sway(at:)`), in seconds. A step turns the
+    /// book at most about 0.0006 radians, which moves its edges less than a tenth of a point, too
+    /// little to show; each step redraws the book's faces.
+    static let swayInterval = 0.1
 
     /// When the book arrived in its details.
     let start: Date
+
+    /// The sway that `offset(at:)` gives at the start of the `swayInterval` that holds `date`,
+    /// counted from `start`.
+    func sway(at date: Date) -> Double {
+        let steps = (date.timeIntervalSince(start) / Self.swayInterval).rounded(.down)
+        return offset(at: start.addingTimeInterval(steps * Self.swayInterval)).yaw
+    }
 
     /// The book's displacement at `date`: `translation` in points, with y down, and `yaw` in
     /// radians to add to its pose.
