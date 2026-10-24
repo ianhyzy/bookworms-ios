@@ -35,18 +35,85 @@ final class GenerationTests: XCTestCase {
     }
 
     /// The backup model's cover-lettering request reaches the provider: a session refuses a
-    /// request with a reasoning level for a model without `.reasoning`, as `ProviderModel` is,
-    /// before it sends anything, which failed every book of a Gemini run. A stub answers for
-    /// Gemini, so no request leaves the device.
+    /// request with a reasoning level for a model without `.reasoning`, as `ProviderModel` is
+    /// without a thinking level, before it sends anything, which failed every book of a Gemini
+    /// run. A stub answers for Gemini, so no request leaves the device.
     func testBackupModelRequestsReachTheProviderWithoutAReasoningLevel() async throws {
-        ProviderStub.requests = 0
+        ProviderStub.reset()
         URLProtocol.registerClass(ProviderStub.self)
         defer { URLProtocol.unregisterClass(ProviderStub.self) }
         let model = ProviderModel(
             designer: SpineDesigner(
-                provider: .google, model: "gemini-3.8-flash",
+                provider: .google, model: "gemini-fictional-model",
                 baseURL: "https://\(ProviderStub.host)/v1beta"))
+        XCTAssertFalse(model.capabilities.contains(.reasoning))
         XCTAssertNil(BookAnalyzer.readingOptions(for: model).reasoningLevel)
+        let answer = try await Self.askLettering(model, BookAnalyzer.readingOptions(for: model))
+        XCTAssertEqual(answer, "plain")
+        XCTAssertEqual(ProviderStub.requests, 1)
+        let config = ProviderStub.lastBody?["generationConfig"] as? [String: Any]
+        XCTAssertNil(config?["thinkingConfig"], "A model without thinking levels gets none")
+        do {
+            _ = try await Self.askLettering(
+                model, ContextOptions(includeSchemaInPrompt: true, reasoningLevel: .light))
+            XCTFail("The session should refuse a reasoning level for this model")
+        } catch LanguageModelError.unsupportedCapability {
+            XCTAssertEqual(ProviderStub.requests, 1, "The refused request never reached Gemini")
+        }
+    }
+
+    /// A backup model with a thinking level declares reasoning, so the cover-lettering request
+    /// asks for a light level and reaches the provider, which receives the reader's level in its
+    /// own terms. Stubs answer for each provider, so no request leaves the device.
+    func testThinkingBackupModelsSendTheReadersLevel() async throws {
+        ProviderStub.reset()
+        URLProtocol.registerClass(ProviderStub.self)
+        defer { URLProtocol.unregisterClass(ProviderStub.self) }
+        let host = "https://\(ProviderStub.host)"
+        let cases: [(SpineDesigner, (([String: Any]?) -> Any?))] = [
+            (
+                SpineDesigner(
+                    provider: .google, model: "gemini-3.8-flash", baseURL: "\(host)/v1beta",
+                    thinking: "low"),
+                {
+                    (($0?["generationConfig"] as? [String: Any])?["thinkingConfig"]
+                        as? [String: Any])?["thinkingLevel"]
+                }
+            ),
+            (
+                SpineDesigner(
+                    provider: .anthropic, model: "claude-haiku-5-5", baseURL: "\(host)/v1",
+                    thinking: "medium"),
+                { ($0?["output_config"] as? [String: Any])?["effort"] }
+            ),
+            (
+                SpineDesigner(
+                    provider: .openAI, model: "gpt-6-luna", baseURL: "\(host)/v1",
+                    thinking: "high"),
+                { $0?["reasoning_effort"] }
+            ),
+        ]
+        for (designer, level) in cases {
+            let model = ProviderModel(designer: designer)
+            XCTAssertTrue(model.capabilities.contains(.reasoning))
+            let options = BookAnalyzer.readingOptions(for: model)
+            XCTAssertEqual(options.reasoningLevel, .light)
+            let answer = try await Self.askLettering(model, options)
+            XCTAssertEqual(answer, "plain", "\(designer.provider)")
+            XCTAssertEqual(
+                level(ProviderStub.lastBody) as? String, designer.thinking, "\(designer.provider)")
+        }
+        XCTAssertEqual(ProviderStub.requests, 3)
+        let anthropic = ProviderModel(designer: cases[1].0)
+        _ = try await Self.askLettering(anthropic, ContextOptions(includeSchemaInPrompt: true))
+        let output = ProviderStub.lastBody?["output_config"] as? [String: Any]
+        XCTAssertNotNil(output?["format"], "The effort joins the schema's output format")
+    }
+
+    /// Asks `model` the cover-lettering question about a small blank image, with `options`.
+    private static func askLettering(_ model: ProviderModel, _ options: ContextOptions)
+        async throws -> String
+    {
         let schema = try GenerationSchema(
             root: DynamicGenerationSchema(
                 name: "Reading",
@@ -63,23 +130,12 @@ final class GenerationTests: XCTestCase {
                 space: CGColorSpace(name: CGColorSpace.sRGB)!,
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?
                 .makeImage())
-        func ask(_ options: ContextOptions) async throws -> String {
-            try await LanguageModelSession(model: model)
-                .respond(schema: schema, contextOptions: options) {
-                    "Describe the title lettering."
-                    Attachment(image)
-                }
-                .content.value(String.self, forProperty: "treatment")
-        }
-        let answer = try await ask(BookAnalyzer.readingOptions(for: model))
-        XCTAssertEqual(answer, "plain")
-        XCTAssertEqual(ProviderStub.requests, 1)
-        do {
-            _ = try await ask(ContextOptions(includeSchemaInPrompt: true, reasoningLevel: .light))
-            XCTFail("The session should refuse a reasoning level for this model")
-        } catch LanguageModelError.unsupportedCapability {
-            XCTAssertEqual(ProviderStub.requests, 1, "The refused request never reached Gemini")
-        }
+        return try await LanguageModelSession(model: model)
+            .respond(schema: schema, contextOptions: options) {
+                "Describe the title lettering."
+                Attachment(image)
+            }
+            .content.value(String.self, forProperty: "treatment")
     }
 
     func testProviderErrorsStopTheRunWhenEveryBookWouldFail() {
@@ -1759,15 +1815,42 @@ private final class OfflineURLProtocol: URLProtocol {
 private final class ProviderStub: URLProtocol {
     static let host = "provider.localhost"
     nonisolated(unsafe) static var requests = 0
+    /// The JSON body of the last request.
+    nonisolated(unsafe) static var lastBody: [String: Any]?
+
+    static func reset() {
+        requests = 0
+        lastBody = nil
+    }
 
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == host }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         Self.requests += 1
+        // URLSession moves a request's body into a stream before a protocol sees it.
+        if let stream = request.httpBodyStream {
+            stream.open()
+            var data = Data()
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while case let count = stream.read(&buffer, maxLength: buffer.count), count > 0 {
+                data.append(buffer, count: count)
+            }
+            stream.close()
+            Self.lastBody = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        }
+        // Each provider's answer shape: Anthropic's content blocks, OpenAI's choices, or
+        // Gemini's candidates.
         let answer = #"{"treatment":"plain"}"#
-        let body = try! JSONSerialization.data(withJSONObject: [
-            "candidates": [["content": ["parts": [["text": answer]]]]]
-        ])
+        let path = request.url?.path ?? ""
+        let reply: [String: Any] =
+            if path.hasSuffix("/messages") {
+                ["content": [["type": "text", "text": answer]]]
+            } else if path.hasSuffix("/chat/completions") {
+                ["choices": [["message": ["content": answer]]]]
+            } else {
+                ["candidates": [["content": ["parts": [["text": answer]]]]]]
+            }
+        let body = try! JSONSerialization.data(withJSONObject: reply)
         guard let url = request.url,
             let response = HTTPURLResponse(
                 url: url, statusCode: 200, httpVersion: "HTTP/1.1",

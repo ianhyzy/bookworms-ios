@@ -5,11 +5,21 @@ import SwiftUI
 /// Cloud Compute design with it whenever it is available. Otherwise the chosen provider designs,
 /// then Apple's on-device model, then local defaults (`ModelTier`).
 ///
+/// A preset provider's **Model name** picker lists `DesignModels`, with a star on the
+/// recommended model, and **Custom…**, which shows a field for any model ID; a saved ID that the
+/// list doesn't name shows as **Custom…** with its ID. The custom endpoint has only the field.
+/// **Thinking** appears only for a model that the list names with thinking levels, and saves for
+/// each provider; a custom model ID sends no level
+/// (`SpineDesigner.thinking(saved:provider:model:)`).
+///
 /// A field saves when it loses focus, on Return, and when the screen or window closes, so typing
 /// neither reads the Keychain nor rechecks the model for each character. Keys go straight to this
 /// device's Keychain and never show again; the row of a saved key says **Saved** and only removes
 /// it. On the iPhone, saving a key also shows a "Key saved" toast; the Mac's Settings window has
-/// no toasts. A key the Keychain refuses says so under the field.
+/// no toasts. A key the Keychain refuses says so under the field. When the screen appears, a key
+/// is saved, or a preset provider's model changes, one request asks the provider whether the key
+/// can use the model, and a note says when it can't (`SpineDesigner.availability()`); saving
+/// never waits for it.
 struct SpineDesignerSettings: View {
     @Environment(AppModel.self) private var model
     @Environment(GenerationController.self) private var generation
@@ -19,6 +29,13 @@ struct SpineDesignerSettings: View {
     @State private var newKey = ""
     @State private var hasKey = false
     @State private var keyError: String?
+    /// Whether the **Model name** picker shows **Custom…** and the model ID field.
+    @State private var customModel = false
+    /// The chosen model's thinking levels, cheapest first; empty hides **Thinking**.
+    @State private var thinkingLevels: [String] = []
+    /// Why the key can't use the chosen model, from the provider's answer.
+    @State private var availabilityNote: String?
+    @State private var availabilityCheck: Task<Void, Never>?
     @FocusState private var focus: Field?
 
     private enum Field { case model, baseURL, key }
@@ -28,20 +45,47 @@ struct SpineDesignerSettings: View {
             Picker("Model", selection: $designer.provider) {
                 ForEach(SpineDesigner.Provider.allCases) { Text($0.name).tag($0) }
             }
-            if designer.provider != .apple {
+            if designer.provider == .custom {
                 TextField("Model name", text: $designer.model, prompt: Text("Model name"))
                     .plainEntry()
                     .focused($focus, equals: .model)
                     .onSubmit(commit)
-                if designer.provider == .custom {
-                    TextField(
-                        "Base URL", text: $designer.baseURL,
-                        prompt: Text("https://example.com/v1")
-                    )
-                    .plainEntry()
-                    .focused($focus, equals: .baseURL)
-                    .onSubmit(commit)
+                TextField(
+                    "Base URL", text: $designer.baseURL,
+                    prompt: Text("https://example.com/v1")
+                )
+                .plainEntry()
+                .focused($focus, equals: .baseURL)
+                .onSubmit(commit)
+            } else if designer.provider != .apple {
+                Picker("Model name", selection: modelChoice) {
+                    ForEach(DesignModels.bundled.models[designer.provider] ?? []) { listed in
+                        Text(listed.pickerLabel)
+                            .accessibilityLabel(
+                                listed.recommended == true
+                                    ? "\(listed.label), recommended" : listed.label
+                            )
+                            .tag(String?.some(listed.id))
+                    }
+                    Text("Custom…").tag(String?.none)
                 }
+                if customModel {
+                    TextField("Model ID", text: $designer.model, prompt: Text("Model ID"))
+                        .plainEntry()
+                        .focused($focus, equals: .model)
+                        .onSubmit(commit)
+                }
+                if !thinkingLevels.isEmpty {
+                    Picker("Thinking", selection: $designer.thinking) {
+                        ForEach(thinkingLevels, id: \.self) { Text($0).tag($0) }
+                    }
+                }
+                if let availabilityNote {
+                    Label(availabilityNote, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if designer.provider != .apple {
                 if hasKey {
                     LabeledContent("API key") {
                         HStack {
@@ -50,6 +94,7 @@ struct SpineDesignerSettings: View {
                                 designer.provider.key.delete()
                                 hasKey = false
                                 settingsChanged()
+                                checkModel()
                             }
                         }
                     }
@@ -69,21 +114,42 @@ struct SpineDesignerSettings: View {
                     ? Self.appleNote : Self.providerNote(designer.provider))
         }
         .onChange(of: designer.provider) { _, provider in
-            designer.model = provider.defaultModel
-            designer.baseURL = provider.defaultBaseURL
+            designer = SpineDesigner(choosing: provider)
             newKey = ""
             keyError = nil
             // A choice of provider, not typing, reads the Keychain.
             hasKey = provider.key.read() != nil
             commit()
         }
+        .onChange(of: designer.thinking) { commit() }
         .onChange(of: focus) { left, _ in
             if left == .key { saveKey() } else if left != nil { commit() }
         }
-        .onAppear { hasKey = designer.provider.key.read() != nil }
+        .onAppear {
+            hasKey = designer.provider.key.read() != nil
+            showModel()
+            checkModel()
+        }
         // **Back** and closing the Settings window save what was typed.
         .onDisappear {
             saveKey()
+            commit()
+            availabilityCheck?.cancel()
+        }
+    }
+
+    /// The **Model name** picker's choice: a listed model's ID, or `nil` for **Custom…**, which
+    /// keeps the current ID in the field to edit.
+    private var modelChoice: Binding<String?> {
+        Binding {
+            customModel ? nil : designer.model
+        } set: { id in
+            guard let id else {
+                customModel = true
+                return
+            }
+            customModel = false
+            designer.model = id
             commit()
         }
     }
@@ -143,12 +209,54 @@ struct SpineDesignerSettings: View {
             model.toasts.show(Toast(message: "Key saved", systemImage: "key.fill"))
         #endif
         settingsChanged()
+        checkModel()
     }
 
-    /// Saves the settings when they changed since the last save.
+    /// Saves the settings when they changed since the last save. A new provider or model also
+    /// updates the model rows and is checked against the key.
     private func commit() {
+        let newModel = designer.provider != saved.provider || designer.model != saved.model
+        if newModel { showModel() }
         guard designer != saved else { return }
         settingsChanged()
+        if newModel { checkModel() }
+    }
+
+    /// Matches the rows to the chosen model: the picker selects a listed model, else
+    /// **Custom…**, and **Thinking** offers the list's levels for it, so a model that the list
+    /// doesn't name shows no **Thinking** and sends no level. A level the model doesn't take
+    /// becomes its default.
+    private func showModel() {
+        let listed = DesignModels.bundled.model(designer.model, of: designer.provider)
+        customModel = listed == nil
+        thinkingLevels = listed?.thinking ?? []
+        designer.thinking = SpineDesigner.thinking(
+            saved: designer.thinking, provider: designer.provider, model: designer.model)
+    }
+
+    /// Asks the provider whether the saved key can use the chosen preset model, and notes when
+    /// it can't. Each check replaces the last one, and an answer applies only while the reader
+    /// keeps that provider and model; a failed check says nothing.
+    private func checkModel() {
+        availabilityCheck?.cancel()
+        availabilityNote = nil
+        let checked = designer
+        guard hasKey, checked.provider != .apple, checked.provider != .custom,
+            !checked.model.isEmpty
+        else { return }
+        availabilityCheck = Task {
+            let result = await checked.availability()
+            guard !Task.isCancelled, designer.provider == checked.provider,
+                designer.model == checked.model
+            else { return }
+            switch result {
+            case .unavailable:
+                availabilityNote = "This key can't use \(checked.model); choose another model."
+            case .keyRejected:
+                availabilityNote = "\(checked.provider.name) didn't accept this key."
+            case .available, nil: break
+            }
+        }
     }
 
     /// Saves the settings and forgets the provider's rejection of the old ones, with the last
