@@ -535,6 +535,18 @@ final class GenerationTests: XCTestCase {
                 status(reader: .measurementsOnly, quota: .belowLimit), mode: .background))
     }
 
+    /// Idle Mac runs fail closed: an unknown power source counts as battery power, and a run
+    /// without a power-source watch, which unplugging couldn't stop, never starts.
+    func testIdleMacRunsNeedACPowerAndAPowerWatch() {
+        func mayProceed(_ power: GenerationController.PowerSource, watching: Bool = true) -> Bool {
+            GenerationController.idleRunMayProceed(power: power, watching: watching)
+        }
+        XCTAssertTrue(mayProceed(.ac))
+        XCTAssertFalse(mayProceed(.battery))
+        XCTAssertFalse(mayProceed(.unknown))
+        XCTAssertFalse(mayProceed(.ac, watching: false))
+    }
+
     func testRunsQueueUpgradesOnlyWhenTheirTierCanTakeRequests() {
         func upgradeTier(
             _ tier: ModelTier, available: Bool = true, quota: ModelStatus.Quota = .belowLimit,
