@@ -930,10 +930,10 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertNil(GenerationView.coverlessNote(0))
         XCTAssertEqual(
             GenerationView.coverlessNote(1),
-            "1 book had no cover, so its cover and spine use a default style.")
+            "1 book has no cover, so it gets a default style.")
         XCTAssertEqual(
             GenerationView.coverlessNote(3),
-            "3 books had no cover, so their covers and spines use a default style.")
+            "3 books have no cover, so they get a default style.")
     }
 
     @MainActor
