@@ -1,0 +1,17 @@
+.DS_Store
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+*.xcresult
+.local/
+.claude/*
+!.claude/settings.json
+DerivedData-device/
+DerivedData-mac/
+DerivedData-sim/
+# The owner's private example profile (script/export-example-profile.py). The placeholder keeps
+# the folder, which the project copies into the app, so builds without the profile still work.
+ExampleProfile/*
+!ExampleProfile/.gitkeep
+__pycache__/

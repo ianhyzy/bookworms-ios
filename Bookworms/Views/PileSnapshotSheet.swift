@@ -1,0 +1,343 @@
+import SwiftUI
+import os
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
+
+/// Shares the pile as an image: the pile's books spread front cover up across the table
+/// (`PileSpread`) under the name of its time frame, in a share size the reader picks.
+///
+/// Each size change or shuffle renders a new image and cancels one in progress. A change to the
+/// books or their designs, such as a library update, draws again once the image in progress, if
+/// any, is ready. The previous image stays in view under a progress indicator until the new one
+/// is ready, and sharing waits for it, except after a new design alone, which leaves the image
+/// shareable while the next draws. The preview leaves out the credit, which the shared file
+/// carries. **Video** films the same books falling into the same spread (`PileVideoSheet`),
+/// pushed in this sheet's navigation stack so only one sheet shows at a time. On a Mac, the sheet
+/// takes the page size, which leaves the preview room, and a failure shows in an alert in the
+/// sheet, since the main window's toasts sit behind it.
+struct PileSnapshotSheet: View {
+    let books: [CloudBook]
+    let title: String
+
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage(ShareProfileLink.settingKey) private var showsProfileLink = true
+    @State private var aspect = ShareAspect.story
+    @State private var seed: UInt64 = 0
+    /// `books` as last passed in, which the render loop reads between renders.
+    @State private var latest: [CloudBook]
+    @State private var image: ShareImage?
+    /// The options of the last finished render, whether it drew `image` or failed.
+    @State private var rendered: Options?
+    @State private var failed = false
+    /// The render loops running. A cancelled loop can finish its frame after its replacement
+    /// starts.
+    @State private var drawing = 0
+    /// Counts changes that no running loop draws: book and design changes while no loop ran,
+    /// and the last loop's end before the image shows the latest options. Each starts a loop.
+    @State private var redraws = 0
+    /// The redraw waiting for covers that missed the image's wait. A new render or the sheet's
+    /// closing cancels it, so it never claims the render slot for an image nobody sees.
+    @State private var lateRedraw: Task<Void, Never>?
+    @State private var filmsPile = false
+    /// The files the share sheet offers while it is open.
+    @State private var files: SharedFiles?
+    /// Whether **Share** is adding the credit and writing the file.
+    @State private var isPreparing = false
+    #if os(macOS)
+        @State private var failure: String?
+    #endif
+
+    nonisolated private static let log = Logger(
+        subsystem: "gay.ian.Bookworms.iOS", category: "share")
+
+    private struct Options: Equatable {
+        var aspect: ShareAspect
+        var seed: UInt64
+        /// The books and heading, so a new library never leaves an image of the old one.
+        var books: [CloudBook]
+        var title: String
+        /// The designs the books draw (`AppModel.design(for:)`), so a design saved for a book
+        /// the image leaves out draws nothing again.
+        var designs: [SpineDesignV1?]
+        /// The profile link the image letters (`ShareProfileLink`).
+        var username: String?
+
+        /// The options without the designs. An image that differs only in its designs, such as
+        /// one a generation run outdates every few seconds, stays shareable while the next draws.
+        var shownKey: Options {
+            var key = self
+            key.designs = []
+            return key
+        }
+
+        /// The options without the books and designs, which restart a render in progress when
+        /// they change.
+        var restartKey: Options {
+            var key = shownKey
+            key.books = []
+            return key
+        }
+    }
+
+    private struct LoopKey: Equatable {
+        var options: Options
+        var redraws: Int
+    }
+
+    init(books: [CloudBook], title: String) {
+        self.books = books
+        self.title = title
+        _latest = State(initialValue: books)
+        #if DEBUG
+            if let aspect = UserDefaults.standard.string(forKey: "BookwormsPileShareAspect")
+                .flatMap(ShareAspect.init(rawValue:))
+            {
+                _aspect = State(initialValue: aspect)
+            }
+            _seed = State(
+                initialValue: UInt64(
+                    max(0, UserDefaults.standard.integer(forKey: "BookwormsPileShareSeed"))))
+        #endif
+    }
+
+    var body: some View {
+        // Without the designs, which the body watches through `model.designRevision` instead
+        // of reading each book's.
+        let options = Options(
+            aspect: aspect, seed: seed, books: books, title: title, designs: [],
+            username: username)
+        let isPending = rendered?.shownKey != options.shownKey
+        NavigationStack {
+            VStack(spacing: 20) {
+                preview(isPending: isPending)
+                Picker("Size", selection: $aspect) {
+                    ForEach(ShareAspect.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                HStack(spacing: 24) {
+                    Button("Shuffle", systemImage: "shuffle") { seed = .random(in: 1 ... .max) }
+                    Button("Video", systemImage: "video") { filmsPile = true }
+                }
+                // Shown once the app has read the username the link names.
+                if model.social.owner?.username != nil {
+                    Toggle("Show profile link", isOn: $showsProfileLink)
+                        .accessibilityHint("Letters your Hardcover profile link on the image.")
+                        .fixedSize()
+                        // The image being prepared already letters the link, or doesn't.
+                        .disabled(isPreparing)
+                }
+            }
+            .padding()
+            .navigationTitle("Share desk")
+            .navigationBarTitleDisplayMode(.inline)
+            .navigationDestination(isPresented: $filmsPile) {
+                PileVideoSheet(books: latest, title: title, aspect: aspect, seed: seed)
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(role: .close) { dismiss() }
+                }
+                if let image {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Share", systemImage: "square.and.arrow.up") {
+                            Task { await share(image) }
+                        }
+                        .help("Share the image")
+                        .disabled(isPending || isPreparing)
+                        #if os(macOS)
+                            .shareSheet($files, fromButton: true, showsToast: false) { outcome in
+                                if case .failed(let message) = outcome { failure = message + "." }
+                            }
+                        #endif
+                    }
+                }
+            }
+        }
+        #if os(iOS)
+            .shareSheet($files)
+        #endif
+        .task(id: LoopKey(options: options.restartKey, redraws: redraws)) { await render() }
+        .onDisappear { lateRedraw?.cancel() }
+        .presentationSizing(.page)
+        #if os(macOS)
+            .alert(
+                failure ?? "",
+                isPresented: Binding {
+                    failure != nil
+                } set: { _ in
+                    failure = nil
+                }
+            ) {}
+        #endif
+        #if DEBUG
+            .task {
+                // Lets this sheet finish presenting before it pushes the video.
+                guard PileVideoDebug.opensSheet else { return }
+                try? await Task.sleep(for: .seconds(1))
+                filmsPile = true
+            }
+        #endif
+        .onChange(of: books) {
+            latest = books
+            if drawing == 0 { redraws += 1 }
+        }
+        .onChange(of: model.designRevision) {
+            if drawing == 0 { redraws += 1 }
+        }
+        // The shelf's dark scheme reaches this content but not the sheet's own background.
+        .preferredColorScheme(.dark)
+    }
+
+    private func preview(isPending: Bool) -> some View {
+        ZStack {
+            // Fills the image's shape before there is an image.
+            Rectangle().fill(.quaternary)
+            if let image {
+                Image(uiImage: image.image)
+                    .resizable()
+                    .scaledToFit()
+                    .accessibilityLabel("\(image.name) preview")
+            } else if failed && !isPending {
+                ContentUnavailableView(
+                    "Couldn't draw the desk", systemImage: "exclamationmark.triangle",
+                    description: Text("Try Shuffle or another size."))
+            }
+            if isPending {
+                ProgressView("Dropping books")
+                    .padding()
+                    .background(.regularMaterial, in: .rect(cornerRadius: 12))
+            }
+        }
+        .aspectRatio(aspect.size.width / aspect.size.height, contentMode: .fit)
+        .clipShape(.rect(cornerRadius: 12))
+        .frame(maxHeight: .infinity)
+    }
+
+    /// Opens the share sheet with the image and its credit, which the preview leaves out, and
+    /// with the books' and the sharer's Hardcover links in the text
+    /// (`HardcoverInvite.readingText`).
+    private func share(_ image: ShareImage) async {
+        isPreparing = true
+        defer { isPreparing = false }
+        // The text names the same profile as the image, whatever the toggle says by the time
+        // the files are ready.
+        let username = username
+        do {
+            files = try await SharedFiles.images([image])
+            files?.text = HardcoverInvite.readingText(books: image.books, username: username)
+        } catch {
+            Self.log.error("The desk image could not be shared: \(error)")
+            #if os(macOS)
+                failure = "Couldn't prepare the image."
+            #else
+                model.toasts.show(.failure("Couldn't prepare the image"))
+            #endif
+        }
+    }
+
+    /// The designs of the books the image shows, the first `PileSnapshotRenderer.maximumBooks`.
+    private func designs(of books: [CloudBook]) -> [SpineDesignV1?] {
+        books.prefix(PileSnapshotRenderer.maximumBooks).map { model.design(for: $0) }
+    }
+
+    /// The username the image and its text link, unless **Show profile link** is off.
+    private var username: String? { showsProfileLink ? model.social.owner?.username : nil }
+
+    /// The options for the books the render loop draws (`latest`).
+    private var latestOptions: Options {
+        Options(
+            aspect: aspect, seed: seed, books: latest, title: title,
+            designs: designs(of: latest), username: username)
+    }
+
+    /// Renders until the image shows the latest books. The last loop to end starts another when
+    /// the image is still out of date, as after a change that arrived while only a cancelled
+    /// loop ran.
+    private func render() async {
+        drawing += 1
+        defer {
+            drawing -= 1
+            if drawing == 0 && rendered != latestOptions { redraws += 1 }
+        }
+        while !Task.isCancelled {
+            let options = latestOptions
+            guard rendered != options else { return }
+            await render(options.books, options)
+        }
+    }
+
+    private func render(_ books: [CloudBook], _ options: Options) async {
+        lateRedraw?.cancel()
+        do {
+            let drawn = try await PileSnapshotRenderer.render(
+                books: books, title: options.title, aspect: options.aspect, seed: options.seed,
+                username: options.username, model: model)
+            // A render cancelled after its last check still returns; a newer one is on its way.
+            try Task.checkCancellation()
+            image = ShareImage(image: drawn.image, name: "Desk \(title)", books: books)
+            failed = false
+            #if DEBUG
+                PileSnapshotDebug.write(drawn.image)
+                if options.seed < PileSnapshotDebug.lastSeed { seed = options.seed + 1 }
+            #endif
+            if !drawn.late.isEmpty {
+                lateRedraw = Task { await redrawLateCovers(drawn.late, of: books, options) }
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            Self.log.error("The desk image failed: \(error)")
+            // A blank or failed render must not leave an older image to share.
+            image = nil
+            failed = true
+        }
+        rendered = options
+    }
+
+    /// Draws the image of `books` with `options` once more when the covers of `late`, which
+    /// missed its wait, arrive, unless another image replaces it, starts drawing first, or the
+    /// task is cancelled. A failed redraw keeps the image.
+    private func redrawLateCovers(
+        _ late: [CloudBook], of books: [CloudBook], _ options: Options
+    ) async {
+        await PileSnapshotRenderer.waitForCovers(
+            of: late, among: books.count, aspect: options.aspect, model: model)
+        guard !Task.isCancelled, rendered == options, drawing == 0,
+            let drawn = try? await PileSnapshotRenderer.render(
+                books: books, title: options.title, aspect: options.aspect, seed: options.seed,
+                username: options.username, model: model),
+            !Task.isCancelled, rendered == options, drawing == 0
+        else { return }
+        image = ShareImage(image: drawn.image, name: "Desk \(title)", books: books)
+    }
+}
+
+#if DEBUG
+    /// Simulator hooks, since a script cannot tap the share button.
+    ///
+    /// `-BookwormsPileShare YES` opens the pile's share sheet when the pile appears, and
+    /// `-BookwormsPileShareAspect <story|portrait|square>` picks its size. Each image is then
+    /// written, with the credit that sharing adds, to
+    /// `Library/Caches/Bookworms/pile-share-debug.png`. `-BookwormsPileShareSeed <n>`
+    /// sets the first image's seed, and `-BookwormsPileRedrops <n>` renders an image for each
+    /// seed after it up to n.
+    enum PileSnapshotDebug {
+        static var opensSheet: Bool { UserDefaults.standard.bool(forKey: "BookwormsPileShare") }
+        static var lastSeed: UInt64 {
+            UInt64(max(0, UserDefaults.standard.integer(forKey: "BookwormsPileRedrops")))
+        }
+
+        @MainActor static func write(_ image: UIImage) {
+            guard opensSheet else { return }
+            let url = URL.cachesDirectory.appending(path: "Bookworms/pile-share-debug.png")
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? image.withShareCredit()?.pngData()?.write(to: url, options: .atomic)
+        }
+    }
+#endif

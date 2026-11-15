@@ -1,0 +1,404 @@
+import SwiftUI
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
+
+/// How two readers' tastes compare: their photos, the match score and its name, the books they
+/// both loved, and the books they fought over (`TasteMatch`).
+///
+/// The card draws nothing without a score. Fewer rows fit on smaller sizes: a Story shows two
+/// fights, and Portrait and Square one. With no fights, a line says so, and the covers of the
+/// books both readers loved start larger. The covers grow into leftover height, and what they
+/// leave spreads evenly between the sections.
+struct TasteMatchCard: View {
+    let input: ShareInput
+
+    var body: some View {
+        if let social = input.social, let score = social.match.score {
+            card(social, score: score)
+        }
+    }
+
+    private var metrics: (avatar: CGFloat, score: CGFloat, cover: CGFloat, row: CGFloat) {
+        let hasFights = input.social?.match.fights.isEmpty == false
+        return switch input.aspect {
+        case .story: (130, 200, hasFights ? 250 : 380, 214)
+        case .portrait: (116, 170, hasFights ? 210 : 280, 204)
+        case .square: (100, 140, hasFights ? 160 : 210, 194)
+        }
+    }
+
+    private func card(_ social: ShareSocial, score: Int) -> some View {
+        let aspect = input.aspect
+        let theme = input.theme
+        let match = social.match
+        let fights = match.fights.prefix(aspect == .story ? 2 : 1)
+        return ZStack {
+            LinearGradient(
+                colors: [theme.backdropLight.color, theme.backdropDark.color],
+                startPoint: .top, endPoint: .bottom)
+            VStack(alignment: .leading, spacing: 0) {
+                // Wider than the 16 points between a heading and its books, so sections read
+                // apart.
+                let gap: CGFloat = aspect == .story ? 48 : 36
+                ShareReadersHeader(
+                    social: social, title: "Taste match", size: metrics.avatar, theme: theme)
+                Spacer(minLength: gap)
+                scoreRow(score, match: match)
+                Spacer(minLength: gap)
+                if !match.agreements.isEmpty {
+                    VStack(alignment: .leading, spacing: 16) {
+                        ShareStyle.heading("We both loved", aspect: aspect)
+                        ShareCoverRow(
+                            input: input, books: match.agreements.map(\.book),
+                            height: metrics.cover, titleLines: aspect == .square ? 1 : 2)
+                    }
+                    // The covers grow before the gaps do.
+                    .layoutPriority(1)
+                    Spacer(minLength: gap)
+                }
+                VStack(alignment: .leading, spacing: 16) {
+                    ShareStyle.heading("We fought over", aspect: aspect)
+                    if fights.isEmpty {
+                        Text("Not a single fight. Suspicious.")
+                            .font(ShareStyle.serif(aspect == .square ? 40 : 46).italic())
+                            .opacity(0.9)
+                    } else {
+                        ForEach(fights) { fight(social, $0, panel: theme.panel().color) }
+                    }
+                }
+                Spacer(minLength: gap)
+                ShareInviteLine(username: social.owner.username)
+            }
+            .foregroundStyle(ShareStyle.cream.color)
+            .padding(aspect.insets)
+        }
+    }
+
+    /// The score in large cream numerals beside its name and the number of books it compares.
+    private func scoreRow(_ score: Int, match: TasteMatch) -> some View {
+        HStack(alignment: .center, spacing: 32) {
+            Text("\(score)%")
+                .font(ShareStyle.serif(metrics.score, .bold))
+                .foregroundStyle(ShareStyle.cream.color)
+                .fixedSize()
+                .accessibilityLabel("\(score) percent match")
+            VStack(alignment: .leading, spacing: 8) {
+                Text(match.tier ?? "")
+                    .font(ShareStyle.serif(input.aspect == .square ? 46 : 54, .semibold))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.7)
+                Text("\(match.shared.count) books we both rated")
+                    .font(ShareStyle.serif(32, .medium))
+                    .opacity(0.8)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.9)
+            }
+        }
+        // The covers' growth takes spare height, not the text's.
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// One book the readers rated far apart: its cover, title, both ratings, and a playful
+    /// label, with the gap in stars.
+    private func fight(_ social: ShareSocial, _ fight: SharedRating, panel: Color) -> some View {
+        let book = fight.book
+        let coverHeight = metrics.row - 40
+        return HStack(spacing: 24) {
+            ShareCover(
+                book: book, look: input.look(for: book), cover: input.covers[book.id],
+                style: input.coverStyle, height: coverHeight,
+                yaw: 0.5 + (ShareStyle.unit(input.seed, book.id, 6) - 0.5) * 0.12
+            )
+            .shadow(color: .black.opacity(0.45), radius: 14, y: 10)
+            VStack(alignment: .leading, spacing: 4) {
+                ShareFittingText(
+                    forms: ShareStyle.titles(book), size: 38, minimumScale: 0.8, book: book
+                ) {
+                    ShareStyle.serif($0, .semibold)
+                }
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
+                    ratingRow("Me", rating: fight.mine, isMuted: false)
+                    ratingRow(social.reader.shortName, rating: fight.theirs, isMuted: true)
+                }
+                Text(TasteMatch.fightLabel(fight.distance))
+                    .font(ShareStyle.serif(28, .semibold).italic())
+                    .foregroundStyle(ShareStyle.gold)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(20)
+        .frame(height: metrics.row)
+        .background(panel, in: .rect(cornerRadius: 28))
+    }
+
+    private func ratingRow(_ label: String, rating: Double, isMuted: Bool) -> some View {
+        GridRow {
+            Text(label)
+                .font(ShareStyle.serif(28, .medium))
+                .opacity(isMuted ? 0.75 : 1)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            ShareStars(rating: rating, size: 24, isMuted: isMuted)
+        }
+    }
+}
+
+/// Each reader's favorites that the other hasn't shelved (`TasteMatch.forThem` and `forMe`):
+/// up to three covers for each, with the recommending reader's stars. The owner's picks on their
+/// Want to Read (`TasteMatch.onMyList`) say so under the title.
+///
+/// A side without picks says so in a line instead, and the other side's covers start larger.
+/// The covers grow into leftover height, and what they leave spreads evenly between the
+/// sections.
+struct BookSwapCard: View {
+    let input: ShareInput
+
+    var body: some View {
+        if let social = input.social {
+            card(social)
+        }
+    }
+
+    private var metrics: (avatar: CGFloat, cover: CGFloat, stars: CGFloat) {
+        let match = input.social?.match
+        let scale: CGFloat =
+            match?.forThem.isEmpty == false && match?.forMe.isEmpty == false ? 1 : 1.3
+        return switch input.aspect {
+        case .story: (130, 320 * scale, 30)
+        case .portrait: (116, 228 * scale, 26)
+        case .square: (100, 170 * scale, 22)
+        }
+    }
+
+    private func card(_ social: ShareSocial) -> some View {
+        let aspect = input.aspect
+        let theme = input.theme
+        let match = social.match
+        let other = social.reader.shortName
+        return ZStack {
+            LinearGradient(
+                colors: [theme.backdropLight.color, theme.backdropDark.color],
+                startPoint: .top, endPoint: .bottom)
+            VStack(alignment: .leading, spacing: 0) {
+                // Wider than the 16 points between a heading and its books, so sections read
+                // apart.
+                let gap: CGFloat = aspect == .story ? 64 : 48
+                ShareReadersHeader(
+                    social: social, title: "Book swap", size: metrics.avatar, theme: theme)
+                Spacer(minLength: gap)
+                // The covers grow before the gaps do.
+                side(
+                    "\(other), read this next", books: match.forThem, isMuted: false,
+                    empty: "\(other) has read all my favorites."
+                )
+                .layoutPriority(1)
+                Spacer(minLength: gap)
+                side(
+                    "My next reads, from \(other)", books: match.forMe, isMuted: true,
+                    empty: "I've read all of \(other)'s favorites.",
+                    notes: Dictionary(
+                        uniqueKeysWithValues: match.onMyList.map { ($0, "Already on my list") })
+                )
+                .layoutPriority(1)
+                Spacer(minLength: gap)
+                ShareInviteLine(username: social.owner.username)
+            }
+            .foregroundStyle(ShareStyle.cream.color)
+            .padding(aspect.insets)
+        }
+    }
+
+    /// One reader's picks under a heading, with the recommender's stars and any `notes`, or
+    /// `empty` without any.
+    private func side(
+        _ heading: String, books: [CloudBook], isMuted: Bool, empty: String,
+        notes: [Int: String] = [:]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ShareStyle.heading(heading, aspect: input.aspect)
+            if books.isEmpty {
+                Text(empty)
+                    .font(ShareStyle.serif(input.aspect == .square ? 38 : 44).italic())
+                    .opacity(0.9)
+            } else {
+                ShareCoverRow(
+                    input: input, books: books, height: metrics.cover,
+                    titleLines: input.aspect == .square ? 1 : 2,
+                    stars: (size: metrics.stars, isMuted: isMuted), notes: notes)
+            }
+        }
+    }
+}
+
+/// Both readers' photos, overlapping, beside their names, such as "Avery & Robin", over the
+/// card's name, such as "Taste match".
+struct ShareReadersHeader: View {
+    let social: ShareSocial
+    let title: String
+    let size: CGFloat
+    let theme: ShareTheme
+
+    var body: some View {
+        HStack(spacing: 28) {
+            HStack(spacing: -size * 0.22) {
+                ShareAvatar(
+                    profile: social.owner, image: social.avatars[social.owner.id], size: size,
+                    fill: theme.panel(0))
+                ShareAvatar(
+                    profile: social.reader, image: social.avatars[social.reader.id], size: size,
+                    fill: theme.panel(1))
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                ShareFittingText(
+                    forms: ["\(social.owner.shortName) & \(social.reader.shortName)"],
+                    size: size * 0.5, minimumScale: 0.6
+                ) {
+                    ShareStyle.serif($0, .semibold)
+                }
+                Text(title)
+                    .font(ShareStyle.serif(size * 0.3))
+                    .lineLimit(1)
+            }
+        }
+        // The covers' growth takes spare height, not the names'.
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// A reader's profile photo in a cream ring, or their initials without one.
+struct ShareAvatar: View {
+    let profile: ReaderProfile
+    let image: UIImage?
+    let size: CGFloat
+    let fill: ColorValue
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else {
+                ZStack {
+                    fill.color
+                    Text(Self.initials(profile))
+                        .font(ShareStyle.serif(size * 0.4, .semibold))
+                        .foregroundStyle(ShareStyle.cream.color)
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(.circle)
+        .overlay { Circle().strokeBorder(ShareStyle.cream.color, lineWidth: max(3, size * 0.035)) }
+        .shadow(color: .black.opacity(0.35), radius: 10, y: 6)
+        .accessibilityHidden(true)
+    }
+
+    /// The first letters of the first two words of the name, or the username's first letter.
+    static func initials(_ profile: ReaderProfile) -> String {
+        let words = (profile.name ?? "").split(separator: " ").prefix(2)
+        let letters = words.compactMap(\.first).map(String.init).joined()
+        return (letters.isEmpty ? String(profile.username.prefix(1)) : letters).uppercased()
+    }
+}
+
+/// Up to three covers in a row, standing on one line, each with its title below and,
+/// optionally, the book's rating in stars and a short note under the title.
+///
+/// The covers and any notes' line take at least `height` and grow by up to 40 percent of it into
+/// height the card has to spare, so a row with notes is no taller than one without; the covers
+/// fill their part as far as their column's width allows.
+struct ShareCoverRow: View {
+    let input: ShareInput
+    let books: [CloudBook]
+    let height: CGFloat
+    let titleLines: Int
+    var stars: (size: CGFloat, isMuted: Bool)?
+    /// Notes by book ID, such as "Already on my list". With any note, every column keeps a line
+    /// for one, so the covers stay level.
+    var notes: [Int: String] = [:]
+
+    var body: some View {
+        // A turned 3D book draws up to about 10 percent taller than its height.
+        let fill: CGFloat = input.coverStyle == .threeD ? 0.9 : 1
+        let titleSize: CGFloat = 30
+        let noteSize: CGFloat = 24
+        // The notes' line and the spacing above it, estimated as for titles.
+        let noteHeight: CGFloat = notes.isEmpty ? 0 : noteSize * 1.2 + 12
+        HStack(alignment: .top, spacing: 28) {
+            ForEach(books.prefix(TasteMatch.limit)) { book in
+                let cover = input.covers[book.id]
+                let ratio = ShareCover.aspect(of: cover, style: input.coverStyle)
+                VStack(spacing: 12) {
+                    GeometryReader { proxy in
+                        ShareCover(
+                            book: book, look: input.look(for: book), cover: cover,
+                            style: input.coverStyle,
+                            height: min(proxy.size.height * fill, proxy.size.width * 0.95 / ratio),
+                            yaw: 0.5 + (ShareStyle.unit(input.seed, book.id, 6) - 0.5) * 0.12
+                        )
+                        .shadow(color: .black.opacity(0.45), radius: 18, y: 14)
+                        .frame(
+                            width: proxy.size.width, height: proxy.size.height, alignment: .bottom)
+                    }
+                    .frame(minHeight: height - noteHeight, maxHeight: height * 1.4 - noteHeight)
+                    if let stars, let rating = book.rating {
+                        ShareStars(rating: rating, size: stars.size, isMuted: stars.isMuted)
+                    }
+                    ShareFittingText(
+                        forms: ShareStyle.titles(book), size: titleSize, minimumScale: 0.85,
+                        lines: titleLines, book: book
+                    ) {
+                        ShareStyle.serif($0, .semibold)
+                    }
+                    .multilineTextAlignment(.center)
+                    // Every title takes the height of `titleLines` lines, as `ShareFittingText`
+                    // estimates a line, so the covers above share one height and one line.
+                    .frame(minHeight: CGFloat(titleLines) * titleSize * 1.2, alignment: .top)
+                    if !notes.isEmpty {
+                        Text(notes[book.id] ?? " ")
+                            .font(ShareStyle.serif(noteSize, .semibold))
+                            .foregroundStyle(ShareStyle.gold)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+    }
+}
+
+/// The invitation a social image ends with: compare takes on Hardcover, and the sharer's
+/// profile link (`HardcoverInvite`), on one line when it fits, else on two.
+struct ShareInviteLine: View {
+    let username: String
+
+    var body: some View {
+        let line = Text(HardcoverInvite.line).opacity(0.85)
+        let link = Text(HardcoverInvite.link(username))
+            .fontWeight(.semibold)
+            .foregroundStyle(ShareStyle.gold)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 14) {
+                line
+                Text("·").opacity(0.6)
+                link
+            }
+            VStack(spacing: 4) {
+                line
+                link
+            }
+        }
+        .font(ShareStyle.serif(30, .medium))
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+        .frame(maxWidth: .infinity)
+        // Shrinks only to fit the width; a card's growing covers cannot squeeze it shorter.
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}

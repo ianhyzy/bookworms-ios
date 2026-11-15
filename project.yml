@@ -1,0 +1,104 @@
+name: Bookworms
+options:
+  bundleIdPrefix: gay.ian
+  deploymentTarget:
+    iOS: '27.0'
+    macOS: '27.0'
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    DEVELOPMENT_TEAM: KSZ7QR8Y88
+    CODE_SIGN_STYLE: Automatic
+    GENERATE_INFOPLIST_FILE: YES
+    MARKETING_VERSION: '1.0.0'
+    CURRENT_PROJECT_VERSION: '10'
+    SWIFT_STRICT_CONCURRENCY: complete
+targets:
+  Bookworms:
+    type: application
+    platform: auto
+    # One multiplatform target: iPhone, and a native app for Apple silicon Macs.
+    supportedDestinations: [iOS, macOS]
+    sources:
+      - path: Bookworms
+        type: syncedFolder
+      # The owner's example profile, which `script/export-example-profile.py` writes and Git
+      # ignores except for a placeholder. Builds without it hide **View example profile**;
+      # archives require it, and other Release builds, such as `script/run_mac.sh`, warn.
+      - path: ExampleProfile
+        type: folder
+        buildPhase: resources
+    preBuildScripts:
+      - name: Check the example profile
+        basedOnDependencyAnalysis: false
+        script: |
+          if [ "$CONFIGURATION" = Release ] && [ ! -f "$SRCROOT/ExampleProfile/library-v1.json" ]; then
+            message="ExampleProfile/ is missing. Run python3 -I script/export-example-profile.py --out ExampleProfile (see docs/RELEASING.md)."
+            # An archive builds with the install action.
+            if [ "$ACTION" = install ]; then echo "error: $message"; exit 1; fi
+            echo "warning: $message"
+          fi
+    entitlements:
+      path: Bookworms/Bookworms.entitlements
+      properties:
+        com.apple.developer.icloud-container-identifiers: [iCloud.gay.ian.Bookworms]
+        com.apple.developer.icloud-services: [CloudKit]
+        aps-environment: development
+        # Managed capability: request it for the team before signing a device build.
+        com.apple.developer.private-cloud-compute: true
+    info:
+      path: Bookworms/Info.plist
+      properties:
+        CFBundleDisplayName: Bookworms
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        # Lets display links and animations run above 60 Hz on ProMotion iPhones.
+        CADisableMinimumFrameDurationOnPhone: true
+        UIBackgroundModes: [processing, remote-notification]
+        BGTaskSchedulerPermittedIdentifiers:
+          - gay.ian.Bookworms.iOS.spines
+          - gay.ian.Bookworms.iOS.generate.*
+        NSPhotoLibraryAddUsageDescription: Bookworms saves the share images and videos you create to your photo library.
+        # The system asks when a request goes to another device on the local network. Only the
+        # reader's OpenAI-compatible endpoint can name one (`SpineDesigner`), because
+        # `CoverURLPolicy` keeps covers to public hosts; reword this if that policy opens up.
+        NSLocalNetworkUsageDescription: Bookworms connects to the model endpoint you set up on your network to design spines.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: gay.ian.Bookworms.iOS
+        # XcodeGen's iOS app preset sets 1,2 at the target level; this app is iPhone only.
+        TARGETED_DEVICE_FAMILY: '1'
+        ARCHS[sdk=macosx*]: arm64
+        CODE_SIGN_ENTITLEMENTS[sdk=macosx*]: Bookworms/Bookworms-macOS.entitlements
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.books
+        # An Icon Composer icon, which iOS and macOS render with Liquid Glass.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Dark brass in light appearance and a lighter brass in dark, with High Contrast variants.
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+  BookwormsTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: BookwormsTests
+        type: syncedFolder
+    dependencies:
+      - target: Bookworms
+    settings:
+      base:
+        TARGETED_DEVICE_FAMILY: '1'
+schemes:
+  Bookworms:
+    build:
+      targets:
+        Bookworms: all
+    run:
+      config: Debug
+    test:
+      targets:
+        - BookwormsTests
+      gatherCoverageData: false

@@ -1,0 +1,2034 @@
+import SwiftUI
+import TipKit
+import UniformTypeIdentifiers
+import os
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+    import QuickLook
+#endif
+
+/// The Share tab: choose a template and its options, preview the export, and share it.
+///
+/// The preview shows the rendered image without the credit, which only the shared files carry.
+/// Each option change renders the image again after a short pause and cancels a render still in
+/// progress; a new design for a drawn book renders after it instead. Covers and spine fonts
+/// load before each render, because `ImageRenderer` draws synchronously and would capture
+/// anything still loading as a placeholder. The Pile template renders with
+/// `PileSnapshotRenderer`, which loads its own covers and fonts.
+///
+/// **My reading** offers templates about the reader's own books, and **With friends** offers
+/// comparisons with another Hardcover reader, chosen under **Compare with**
+/// (`ShareReaderSection`). Comparisons come prepared from `SocialModel`; the body only picks
+/// the shown reader's.
+///
+/// The app saves the mode, template, size, time frame, and **Show profile link**, so the tab
+/// opens as it was left, except that it never opens on Desk: a Desk image takes seconds of
+/// RealityKit work, which a launch should not start before the reader asks for it. Choosing
+/// Desk leaves the template chosen before it saved.
+///
+/// Without a library, the tab shows `NoLibraryView` instead, which can open the Hardcover sheet.
+struct ShareStudioView: View {
+    /// The `UserDefaults` keys of the saved choices.
+    static let modeKey = "BookwormsStudioMode"
+    static let templateKey = "BookwormsStudioTemplate"
+    static let aspectKey = "BookwormsStudioSize"
+    /// The saved time frame, as `TimeFrame.setting` writes it, or empty for the newest year.
+    static let frameKey = "BookwormsStudioFrame"
+    /// The saved `TopFiveSource`.
+    static let topFiveSourceKey = "BookwormsStudioTopFiveSource"
+
+    @Environment(AppModel.self) private var model
+    @AppStorage(Self.modeKey) private var savedMode = ShareMode.mine
+    @State private var template = Self.savedTemplate
+    /// The reader chosen under **Compare with**: `nil`, or a reader no longer listed, is the
+    /// best match.
+    @State private var readerID: Int?
+    @AppStorage(Self.aspectKey) private var aspect = ShareAspect.story
+    @AppStorage(Self.frameKey) private var frameSetting = ""
+    /// The example profile's time frame, which the saved frame never sees.
+    @State private var exampleFrame = ""
+    @AppStorage(ShareProfileLink.settingKey) private var showsProfileLink = true
+    /// The featured book of a single-book template: `nil` is its newest choice.
+    @State private var bookID: Int?
+    @State private var coverStyle = ShareCoverStyle.threeD
+    @State private var direction = HotTakeDirection.lovedMore
+    @State private var showsRatings = true
+    /// What Top Five draws: the frame's highest rated books, or the pinned ones of all time.
+    @AppStorage(Self.topFiveSourceKey) private var topFiveSource = TopFiveSource.rating
+    /// **Show ratings** for pinned books, kept apart because ratings don't choose them.
+    @State private var showsPinnedRatings = false
+    @State private var seed: UInt64 = 0
+    /// The Checkout Card card to show, counting from 0 (`CheckoutCardLayout`).
+    @State private var card = 0
+    @AppStorage(TopFivePins.key) private var pins = TopFivePins()
+    /// The years and months with finished books, kept with the library so the body need not
+    /// recompute them.
+    @State private var periods: (years: [Int], months: [TimeFrame]) = ([], [])
+    /// The books the options draw, and a single-book template's choices, chosen again only when
+    /// `bookSelection` changes, so the body neither filters nor sorts the library.
+    @State private var drawn: (books: [CloudBook], choices: [CloudBook]) = ([], [])
+    /// The rendered image: `nil` before the first render, without books, or after a failed
+    /// render.
+    @State private var image: ShareImage?
+    /// The request that drew `image`. While it differs from the current request, a newer image
+    /// is on its way, so the preview shows progress and sharing waits.
+    @State private var renderedRequest: RenderRequest?
+    /// The Pile redraw waiting for covers that missed the image's wait; `nil` once it drew. A new
+    /// render or leaving the tab cancels it, so it never claims the render slot for an image
+    /// nobody sees. Leaving the tab before it draws clears `renderedRequest`, so the image draws
+    /// again when the reader comes back.
+    @State private var lateRedraw: Task<Void, Never>?
+    /// Whether the last render failed, so no image is shown or shared.
+    @State private var failed = false
+    @State private var showsAccount = false
+    @State private var filmsPile = false
+    /// The Pile template's books and heading when **Video** was tapped, which the video films.
+    @State private var film: (books: [CloudBook], title: String) = ([], "")
+    /// The files the share sheet offers while it is open.
+    @State private var files: SharedFiles?
+    /// Whether **Share** is adding the credit and writing the files.
+    @State private var isPreparing = false
+    #if os(iOS)
+        /// Whether a finger holds the preview, which then shows full size (`RootView`).
+        @GestureState private var holdsPreview = false
+        private let holdTip = HoldPreviewTip()
+    #else
+        /// Whether **Save Image…** shows the save panel.
+        @State private var savesImage = false
+        /// The credited copy of the image that Quick Look shows, or `nil` while it is closed.
+        @State private var quickLookURL: URL?
+        /// The menu commands' actions, made once so that publishing them never rebuilds the
+        /// menus (`FocusedActions.swift`). Each reads the image when it runs.
+        @State private var commands:
+            (save: SceneAction, preview: SceneAction, copy: SceneAction, inspector: SceneAction)?
+    #endif
+    /// VoiceOver's focus on the preview, which returns there when the full-size view closes.
+    @AccessibilityFocusState private var focusesPreview: Bool
+    @Environment(\.fullSizeShareImage) private var fullSizeImage
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    #if os(iOS)
+        /// What the studio's size means for its layout. Other size changes, such as a
+        /// landscape studio's, write nothing, so they don't evaluate the body again.
+        @State private var studioShape = StudioShape()
+    #else
+        /// Whether the settings inspector shows.
+        @State private var showsInspector = true
+        /// Whether the book or pin popover shows.
+        @State private var picksBook = false
+        @State private var picksPins = false
+    #endif
+
+    init() {
+        #if DEBUG
+            ShareDebug.saveLaunchChoices()
+            _template = State(initialValue: Self.savedTemplate)
+            let defaults = UserDefaults.standard
+            guard defaults.string(forKey: "BookwormsShareTemplate") != nil else { return }
+            _bookID = State(
+                initialValue: defaults.string(forKey: "BookwormsShareBook").flatMap { Int($0) })
+            _coverStyle = State(
+                initialValue: defaults.string(forKey: "BookwormsShareCover")
+                    .flatMap(ShareCoverStyle.init(rawValue:)) ?? .threeD)
+            _direction = State(
+                initialValue: defaults.string(forKey: "BookwormsShareDirection")
+                    .flatMap(HotTakeDirection.init(rawValue:)) ?? .lovedMore)
+            _seed = State(
+                initialValue: defaults.string(forKey: "BookwormsShareSeed").flatMap { UInt64($0) }
+                    ?? 0)
+            _card = State(initialValue: max(defaults.integer(forKey: "BookwormsShareCard") - 1, 0))
+        #endif
+    }
+
+    nonisolated private static let log = Logger(
+        subsystem: "gay.ian.Bookworms.iOS", category: "share")
+
+    /// The template last chosen other than Desk, which a launch opens on.
+    private static var savedTemplate: ShareTemplate {
+        UserDefaults.standard.string(forKey: templateKey).flatMap(ShareTemplate.init(rawValue:))
+            ?? .topFive
+    }
+
+    /// **My reading** or **With friends**. The example profile shows only **My reading** and
+    /// keeps the saved mode as it was.
+    private var mode: ShareMode {
+        get { model.isExample ? .mine : savedMode }
+        nonmutating set { if !model.isExample { savedMode = newValue } }
+    }
+
+    /// Whether the image can leave the app: never in the example profile, whose images would
+    /// show the owner's reading as the viewer's.
+    private var exports: Bool { !model.isExample }
+
+    /// The templates the picker offers. The example profile leaves out those its data can't
+    /// fill: it has no reviews, current reads, Did Not Finish books, or Hardcover averages.
+    private var templates: [ShareTemplate] {
+        guard model.isExample else { return mode.templates }
+        let empty: [ShareTemplate] = [.review, .currentlyReading, .dropped, .hotTakes]
+        return mode.templates.filter { !empty.contains($0) }
+    }
+
+    /// The chosen time frame: `nil`, or a frame without finished books, is the newest year.
+    private var frame: TimeFrame? {
+        get { TimeFrame(setting: model.isExample ? exampleFrame : frameSetting) }
+        nonmutating set {
+            if model.isExample {
+                exampleFrame = newValue?.setting ?? ""
+            } else {
+                frameSetting = newValue?.setting ?? ""
+            }
+        }
+    }
+
+    /// The books the studio draws from. Debug builds can add fictional reviews and current reads
+    /// for screenshots (`ShareDebug.samples`).
+    private var library: [CloudBook] {
+        #if DEBUG
+            ShareDebug.samples(model.books)
+        #else
+            model.books
+        #endif
+    }
+
+    /// Lists the years and months with books to share: drop dates for **Dropped**, else finish
+    /// dates.
+    private func updatePeriods() {
+        periods = TimeFrame.periods(in: library, dropped: template == .dropped)
+    }
+
+    /// The frame the image uses: all time for pinned books, else the chosen one while it still
+    /// has books, else the newest year.
+    private var shownFrame: TimeFrame {
+        if shownPins != nil { return .lifetime }
+        if let frame,
+            frame == .lifetime || periods.months.contains(frame)
+                || periods.years.contains(where: { .year($0) == frame })
+        {
+            return frame
+        }
+        return periods.years.first.map { .year($0) } ?? .lifetime
+    }
+
+    /// The reader the friends' templates compare with: the chosen one while listed, else the
+    /// best match, else the first reader. `nil` in **My reading**.
+    private var shownReader: SocialModel.Reader? {
+        guard mode == .friends else { return nil }
+        let readers = model.social.readers
+        return readers.first { $0.id == readerID } ?? readers.first { $0.match?.score != nil }
+            ?? readers.first
+    }
+
+    /// The books `template` draws, with Top Five's `pins` and Hot Takes' `direction`. With
+    /// friends, they come from the comparison with `reader`, and there are none before the
+    /// reader's library downloads.
+    private func books(
+        _ template: ShareTemplate, frame: TimeFrame, bookID: Int?, reader: SocialModel.Reader?,
+        pins: [Int]?, direction: HotTakeDirection
+    ) -> [CloudBook] {
+        if mode == .friends && reader?.match == nil { return [] }
+        return template.books(
+            from: library, in: frame, bookID: bookID, direction: direction, match: reader?.match,
+            pinned: pins)
+    }
+
+    /// What chooses the drawn books: the library, the options that pick from it, and with
+    /// friends, the shown reader's comparison.
+    private var bookSelection: BookSelection {
+        BookSelection(
+            library: model.books, mode: mode, template: template, frame: shownFrame,
+            bookID: template.isSingleBook ? bookID : nil, readerID: shownReader?.id,
+            socialRevision: mode == .friends ? model.social.revision : 0,
+            pins: shownPins, direction: direction)
+    }
+
+    /// The pins Top Five draws, or `nil` when ratings choose the books, as they always do for
+    /// the example profile. Other templates ignore pins.
+    private var shownPins: [Int]? {
+        template == .topFive && topFiveSource == .pinned && !model.isExample ? pins.ids : nil
+    }
+
+    /// **Show ratings** for what the image draws.
+    private var ratingsShown: Binding<Bool> {
+        shownPins == nil ? $showsRatings : $showsPinnedRatings
+    }
+
+    /// Chooses the books that `selection` draws, and a single-book template's choices.
+    private func chooseBooks(_ selection: BookSelection) {
+        let template = selection.template
+        let books = books(
+            template, frame: selection.frame, bookID: selection.bookID,
+            reader: model.social.reader(selection.readerID), pins: selection.pins,
+            direction: selection.direction)
+        let choices =
+            template.isSingleBook ? template.choices(from: library, in: selection.frame) : []
+        drawn = (books, choices)
+    }
+
+    /// The image the current options and library call for.
+    private var request: RenderRequest {
+        let frame = shownFrame
+        let bookID = template.isSingleBook ? bookID : nil
+        let reader = shownReader
+        var books = drawn.books
+        if template == .pile { books = Array(books.prefix(PileSnapshotRenderer.maximumBooks)) }
+        if template == .dropped { books = Array(books.prefix(DroppedCard.maximumBooks)) }
+        // Only the drawn books' designs, so a design saved for another book changes nothing.
+        let designs = books.map { model.design(for: $0) }
+        // The pile renderer waits for its own fonts, so a newly loaded face changes nothing;
+        // restarting a pile would only delay it. Other templates re-render only when a face for
+        // one of their own books arrives.
+        let loadedFaces =
+            template == .pile ? 0 : designs.count { model.fonts.face(for: $0) != nil }
+        var request = RenderRequest(
+            template: template, aspect: aspect, frame: frame, bookID: bookID,
+            coverStyle: coverStyle, direction: direction,
+            showsRatings: ratingsShown.wrappedValue, seed: seed,
+            pins: shownPins, syncedAt: model.library?.syncedAt, readerID: reader?.id,
+            // A comparison letters the username in its invitation instead.
+            username: mode == .mine && showsProfileLink ? model.social.owner?.username : nil,
+            socialRevision: mode == .friends ? model.social.revision : 0,
+            hasScore: template == .tasteMatch && reader?.match?.score != nil,
+            covers: books.map(\.coverCandidates.first), designs: designs, loadedFaces: loadedFaces)
+        // Checkout Card writes the owner's name in its heading, and Review and Currently Reading
+        // sign with it in place of the profile link they would letter. Checkout Card shows the
+        // name even with **Show profile link** off, on purpose: a checkout card names its
+        // borrower, and the name links to nothing.
+        if template == .checkoutCard || (request.username != nil && ShareInput.signs(template)) {
+            request.owner = model.social.owner
+        }
+        if template == .checkoutCard {
+            // The image draws one card at a time; a card that a smaller frame no longer has
+            // shows its last.
+            let layout = CheckoutCardLayout(
+                ShareInput(
+                    template: template, aspect: aspect, books: books, username: request.username))
+            request.cards = layout.cards.count
+            request.card = layout.index(of: card)
+        }
+        return request
+    }
+
+    var body: some View {
+        let request = request
+        // A newer design alone keeps the image shareable while the render loop draws it.
+        let isPending = renderedRequest?.options != request.options
+        #if os(macOS)
+            // The commands dim without an image, while a newer one is on its way, and while one
+            // of the tab's sheets, a window of its own, covers the image.
+            let shownCommands =
+                image == nil || isPending || filmsPile || showsAccount || !exports ? nil : commands
+            // **Show Inspector** needs only the studio, image or not.
+            let inspectorCommand =
+                model.library == nil || filmsPile || showsAccount ? nil : commands?.inspector
+        #endif
+        NavigationStack {
+            if model.library == nil {
+                NoLibraryView(room: .share, showsAccount: $showsAccount)
+                    .navigationTitle("Share")
+                    // The title keeps its place when the library arrives.
+                    .navigationBarTitleDisplayMode(.inline)
+            } else {
+                // The request lists one cover candidate per drawn book, so it shows emptiness
+                // at once, before the debounced render catches up.
+                studio(isPending: isPending, hasNoBooks: request.isEmpty)
+            }
+        }
+        #if os(iOS)
+            .shareSheet($files)
+        #endif
+        #if os(macOS)
+            .focusedSceneValue(\.copyShareImage, shownCommands?.copy, in: .share)
+            .focusedSceneValue(\.saveShareImage, shownCommands?.save, in: .share)
+            .focusedSceneValue(\.previewShareImage, shownCommands?.preview, in: .share)
+            .focusedSceneValue(\.toggleShareInspector, inspectorCommand, in: .share)
+            .focusedSceneValue(
+                \.showsShareInspector, inspectorCommand == nil ? nil : showsInspector, in: .share
+            )
+            .onAppear {
+                guard commands == nil else { return }
+                commands = (
+                    save: SceneAction { savesImage = true },
+                    preview: SceneAction { Task { await quickLook() } },
+                    copy: SceneAction { if let image { ShareCommands.copy(image) } },
+                    inspector: SceneAction { showsInspector.toggle() }
+                )
+            }
+            .fileExporter(
+                isPresented: $savesImage, item: image, contentTypes: [.png],
+                defaultFilename: image?.name
+            ) { result in
+                if case .failure = result {
+                    model.toasts.show(.failure("Couldn't save the image"))
+                }
+            }
+            .quickLookPreview($quickLookURL)
+        #endif
+        .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
+        .sheet(isPresented: $filmsPile) {
+            NavigationStack {
+                PileVideoSheet(
+                    books: film.books, title: film.title, aspect: aspect, seed: seed,
+                    showsClose: true)
+            }
+            .presentationSizing(.page)
+        }
+        .task(id: request.options) {
+            // A saved design, or a series that a loaded face redraws in another design, draws
+            // after the image in progress instead of restarting it.
+            for await _ in Observations({ [model] in model.designRevision }) { await render() }
+        }
+        .onDisappear {
+            if let lateRedraw, !lateRedraw.isCancelled {
+                lateRedraw.cancel()
+                renderedRequest = nil
+            }
+        }
+        .onChange(of: model.books, initial: true) {
+            updatePeriods()
+            model.hideUndrawableTopFivePins()
+        }
+        // A sync can bring back a pin this device hides.
+        .onChange(of: pins) { model.hideUndrawableTopFivePins() }
+        .onChange(of: bookSelection, initial: true) { _, selection in chooseBooks(selection) }
+        .onChange(of: template == .dropped) { updatePeriods() }
+        .onChange(of: template) { _, template in
+            guard template != .pile, !model.isExample else { return }
+            UserDefaults.standard.set(template.rawValue, forKey: Self.templateKey)
+        }
+        // The example's choices stay out of the saved settings, and leaving it restores them.
+        .onChange(of: model.isExample, initial: true) { wasExample, isExample in
+            if isExample {
+                exampleFrame = ""
+                if !templates.contains(template) { template = .topFive }
+            } else if wasExample {
+                template = Self.savedTemplate
+            }
+        }
+        .onChange(of: savedMode) { oldMode, mode in
+            if mode == .mine, oldMode.templates.contains(template) {
+                // My reading opens on Top Five, even from Hot takes, which both modes offer. A
+                // detail's Share picks its template along with the mode, so that one stays.
+                template = .topFive
+            } else if !mode.templates.contains(template) {
+                template = mode == .mine ? .topFive : mode.templates[0]
+            }
+        }
+        .onChange(of: request, initial: true) { _, request in
+            // Only an empty Hot Takes image looks at the other direction, so the body sorts no
+            // more books than the image draws.
+            guard request.template == .hotTakes, request.isEmpty else { return }
+            let reader = shownReader
+            direction = direction.shown { direction in
+                !books(
+                    .hotTakes, frame: request.frame, bookID: nil, reader: reader, pins: nil,
+                    direction: direction
+                )
+                .isEmpty
+            }
+        }
+        .task(id: shownReader?.id) {
+            // A reader outside the refresh's limit downloads once shown; a refresh in progress
+            // downloads the others itself.
+            guard let reader = shownReader, reader.match == nil, !model.social.isSyncing else {
+                return
+            }
+            await model.downloadReader(reader.id)
+        }
+        .onChange(of: model.shareBookID, initial: true) { _, id in
+            guard let id else { return }
+            model.shareBookID = nil
+            let book = library.first { $0.id == id }
+            mode = .mine
+            if book?.isReading == true && book?.finishedDate == nil {
+                template = .currentlyReading
+            } else {
+                template = .justFinished
+                if let year = book?.finishedYear { frame = .year(year) }
+            }
+            bookID = id
+        }
+        #if DEBUG
+            .task(id: periods.years) { await renderBatch() }
+            .onAppear { ShareDebug.switchTabs(model) }
+            .onChange(of: model.social.revision, initial: true) {
+                // `-BookwormsShareReader <username>` chooses that reader once they are listed.
+                guard readerID == nil,
+                    let username = UserDefaults.standard.string(forKey: "BookwormsShareReader")
+                else { return }
+                readerID = model.social.readers.first { $0.profile.username == username }?.id
+            }
+        #endif
+    }
+
+    /// The studio: the preview, a print on the desk blotter (`ShareBlotter`), and the settings.
+    ///
+    /// On an iPhone, the preview stays pinned under the navigation bar while the settings scroll
+    /// beneath it, so each change shows in the image. Where the studio is wider than tall, as on
+    /// the iPhone Duo's inner display in landscape, the preview fills the space beside a column
+    /// of settings 400 points wide. On a Mac, the settings sit in an inspector
+    /// column, 400 points wide and down to 320 in a narrow window, which the toolbar's **Hide
+    /// inspector** button and **View > Show Inspector** hide and show, and the size and **3D
+    /// books** stay under the preview.
+    ///
+    /// The Mac's column is not `inspector(isPresented:)`, which nests a second split view in the
+    /// tab view's sidebar split view. SwiftUI then counts the floating sidebar's width twice in
+    /// every other pass that measures the tab's minimum width, so whenever that doubled minimum
+    /// is wider than the window, AppKit repeats the window's layout until it raises an
+    /// exception that ends the app.
+    @ViewBuilder
+    private func studio(isPending: Bool, hasNoBooks: Bool) -> some View {
+        Group {
+            #if os(macOS)
+                HStack(spacing: 0) {
+                    stage(isPending: isPending, hasNoBooks: hasNoBooks)
+                    if showsInspector {
+                        Form { settings(hasNoBooks: hasNoBooks) }
+                            .frame(minWidth: 320, idealWidth: 400, maxWidth: 400)
+                    }
+                }
+                .animation(.default, value: showsInspector)
+            #else
+                // One form in both layouts, so it keeps its identity when the studio changes
+                // shape, as the iPhone Duo's inner display does when it turns.
+                HStack(spacing: 0) {
+                    if !isPinned { stage(isPending: isPending, hasNoBooks: hasNoBooks) }
+                    Form { settings(hasNoBooks: hasNoBooks) }
+                        .scrollContentBackground(.hidden)
+                        .background { PaperGround().ignoresSafeArea() }
+                        // Pinned, the form scrolls beneath the preview, which keeps its size.
+                        // The preview's blotter is opaque and hides the rows there, so the form
+                        // draws no edge effect that it would only cover.
+                        .scrollEdgeEffectHidden(isPinned, for: .top)
+                        .safeAreaBar(edge: .top) {
+                            if isPinned {
+                                stage(isPending: isPending, hasNoBooks: hasNoBooks)
+                                    .frame(height: stageHeight)
+                            }
+                        }
+                        .frame(width: isPinned ? nil : 400)
+                }
+                .onGeometryChange(for: StudioShape.self) {
+                    StudioShape($0.size)
+                } action: {
+                    studioShape = $0
+                }
+            #endif
+        }
+        .navigationTitle("Share")
+        // An inline title, as Library and Desk use, leaves the preview the height a large
+        // title would take.
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if image != nil && exports {
+                #if os(macOS)
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Quick Look", systemImage: "eye") {
+                            Task { await quickLook() }
+                        }
+                        .help("Show the image full size")
+                        .disabled(isPending)
+                    }
+                #endif
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Share", systemImage: "square.and.arrow.up") {
+                        Task { await share() }
+                    }
+                    .help("Share the image")
+                    .disabled(isPending || isPreparing)
+                    #if os(macOS)
+                        .shareSheet($files, fromButton: true)
+                    #endif
+                }
+            }
+            #if os(macOS)
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(
+                        showsInspector ? "Hide inspector" : "Show inspector",
+                        systemImage: "sidebar.trailing"
+                    ) {
+                        showsInspector.toggle()
+                    }
+                    .help(showsInspector ? "Hide the settings" : "Show the settings")
+                }
+            #endif
+        }
+    }
+
+    #if os(iOS)
+        /// Whether the preview stays pinned above the settings: where the studio is taller than
+        /// wide, so the settings fit only below it. Otherwise the preview fills the space beside
+        /// a column of settings. The shape decides rather than the size class, because the
+        /// iPhone Duo's inner display has a regular width in portrait too.
+        private var isPinned: Bool { studioShape.isPinned }
+
+        /// The pinned preview's height: just under half the studio's, up to 380 points, and a
+        /// little less at accessibility text sizes, which need more room for the settings.
+        private var stageHeight: CGFloat {
+            let share = dynamicTypeSize.isAccessibilitySize ? 0.38 : 0.46
+            return min(380, max(220, studioShape.height * share))
+        }
+
+        /// What the studio's layout reads from its size.
+        private struct StudioShape: Equatable {
+            /// Whether the studio is taller than wide.
+            var isPinned = true
+            /// The studio's height while it is taller than wide, or zero.
+            var height: CGFloat = 0
+
+            init() {}
+
+            init(_ size: CGSize) {
+                isPinned = size.height >= size.width
+                height = isPinned ? size.height : 0
+            }
+        }
+    #endif
+
+    #if os(macOS)
+        /// Shows the image with its credit in Quick Look, from a file of its own, so a share in
+        /// progress, which replaces its own files, leaves the preview's file alone.
+        private func quickLook() async {
+            guard exports, let image, renderedRequest?.options == request.options else { return }
+            do {
+                quickLookURL = try await SharedFiles.images([image], in: "Preview").urls.first
+            } catch {
+                model.toasts.show(.failure("Couldn't prepare the image"))
+            }
+        }
+    #endif
+
+    /// The preview on the blotter, and on a Mac, the image's size and cover style under it.
+    private func stage(isPending: Bool, hasNoBooks: Bool) -> some View {
+        VStack(spacing: 16) {
+            preview(isPending: isPending, hasNoBooks: hasNoBooks)
+            #if os(macOS)
+                HStack(spacing: 16) {
+                    sizePicker.labelsHidden()
+                    coverToggle
+                        // Keeps the size picker's width where the template has one style.
+                        .opacity(template.hasCoverStyle ? 1 : 0)
+                        .accessibilityHidden(!template.hasCoverStyle)
+                        .disabled(!template.hasCoverStyle)
+                }
+                .frame(maxWidth: 460)
+            #endif
+        }
+        #if os(macOS)
+            .padding(24)
+        #else
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        #endif
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background { ShareBlotter().ignoresSafeArea() }
+    }
+
+    /// **My reading** / **With friends**, which chooses the templates listed below it.
+    private var modePicker: some View {
+        Picker("Templates for", selection: $savedMode) {
+            ForEach(ShareMode.allCases) { Text($0.title).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+    }
+
+    private var sizePicker: some View {
+        Picker("Size", selection: $aspect) {
+            ForEach(ShareAspect.allCases) { Text($0.title).tag($0) }
+        }
+        .pickerStyle(.segmented)
+    }
+
+    /// The image's size, and beside it whether covers draw as 3D books or flat. At accessibility
+    /// text sizes the button moves below the picker, which then keeps the row's whole width.
+    private var imageRow: some View {
+        let layout =
+            dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(spacing: 12)) : AnyLayout(HStackLayout(spacing: 12))
+        return layout {
+            sizePicker.labelsHidden()
+            if template.hasCoverStyle { coverToggle }
+        }
+    }
+
+    /// Draws covers as 3D books when on and flat when off: a round, untinted glass button whose
+    /// cube is filled while on, so it doesn't read as the screen's main action. Year in Books on
+    /// Square shows no covers, so it disables the button, and Desk, whose books are always 3D,
+    /// and Checkout Card, which draws no covers, hide it.
+    private var coverToggle: some View {
+        let isOn = coverStyle == .threeD
+        let help = coverStyleNote ?? "Draw covers as 3D books"
+        return Button {
+            coverStyle = isOn ? .flat : .threeD
+        } label: {
+            Label("3D books", systemImage: isOn ? "cube.fill" : "cube")
+                // Grows the circle to the 44-point touch target.
+                .padding(4)
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .foregroundStyle(.primary)
+        .help(help)
+        .accessibilityAddTraits(.isToggle)
+        .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityHint(help)
+        .disabled(template == .yearInBooks && aspect == .square)
+    }
+
+    /// Why the cover style does less than it says, or `nil` when it does what it says. Templates
+    /// that hide the button (`ShareTemplate.hasCoverStyle`) need no note.
+    private var coverStyleNote: String? {
+        switch template {
+        case .yearInBooks where aspect == .square: "Year in Books shows no covers on Square."
+        case .yearInBooks:
+            "Year in Books draws covers only for its records, which show when they fit."
+        default: nil
+        }
+    }
+
+    /// The settings, choice of template first: **My reading** / **With friends** and the
+    /// templates they offer, then what chooses the books (the reader, the time frame, the pins,
+    /// or the book), then on an iPhone the image's size and cover style, then the options.
+    @ViewBuilder
+    private func settings(hasNoBooks: Bool) -> some View {
+        Section("Template") {
+            // The example profile has no friends to compare with.
+            if !model.isExample { modePicker }
+            templatePicker
+        }
+        if mode == .friends {
+            ShareReaderSection(
+                reader: shownReader, selection: $readerID, showsAccount: $showsAccount)
+        }
+        // The pins are the viewer's own, so the example profile leaves them alone.
+        if template == .topFive && !periods.years.isEmpty && !model.isExample {
+            Section("Books") {
+                Picker("Books", selection: $topFiveSource) {
+                    ForEach(TopFiveSource.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                // The section's header names it.
+                .labelsHidden()
+                if topFiveSource == .pinned { pinsRow }
+            }
+        }
+        if template.usesTimeFrame && !periods.years.isEmpty && shownPins == nil {
+            Section("Time frame") { frameControls }
+        }
+        if template == .checkoutCard, let cards = renderedRequest?.cards, cards > 1 {
+            Section {
+                cardStepper(cards: cards)
+            } footer: {
+                Text("Share sends the card shown.")
+            }
+        }
+        if template.isSingleBook {
+            Section("Book") { bookRow }
+        }
+        #if os(iOS)
+            Section {
+                imageRow
+            } header: {
+                Text("Image")
+            } footer: {
+                if let coverStyleNote { Text(coverStyleNote) }
+            }
+        #endif
+        if template == .hotTakes || template.hasRatingOption || showsShuffle
+            || offersProfileLink
+        {
+            Section("Options") { options(hasNoBooks: hasNoBooks) }
+        }
+    }
+
+    /// Opens the share sheet with the image. Only the shared file carries the credit.
+    ///
+    /// A comparison's text invites its viewers to compare on Hardcover. A **My reading** image's
+    /// text links its books and the sharer's profile (`HardcoverInvite.readingText`).
+    private func share() async {
+        // The request this image was drawn for, before a new render can replace it.
+        guard exports, let image, let request = renderedRequest else { return }
+        // Read before the files are written, so a refresh or sign-out meanwhile can't change the
+        // invitation.
+        let inviter = model.social.owner?.username
+        isPreparing = true
+        defer { isPreparing = false }
+        do {
+            var shared = try await SharedFiles.images([image])
+            // A **My reading** image's text links the profile only when the image letters it.
+            shared.text =
+                request.readerID != nil
+                ? inviter.map(HardcoverInvite.shareText)
+                : HardcoverInvite.readingText(books: image.books, username: request.username)
+            files = shared
+        } catch {
+            model.toasts.show(.failure("Couldn't prepare the image"))
+        }
+    }
+
+    #if DEBUG
+        /// Renders each entry of `-BookwormsShareBatch`, such as
+        /// `yearInBooks,story,month:2025-08,flat`, separated by spaces, and saves it as
+        /// `share-debug-<entry>.png`, so one launch checks many options.
+        private func renderBatch() async {
+            guard
+                let batch = UserDefaults.standard.string(forKey: "BookwormsShareBatch"),
+                !periods.years.isEmpty
+            else { return }
+            for entry in batch.split(separator: " ") {
+                let parts = entry.split(separator: ",").map(String.init) + ["", "", "", ""]
+                template = ShareTemplate(rawValue: parts[0]) ?? template
+                aspect = ShareAspect(rawValue: parts[1]) ?? aspect
+                frame = TimeFrame(setting: parts[2])
+                coverStyle = ShareCoverStyle(rawValue: parts[3]) ?? .threeD
+                // A fifth part names a reader to compare with, which also chooses With friends.
+                let reader = parts.count > 4 ? parts[4] : ""
+                mode = template.isSocial || !reader.isEmpty ? .friends : .mine
+                if !reader.isEmpty {
+                    // Comparisons are prepared shortly after the library loads.
+                    for _ in 0..<50 where model.social.readers.isEmpty {
+                        try? await Task.sleep(for: .milliseconds(100))
+                    }
+                    readerID = model.social.readers.first { $0.profile.username == reader }?.id
+                }
+                // Waits until the image matches the options and font loads have settled.
+                var settled = 0
+                while settled < 5, !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(200))
+                    settled = renderedRequest == request ? settled + 1 : 0
+                }
+                ShareDebug.write(image, name: "-" + entry.replacing(":", with: "_"))
+            }
+        }
+    #endif
+
+    /// The image, or why there is none. A message scrolls when it is taller than the pinned
+    /// preview, as it can be at large text sizes.
+    @ViewBuilder
+    private func preview(isPending: Bool, hasNoBooks: Bool) -> some View {
+        if image == nil && hasNoBooks && !model.isLoading {
+            let empty = emptyState
+            ScrollView {
+                ContentUnavailableView {
+                    Label(empty.title, systemImage: template.systemImage)
+                } description: {
+                    Text(empty.message)
+                } actions: {
+                    // The iCloud library may carry no reviews and never carries friends; the
+                    // device's own Hardcover sign-in adds both.
+                    let needsHardcover =
+                        mode == .friends
+                        ? !model.canCompare : template == .review && !usesHardcover
+                    if needsHardcover && !model.isPreview {
+                        Button("Connect Hardcover") { showsAccount = true }
+                            .buttonStyle(.glassProminent)
+                    }
+                }
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .defaultScrollAnchor(.center)
+        } else if image == nil && failed && !isPending {
+            ScrollView {
+                ContentUnavailableView(
+                    "Couldn't draw the image", systemImage: "exclamationmark.triangle",
+                    // A pile's arrangement varies with the seed, so Shuffle can succeed where
+                    // it failed.
+                    description: Text(
+                        template == .pile
+                            ? "Try Shuffle or another size." : "Try another size or template.")
+                )
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .defaultScrollAnchor(.center)
+        } else {
+            box(isPending: isPending)
+        }
+    }
+
+    /// The preview's image in a box shaped like it, with the render's progress over it.
+    ///
+    /// On an iPhone, holding the image shows it full size until the finger lifts; VoiceOver's
+    /// **Show full size** action shows it until dismissed. The hold starts after a moment without
+    /// movement.
+    ///
+    /// On a Mac, the image drags out as a PNG file with its credit, and once clicked, it takes
+    /// keyboard focus: Space shows it in Quick Look and Command-C copies it. VoiceOver's **Show
+    /// full size** opens Quick Look.
+    private func box(isPending: Bool) -> some View {
+        let size = aspect.size
+        return ZStack {
+            // Sizes the box as the image does, before there is one.
+            Color.clear.frame(idealWidth: size.width, idealHeight: size.height)
+            if let image {
+                Image(uiImage: image.image)
+                    .resizable()
+                    .scaledToFit()
+                    #if os(iOS)
+                        .gesture(
+                            LongPressGesture(minimumDuration: 0.25)
+                                // The drag keeps the hold going, wherever the finger moves,
+                                // until it lifts.
+                                .sequenced(before: DragGesture(minimumDistance: 0))
+                                .updating($holdsPreview) { value, state, _ in
+                                    if case .second(true, _) = value { state = true }
+                                }
+                        )
+                        // A render that finishes during the hold replaces the image shown.
+                        .onChange(of: holdsPreview ? image.image : nil) { _, shown in
+                            fullSizeImage.wrappedValue = shown
+                            if shown != nil { holdTip.invalidate(reason: .actionPerformed) }
+                        }
+                        .popoverTip(holdTip, arrowEdge: .top)
+                        .onChange(of: fullSizeImage.wrappedValue == nil) { _, isClosed in
+                            if isClosed { focusesPreview = true }
+                        }
+                    #else
+                        // The representation adds the credit only once the image is dropped. A
+                        // shown image older than the settings, such as one with the profile link
+                        // just turned off, doesn't drag out.
+                        .modifier(PreviewDrag(image: isPending || !exports ? nil : image))
+                    #endif
+                    .accessibilityLabel("\(image.name) preview")
+                    .accessibilityFocused($focusesPreview)
+                    .accessibilityAction(named: "Show full size") {
+                        #if os(iOS)
+                            fullSizeImage.wrappedValue = image.image
+                            holdTip.invalidate(reason: .actionPerformed)
+                        #else
+                            Task { await quickLook() }
+                        #endif
+                    }
+            }
+            if template == .pile && isPending {
+                // A pile takes seconds to load its covers and lay its books out.
+                ProgressView("Dropping books")
+                    .padding()
+                    .background(.regularMaterial, in: .rect(cornerRadius: 12))
+            } else if image == nil {
+                ProgressView()
+            } else if isPending {
+                ProgressView()
+                    .padding(12)
+                    .background(.regularMaterial, in: .circle)
+                    .accessibilityLabel("Updating preview")
+            }
+        }
+        .aspectRatio(size.width / size.height, contentMode: .fit)
+        // A blank sheet until the first image arrives.
+        .background(.quaternary)
+        .modifier(PrintEdge())
+        #if os(macOS)
+            // Outside the print's clip, which would cut off the focus ring.
+            .focusable(image != nil)
+            .copyable(isPending || !exports ? [] : image.map { [$0] } ?? [])
+            .onKeyPress(.space) {
+                guard image != nil else { return .ignored }
+                Task { await quickLook() }
+                return .handled
+            }
+        #endif
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Whether this device's Hardcover sign-in provides the library, which preview mode ignores.
+    private var usesHardcover: Bool { model.account.isSignedIn && !model.isPreview }
+
+    /// Why the template has nothing to draw, and what would give it something.
+    private var emptyState: (title: String, message: String) {
+        if mode == .friends { return friendsEmptyState }
+        let frame = shownFrame
+        let suffix = frame == .lifetime ? "" : " in \(frame.title)"
+        let nextSync =
+            usesHardcover
+            ? "after the next sync with Hardcover"
+            : "after one of your Apple devices syncs with Hardcover"
+        switch template {
+        case .topFive where shownPins != nil && !periods.years.isEmpty:
+            return ("No pinned books", "Pin up to \(TopFivePins.limit) books to share them.")
+        case .review where !library.contains { $0.reviewText != nil }:
+            return (
+                "No reviews yet",
+                usesHardcover
+                    ? "Reviews you write on Hardcover appear here \(nextSync)."
+                    : "This iCloud library has no reviews. Connect Hardcover on this \(ThisDevice.name) to share yours."
+            )
+        case .review:
+            return ("No reviews\(suffix)", "Choose another time frame to share a review.")
+        case .currentlyReading:
+            return ("Not reading anything", "Books you're reading appear here \(nextSync).")
+        case .dropped:
+            return (
+                "Nothing dropped\(suffix)",
+                "Books you mark Did Not Finish on Hardcover appear here \(nextSync)."
+            )
+        // Neither direction has takes in the frame, or the studio would have switched.
+        case .hotTakes:
+            if frame != .lifetime,
+                HotTakeDirection.allCases.contains(where: {
+                    !ShareTemplate.hotTakes.books(from: library, in: .lifetime, direction: $0)
+                        .isEmpty
+                })
+            {
+                return (
+                    "No hot takes\(suffix)",
+                    "Choose another time frame, such as \(TimeFrame.lifetime.title)."
+                )
+            }
+            let side = direction == .lovedMore ? "above" : "below"
+            return (
+                "No hot takes\(suffix)",
+                "Rate a book at least half a star \(side) its Hardcover average. Only books with "
+                    + "\(HotTakeDirection.minimumRatings) or more ratings count."
+            )
+        default:
+            return periods.years.isEmpty
+                ? ("No finished books", "Books you finish appear here \(nextSync).")
+                : ("No finished books\(suffix)", "Choose another time frame.")
+        }
+    }
+
+    /// Why a comparison has nothing to draw: no sign-in, no reader, a library still loading or
+    /// hidden, or too little in common.
+    private var friendsEmptyState: (title: String, message: String) {
+        let social = model.social
+        guard let reader = shownReader else {
+            if !model.canCompare {
+                return (
+                    "Compare with friends",
+                    "Connect Hardcover to compare your ratings with the people you follow."
+                )
+            }
+            if social.isSyncing {
+                return ("Loading the people you follow", "This takes a moment the first time.")
+            }
+            if let failure = social.failure {
+                return ("Couldn't load the people you follow", failure)
+            }
+            return (
+                "No one to compare with yet",
+                "Follow readers on Hardcover, or look up a public username under Compare with."
+            )
+        }
+        let name = reader.profile.shortName
+        guard let match = reader.match else {
+            if social.loadingReaders.contains(reader.id) || social.isSyncing {
+                return ("Loading \(name)'s ratings", "This takes a moment for a big library.")
+            }
+            return (
+                "\(name)'s ratings haven't downloaded",
+                social.failure ?? "Choose \(name) again under Compare with to try again."
+            )
+        }
+        if reader.hasNoRatings {
+            return (
+                "\(name) has no public ratings",
+                "Their Hardcover profile may be private, or they haven't rated any books yet."
+            )
+        }
+        let shared = match.shared.count
+        let both = shared == 1 ? "1 book" : "\(shared) books"
+        switch template {
+        case .tasteMatch:
+            return (
+                "Not enough in common yet",
+                "You and \(name) have both rated \(both). A taste match needs "
+                    + "\(TasteMatch.minimumShared)."
+            )
+        case .hotTakes:
+            let frame = shownFrame
+            let suffix = frame == .lifetime ? "" : " in \(frame.title)"
+            if frame != .lifetime,
+                HotTakeDirection.allCases.contains(where: {
+                    !match.hotTakes(in: .lifetime, direction: $0).isEmpty
+                })
+            {
+                return (
+                    "No hot takes\(suffix)",
+                    "Choose another time frame, such as \(TimeFrame.lifetime.title)."
+                )
+            }
+            return (
+                "No hot takes with \(name)\(suffix)",
+                "Books you both rated at least half a star apart appear here. You have \(both) "
+                    + "in common."
+            )
+        default:
+            return (
+                "Nothing to swap yet",
+                "Book Swap suggests books one of you rated 4 stars or more that the other "
+                    + "hasn't shelved."
+            )
+        }
+    }
+
+    /// The templates the mode offers: a row of tiles under the pinned preview, a grid in a
+    /// column of settings, and above the default text size a list, since tiles truncate names.
+    @ViewBuilder
+    private var templatePicker: some View {
+        if dynamicTypeSize >= .xLarge {
+            Picker("Template", selection: $template) {
+                ForEach(templates) { option in
+                    Label(option.title, systemImage: option.systemImage).tag(option)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } else {
+            #if os(iOS)
+                if isPinned { templateRow } else { templateGrid }
+            #else
+                templateGrid
+            #endif
+        }
+    }
+
+    #if os(iOS)
+        /// The templates in one row that scrolls sideways, which opens on the chosen one.
+        private var templateRow: some View {
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal) {
+                    HStack(alignment: .top, spacing: 4) {
+                        ForEach(templates) { templateTile($0).frame(width: 84) }
+                    }
+                }
+                .scrollIndicators(.hidden)
+                .contentMargins(.horizontal, 12, for: .scrollContent)
+                .onAppear { proxy.scrollTo(template, anchor: .center) }
+            }
+            .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
+        }
+    #endif
+
+    private var templateGrid: some View {
+        // Rows of three, or of four where three would leave a template alone on the last row.
+        let columns = templates.count % 3 == 1 ? 4 : 3
+        return LazyVGrid(
+            columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: columns),
+            alignment: .center, spacing: 6
+        ) {
+            ForEach(templates) { templateTile($0) }
+        }
+    }
+
+    /// A template's tile: a small drawing of its card (`script/template-art.py`), outlined in
+    /// brass while chosen, over its name. Every name reserves two lines, so the tiles line up
+    /// whichever names wrap.
+    private func templateTile(_ option: ShareTemplate) -> some View {
+        let isSelected = option == template
+        return Button {
+            template = option
+        } label: {
+            VStack(spacing: 6) {
+                Image("template.\(option.rawValue)")
+                    .resizable()
+                    .frame(width: 56, height: 70)
+                    .padding(3)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(.tint, lineWidth: 2.5)
+                            .opacity(isSelected ? 1 : 0)
+                    }
+                    // VoiceOver reads the template's name alone.
+                    .accessibilityHidden(true)
+                Text(option.title)
+                    .font(.caption)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2, reservesSpace: true)
+                    .foregroundStyle(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+            .contentShape(.rect)
+        }
+        // A plain style keeps each button's tap separate inside one form row.
+        .buttonStyle(.plain)
+        .id(option)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    // MARK: - Time frame
+
+    /// The kinds of time frame, shortest first. Share offers no **Last 12 Months**, which
+    /// only the `-BookwormsShareFrame` launch argument can name, so the switches below group
+    /// it with a lifetime.
+    private enum FrameKind: CaseIterable, Identifiable {
+        case month, year, lifetime
+
+        var id: Self { self }
+
+        var title: String {
+            switch self {
+            case .year: "Year"
+            case .month: "Month"
+            case .lifetime: TimeFrame.lifetime.title
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var frameControls: some View {
+        let shown = shownFrame
+        Picker("Time frame", selection: kind) {
+            ForEach(FrameKind.allCases) { Text($0.title).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        // The section's header names it.
+        .labelsHidden()
+        let selection = Binding {
+            shownFrame
+        } set: {
+            choose($0)
+        }
+        switch shown {
+        case .year:
+            Picker("Year", selection: selection) {
+                ForEach(periods.years, id: \.self) { Text(String($0)).tag(TimeFrame.year($0)) }
+            }
+        case .month:
+            Picker("Month", selection: selection) {
+                ForEach(periods.months, id: \.self) { Text($0.title).tag($0) }
+            }
+        case .lifetime, .last12Months:
+            EmptyView()
+        }
+    }
+
+    /// Switches between a year, a month, and a lifetime, staying near the shown period: a
+    /// year's newest month, or a month's year.
+    private var kind: Binding<FrameKind> {
+        Binding {
+            switch shownFrame {
+            case .year: .year
+            case .month: .month
+            case .lifetime, .last12Months: .lifetime
+            }
+        } set: { kind in
+            let year = shownFrame.year
+            switch kind {
+            case .year:
+                choose(.year(year ?? periods.years.first ?? 0))
+            case .month:
+                let inYear = periods.months.first { month in
+                    if case .month(let monthYear, _) = month { monthYear == year } else { false }
+                }
+                choose(inYear ?? periods.months.first)
+            case .lifetime:
+                choose(.lifetime)
+            }
+        }
+    }
+
+    /// Shows `frame` and drops a chosen book, which may not be in it.
+    private func choose(_ frame: TimeFrame?) {
+        self.frame = frame
+        bookID = nil
+        card = 0
+    }
+
+    /// Steps through Checkout Card's `cards` cards, which the preview shows one at a time.
+    private func cardStepper(cards: Int) -> some View {
+        let shown = CheckoutCardLayout.index(of: card, among: cards)
+        return Stepper(
+            value: Binding {
+                shown
+            } set: {
+                card = $0
+            }, in: 0...(cards - 1)
+        ) {
+            Text("Card \(shown + 1) of \(cards)")
+        }
+    }
+
+    // MARK: - Book and options
+
+    /// The featured book, which opens a list of the template's choices: pushed on an iPhone,
+    /// and on a Mac in a popover beside the inspector, so the image stays in view.
+    private var bookRow: some View {
+        let choices = drawn.choices
+        // The book the image draws, so the row names the book the image shows.
+        let shown = drawn.books.first
+        let picker = ShareBookPicker(books: choices, current: shown?.id, selection: $bookID)
+        let title = Group {
+            if let shown { BookText(shown.spineTitle, of: shown) } else { Text("None") }
+        }
+        #if os(macOS)
+            return LabeledContent("Book") {
+                Button {
+                    picksBook = true
+                } label: {
+                    title.lineLimit(1)
+                }
+                .popover(isPresented: $picksBook, arrowEdge: .leading) {
+                    picker.frame(width: 340, height: 440)
+                }
+            }
+            .disabled(choices.isEmpty)
+        #else
+            return NavigationLink {
+                picker
+            } label: {
+                LabeledContent("Book") { title }
+            }
+            .disabled(choices.isEmpty)
+        #endif
+    }
+
+    /// Top Five's pins, which opens `TopFivePinPicker` as the book row opens its list.
+    private var pinsRow: some View {
+        let count =
+            pins.ids.isEmpty ? "None" : "\(pins.ids.count) of \(TopFivePins.limit)"
+        #if os(macOS)
+            return LabeledContent("Pinned books") {
+                Button(count) { picksPins = true }
+                    .popover(isPresented: $picksPins, arrowEdge: .leading) {
+                        TopFivePinPicker(library: library).frame(width: 340, height: 480)
+                    }
+            }
+        #else
+            return NavigationLink {
+                TopFivePinPicker(library: library)
+            } label: {
+                LabeledContent("Pinned books", value: count)
+            }
+        #endif
+    }
+
+    @ViewBuilder
+    private func options(hasNoBooks: Bool) -> some View {
+        if template == .hotTakes {
+            Picker("Show", selection: $direction) {
+                ForEach(HotTakeDirection.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+        }
+        if template.hasRatingOption {
+            Toggle("Show ratings", isOn: ratingsShown)
+        }
+        if offersProfileLink {
+            Toggle("Show profile link", isOn: $showsProfileLink)
+                .accessibilityHint("Letters your Hardcover profile link on the image.")
+        }
+        if showsShuffle {
+            Button("Shuffle", systemImage: "shuffle") { seed = .random(in: 1 ... .max) }
+        }
+        if template == .pile && exports {
+            Button("Video", systemImage: "video") {
+                let frame = shownFrame
+                let books = ShareTemplate.pile.books(from: library, in: frame, direction: direction)
+                let input = ShareInput(
+                    template: .pile, aspect: aspect, books: books, frame: frame,
+                    coverStyle: coverStyle, direction: direction, showsRatings: showsRatings,
+                    seed: seed)
+                film = (books, input.period)
+                filmsPile = true
+            }
+            .disabled(hasNoBooks)
+        }
+    }
+
+    /// Whether **My reading** images can letter the sharer's profile link, which needs the
+    /// username that the friends' data reads. A comparison letters it in its invitation instead.
+    private var offersProfileLink: Bool {
+        mode == .mine && model.social.owner?.username != nil
+    }
+
+    /// Whether **Shuffle** shows: for the templates whose layout the seed varies, Year in Books'
+    /// spine stacks, the Top Five fan, and a pile's arrangement. The other templates use the
+    /// seed only to turn a 3D book slightly, too little to offer as a choice.
+    private var showsShuffle: Bool { [.yearInBooks, .topFive, .pile].contains(template) }
+
+    // MARK: - Rendering
+
+    /// Renders until the image matches the latest request.
+    ///
+    /// SwiftUI skips a `task(id:)` restart when the ID changes more than once in a frame, as it
+    /// does while cached fonts load in a burst. Each pass therefore reads the latest request,
+    /// and the loop checks it again after drawing.
+    private func render() async {
+        // A short pause folds quick option changes into one render.
+        try? await Task.sleep(for: .milliseconds(150))
+        while !Task.isCancelled, renderedRequest != request {
+            await render(request)
+        }
+    }
+
+    /// Draws one request, unless the task is cancelled first. Sets `renderedRequest` otherwise.
+    private func render(_ request: RenderRequest) async {
+        lateRedraw?.cancel()
+        let template = request.template
+        let reader = request.readerID.flatMap(model.social.reader)
+        var books = books(
+            template, frame: request.frame, bookID: request.bookID, reader: reader,
+            pins: request.pins, direction: request.direction)
+        var input = ShareInput(
+            template: template, aspect: request.aspect, books: books, frame: request.frame,
+            coverStyle: request.coverStyle, direction: request.direction,
+            showsRatings: request.showsRatings, seed: request.seed, username: request.username)
+        if let reader, let match = reader.match, let owner = model.social.owner {
+            input.social = ShareSocial(owner: owner, reader: reader.profile, match: match)
+            input.social?.avatars = await loadAvatars([owner, reader.profile])
+        }
+        input.owner = request.owner
+        if !request.isEmpty, input.hasByline, let owner = request.owner {
+            input.avatar = await loadAvatars([owner])[owner.id]
+        }
+        // A newer request may have drawn while the photos loaded; this one must not replace it.
+        guard !Task.isCancelled else { return }
+        // `nil` when there are no books or the image could not be drawn.
+        var rendered: UIImage?
+        // A pile's books whose covers missed its wait.
+        var late: [CloudBook] = []
+        if request.isEmpty {
+            // Nothing to draw; the preview says why.
+        } else if template == .pile {
+            do {
+                let pile = try await PileSnapshotRenderer.render(
+                    books: books, title: input.period, aspect: request.aspect,
+                    seed: request.seed, username: request.username, model: model)
+                // A render cancelled after its last check still returns; a newer one is coming.
+                try Task.checkCancellation()
+                rendered = pile.image
+                late = pile.late
+            } catch is CancellationError {
+                return
+            } catch {
+                Self.log.error("The desk image failed: \(error)")
+            }
+        } else if template == .checkoutCard {
+            // A Checkout Card draws no covers or spines, only its handwriting.
+            input.card = request.card
+            input.handwriting = await model.fonts.face(
+                family: CheckoutCard.handFamily, weight: CheckoutCard.handWeight)
+            guard !Task.isCancelled else { return }
+            rendered = input.render()
+            // The share text links only the books on the card shared.
+            books = CheckoutCardLayout(input).books(on: request.card, of: books)
+        } else {
+            // The books drawn with covers. Year in Books draws covers only for the records it
+            // shows, none on Square, and Dropped only for the books it draws.
+            let covered: [CloudBook] =
+                switch template {
+                case .yearInBooks where request.aspect == .square: []
+                case .yearInBooks:
+                    YearInBooks(frame: request.frame, library: books)
+                        .records(showsRatings: request.showsRatings)
+                case .dropped: DroppedCard(input: input).shown
+                default: books
+                }
+            // The spines of 3D books, and of flat Dropped stacks, carry lettering, so their fonts
+            // load first. This waits for every face, including ones another feature is already
+            // downloading.
+            let lettered = request.coverStyle == .threeD || template == .dropped ? covered : []
+            await model.fonts.load(lettered.compactMap { model.design(for: $0) })
+            let coverSize = template.isSingleBook ? 1200 : template == .topFive ? 900 : 700
+            input.covers = await loadCovers(covered, maximumPixelSize: coverSize)
+            guard !Task.isCancelled else { return }
+            input.looks = Dictionary(books.map { ($0.id, model.look(for: $0)) }) { first, _ in
+                first
+            }
+            rendered = input.render()
+        }
+        var name = template.title
+        if template.usesTimeFrame && !template.isSingleBook { name += " " + input.period }
+        if let reader = input.social?.reader { name += " with \(reader.shortName)" }
+        if request.cards > 1 { name += " (card \(request.card + 1) of \(request.cards))" }
+        // Without a new image, the old one must not stay to be shared.
+        image = rendered.map { ShareImage(image: $0, name: name, books: books) }
+        failed = !request.isEmpty && rendered == nil
+        renderedRequest = request
+        #if os(iOS)
+            if rendered != nil { HoldPreviewTip.imageShown(for: choices) }
+        #endif
+        #if DEBUG
+            ShareDebug.write(image)
+            // `-BookwormsShareFullSize YES` shows each image full size, as holding the preview
+            // does.
+            if UserDefaults.standard.bool(forKey: "BookwormsShareFullSize"), let image {
+                fullSizeImage.wrappedValue = image.image
+            }
+        #endif
+        // Covers that missed the pile's wait draw it once more when they arrive, unless a newer
+        // image replaces it first. A failed redraw keeps the image.
+        guard !late.isEmpty else { return }
+        let (title, drawnBooks, lateBooks, shareName) = (input.period, books, late, name)
+        lateRedraw = Task {
+            await PileSnapshotRenderer.waitForCovers(
+                of: lateBooks, among: drawnBooks.count, aspect: request.aspect, model: model)
+            guard !Task.isCancelled, renderedRequest == request,
+                let pile = try? await PileSnapshotRenderer.render(
+                    books: drawnBooks, title: title, aspect: request.aspect, seed: request.seed,
+                    username: request.username, model: model),
+                !Task.isCancelled, renderedRequest == request
+            else { return }
+            image = ShareImage(image: pile.image, name: shareName, books: drawnBooks)
+            lateRedraw = nil
+        }
+    }
+
+    #if os(iOS)
+        /// The options the reader chooses, without what syncs, downloads, and new designs
+        /// change, so `HoldPreviewTip` can tell an image the reader asked for.
+        private var choices: [AnyHashable] {
+            [
+                mode, template, aspect, frameSetting, exampleFrame, bookID, coverStyle, direction,
+                showsRatings, topFiveSource, showsPinnedRatings, seed, pins.ids, readerID,
+                showsProfileLink, card,
+            ]
+        }
+    #endif
+
+    /// Loads the readers' profile photos for a social card, a review's byline, or a current
+    /// read's chip. A reader without one, or whose photo fails to load, is left out and shows
+    /// initials.
+    private func loadAvatars(_ readers: [ReaderProfile]) async -> [Int: UIImage] {
+        var avatars: [Int: UIImage] = [:]
+        for reader in readers {
+            guard let url = reader.avatarURL else { continue }
+            avatars[reader.id] = await model.covers.image(at: [url], maximumPixelSize: 400)
+        }
+        return avatars
+    }
+
+    private func loadCovers(_ books: [CloudBook], maximumPixelSize: Int) async -> [Int: UIImage] {
+        let store = model.covers
+        return await withTaskGroup(of: (Int, UIImage?).self) { group in
+            for book in books {
+                group.addTask {
+                    (book.id, await store.image(for: book, maximumPixelSize: maximumPixelSize))
+                }
+            }
+            var covers: [Int: UIImage] = [:]
+            for await (id, cover) in group { covers[id] = cover }
+            return covers
+        }
+    }
+}
+
+#if os(iOS)
+    /// Teaches the preview's touch and hold, which nothing on screen shows, once the studio has
+    /// drawn an image for options the reader changed in a launch. A launch's first image, and
+    /// the images that a sync, a download, or a new design redraws without the reader, never
+    /// show it. Holding the preview, or VoiceOver's **Show full size**, retires it.
+    ///
+    /// The first image's options live in memory and the rule's parameter is transient, so
+    /// drawing an image never writes to TipKit's store; only showing and retiring the tip do.
+    struct HoldPreviewTip: Tip {
+        @Parameter(.transient) static var isReady: Bool = false
+        /// The options of the launch's first image.
+        @MainActor private static var firstChoices: [AnyHashable]?
+
+        var title: Text { Text("See it full size") }
+        var message: Text? { Text("Touch and hold the preview to see the image as it will look.") }
+        var image: Image? { Image(systemName: "hand.tap") }
+        var rules: [Rule] { #Rule(Self.$isReady) { $0 } }
+
+        /// Notes an image the preview shows, drawn for the reader's `choices`, and makes the tip
+        /// ready once they differ from the first image's.
+        @MainActor static func imageShown(for choices: [AnyHashable]) {
+            guard let first = firstChoices else {
+                firstChoices = choices
+                return
+            }
+            if choices != first && !isReady { isReady = true }
+        }
+    }
+#endif
+
+/// What chooses the books a share image draws, so the studio chooses them again only when one
+/// of these changes.
+private struct BookSelection: Equatable {
+    var library: [CloudBook]
+    var mode: ShareMode
+    var template: ShareTemplate
+    var frame: TimeFrame
+    /// The chosen book of a single-book template, else `nil`.
+    var bookID: Int?
+    var readerID: Int?
+    /// `SocialModel.revision` with friends, so a reader's new comparison chooses again; 0 in
+    /// **My reading**.
+    var socialRevision: Int
+    /// Top Five's pins, or `nil` when ratings choose its books and for other templates.
+    var pins: [Int]?
+    var direction: HotTakeDirection
+}
+
+/// The options that change the rendered image, including library and font changes.
+private struct RenderRequest: Equatable {
+    var template: ShareTemplate
+    var aspect: ShareAspect
+    var frame: TimeFrame
+    var bookID: Int?
+    var coverStyle: ShareCoverStyle
+    var direction: HotTakeDirection
+    var showsRatings: Bool
+    var seed: UInt64
+    /// Top Five's pinned books (`TopFivePins`), or `nil` when ratings choose its books and for
+    /// other templates.
+    var pins: [Int]?
+    var syncedAt: Date?
+    /// The reader a comparison draws with, or `nil` outside **With friends**.
+    var readerID: Int?
+    /// The username a **My reading** image letters as a profile link (`ShareInput.username`).
+    var username: String?
+    /// `SocialModel.revision` for a comparison, so new ratings redraw it.
+    var socialRevision: Int
+    /// Whether a Taste Match has a score, which it draws even without books to show.
+    var hasScore: Bool
+    /// The covers the image draws, so choosing another cover redraws it.
+    var covers: [URL?]
+    /// The designs of the books the image draws, in their order.
+    var designs: [SpineDesignV1?]
+    var loadedFaces: Int
+    /// The sharer's profile that Checkout Card's heading or a card's byline or chip letters
+    /// (`ShareInput.owner`), so a newly read name or photo redraws it; `nil` for other templates
+    /// and for a card that signs but doesn't letter `username`.
+    var owner: ReaderProfile?
+    /// The Checkout Card card the image draws, counting from 0, and how many cards the frame
+    /// takes (`CheckoutCardLayout`); 0 for other templates.
+    var card = 0
+    var cards = 0
+
+    /// Whether the image has nothing to draw.
+    var isEmpty: Bool { covers.isEmpty && !hasScore }
+
+    /// The request without its designs. The render task restarts only when these change: a
+    /// pile takes seconds to render, and a generation run saves a design every few seconds, so a
+    /// new design waits for the image in progress and draws next.
+    var options: RenderRequest {
+        var options = self
+        options.designs = []
+        return options
+    }
+}
+
+extension EnvironmentValues {
+    /// The share image that `RootView` shows full size over the tabs and bars, or `nil`. The
+    /// Share tab sets it while its preview is held.
+    @Entry var fullSizeShareImage: Binding<UIImage?> = .constant(nil)
+}
+
+/// A share image filling the screen at its own aspect on black, over the tabs and bars. A tap,
+/// or VoiceOver's escape gesture, closes it.
+struct FullSizeShareImage: View {
+    let image: UIImage
+    let close: () -> Void
+    @AccessibilityFocusState private var isFocused: Bool
+
+    var body: some View {
+        Image(uiImage: image)
+            .resizable()
+            .scaledToFit()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(.black)
+            .ignoresSafeArea()
+            .contentShape(.rect)
+            .onTapGesture(perform: close)
+            .accessibilityElement()
+            .accessibilityLabel("Full-size preview")
+            .accessibilityHint("Double-tap to close")
+            .accessibilityAddTraits([.isImage, .isModal])
+            .accessibilityAction(.default, close)
+            .accessibilityAction(.escape, close)
+            .accessibilityFocused($isFocused)
+            // VoiceOver moves to the image, which it opened from the preview's action.
+            .onAppear { isFocused = true }
+    }
+}
+
+/// A rendered share image and the name its file takes.
+///
+/// As a `Transferable`, such as an image dragged out of the preview, copied, or saved on a Mac,
+/// it is a PNG with the credit (`UIImage.withShareCredit()`), drawn only when it is dropped,
+/// pasted, or written, and named after the image, such as "Top Five 2025.png". Two values are
+/// equal when they hold the same rendered image.
+struct ShareImage: Transferable, Equatable, Sendable {
+    let image: UIImage
+    let name: String
+    /// The books the image draws, which its share text can link.
+    var books: [CloudBook] = []
+
+    static var transferRepresentation: some TransferRepresentation {
+        DataRepresentation(exportedContentType: .png) { item in try await item.creditedPNG() }
+            .suggestedFileName { $0.name }
+    }
+
+    static func == (lhs: ShareImage, rhs: ShareImage) -> Bool {
+        lhs.image === rhs.image && lhs.name == rhs.name
+    }
+
+    /// The image with its credit, as PNG data.
+    ///
+    /// - Throws: `CocoaError(.fileWriteUnknown)` when the image cannot be drawn or encoded.
+    @MainActor func creditedPNG() throws -> Data {
+        guard let data = image.withShareCredit()?.pngData() else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return data
+    }
+}
+
+/// The preview's paper: square corners, a one-pixel paper edge, and the thin shadow of a sheet
+/// lying flat on the blotter, drawn as two offset fills rather than a blur, so it costs nothing
+/// when the image changes.
+private struct PrintEdge: ViewModifier {
+    @Environment(\.displayScale) private var displayScale
+
+    func body(content: Content) -> some View {
+        content
+            .clipShape(.rect(cornerRadius: 2))
+            .overlay {
+                RoundedRectangle(cornerRadius: 2)
+                    .strokeBorder(ShareStyle.cream.color.opacity(0.5), lineWidth: 1 / displayScale)
+            }
+            .background {
+                RoundedRectangle(cornerRadius: 3).fill(.black.opacity(0.14)).padding(-1.5)
+                    .offset(y: 3)
+                RoundedRectangle(cornerRadius: 2).fill(.black.opacity(0.3)).offset(y: 1)
+            }
+    }
+}
+
+/// The desk blotter behind the Share tab's preview: in dark appearance, the table's wood
+/// (`TableWood`) darkened under the pool of the lamp's light, as on the Desk, and in light
+/// appearance cream paper (`PaperGround`). Increase Contrast leaves out the grain and the pool,
+/// so the print's edge stands out.
+///
+/// It is a static image under one gradient, so nothing redraws while the settings scroll or
+/// the image changes.
+struct ShareBlotter: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        if colorScheme == .light {
+            PaperGround()
+        } else {
+            Color(.shelfWallBottom)
+                .overlay {
+                    if contrast == .standard {
+                        Image("TableWood").resizable(resizingMode: .tile)
+                        // Dark walnut, as the bookcase's wood is (`WoodGrain`), lit from above
+                        // the print and falling off toward the edges.
+                        RadialGradient(
+                            colors: [
+                                ShelfPalette.walnutStain.opacity(0.55),
+                                Color(red: 0.08, green: 0.04, blue: 0.015).opacity(0.9),
+                            ],
+                            center: UnitPoint(x: 0.5, y: 0.4), startRadius: 40, endRadius: 560)
+                    }
+                }
+                .accessibilityHidden(true)
+        }
+    }
+}
+
+/// A searchable list of the books a single-book template can feature.
+private struct ShareBookPicker: View {
+    let books: [CloudBook]
+    let current: Int?
+    @Binding var selection: Int?
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    #if os(macOS)
+        /// The row that the arrow keys highlight and Return chooses (`pickerReturn(_:perform:)`).
+        @State private var highlighted: Int?
+    #endif
+
+    var body: some View {
+        let shown = filtered
+        Group {
+            #if os(macOS)
+                List(shown, selection: $highlighted, rowContent: row)
+                    .pickerReturn($highlighted, perform: choose)
+            #else
+                List(shown, rowContent: row)
+            #endif
+        }
+        .pickerSearch($query) { shown.first.map { choose($0.id) } }
+        .navigationTitle("Book")
+    }
+
+    private func choose(_ id: Int) {
+        selection = id
+        dismiss()
+    }
+
+    private func row(_ book: CloudBook) -> some View {
+        Button {
+            choose(book.id)
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    BookText(book.title, of: book).lineLimit(2)
+                    Text(book.author).font(.subheadline).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if book.id == current {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(.tint)
+                        .accessibilityLabel("Selected")
+                }
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var filtered: [CloudBook] {
+        guard !query.isEmpty else { return books }
+        return books.filter {
+            $0.title.localizedStandardContains(query) || $0.author.localizedStandardContains(query)
+        }
+    }
+}
+
+/// A searchable list of the books Top Five can draw from `library`, the finished ones: pinned
+/// books first in pin order, then the rest highest rated first. Each book's button pins or
+/// unpins it (`TopFivePins`).
+private struct TopFivePinPicker: View {
+    let library: [CloudBook]
+    @AppStorage(TopFivePins.key) private var pins = TopFivePins()
+    @Environment(AppModel.self) private var model
+    @State private var query = ""
+    /// The finished books, highest rated first, ranked when the library changes so a search
+    /// edit only filters them.
+    @State private var books: [CloudBook] = []
+    #if os(macOS)
+        /// The row that the arrow keys highlight and Return pins or unpins.
+        @State private var highlighted: Int?
+    #endif
+
+    var body: some View {
+        let shown =
+            query.isEmpty
+            ? books
+            : books.filter {
+                $0.title.localizedStandardContains(query)
+                    || $0.author.localizedStandardContains(query)
+            }
+        let pinned = pins.ids.compactMap { id in shown.first { $0.id == id } }
+        let rows = Group {
+            if !pinned.isEmpty {
+                Section("Pinned") { ForEach(pinned, content: row) }
+            }
+            Section {
+                ForEach(shown.filter { !pins.contains($0.id) }, content: row)
+            } header: {
+                Text("Books")
+            } footer: {
+                if pins.isFull { Text("Unpin a book to pin another.") }
+            }
+        }
+        Group {
+            #if os(macOS)
+                List(selection: $highlighted) { rows }
+                    .pickerReturn($highlighted, perform: toggle)
+            #else
+                List { rows }
+            #endif
+        }
+        .pickerSearch($query) { (pinned.first ?? shown.first).map { toggle($0.id) } }
+        .navigationTitle("Pin to Top Five")
+        .onChange(of: library, initial: true) { _, library in
+            books = library.filter(TimeFrame.lifetime.contains)
+                .sorted(by: ShareTemplate.isRankedHigher)
+        }
+    }
+
+    private func row(_ book: CloudBook) -> some View {
+        let isPinned = pins.contains(book.id)
+        return Button {
+            toggle(book.id)
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    BookText(book.title, of: book).lineLimit(2)
+                    Text(book.author).font(.subheadline).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: isPinned ? "pin.fill" : "pin")
+                    .foregroundStyle(isPinned ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                    // The row's value says whether the book is pinned.
+                    .accessibilityHidden(true)
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .disabled(!isPinned && pins.isFull)
+        .accessibilityValue(isPinned ? "Pinned" : "")
+        .accessibilityHint(isPinned ? "Unpins it from Top Five." : "Pins it to Top Five.")
+    }
+
+    /// Pins or unpins the book, unless it is unpinned and the pins are full.
+    private func toggle(_ id: Int) {
+        guard pins.contains(id) || !pins.isFull else { return }
+        pins.toggle(id)
+        Task { await model.syncTopFivePins() }
+    }
+}
+
+#if DEBUG
+    /// Simulator hooks, since a script cannot tap the Share tab.
+    ///
+    /// Launching with `-BookwormsShareTemplate <name>` opens the Share tab with that template,
+    /// where the name is a `ShareTemplate` raw value such as `topFive`, `hotTakes`, or `pile`.
+    /// `-BookwormsShareAspect <story|portrait|square>`,
+    /// `-BookwormsShareFrame <year:2025|month:2025-08|lifetime>`, `-BookwormsShareBook <id>`,
+    /// `-BookwormsShareCover <threeD|flat>`, `-BookwormsShareDirection <lovedMore|lovedLess>`,
+    /// `-BookwormsShareTopFive <rating|pinned>`,
+    /// `-BookwormsShareSeed <n>`, and Checkout Card's `-BookwormsShareCard <n>`, counting from
+    /// 1, set its options, and `-BookwormsShareSamples <n>` adds
+    /// fictional reviews and current reads (`samples(_:)`). Each render is then written, with
+    /// the credit that sharing adds, to `Library/Caches/Bookworms/share-debug.png`;
+    /// `-BookwormsShareBatch` renders a list of option sets in one launch
+    /// (`ShareStudioView.renderBatch()`).
+    enum ShareDebug {
+        /// Writes `image` as `share-debug<name>.png`, with the credit, as sharing exports it, in
+        /// a launch with `-BookwormsShareTemplate` or `-BookwormsShareBatch`.
+        @MainActor static func write(_ image: ShareImage?, name: String = "") {
+            let defaults = UserDefaults.standard
+            guard let image,
+                defaults.string(forKey: "BookwormsShareTemplate") != nil
+                    || defaults.string(forKey: "BookwormsShareBatch") != nil
+            else { return }
+            let url = URL.cachesDirectory.appending(path: "Bookworms/share-debug\(name).png")
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? image.image.withShareCredit()?.pngData()?.write(to: url, options: .atomic)
+        }
+
+        @MainActor private static var switchesTabs = false
+
+        /// With `-BookwormsShareTabs "desk:0 share:8"`, selects each tab, named by its `AppTab`
+        /// raw value, once its seconds pass after the previous entry. It checks the Desk's pile
+        /// while the Share tab renders one.
+        @MainActor static func switchTabs(_ model: AppModel) {
+            guard !switchesTabs,
+                let schedule = UserDefaults.standard.string(forKey: "BookwormsShareTabs")
+            else { return }
+            switchesTabs = true
+            // Unstructured, so leaving the Share tab does not cancel it.
+            Task {
+                for entry in schedule.split(separator: " ") {
+                    let parts = entry.split(separator: ":")
+                    try? await Task.sleep(for: .seconds(Double(parts.last ?? "") ?? 0))
+                    model.selectedTab = AppTab(rawValue: String(parts.first ?? "")) ?? .share
+                }
+            }
+        }
+
+        @MainActor private static var savedLaunchChoices = false
+
+        /// Saves `-BookwormsShareTemplate`'s template and the mode, size, time frame, and Top
+        /// Five source that the other arguments name as the studio's choices, once per launch,
+        /// so the studio opens on them and the reader can still change them.
+        @MainActor static func saveLaunchChoices() {
+            guard !savedLaunchChoices else { return }
+            savedLaunchChoices = true
+            let defaults = UserDefaults.standard
+            guard let raw = defaults.string(forKey: "BookwormsShareTemplate") else { return }
+            let template = ShareTemplate(rawValue: raw) ?? .topFive
+            let mode =
+                defaults.string(forKey: "BookwormsShareMode").flatMap(ShareMode.init(rawValue:))
+                ?? (template.isSocial ? .friends : .mine)
+            let aspect = defaults.string(forKey: "BookwormsShareAspect")
+                .flatMap(ShareAspect.init(rawValue:))
+            let frame = defaults.string(forKey: "BookwormsShareFrame")
+                .flatMap { TimeFrame(setting: $0) }
+            defaults.set(template.rawValue, forKey: ShareStudioView.templateKey)
+            defaults.set(mode.rawValue, forKey: ShareStudioView.modeKey)
+            defaults.set((aspect ?? .story).rawValue, forKey: ShareStudioView.aspectKey)
+            defaults.set(frame?.setting ?? "", forKey: ShareStudioView.frameKey)
+            defaults.set(
+                defaults.string(forKey: "BookwormsShareTopFive") ?? TopFiveSource.rating.rawValue,
+                forKey: ShareStudioView.topFiveSourceKey)
+        }
+
+        /// Fictional review text, from a short line to one long enough to need an excerpt.
+        private static let reviews = [
+            "A quiet book that kept getting louder. By the last chapter I had stopped reading "
+                + "for the plot and was reading for the sentences.",
+            "Perfect comfort read.",
+            "The middle sags and the ending hurries, but the characters carried me. I would "
+                + "follow these two through a phone book. The banter alone earns the stars, and "
+                + "the final scene on the pier will stay with me for a while.",
+            "I expected a thriller and got a meditation on memory, which turned out to be "
+                + "better. The structure is the trick: each chapter moves a year back, so you "
+                + "learn the ending first and spend the rest of the book discovering why it "
+                + "matters. Some chapters work better than others, and a few side characters "
+                + "vanish without much reason, but the way the author lets small objects carry "
+                + "meaning across decades is remarkable. A watch, a recipe card, a key to a door "
+                + "that no longer exists. I finished it in two sittings and then went back to "
+                + "read the first chapter again, which now reads like a completely different "
+                + "story. I will be recommending this to everyone who will listen, and to a few "
+                + "people who won't.",
+        ]
+
+        /// `books` with the sample reviews, current reads, and dropped books that launch
+        /// arguments ask for.
+        static func samples(_ books: [CloudBook]) -> [CloudBook] {
+            dropped(reviewed(books))
+        }
+
+        /// With `-BookwormsShareDropped <n>`, moves the first `n` unread books with covers to the
+        /// **Did Not Finish** shelf, dropped on days spread through this year. The preview library
+        /// has none.
+        private static func dropped(_ books: [CloudBook]) -> [CloudBook] {
+            let count = UserDefaults.standard.integer(forKey: "BookwormsShareDropped")
+            guard count > 0 else { return books }
+            let year = Calendar(identifier: .gregorian).component(.year, from: .now)
+            var dropped = 0
+            return books.map { book in
+                var book = book
+                if dropped < count, book.finishedDate == nil, book.isReading != true,
+                    book.coverURL != nil
+                {
+                    book.statusID = HardcoverClient.didNotFinishStatus
+                    book.dropped = String(format: "%d-%02d-15", year, dropped % 9 + 1)
+                    dropped += 1
+                }
+                return book
+            }
+        }
+
+        /// With `-BookwormsShareSamples <n>`, gives the newest rated finished books the
+        /// fictional reviews, starting with review `n`, and marks the first two unfinished books
+        /// as current reads with progress. The preview library has neither.
+        private static func reviewed(_ books: [CloudBook]) -> [CloudBook] {
+            guard let value = UserDefaults.standard.string(forKey: "BookwormsShareSamples")
+            else { return books }
+            let start = Int(value) ?? 0
+            var reviewed = 0
+            var reading = 0
+            return books.map { book in
+                var book = book
+                if book.finishedDate != nil, book.rating != nil, reviewed < reviews.count {
+                    book.review = reviews[(start + reviewed) % reviews.count]
+                    reviewed += 1
+                } else if book.finishedDate == nil, reading < 2 {
+                    book.isReading = true
+                    book.progress = [0.62, 0.18][reading]
+                    book.started = ["2026-09-21", "2026-10-02"][reading]
+                    reading += 1
+                }
+                return book
+            }
+        }
+    }
+#endif
+
+#if os(macOS)
+    /// Lets the preview drag out `image` as a PNG file, and nothing while it's `nil`.
+    private struct PreviewDrag: ViewModifier {
+        let image: ShareImage?
+
+        func body(content: Content) -> some View {
+            if let image { content.draggable(image) } else { content }
+        }
+    }
+#endif

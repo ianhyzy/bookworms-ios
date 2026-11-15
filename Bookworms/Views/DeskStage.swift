@@ -1,0 +1,765 @@
+import RealityKit
+import SwiftUI
+
+#if canImport(UIKit)
+    import UIKit
+#else
+    import AppKit
+#endif
+
+/// The setting every 3D view shares: a wooden desk at night under a warm lamp.
+///
+/// A spotlight high over the reader's right shoulder lays a warm pool of light on the books,
+/// lighting the covers, spines, and page edges that face the camera, and the table falls off
+/// into the dark room outside the pool, which also hides the repeats of the table's texture.
+/// An image-based light, a dim room drawn in code with the lamp's glow in it, lights the
+/// shadows and gives the jackets' sheen something to reflect. Each lit entity receives it through
+/// `light(_:)`. Dust motes drift through the beam while `setDust(true)`, catching its light, or
+/// fine, faint ones for a camera that films low among them (`setDust(_:fine:)`).
+/// While the scene that shows comes to rest (`rest`, `setSettled(_:)`), and under heat or in Low
+/// Power Mode (`setReducesEffects(_:)`), no new motes drift in, and those in the beam fade out.
+///
+/// Scene units are decimeters, but RealityKit treats them as meters, so the lamp's intensity
+/// grows with the square of its distance in those units to keep the pool equally bright.
+///
+/// The table reaches far past the pool, and its wood repeats every `tile` units, so a scene can
+/// move its books and camera by whole tiles without the table showing any change (see
+/// `DominoSetup.offset(of:aspect:)`). One stage can serve two scenes in turn: each puts `root`
+/// under its own root while it shows (see `DeskScenes`).
+@MainActor
+final class DeskStage {
+    /// The table, lights, and dust.
+    let root = Entity()
+    /// Holds the image-based light, which lit entities receive through `light(_:)`.
+    let lighting = Entity()
+    private let lamp = SpotLight()
+    /// Holds the brighter copy of the room's light that `light(_:boost:)` gives.
+    private let boosted = Entity()
+    private let dust = Entity()
+    /// Whether the dust shows, which Reduce Motion turns off, and whether its motes are the fine
+    /// ones (see `setDust(_:fine:)`).
+    private var showsDust = false
+    private var finesDust = false
+    /// Whether the stage saves power under heat or in Low Power Mode.
+    private var reducesEffects = false
+    /// Whether the scene rests, so it can pause on a still (see `setSettled(_:)`).
+    private var isSettled = false
+    /// The rest of whichever scene shows on the stage, which both desk scenes count, and which
+    /// settles the dust before it reports.
+    private(set) lazy var rest = SceneRest { [weak self] in self?.setSettled($0) }
+    private var isBuilt = false
+    private var table: Entity?
+    /// The emitters `preparePuff(size:)` built, and the book size they fit.
+    private var puffs: (entity: Entity, size: SIMD3<Float>)?
+    private var environment: Task<Void, Never>?
+    /// The middle and radius of the lamp's pool of light on the table.
+    private(set) var pool: (center: SIMD3<Float>, radius: Float) = (.zero, 1)
+
+    /// The distance at which the table's wood texture repeats, in units.
+    nonisolated static let tile: Float = 15
+    /// The table's width and depth, in units: a whole number of `tile`s.
+    nonisolated static let tableSize: Float = 180
+
+    /// The lamp's color: an incandescent bulb's warm white, about 2700 K.
+    nonisolated static let lampColor = UIColor(red: 1, green: 0.78, blue: 0.55, alpha: 1)
+    /// Where the lamp hangs from the pool's middle, in pool radii: toward the camera (+z), a
+    /// little to its right (+x), and high above.
+    nonisolated static let lampOffset = SIMD3<Float>(1.2, 4.6, 2.2)
+    /// The room's light, built once and shared by every stage, including share images, and
+    /// its intensity, as a power of 2.
+    private static var room: Task<EnvironmentResource?, Never>?
+    private static let roomIntensity: Float = 2.2
+
+    init() {
+        root.addChild(lighting)
+    }
+
+    /// Adds the table and the lamp, whose pool of light covers a circle of `radius` around
+    /// `center` on the table, and starts building the room's light (see `lit`). Later calls
+    /// do nothing; `aim(pool:radius:)` moves the pool.
+    func build(pool center: SIMD3<Float>, radius: Float) {
+        guard !isBuilt else { return }
+        isBuilt = true
+        prepare()
+        aim(pool: center, radius: radius)
+    }
+
+    /// Adds the table and the lamp and starts building the room's light, ahead of `build`, as
+    /// `DeskScenes.prewarm()` does before the Desk tab shows. Later calls do nothing.
+    func prepare() {
+        guard table == nil else { return }
+        environment = Task { [lighting] in
+            guard let resource = await Self.roomLight() else { return }
+            lighting.components.set(
+                ImageBasedLightComponent(
+                    source: .single(resource), intensityExponent: Self.roomIntensity))
+        }
+        let table = makeTable()
+        self.table = table
+        // Draws the slam's puffs' image now rather than as the dominoes prepare a puff.
+        _ = Self.haze
+        root.addChild(table)
+        root.addChild(lamp)
+    }
+
+    /// Moves the lamp so its pool of light covers a circle of `radius` around `center` on the
+    /// table, and spreads the dust over it. The table and the room's light stay as they are.
+    ///
+    /// Dust that already drifts keeps its motes and spreads over the new pool as they renew.
+    func aim(pool center: SIMD3<Float>, radius: Float) {
+        moveLamp(pool: center, radius: radius)
+        if var motes = dust.components[ParticleEmitterComponent.self] {
+            motes.emitterShapeSize = Self.dustSize(radius: radius)
+            dust.components.set(motes)
+        } else {
+            var motes = Self.dustMotes(radius: radius)
+            Self.dress(&motes.mainEmitter, fine: finesDust)
+            motes.isEmitting = emitsDust
+            dust.components.set(motes)
+        }
+    }
+
+    /// Moves the lamp so its pool of light covers a circle of `radius` around `center`, as
+    /// `aim(pool:radius:)` does, and moves the dust along without starting it over, for a pool
+    /// that moves from frame to frame.
+    func moveLamp(pool center: SIMD3<Float>, radius: Float) {
+        pool = (center, radius)
+        let placement = Self.lampPlacement(pool: center, radius: radius)
+        lamp.light = SpotLightComponent(
+            color: Self.lampColor, intensity: 7e6 * pow(placement.distance / 19, 2),
+            innerAngleInDegrees: placement.innerAngle, outerAngleInDegrees: placement.outerAngle,
+            attenuationRadius: placement.distance * 3)
+        // The shadow map's depths end just past the pool's far side, where the dark table no
+        // longer shows shadows. A bias of 2 is the least that keeps the books' faces free of
+        // shadow acne, which smaller biases draw as stripes, and shadows still meet the books
+        // where they touch the table.
+        var shadow = SpotLightComponent.Shadow()
+        shadow.depthBias = 2
+        shadow.zNear = .fixed(2)
+        shadow.zFar = .fixed(placement.distance + radius * 1.5)
+        // A lamp shade's opening, about 15 cm across. At the default shadow quality, which the
+        // lamp keeps, RealityKit ignores the light's size, so the shadows' edges stay hard.
+        shadow.lightSize = 1.5
+        lamp.shadow = shadow
+        lamp.look(at: placement.aim, from: placement.position, relativeTo: nil)
+        // Over the beam's axis, which runs from the lamp to the pool's middle, at the dust's
+        // middle height (see `dustSize`).
+        dust.position = center + Self.lampOffset * (2 / Self.lampOffset.y)
+    }
+
+    /// Waits until the room's light reaches the scene, as a still image needs before it
+    /// renders. `build(pool:radius:)` starts the light; before it, this returns at once.
+    func lit() async { await environment?.value }
+
+    /// Lets `entity` reflect the room and be lit by it.
+    func light(_ entity: Entity) {
+        entity.components.set(ImageBasedLightReceiverComponent(imageBasedLight: lighting))
+    }
+
+    /// Lights the parts of `entity` that the room lights, such as a book's model, with the
+    /// room's light `boost` stops brighter, as a book held out of the lamp's beam needs to stay
+    /// lit, or with the room's own light for no boost. One entity at a time can have a boost: a
+    /// later call sets it for every entity it lights.
+    func light(_ entity: Entity, boost: Float) {
+        var source = lighting
+        if boost > 0, var light = lighting.components[ImageBasedLightComponent.self] {
+            light.intensityExponent = Self.roomIntensity + boost
+            boosted.components.set(light)
+            if boosted.parent == nil { root.addChild(boosted) }
+            source = boosted
+        }
+        let receiver = ImageBasedLightReceiverComponent(imageBasedLight: source)
+        func relight(_ entity: Entity) {
+            if entity.components.has(ImageBasedLightReceiverComponent.self) {
+                entity.components.set(receiver)
+            }
+            entity.children.forEach(relight)
+        }
+        relight(entity)
+    }
+
+    /// Shows or hides the dust drifting through the lamp's beam. Reduce Motion hides it, as
+    /// motion the reader did not start. `fine` motes, the same flecks about 1 to 3 mm long,
+    /// faint, and lit by the lamp, suit a camera that films low among them, as the dominoes'
+    /// Follow camera does, where a mote of the desk's that drifts near the lens shows as a
+    /// large glowing fleck.
+    /// Motes already drifting keep their look until they fade.
+    func setDust(_ enabled: Bool, fine: Bool = false) {
+        showsDust = enabled
+        finesDust = fine
+        updateDust()
+    }
+
+    /// Saves power while `reduces`, as Apple asks of apps under heat or in Low Power Mode: no
+    /// new dust drifts into the beam. Turning it off lets the dust drift in again.
+    func setReducesEffects(_ reduces: Bool) {
+        guard reduces != reducesEffects else { return }
+        reducesEffects = reduces
+        updateDust()
+    }
+
+    /// Lets no new dust drift into the beam while the scene is `settled`, so the motes have
+    /// faded out, within `longestMoteLife`, by the time a resting scene pauses on a still,
+    /// which would hold motes frozen in the air. Turning it off lets the dust drift in again,
+    /// each mote fading in as it starts.
+    func setSettled(_ settled: Bool) {
+        guard settled != isSettled else { return }
+        isSettled = settled
+        updateDust()
+    }
+
+    /// Whether new motes drift into the beam.
+    private var emitsDust: Bool { !reducesEffects && !isSettled }
+
+    /// Adds the dust while it shows and removes it otherwise, and keeps it emitting unless the
+    /// stage saves power or the scene rests. An emitter that stops leaves its motes to fade out
+    /// over their lives, and one that starts again fills the beam over a few seconds.
+    private func updateDust() {
+        if showsDust, dust.parent == nil {
+            root.addChild(dust)
+        } else if !showsDust {
+            dust.removeFromParent()
+        }
+        if var motes = dust.components[ParticleEmitterComponent.self],
+            motes.isEmitting != emitsDust || motes.mainEmitter.isLightingEnabled != finesDust
+        {
+            motes.isEmitting = emitsDust
+            Self.dress(&motes.mainEmitter, fine: finesDust)
+            dust.components.set(motes)
+        }
+    }
+
+    /// Moves the table up at `speed` units a second of the physics' clock, so the books on it
+    /// ride along and leave it as it gives and springs back under a slam. At `nil`, it rests
+    /// where it started, static again.
+    func moveTable(at speed: Float?) {
+        guard let table else { return }
+        guard let speed else {
+            table.position.y = 0
+            table.components[PhysicsBodyComponent.self]?.mode = .static
+            table.components.set(PhysicsMotionComponent())
+            return
+        }
+        table.components[PhysicsBodyComponent.self]?.mode = .kinematic
+        table.components.set(PhysicsMotionComponent(linearVelocity: [0, speed, 0]))
+    }
+
+    /// Blows a soft cloud of dust out from under a book of `size` (see `BookShape.size`) slammed
+    /// down onto `place`, as a heavy book slammed onto a dusty desk squeezes out the air under it:
+    /// about 40 hazy puffs (`haze`) for each unit of the book's edges burst out at once, each
+    /// born at random in a band along an edge just above the book's underside, so the cloud has
+    /// no outline. They roll outward and up over the books around it, slowing within about half
+    /// a book's width, and grow by half as they thin out steadily, gone within 1.2 to 1.8
+    /// seconds. Each is a glow of the lamp's warm light that brightens what lies behind it, as
+    /// dust in a beam does, so the cloud never hides a cover. It shows only while the dust does
+    /// and the stage does not save power. It bursts the emitters `preparePuff(size:)` built for
+    /// the book, and builds them first if it has not, then removes them once the puffs are gone,
+    /// so no idle emitter rides along into the next view the stage is shown in.
+    func puff(under place: Transform, size: SIMD3<Float>) {
+        guard showsDust, !reducesEffects else { return }
+        preparePuff(size: size)
+        guard let puffs = puffs?.entity else { return }
+        // The book's own axes: x from spine to fore edge, y from tail to head, and z up out of
+        // its front cover, so its underside lies at z = 0 here.
+        puffs.transform = Transform(
+            rotation: place.rotation,
+            translation: place.translation - place.rotation.act([0, 0, size.z / 2]))
+        for edge in puffs.children {
+            guard var emitter = edge.components[ParticleEmitterComponent.self] else { continue }
+            emitter.burst()
+            edge.components.set(emitter)
+        }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, self.puffs?.entity === puffs else { return }
+            puffs.removeFromParent()
+            self.puffs = nil
+        }
+    }
+
+    /// Builds the emitters of `puff(under:size:)` for a book of `size` ahead of its slam, and
+    /// leaves them waiting, emitting nothing. RealityKit holds up the frames that follow a new or
+    /// changed particle emitter, by about a twelfth of a second in the Simulator, which would
+    /// freeze the slam's first frames. Later calls for the same size, and calls while the dust
+    /// is hidden or the stage saves power, when no puff would show, do nothing.
+    func preparePuff(size: SIMD3<Float>) {
+        guard showsDust, !reducesEffects, size != puffs?.size else { return }
+        puffs?.entity.removeFromParent()
+        let entity = Self.makePuffs(size: size)
+        root.addChild(entity)
+        puffs = (entity, size)
+    }
+
+    /// One emitter for each edge of a book of `size`, as children of one entity in the book's
+    /// own axes, each set to burst `puff(under:size:)`'s puffs out from under its edge.
+    private static func makePuffs(size: SIMD3<Float>) -> Entity {
+        let puffs = Entity()
+        // Each edge's outward direction, and its length.
+        let sides: [(out: SIMD3<Float>, length: Float)] = [
+            ([1, 0, 0], size.y), ([0, 1, 0], size.x),
+        ]
+        for (out, length) in sides + sides.map({ (-$0.out, $0.length) }) {
+            var emitter = ParticleEmitterComponent()
+            emitter.emitterShape = .box
+            emitter.birthLocation = .volume
+            emitter.birthDirection = .local
+            // About 31 degrees up, more than the puffs spread to either side (`spreadingAngle`),
+            // so no puff heads down into the covers around the book.
+            emitter.emissionDirection = simd_normalize(out + [0, 0, 0.6])
+            // The band the edge's puffs start in: 5 mm past each corner, from 1 cm under the book
+            // to 2 cm past its edge, and from 8 to 16 mm above its underside, high enough that,
+            // seen from the spread's camera, a puff's glow clears a cover level with the
+            // underside.
+            let band: SIMD3<Float> = [length + 0.1, 0.3, 0.08]
+            emitter.emitterShapeSize = out.x == 0 ? band : [band.y, band.x, band.z]
+            emitter.speed = 2.5
+            emitter.speedVariation = 1.3
+            emitter.fieldSimulationSpace = .global
+            emitter.isEmitting = false
+            emitter.burstCount = Int(40 * length)
+            var cloud = emitter.mainEmitter
+            cloud.birthRate = 0
+            cloud.spreadingAngle = 0.5
+            cloud.lifeSpan = 1.5
+            cloud.lifeSpanVariation = 0.3
+            cloud.dampingFactor = 3.5
+            cloud.acceleration = [0, 0.2, 0]
+            cloud.noiseStrength = 0.5
+            cloud.noiseScale = 1
+            cloud.noiseAnimationSpeed = 0.5
+            cloud.size = 0.55
+            cloud.sizeVariation = 0.12
+            cloud.sizeMultiplierAtEndOfLifespan = 1.5
+            cloud.sizeMultiplierAtEndOfLifespanPower = 1
+            cloud.opacityCurve = .linearFadeOut
+            cloud.billboardMode = .billboard
+            cloud.angleVariation = .pi
+            cloud.angularSpeedVariation = 0.5
+            cloud.blendMode = .additive
+            cloud.color = .constant(.single(UIColor(red: 1, green: 0.8, blue: 0.56, alpha: 0.13)))
+            cloud.image = haze
+            emitter.mainEmitter = cloud
+            let edge = Entity()
+            edge.components.set(emitter)
+            edge.position = out * (size / 2 + 0.05) + [0, 0, 0.12]
+            puffs.addChild(edge)
+        }
+        return puffs
+    }
+
+    /// Where the lamp stands for a pool of `radius` around `pool`, and where it points.
+    ///
+    /// It hangs high above the pool, toward the camera and a little to its right, about 61
+    /// degrees up: it lights the faces that turn toward the camera, its shadows fall up and to
+    /// the left of the books, where the camera sees them, and flat covers reflect it away from
+    /// the camera, though covers that tilt toward the camera reflect it into view (see
+    /// `BookFactory.finish`). Over the pile's pool it hangs above the camera, so above every book
+    /// in view. It aims at the pool's middle. Full light spans the middle of the pool and fades
+    /// out past its edge. Angles are the cone's full angles, in degrees.
+    nonisolated static func lampPlacement(pool: SIMD3<Float>, radius: Float) -> (
+        position: SIMD3<Float>, aim: SIMD3<Float>, distance: Float, innerAngle: Float,
+        outerAngle: Float
+    ) {
+        let position = pool + lampOffset * radius
+        let distance = simd_distance(position, pool)
+        let edge = 2 * atan(radius / distance) * 180 / .pi
+        return (position, pool, distance, edge * 0.7, edge * 1.5)
+    }
+
+    private func makeTable() -> Entity {
+        var material = BookFactory.surface(
+            nil, tint: UIColor(red: 0.6, green: 0.44, blue: 0.32, alpha: 1), roughness: 0.62,
+            specular: 0.3)
+        // A thin satin varnish, which gives the wood a soft sheen without a glare.
+        material.clearcoat = .init(floatLiteral: 0.2)
+        material.clearcoatRoughness = .init(floatLiteral: 0.45)
+        if let image = UIImage(named: "TableWood")?.cgImage,
+            let texture = try? TextureResource(image: image, options: .init(semantic: .color))
+        {
+            let sampler = MTLSamplerDescriptor()
+            sampler.sAddressMode = .repeat
+            sampler.tAddressMode = .repeat
+            sampler.minFilter = .linear
+            sampler.magFilter = .linear
+            sampler.mipFilter = .linear
+            sampler.maxAnisotropy = 8
+            material.baseColor.texture = .init(texture, sampler: .init(sampler))
+            // One 1024-pixel tile spans `tile` units (1.5 meters) of the table.
+            let tiles = Self.tableSize / Self.tile
+            material.textureCoordinateTransform = .init(scale: [tiles, tiles])
+        }
+        let size = Self.tableSize
+        let table = ModelEntity(
+            mesh: .generatePlane(width: size, depth: size), materials: [material])
+        table.components.set(
+            CollisionComponent(shapes: [
+                ShapeResource.generateBox(width: size, height: 2, depth: size)
+                    .offsetBy(translation: [0, -1, 0])
+            ]))
+        table.components.set(
+            PhysicsBodyComponent(
+                massProperties: .default,
+                material: .generate(staticFriction: 0.7, dynamicFriction: 0.55, restitution: 0.1),
+                mode: .static))
+        table.components.set(GroundingShadowComponent(castsShadow: false, receivesShadow: true))
+        light(table)
+        return table
+    }
+
+    /// The longest a mote drifts, in seconds: short enough that a scene that comes to rest
+    /// shows its dust for several seconds before the motes must fade for its still
+    /// (`SceneRest.dustStop`).
+    nonisolated static let longestMoteLife: Double = 3
+
+    /// Slow motes in the beam around its axis, over the middle of the pool. About 100 drift at
+    /// a time, each fading in and out over 2 to `longestMoteLife` seconds, born at any angle
+    /// and turning slowly, up to about 30 degrees a second either way, as specks of dust
+    /// tumble. The emitter has no warm-up, which a new emitter simulates in a single frame,
+    /// stalling the render, so the motes fill the beam over their first few seconds.
+    /// `dress(_:fine:)` sets their look.
+    private static func dustMotes(radius: Float) -> ParticleEmitterComponent {
+        var emitter = ParticleEmitterComponent()
+        emitter.emitterShape = .box
+        emitter.birthLocation = .volume
+        emitter.emitterShapeSize = dustSize(radius: radius)
+        emitter.speed = 0.03
+        emitter.speedVariation = 0.03
+        emitter.timing = .repeating(emit: .init(duration: 60))
+        var motes = emitter.mainEmitter
+        motes.birthRate = 40
+        motes.lifeSpanVariation = 0.5
+        motes.lifeSpan = longestMoteLife - motes.lifeSpanVariation
+        motes.opacityCurve = .gradualFadeInOut
+        motes.noiseStrength = 0.04
+        motes.noiseScale = 0.6
+        motes.noiseAnimationSpeed = 0.1
+        motes.acceleration = [0, -0.004, 0]
+        motes.billboardMode = .billboard
+        motes.angleVariation = .pi
+        motes.angularSpeedVariation = 0.5
+        emitter.mainEmitter = motes
+        return emitter
+    }
+
+    /// Gives `motes` the desk's look: slender irregular flecks (`flecks`) about 2 to 5.5 mm
+    /// long and a third to half as wide, in cells 5.5 to 9.5 mm across, specks of the lamp's
+    /// warm light at half strength that brighten what lies behind them, as dust catching a beam
+    /// does. `fine` motes are the same flecks about 1 to 3 mm long, faint, and lit by the lamp,
+    /// so they show only in its beam, and stay small and faint enough not to show as discs when
+    /// a camera passes close to them.
+    private static func dress(_ motes: inout ParticleEmitterComponent.ParticleEmitter, fine: Bool) {
+        motes.size = fine ? 0.04 : 0.075
+        motes.sizeVariation = fine ? 0.01 : 0.02
+        motes.color = .constant(
+            .single(
+                fine
+                    ? UIColor(red: 1, green: 0.9, blue: 0.75, alpha: 0.35)
+                    : UIColor(red: 1, green: 0.8, blue: 0.52, alpha: 0.5)))
+        motes.isLightingEnabled = fine
+        motes.blendMode = fine ? .alpha : .additive
+        motes.image = flecks
+        var cells = ParticleEmitterComponent.ParticleEmitter.ImageSequence()
+        cells.rowCount = fleckColumns
+        cells.columnCount = fleckColumns
+        // Each mote keeps one fleck, picked at random from the sheet's cells as it is born.
+        let middle = fleckColumns * fleckColumns / 2
+        cells.initialFrame = middle
+        cells.initialFrameVariation = middle
+        cells.frameRate = 0
+        motes.imageSequence = cells
+    }
+
+    /// The columns and rows of `flecks`' grid.
+    private static let fleckColumns = 3
+
+    /// The motes' images: a sheet of `fleckColumns` by `fleckColumns` cells, 32 pixels each,
+    /// with one dust fleck in each. A fleck is four or five overlapping soft blobs of different
+    /// sizes, strung along a slightly bent line and pushed a little to either side, so it is
+    /// lumpy and two to three times as long as it is wide, which still shows when a mote spans
+    /// only a few pixels. Each blob peaks at 0.8 opacity and fades over most of its radius, so a
+    /// mote reads as a soft speck rather than a hard chip. A fixed seed draws the same flecks
+    /// every launch.
+    private static let flecks: TextureResource? = {
+        let cell: CGFloat = 32
+        let side = cell * CGFloat(fleckColumns)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        var random = BookAnalyzer.SeededGenerator(seed: 0xD057)
+        func jitter(_ range: CGFloat) -> CGFloat { .random(in: -range...range, using: &random) }
+        let image = UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format)
+            .image { context in
+                let colors = [0.8, 0.4, 0].map { UIColor(white: 1, alpha: $0).cgColor }
+                guard
+                    let blob = CGGradient(
+                        colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors as CFArray,
+                        locations: [0, 0.45, 1])
+                else { return }
+                let graphics = context.cgContext
+                for index in 0..<(fleckColumns * fleckColumns) {
+                    let middle = CGPoint(
+                        x: (CGFloat(index % fleckColumns) + 0.5) * cell,
+                        y: (CGFloat(index / fleckColumns) + 0.5) * cell)
+                    let axis = jitter(.pi)
+                    let bend = jitter(0.5)
+                    // Half the distance between the end blobs' middles, long enough against the
+                    // blobs' width that every fleck is slender.
+                    let length = 5.5 + jitter(1)
+                    let count = 4 + index % 2
+                    // No blob reaches past 16 pixels from the cell's middle, so none spills
+                    // into a neighbor's cell.
+                    for part in 0..<count {
+                        // From -1 at one end of the fleck to 1 at the other.
+                        let along = CGFloat(part) / CGFloat(count - 1) * 2 - 1
+                        let turn = axis + bend * along
+                        let reach = length * along + jitter(1)
+                        let aside = jitter(0.75)
+                        graphics.saveGState()
+                        graphics.translateBy(
+                            x: middle.x + cos(turn) * reach - sin(turn) * aside,
+                            y: middle.y + sin(turn) * reach + cos(turn) * aside)
+                        graphics.rotate(by: turn + jitter(0.4))
+                        graphics.scaleBy(x: 4.5 + jitter(1.2), y: 3 + jitter(0.6))
+                        graphics.drawRadialGradient(
+                            blob, startCenter: .zero, startRadius: 0, endCenter: .zero,
+                            endRadius: 1, options: [])
+                        graphics.restoreGState()
+                    }
+                }
+            }
+        return image.cgImage.flatMap {
+            try? TextureResource(image: $0, options: .init(semantic: .color))
+        }
+    }()
+
+    /// The image of `puff(under:size:)`'s puffs, 64 pixels across: a soft clump of six white
+    /// blobs on black, one in the middle and five of different sizes around it, each fading from
+    /// its middle along a bell curve to nothing within 26 pixels of the image's middle, so a puff
+    /// is a soft, slightly uneven glow rather than a disc, and overlapping puffs blend into a
+    /// haze without edges. The
+    /// clump lies in the image's color, not its alpha: RealityKit keeps a texture's color
+    /// unpremultiplied, and an additive puff adds that color, so white faded only in alpha would
+    /// draw as a flat disc, while black adds nothing. A fixed seed draws the same clump every
+    /// launch.
+    private static let haze: TextureResource? = {
+        let side: CGFloat = 64
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        var random = BookAnalyzer.SeededGenerator(seed: 0xC10D)
+        let image = UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format)
+            .image { context in
+                UIColor.black.setFill()
+                context.fill(CGRect(x: 0, y: 0, width: side, height: side))
+                let locations = (0...8).map { CGFloat($0) / 8 }
+                let colors = locations.map { edge in
+                    let bell = (exp(-2 * edge * edge) - exp(-2)) / (1 - exp(-2))
+                    return UIColor(white: 1, alpha: 0.6 * bell).cgColor
+                }
+                guard
+                    let blob = CGGradient(
+                        colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors as CFArray,
+                        locations: locations)
+                else { return }
+                for part in 0..<6 {
+                    let turn = CGFloat.random(in: 0..<(2 * .pi), using: &random)
+                    let reach = part == 0 ? 0 : CGFloat.random(in: 5...10, using: &random)
+                    let radius = part == 0 ? 24 : CGFloat.random(in: 12...16, using: &random)
+                    let middle = CGPoint(
+                        x: side / 2 + cos(turn) * reach, y: side / 2 + sin(turn) * reach)
+                    context.cgContext.drawRadialGradient(
+                        blob, startCenter: middle, startRadius: 0, endCenter: middle,
+                        endRadius: radius, options: [])
+                }
+            }
+        return image.cgImage.flatMap {
+            try? TextureResource(image: $0, options: .init(semantic: .color))
+        }
+    }()
+
+    /// The box the motes are born in over a pool of `radius`: from half a unit to 3.5 units
+    /// above the table, and 0.7 of the pool's radius across, so that, about the beam's axis,
+    /// even its corners lie in the beam's full light and no mote glows where the beam would
+    /// leave it dark.
+    private static func dustSize(radius: Float) -> SIMD3<Float> {
+        [radius * 0.7, 3, radius * 0.7]
+    }
+
+    /// Builds the room's light once, the first time a stage needs it. A build that fails is
+    /// tried again the next time a stage needs it.
+    private static func roomLight() async -> EnvironmentResource? {
+        let task =
+            room
+            ?? Task {
+                guard let image = roomImage() else { return nil }
+                return try? await EnvironmentResource(equirectangular: image, options: .init())
+            }
+        room = task
+        let light = await task.value
+        if light == nil, room == task { room = nil }
+        return light
+    }
+
+    /// The lamp's direction from the pool in `roomImage`'s degrees: its azimuth, where 180 is
+    /// toward the camera and less turns toward its right, and its elevation.
+    private nonisolated static var lampDirection: (azimuth: CGFloat, elevation: CGFloat) {
+        let offset = SIMD3<Double>(lampOffset)
+        return (
+            180 - atan2(offset.x, offset.z) * 180 / .pi,
+            atan2(offset.y, (offset.x * offset.x + offset.z * offset.z).squareRoot()) * 180 / .pi
+        )
+    }
+
+    /// A warm, dim room at night as a 512 × 256 equirectangular image, for image-based light:
+    /// the lamp's bright shade high behind the viewer, where `lampPlacement` hangs it, its glow
+    /// on the ceiling and on the wall and bookshelves behind the viewer, which light the faces
+    /// that turn toward the camera, a moonlit window to the right, and a darker floor. Flat
+    /// covers reflect the dim wall above the table's far side, so the room lays no haze over
+    /// dark covers.
+    ///
+    /// The image's middle column faces -z, away from the default camera, and x grows to the
+    /// right, as RealityKit maps equirectangular environments. Its left and right edges both
+    /// face +z, toward the viewer, so shapes there are drawn at both.
+    nonisolated private static func roomImage() -> CGImage? {
+        let size = CGSize(width: 512, height: 256)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        func spot(azimuth: CGFloat, elevation: CGFloat) -> CGPoint {
+            // Azimuth in degrees from -z toward +x, elevation in degrees above the horizon.
+            CGPoint(
+                x: (0.5 + azimuth / 360) * size.width, y: (90 - elevation) / 180 * size.height)
+        }
+        return UIGraphicsImageRenderer(size: size, format: format)
+            .image { context in
+                let cg = context.cgContext
+                let space = CGColorSpaceCreateDeviceRGB()
+                func gradient(_ colors: [UIColor], _ locations: [CGFloat]) -> CGGradient? {
+                    CGGradient(
+                        colorsSpace: space, colors: colors.map(\.cgColor) as CFArray,
+                        locations: locations)
+                }
+                // Draws a radial glow around a point behind the viewer, and again a full turn
+                // around, so it wraps across the image's edges.
+                func glow(
+                    _ colors: [UIColor], azimuth: CGFloat, elevation: CGFloat, radius: CGFloat
+                ) {
+                    guard let glow = gradient(colors, [0, 1]) else { return }
+                    for turn: CGFloat in [-360, 0] {
+                        let center = spot(azimuth: azimuth + turn, elevation: elevation)
+                        cg.drawRadialGradient(
+                            glow, startCenter: center, startRadius: 0, endCenter: center,
+                            endRadius: radius, options: [])
+                    }
+                }
+                // Walls: a little warmer and lighter toward the ceiling, dark toward the floor.
+                if let walls = gradient(
+                    [
+                        UIColor(red: 0.09, green: 0.065, blue: 0.045, alpha: 1),
+                        UIColor(red: 0.05, green: 0.037, blue: 0.028, alpha: 1),
+                        UIColor(red: 0.018, green: 0.014, blue: 0.012, alpha: 1),
+                    ], [0, 0.5, 1])
+                {
+                    cg.drawLinearGradient(
+                        walls, start: .zero, end: CGPoint(x: 0, y: size.height), options: [])
+                }
+                // The lamp's light on the wall behind the viewer.
+                glow(
+                    [
+                        UIColor(red: 0.62, green: 0.44, blue: 0.27, alpha: 1),
+                        UIColor(red: 0.3, green: 0.2, blue: 0.12, alpha: 0),
+                    ], azimuth: 165, elevation: 25, radius: 120)
+                // Bookshelves on that wall: spines of muted colors, lit by the lamp.
+                var seed: UInt32 = 0x2545_F491
+                for shelf in 0..<3 {
+                    let top = spot(azimuth: 0, elevation: 32 - CGFloat(shelf) * 14).y
+                    var x = spot(azimuth: 125, elevation: 0).x
+                    let end = spot(azimuth: 235, elevation: 0).x
+                    while x < end {
+                        seed = seed &* 1_664_525 &+ 1_013_904_223
+                        let width = 3 + CGFloat(seed >> 28)
+                        let tone = 0.12 + CGFloat((seed >> 20) & 15) / 15 * 0.14
+                        UIColor(red: tone * 1.3, green: tone, blue: tone * 0.75, alpha: 0.85)
+                            .setFill()
+                        let height = 26 - CGFloat((seed >> 12) & 7)
+                        let left = x.truncatingRemainder(dividingBy: size.width)
+                        cg.fill(CGRect(x: left, y: top + 26 - height, width: width, height: height))
+                        x += width + 0.5
+                    }
+                }
+                // A window to the right, faintly moonlit.
+                let window = spot(azimuth: 80, elevation: 38)
+                UIColor(red: 0.1, green: 0.13, blue: 0.19, alpha: 1).setFill()
+                cg.fill(CGRect(x: window.x, y: window.y, width: 46, height: 50))
+                // The lamp's glow on the ceiling around it, then its bright shade.
+                let lamp = Self.lampDirection
+                glow(
+                    [
+                        UIColor(red: 0.55, green: 0.38, blue: 0.22, alpha: 0.75),
+                        UIColor(red: 0.2, green: 0.13, blue: 0.08, alpha: 0),
+                    ], azimuth: lamp.azimuth, elevation: lamp.elevation, radius: 90)
+                glow(
+                    [
+                        UIColor(red: 1, green: 0.9, blue: 0.75, alpha: 1),
+                        UIColor(red: 1, green: 0.75, blue: 0.5, alpha: 0),
+                    ], azimuth: lamp.azimuth, elevation: lamp.elevation, radius: 16)
+            }
+            .cgImage
+    }
+}
+
+/// When the scene that shows on the desk rests, which the Desk scene and the dominoes count the
+/// same way, so `DeskScenes` can pause either on a still. Once nothing in the scene has moved for
+/// `dustStop`, no new dust drifts into the lamp's beam, so the last motes have faded out by
+/// `delay`, when `changed` reports the rest, and the still holds no dust frozen in the air. The
+/// next change to the scene, or `stir()`, lets the dust drift in again and reports that the
+/// scene moves.
+@MainActor
+final class SceneRest {
+    /// How long nothing must move before the scene rests, and how often `advance` checks.
+    static let delay: TimeInterval = 10
+    static let check: TimeInterval = 0.5
+    /// How long nothing must move before no new dust drifts in: the motes then fade out within
+    /// `DeskStage.longestMoteLife`, a second before the scene rests.
+    static let dustStop = delay - DeskStage.longestMoteLife - 1
+
+    /// Called with `true` once the scene has rested for `delay`, and with `false` when it next
+    /// stirs.
+    var changed: ((Bool) -> Void)?
+    private(set) var isResting = false
+    /// How long nothing has moved, as of the last check, and the time since that check.
+    private var stillTime: TimeInterval = 0
+    private var sinceCheck: TimeInterval = 0
+    /// Stops new dust at `true`, and lets it drift in again at `false`.
+    private let settleDust: (Bool) -> Void
+
+    init(settleDust: @escaping (Bool) -> Void) {
+        self.settleDust = settleDust
+    }
+
+    /// Moves the count on by a frame of `deltaTime` seconds. Every `check` seconds, it asks
+    /// `isStill` whether nothing in the scene moved since the last check, and counts the time
+    /// toward the rest if so, or stirs the scene if not.
+    func advance(by deltaTime: TimeInterval, isStill: () -> Bool) {
+        sinceCheck += deltaTime
+        guard sinceCheck >= Self.check else { return }
+        let interval = sinceCheck
+        sinceCheck = 0
+        guard isStill() else { return stir() }
+        stillTime += interval
+        if stillTime >= Self.dustStop { settleDust(true) }
+        if stillTime >= Self.delay, !isResting {
+            isResting = true
+            changed?(true)
+        }
+    }
+
+    /// Notes that something changed the scene, so it no longer rests, and reports that to
+    /// `changed` if it rested.
+    func stir() {
+        stillTime = 0
+        settleDust(false)
+        guard isResting else { return }
+        isResting = false
+        changed?(false)
+    }
+}

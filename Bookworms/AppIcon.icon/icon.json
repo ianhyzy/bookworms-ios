@@ -1,0 +1,37 @@
+{
+  "fill" : {
+    "linear-gradient" : [
+      "srgb:0.98824,0.95294,0.87843,1.00000",
+      "srgb:0.93725,0.87843,0.76078,1.00000"
+    ],
+    "orientation" : { "start" : { "x" : 0.5, "y" : 0 }, "stop" : { "x" : 0.5, "y" : 1 } }
+  },
+  "groups" : [
+    {
+      "hidden" : false,
+      "layers" : [
+        { "blend-mode" : "normal", "glass" : true, "hidden" : false, "image-name" : "book.png", "name" : "Book" }
+      ],
+      "shadow" : { "kind" : "layer-color", "opacity" : 0.5 },
+      "translucency" : { "enabled" : false, "value" : 0.5 }
+    },
+    {
+      "hidden" : false,
+      "layers" : [
+        { "blend-mode" : "normal", "glass" : false, "hidden" : false, "image-name" : "face.png", "name" : "Pupils and smiles" },
+        {
+          "blend-mode" : "normal",
+          "fill-specializations" : [
+            { "appearance" : "dark", "value" : { "solid" : "srgb:1.00000,1.00000,1.00000,1.00000" } },
+            { "appearance" : "tinted", "value" : { "solid" : "srgb:1.00000,1.00000,1.00000,1.00000" } }
+          ],
+          "glass" : false, "hidden" : false, "image-name" : "eyes.png", "name" : "Eye whites"
+        },
+        { "blend-mode" : "normal", "glass" : true, "hidden" : false, "image-name" : "worms.png", "name" : "Worms" }
+      ],
+      "shadow" : { "kind" : "layer-color", "opacity" : 0.5 },
+      "translucency" : { "enabled" : false, "value" : 0.5 }
+    }
+  ],
+  "supported-platforms" : { "squares" : "shared" }
+}

@@ -1,0 +1,15 @@
+{
+  "enabled": false,
+  "strategy_options": {
+    "checkpoint_remote": {
+      "provider": "github",
+      "repo": "ianhyzy/bookworms-checkpoints"
+    }
+  },
+  "telemetry": true,
+  "checkpoints": {
+    "primary": {
+      "type": "git-refs"
+    }
+  }
+}

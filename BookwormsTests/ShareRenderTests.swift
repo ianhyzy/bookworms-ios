@@ -1,0 +1,922 @@
+import CoreGraphics
+import UIKit
+import XCTest
+
+@testable import Bookworms
+
+final class ShareRenderTests: XCTestCase {
+    /// Fictional books over two years, with gaps in pages, ratings, genres, reviews, and designs,
+    /// a long title and review, a contributor list, and two current reads. None has a cover, so
+    /// covers fall back to the spine colors.
+    private static let books: [CloudBook] = (1...16).map(fixture)
+
+    /// Did Not Finish books for the Dropped template, kept out of `books` so other templates'
+    /// counts don't change: two dropped in May 2025 and one in 2024.
+    private static let dropped: [CloudBook] = [
+        (17, "2025-05-20"), (18, "2025-05-03"), (19, "2024-09-10"),
+    ]
+    .map { id, day in
+        CloudBook(
+            id: id, title: "Fictional Dropped Book \(id)", author: "Author \(id)",
+            coverURL: nil, detailCoverURL: nil, statusID: HardcoverClient.didNotFinishStatus,
+            dropped: day)
+    }
+
+    private static let longReview = String(
+        repeating: "An invented review sentence that goes on for a while, ", count: 20)
+
+    private static func fixture(_ index: Int) -> CloudBook {
+        let title =
+            index == 3
+            ? "An Unusually Long Fictional Title That Keeps Going: With a Subtitle"
+            : "Fictional Book \(index)"
+        let author = index == 5 ? "First Author, Second Author, Third Author" : "Author \(index)"
+        let pages: Int? = index.isMultiple(of: 4) ? nil : 120 + index * 61
+        guard index <= 14 else {
+            // Current reads: one with progress and a start date, one with neither.
+            return CloudBook(
+                id: index, title: title, author: author, coverURL: nil, detailCoverURL: nil,
+                pages: pages, isReading: true, progress: index == 15 ? 0.35 : nil,
+                started: index == 15 ? "2025-11-20" : nil)
+        }
+        let year = index <= 10 ? 2025 : 2024
+        let rating: Double? = index.isMultiple(of: 3) ? nil : Double(index % 5) + 0.5
+        let audioSeconds: Int? = index % 3 == 2 ? 36_000 + index * 600 : nil
+        return CloudBook(
+            id: index, title: title, author: author, coverURL: nil, detailCoverURL: nil,
+            genres: index == 7
+                ? nil : index.isMultiple(of: 2) ? ["Fantasy", "Mystery"] : ["Horror"],
+            format: ["Read", "Ebook", "Listened"][index % 3], pages: pages,
+            finished: String(format: "%d-%02d-15", year, index % 12 + 1), rating: rating,
+            audioSeconds: audioSeconds,
+            communityRating: Double(index % 4) + 1.2 + Double(index) / 100,
+            ratingsCount: index == 7 ? 12 : 300,
+            review: index % 3 != 1 ? nil : index == 4 ? longReview : "Invented praise \(index).")
+    }
+
+    /// Generated looks for even books; odd books keep the fallback look.
+    private static let looks: [Int: SpineLook] = Dictionary(
+        uniqueKeysWithValues: (books + dropped)
+            .map { book in
+                let design =
+                    book.id.isMultiple(of: 2)
+                    ? SpineDesignV1(
+                        version: 1, accountID: "fixture", bookID: book.id,
+                        workItemHash: String(repeating: "a", count: 64),
+                        coverHash: String(repeating: "b", count: 64), generatorVersion: "fixture",
+                        generatedAt: Date(timeIntervalSince1970: 0),
+                        backgroundHex: book.id.isMultiple(of: 4) ? "#EFE3C3" : "#1F3A5F",
+                        foregroundHex: book.id.isMultiple(of: 4) ? "#2A1E12" : "#F5EBD7",
+                        accentHex: "#C9973A", typeface: "rounded", weight: 700, uppercase: true)
+                    : nil
+                return (book.id, SpineLook(book: book, design: design, face: nil))
+            })
+
+    /// Every template in every aspect, for a year with 3D covers and for a month and a lifetime
+    /// with flat ones. Piles render with `PileSnapshotRenderer` instead.
+    @MainActor
+    func testEveryTemplateRendersAtExactPixelSizeWithContent() throws {
+        let cases: [(frame: TimeFrame, style: ShareCoverStyle)] = [
+            (.year(2025), .threeD), (.month(year: 2025, month: 5), .flat), (.lifetime, .flat),
+        ]
+        // Social templates need another reader (`testSocialTemplatesRender...`).
+        for template in ShareTemplate.allCases where template != .pile && !template.isSocial {
+            for (frame, style) in cases {
+                let library = template == .dropped ? Self.books + Self.dropped : Self.books
+                let books = template.books(from: library, in: frame)
+                XCTAssertFalse(books.isEmpty, "\(template) \(frame)")
+                if template == .dropped {
+                    // Newest drop first, and only the drops inside the frame.
+                    XCTAssertEqual(
+                        books.map(\.id), frame == .lifetime ? [17, 18, 19] : [17, 18], "\(frame)")
+                }
+                for aspect in ShareAspect.allCases {
+                    let label = "\(template) \(frame) \(aspect) \(style)"
+                    // Each image is released before the next, so the run stays small.
+                    try autoreleasepool {
+                        let input = ShareInput(
+                            template: template, aspect: aspect, books: books, looks: Self.looks,
+                            frame: frame, coverStyle: style, seed: 7)
+                        let image = try XCTUnwrap(input.render()?.cgImage, label)
+                        XCTAssertEqual(image.width, Int(aspect.size.width), label)
+                        XCTAssertEqual(image.height, Int(aspect.size.height), label)
+                        XCTAssertGreaterThan(
+                            try differingFraction(image), 0.05, "\(label) is a flat color")
+                    }
+                }
+            }
+        }
+    }
+
+    /// A year with one bare book, and a year with ratings hidden, leave out what they lack and
+    /// still fill the image.
+    @MainActor
+    func testYearInBooksRendersSparseAndUnratedYears() throws {
+        let bare = CloudBook(
+            id: 99, title: "Fictional Bare Book", author: "Author", coverURL: nil,
+            detailCoverURL: nil, finished: "2019-06-01")
+        let cases: [(books: [CloudBook], year: Int, showsRatings: Bool)] = [
+            ([bare], 2019, true),
+            (ShareTemplate.yearInBooks.books(from: Self.books, in: .year(2025)), 2025, false),
+        ]
+        for (books, year, showsRatings) in cases {
+            for aspect in ShareAspect.allCases {
+                let input = ShareInput(
+                    template: .yearInBooks, aspect: aspect, books: books, looks: Self.looks,
+                    frame: .year(year), showsRatings: showsRatings, seed: 7)
+                let image = try XCTUnwrap(input.render()?.cgImage, "\(year) \(aspect)")
+                XCTAssertEqual(image.width, Int(aspect.size.width), "\(year) \(aspect)")
+                XCTAssertEqual(image.height, Int(aspect.size.height), "\(year) \(aspect)")
+                XCTAssertGreaterThan(
+                    try differingFraction(image), 0.05, "\(year) \(aspect) is a flat color")
+            }
+        }
+    }
+
+    /// Card text uses the share typography, never the spine's: with flat covers, which draw no
+    /// spines, a card looks the same whatever typeface and capitalization the spine has. Pile is
+    /// left out because `ImageRenderer` cannot draw it.
+    @MainActor
+    func testCardTextIgnoresSpineTypography() throws {
+        let restyled = Self.looks.mapValues { look in
+            var look = look
+            look.typeface = look.typeface == "monospaced" ? "serif" : "monospaced"
+            look.weight = look.weight == 400 ? 700 : 400
+            look.uppercase.toggle()
+            look.isCondensed.toggle()
+            return look
+        }
+        for template in ShareTemplate.allCases where template != .pile && !template.isSocial {
+            let library = template == .dropped ? Self.books + Self.dropped : Self.books
+            // An empty Dropped list draws only the card's heading and count.
+            let lists =
+                [template.books(from: library, in: .lifetime)] + (template == .dropped ? [[]] : [])
+            for books in lists {
+                for aspect in ShareAspect.allCases {
+                    func pixels(_ looks: [Int: SpineLook]) throws -> Data {
+                        let input = ShareInput(
+                            template: template, aspect: aspect, books: books, looks: looks,
+                            frame: .lifetime, coverStyle: .flat, seed: 3)
+                        return try XCTUnwrap(input.render()?.cgImage?.dataProvider?.data as Data?)
+                    }
+                    try autoreleasepool {
+                        // Shadow blurs can round a few pixels by a level between renders; changed
+                        // lettering would differ by far more.
+                        XCTAssertLessThanOrEqual(
+                            largestChannelDifference(try pixels(Self.looks), try pixels(restyled)),
+                            2, "\(template) \(aspect) \(books.count) books")
+                    }
+                }
+            }
+        }
+    }
+
+    @MainActor
+    func testSameSeedDrawsSameImage() throws {
+        for template in [ShareTemplate.yearInBooks, .topFive] {
+            let books = template.books(from: Self.books, in: .year(2025))
+            func pixels(seed: UInt64) throws -> Data {
+                let input = ShareInput(
+                    template: template, aspect: .square, books: books, looks: Self.looks,
+                    frame: .year(2025), seed: seed)
+                return try XCTUnwrap(input.render()?.cgImage?.dataProvider?.data as Data?)
+            }
+            XCTAssertEqual(try pixels(seed: 3), try pixels(seed: 3), "\(template)")
+            XCTAssertNotEqual(try pixels(seed: 3), try pixels(seed: 4), "\(template)")
+        }
+    }
+
+    /// Top Five's fan reaches as far above its middle as below it, so the space over the books
+    /// matches the space under them, stays inside its height, and its turned books, the widest
+    /// covers included, reach no further than `TopFiveCard.overhang` past its width.
+    @MainActor
+    func testTopFiveFanIsCenteredInItsSpace() {
+        let size = CGSize(width: 920, height: 560)
+        for style in [ShareCoverStyle.threeD, .flat] {
+            // The last book, an outermost one, is as wide as the style allows (`ShareCover.aspect`).
+            let widest = style == .flat ? 1 : Book3DView.aspects.upperBound
+            for count in [1, 3, 5] {
+                let aspects = (0..<count)
+                    .map { $0 == count - 1 ? widest : 0.6 + CGFloat($0) * 0.04 }
+                // The jitters span their whole range, -0.5...0.5, so the outer books turn
+                // furthest.
+                let jitters =
+                    count == 1 ? [0.5] : (0..<count).map { Double($0) / Double(count - 1) - 0.5 }
+                let cards = TopFiveCard.fan(
+                    aspects: aspects, jitters: jitters, style: style, in: size)
+                let extents = zip(cards, aspects)
+                    .map { card, aspect in
+                        let angle = abs(card.turn) * .pi / 180
+                        let width = card.height * aspect
+                        let half = CGSize(
+                            width: (width * cos(angle) + card.height * sin(angle)) / 2,
+                            height: (width * sin(angle) + card.height * cos(angle)) / 2)
+                        return CGRect(
+                            x: card.offset.x - half.width, y: card.offset.y - half.height,
+                            width: half.width * 2, height: half.height * 2)
+                    }
+                let top = extents.map(\.minY).min() ?? 0
+                let bottom = extents.map(\.maxY).max() ?? 0
+                XCTAssertEqual(-top, bottom, accuracy: 0.01, "\(count) \(style) books")
+                XCTAssertLessThanOrEqual(bottom, size.height / 2, "\(count) \(style) books")
+                let reach = size.width / 2 + TopFiveCard.overhang
+                XCTAssertGreaterThanOrEqual(
+                    extents.map(\.minX).min() ?? 0, -reach, "\(count) \(style) books")
+                XCTAssertLessThanOrEqual(
+                    extents.map(\.maxX).max() ?? 0, reach, "\(count) \(style) books")
+            }
+        }
+    }
+
+    /// Top Five's titles give up their subtitles longest first, and a title without a shorter
+    /// form, such as one with only a series tag, gives up nothing.
+    @MainActor
+    func testTopFiveDropsLongestSubtitlesFirst() {
+        let titles = [
+            "Fictional Title", "Fictional Title: A Subtitle",
+            "Fictional Title: A Much Longer Subtitle", "Fictional Title (Fictional Series, #2)",
+        ]
+        let books = titles.enumerated()
+            .map {
+                CloudBook(
+                    id: $0.offset, title: $0.element, author: "Author", coverURL: nil,
+                    detailCoverURL: nil)
+            }
+        XCTAssertEqual(TopFiveCard.subtitleOrder(books), [2, 1])
+    }
+
+    /// The Pile template offers every time frame kind, draws the frame's finished books newest
+    /// first so they land on top, and heads the image with the frame's name.
+    func testPileTemplateDrawsEachTimeFrameNewestFirst() {
+        let pile = ShareTemplate.pile
+        XCTAssertTrue(ShareTemplate.allCases.contains(pile))
+        XCTAssertTrue(pile.usesTimeFrame)
+        XCTAssertFalse(pile.isSingleBook)
+        XCTAssertFalse(pile.hasCoverStyle, "A pile's books are always 3D")
+        for frame in [TimeFrame.year(2025), .month(year: 2025, month: 5), .lifetime] {
+            let books = pile.books(from: Self.books, in: frame)
+            XCTAssertFalse(books.isEmpty, frame.title)
+            XCTAssertEqual(
+                books.map(\.id),
+                ShareTemplate.yearInBooks.books(from: Self.books, in: frame).reversed().map(\.id),
+                frame.title)
+            let input = ShareInput(template: pile, aspect: .story, books: books, frame: frame)
+            XCTAssertEqual(input.period, frame == .lifetime ? "2024–2025" : frame.title)
+        }
+        // A reread's earlier finishes widen the lifetime span.
+        var reread = CloudBook(
+            id: 9, title: "Again", author: "Author", coverURL: nil, detailCoverURL: nil,
+            finished: "2025-01-01")
+        reread.finishedDates = ["2025-01-01", "2015-06-01"]
+        XCTAssertEqual(
+            ShareInput(template: pile, aspect: .story, books: [reread], frame: .lifetime).period,
+            "2015–2025")
+    }
+
+    /// A long Dropped list draws only its newest 40 books, and its count still names every one.
+    @MainActor
+    func testDroppedCardDrawsItsNewestBooksAndCountsEveryOne() {
+        let library = (1...45)
+            .map { index in
+                CloudBook(
+                    id: index, title: "Invented Dropped Book \(index)", author: "Author \(index)",
+                    coverURL: nil, detailCoverURL: nil,
+                    statusID: HardcoverClient.didNotFinishStatus,
+                    dropped: String(format: "2025-%02d-%02d", index % 12 + 1, index % 28 + 1))
+            }
+        let books = ShareTemplate.dropped.books(from: library, in: .year(2025))
+        XCTAssertEqual(books.count, 45)
+        let card = DroppedCard(input: ShareInput(template: .dropped, aspect: .square, books: books))
+        XCTAssertEqual(DroppedCard.maximumBooks, 40)
+        XCTAssertEqual(card.shown.map(\.id), books.prefix(40).map(\.id))
+        // The card keeps the newest drops, newest first.
+        let shown = card.shown.compactMap(\.dropped)
+        XCTAssertEqual(shown, shown.sorted(by: >))
+        XCTAssertTrue(books.dropFirst(40).allSatisfy { ($0.dropped ?? "") <= (shown.last ?? "") })
+        XCTAssertEqual(card.count, "45 books I didn't finish")
+    }
+
+    /// The 3D wastebasket stands the covers of the four most-rated books, newest first on a
+    /// tie, in the card's order.
+    @MainActor
+    func testDroppedBasketStandsTheMostPopularCovers() {
+        let counts: [Int?] = [5, nil, 900, 40, 40, 12]
+        let books = counts.enumerated()
+            .map { index, count in
+                var book = CloudBook(
+                    id: index + 1, title: "Invented Dropped Book \(index + 1)", author: "Author",
+                    coverURL: nil, detailCoverURL: nil)
+                book.ratingsCount = count
+                return book
+            }
+        XCTAssertEqual(DroppedCard.basketCoverLimit, 4)
+        XCTAssertEqual(DroppedCard.popular(books).map(\.id), [3, 4, 5, 6])
+        XCTAssertEqual(DroppedCard.popular(Array(books.prefix(3))).map(\.id), [1, 2, 3])
+    }
+
+    /// A lifetime Dropped image, whose file the period names, spans the years the books were
+    /// dropped in, which unfinished books have instead of finishes.
+    func testDroppedPeriodSpansTheDropYears() {
+        let books = ShareTemplate.dropped.books(from: Self.dropped, in: .lifetime)
+        XCTAssertEqual(
+            ShareInput(template: .dropped, aspect: .story, books: books, frame: .lifetime).period,
+            "2024–2025")
+    }
+
+    /// A flat Dropped card without books draws an empty grid rather than trapping on a negative
+    /// row count.
+    @MainActor
+    func testDroppedCardWithoutBooksStillDraws() {
+        let input = ShareInput(template: .dropped, aspect: .square, books: [], coverStyle: .flat)
+        XCTAssertNotNil(input.render())
+    }
+
+    /// A pile render marks itself until it ends, even when cancelled, so the live pile stays off
+    /// the screen, and a render that started meanwhile still finishes after it.
+    @MainActor
+    func testPileRendersOneAtATimeWhileMarked() async throws {
+        let books = ShareTemplate.pile.books(from: Self.books, in: .month(year: 2025, month: 5))
+        func render() -> Task<UIImage, any Error> {
+            let model = modelWithoutLibrary()
+            return Task {
+                try await PileSnapshotRenderer.render(
+                    books: books, title: "May", aspect: .square, seed: 1, model: model
+                )
+                .image
+            }
+        }
+        XCTAssertFalse(PileSnapshotRenderer.isRendering)
+        let first = render()
+        while !PileSnapshotRenderer.isRendering { await Task.yield() }
+        let second = render()
+        first.cancel()
+        do {
+            _ = try await first.value
+            XCTFail("A cancelled render returns no image")
+        } catch is CancellationError {}
+        // The second render starts only now, so the flag marks it again until it ends. Without
+        // the wait, the first render's end clears the flag while the second one runs.
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !PileSnapshotRenderer.isRendering, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(PileSnapshotRenderer.isRendering, "The second render is marked")
+        let image = try await second.value
+        XCTAssertEqual(image.cgImage?.width, 1080)
+        XCTAssertFalse(PileSnapshotRenderer.isRendering)
+    }
+
+    /// A render that releases its turn and claims again at once, as a still image's loop does,
+    /// goes after a render that was already waiting, and the flag stays set between them.
+    @MainActor
+    func testPileRendersTakeTurnsInOrder() async throws {
+        try await PileSnapshotRenderer.claim()
+        let waiting = Task { @MainActor in
+            try await PileSnapshotRenderer.claim()
+            defer { PileSnapshotRenderer.release() }
+            return ContinuousClock.now
+        }
+        // Lets the waiting render join the line.
+        try await Task.sleep(for: .milliseconds(50))
+        PileSnapshotRenderer.release()
+        XCTAssertTrue(PileSnapshotRenderer.isRendering, "The turn passes without a gap")
+        try await PileSnapshotRenderer.claim()
+        let again = ContinuousClock.now
+        PileSnapshotRenderer.release()
+        let waited = try await waiting.value
+        XCTAssertLessThan(waited, again)
+        XCTAssertFalse(PileSnapshotRenderer.isRendering)
+    }
+
+    /// Without a library, signed out explains how to get one; signed in follows the download.
+    func testNoLibraryStatusFollowsTheSignInAndDownload() {
+        func status(
+            loading: Bool = false, signedIn: Bool = false, syncing: Bool = false,
+            reconnect: Bool = false, syncError: String? = nil, loadError: String? = nil
+        ) -> LibraryStatus {
+            LibraryStatus(
+                isLoading: loading, isSignedIn: signedIn, isSyncing: syncing,
+                needsReconnect: reconnect, syncError: syncError, loadError: loadError)
+        }
+        XCTAssertEqual(status(loading: true), .loading)
+        let signedOut = status(loadError: "Sign in to iCloud.")
+        XCTAssertEqual(signedOut, .signedOut(note: "Sign in to iCloud."))
+        XCTAssertTrue(signedOut.message.contains("Apple TV"), signedOut.message)
+        XCTAssertTrue(signedOut.message.contains("Connect Hardcover"), signedOut.message)
+        XCTAssertTrue(
+            signedOut.message.hasSuffix("\n\niCloud library: Sign in to iCloud."),
+            "The note belongs to the iCloud library: \(signedOut.message)")
+        XCTAssertEqual(status(signedIn: true, syncing: true), .downloading)
+        XCTAssertEqual(status(loading: true, signedIn: true), .downloading)
+        XCTAssertEqual(
+            status(signedIn: true, syncError: "Offline.", loadError: "Stale."),
+            .failed(error: "Offline."))
+        XCTAssertEqual(
+            status(signedIn: true, loadError: "Unreadable."), .failed(error: "Unreadable."))
+        XCTAssertFalse(status(signedIn: true).message.isEmpty)
+        XCTAssertEqual(
+            status(signedIn: true, syncing: true, reconnect: true, syncError: "Expired."),
+            .reconnect(error: "Expired."))
+    }
+
+    /// The Spines toolbar asks for a sign-in in words only when this device can't sync with
+    /// Hardcover: no sign-in, or a rejected one. A failed download keeps the account symbol.
+    func testAccountControlPromptsOnlyWithoutAWorkingSignIn() {
+        func control(
+            preview: Bool = false, signedIn: Bool = false, reconnect: Bool = false,
+            problem: Bool = false
+        ) -> AccountControl {
+            AccountControl(
+                isPreview: preview, isSignedIn: signedIn, needsReconnect: reconnect,
+                hasProblem: problem)
+        }
+        XCTAssertEqual(control(), .connect)
+        XCTAssertEqual(control(problem: true), .connect, "An iCloud error doesn't hide the prompt")
+        XCTAssertEqual(control(signedIn: true), .account(needsAttention: false))
+        XCTAssertEqual(
+            control(signedIn: true, problem: true), .account(needsAttention: true),
+            "Offline, or Hardcover down, keeps the sign-in")
+        XCTAssertEqual(control(signedIn: true, reconnect: true, problem: true), .reconnect)
+        XCTAssertEqual(
+            control(preview: true), .account(needsAttention: false),
+            "Preview mode ignores the sign-in")
+        XCTAssertEqual(
+            control(preview: true, signedIn: true, reconnect: true, problem: true),
+            .account(needsAttention: true))
+
+        for prompt in [AccountControl.connect, .reconnect] {
+            XCTAssertTrue(prompt.isPrompt)
+            XCTAssertFalse(prompt.needsAttention, "A prompt's words replace the badge")
+        }
+        let failed = AccountControl.account(needsAttention: true)
+        XCTAssertFalse(failed.isPrompt)
+        XCTAssertTrue(failed.needsAttention)
+    }
+
+    func testSidebarAccountNamesTheReaderOncePromptsAreAnswered() {
+        XCTAssertEqual(
+            AccountControl.connect.label(username: "fictional_reader"), "Connect Hardcover",
+            "A device without a sign-in prompts, whatever name a summary left behind")
+        XCTAssertEqual(
+            AccountControl.reconnect.label(username: "fictional_reader"), "fictional_reader",
+            "A rejected login keeps the name; the mark says the rest")
+        XCTAssertEqual(
+            AccountControl.account(needsAttention: false).label(username: nil),
+            "Hardcover account")
+
+        XCTAssertNil(AccountControl.connect.mark)
+        XCTAssertNil(AccountControl.account(needsAttention: false).mark)
+        XCTAssertNotNil(AccountControl.reconnect.mark, "The name stays, so the mark is the sign")
+        XCTAssertNotNil(AccountControl.account(needsAttention: true).mark)
+    }
+
+    func testAccountBannerShowsForTheExampleAndARejectedSignIn() {
+        XCTAssertNil(AccountBanner(isExample: false, control: .account(needsAttention: true)))
+        XCTAssertNil(
+            AccountBanner(isExample: false, control: .connect),
+            "A device that never signed in shows its prompt elsewhere")
+        #if os(iOS)
+            XCTAssertEqual(AccountBanner(isExample: false, control: .reconnect), .reconnect)
+        #else
+            XCTAssertNil(
+                AccountBanner(isExample: false, control: .reconnect),
+                "The Mac's sidebar marks a rejected login")
+        #endif
+        XCTAssertEqual(AccountBanner(isExample: true, control: .connect), .example)
+    }
+
+    func testSelectionOrdersEachTemplate() {
+        let year = ShareTemplate.yearInBooks.books(from: Self.books, in: .year(2025))
+        XCTAssertEqual(year.count, 10)
+        XCTAssertEqual(year.compactMap(\.finished), year.compactMap(\.finished).sorted())
+        XCTAssertEqual(
+            ShareTemplate.yearInBooks.books(from: Self.books, in: .month(year: 2024, month: 2))
+                .map(\.id), [13])
+        XCTAssertEqual(ShareTemplate.yearInBooks.books(from: Self.books, in: .lifetime).count, 14)
+
+        let top = ShareTemplate.topFive.books(from: Self.books, in: .year(2025))
+        XCTAssertEqual(top.map(\.id), [4, 8, 7, 2, 1])
+        XCTAssertEqual(
+            ShareTemplate.topFive.books(from: Self.books, in: .lifetime, pinned: [9, 99, 11, 1])
+                .map(\.id), [9, 11, 1],
+            "Only the pins, in pin order, from any year; 99 isn't in the library")
+        XCTAssertEqual(
+            ShareTemplate.topFive.books(from: Self.books, in: .lifetime, pinned: []).map(\.id), [],
+            "No pins draw nothing, not the highest rated")
+    }
+
+    func testTopFivePinsKeepFiveInPinOrder() {
+        var pins = TopFivePins(rawValue: "3,x,3,1,2,4,5,6")
+        XCTAssertEqual(pins.ids, [3, 1, 2, 4, 5], "Valid, distinct, and at most five")
+        XCTAssertTrue(pins.isFull)
+        pins.toggle(6)
+        XCTAssertEqual(pins.ids, [3, 1, 2, 4, 5], "A full set pins nothing more")
+        pins.toggle(1)
+        pins.toggle(6)
+        XCTAssertEqual(pins.rawValue, "3,2,4,5,6")
+        pins.keep(only: [2, 6, 7])
+        XCTAssertEqual(pins.ids, [2, 6])
+        XCTAssertEqual(TopFivePins(rawValue: "").ids, [])
+    }
+
+    func testSingleBookTemplatesChooseWithinTheirChoices() {
+        let finished = ShareTemplate.justFinished
+        XCTAssertEqual(finished.books(from: Self.books, in: .year(2024)).map(\.id), [11])
+        XCTAssertEqual(
+            finished.books(from: Self.books, in: .year(2024), bookID: 2).map(\.id), [2],
+            "A book shared from its details shows even outside the frame")
+
+        let review = ShareTemplate.review
+        XCTAssertEqual(
+            review.choices(from: Self.books, in: .year(2025)).map(\.id), [10, 7, 4, 1])
+        XCTAssertEqual(review.books(from: Self.books, in: .year(2025), bookID: 4).map(\.id), [4])
+        XCTAssertEqual(
+            review.books(from: Self.books, in: .year(2025), bookID: 2).map(\.id), [10],
+            "A book without a review falls back to the newest review")
+        XCTAssertTrue(review.books(from: Self.books, in: .month(year: 2025, month: 3)).isEmpty)
+        let undated = CloudBook(
+            id: 50, title: "Fictional Undated Book", author: "Author", coverURL: nil,
+            detailCoverURL: nil, review: "Invented praise.")
+        XCTAssertEqual(
+            review.choices(from: Self.books + [undated], in: .lifetime).last?.id, 50,
+            "A lifetime offers a reviewed book without a finish date, last")
+        XCTAssertFalse(
+            review.choices(from: Self.books + [undated], in: .year(2025)).contains(undated))
+
+        let reading = ShareTemplate.currentlyReading
+        XCTAssertEqual(reading.choices(from: Self.books, in: .year(2019)).map(\.id), [15, 16])
+        XCTAssertEqual(reading.books(from: Self.books, in: .lifetime, bookID: 16).map(\.id), [16])
+        XCTAssertEqual(reading.books(from: Self.books, in: .lifetime, bookID: 4).map(\.id), [15])
+    }
+
+    /// A reread is a current read that keeps its previous finish date; Currently Reading shows
+    /// its start date instead, and Just Finished names the finish date.
+    func testCurrentReadDetailsShowTheStartDate() {
+        let reread = CloudBook(
+            id: 60, title: "Fictional Reread", author: "Author", coverURL: nil,
+            detailCoverURL: nil, pages: 412, finished: "2021-03-03", isReading: true,
+            started: "2026-10-01")
+        let reading = ShareStyle.details(reread, isReading: true).joined(separator: " · ")
+        XCTAssertTrue(reading.hasPrefix("Started "), reading)
+        XCTAssertTrue(reading.contains("2026"), reading)
+        XCTAssertFalse(reading.contains("2021"), reading)
+        let finished = ShareStyle.details(reread).joined(separator: " · ")
+        XCTAssertTrue(finished.hasPrefix("Finished "), finished)
+        XCTAssertTrue(finished.contains("2021"), "Just Finished shows the finish")
+    }
+
+    /// The format reads as the Shelf labels it, including a book read in print and on audio,
+    /// and only an audiobook gives its listening time instead of its pages.
+    func testDetailsLabelEveryFormatAsTheShelfDoes() {
+        func details(_ format: String) -> String {
+            ShareStyle.details(
+                CloudBook(
+                    id: 61, title: "Fictional Format", author: "Author", coverURL: nil,
+                    detailCoverURL: nil, format: format, pages: 300, finished: "2025-01-02",
+                    audioSeconds: 36_000)
+            )
+            .joined(separator: " · ")
+        }
+        let both = details("Both")
+        XCTAssertTrue(both.hasPrefix("Physical & audiobook · "), both)
+        XCTAssertTrue(both.hasSuffix("300 pages"), both)
+        let audio = details("audio")
+        XCTAssertTrue(audio.hasPrefix("Audiobook · "), audio)
+        XCTAssertFalse(audio.contains("pages"), audio)
+        XCTAssertTrue(details("e-book").hasPrefix("Ebook · "))
+        XCTAssertFalse(details("Read").contains("Physical"), "Print alone goes unlabeled")
+    }
+
+    /// Clashing spine colors give one family of panels, gray spines give a warm neutral, and
+    /// cream text keeps 7:1 contrast on every theme color.
+    func testThemeKeepsOneColorFamilyWithReadableText() {
+        let clashing = ShareTheme(colors: [
+            ColorValue(red: 200, green: 30, blue: 40), ColorValue(red: 30, green: 60, blue: 200),
+            ColorValue(red: 40, green: 160, blue: 60), ColorValue(red: 230, green: 200, blue: 40),
+        ])
+        let hues = (0..<4)
+            .map { index in
+                let lab = SpineContrast.lab(clashing.panel(index))
+                return atan2(lab.b, lab.a) * 180 / .pi
+            }
+        let span = hues.flatMap { hue in hues.map { abs(ShareTheme.difference(hue, $0)) } }.max()
+        XCTAssertLessThanOrEqual(span ?? 0, 34, "Panel hues \(hues)")
+
+        let grays = [
+            ColorValue(red: 255, green: 255, blue: 255), ColorValue(red: 0, green: 0, blue: 0),
+            ColorValue(red: 128, green: 128, blue: 128),
+            ColorValue(red: 120, green: 118, blue: 115),
+        ]
+        XCTAssertEqual(ShareTheme(colors: grays), .neutral)
+        XCTAssertEqual(ShareTheme(colors: []), .neutral)
+        let yellow = ShareTheme(colors: [ColorValue(red: 200, green: 190, blue: 60)])
+        XCTAssertFalse((85...125).contains(yellow.hue), "Muddy yellows turn to amber")
+        // A sage theme (hue 126) turns its third panel to hue 110, inside the muddy band.
+        let sage = SpineContrast.lab(
+            ShareTheme(colors: [ColorValue(red: 140, green: 160, blue: 110)]).panel(2))
+        XCTAssertLessThanOrEqual((sage.a * sage.a + sage.b * sage.b).squareRoot(), 0.04)
+
+        let swept = stride(from: 0.0, to: 360, by: 10).map { ShareTheme(hue: $0, chroma: 0.3) }
+        for theme in [clashing, .neutral] + swept {
+            let colors =
+                [theme.backdropLight, theme.backdropDark, theme.glow] + (0..<4).map(theme.panel)
+            for color in colors {
+                XCTAssertGreaterThanOrEqual(
+                    color.contrast(with: ShareStyle.cream), 7, "\(theme) \(color.hex)")
+            }
+        }
+    }
+
+    /// Ratings in 2025 differ from the fixture's community averages by +3.26 (book 4), +2.22 (8),
+    /// −0.71 (1), −0.72 (2), −1.75 (5), and −2.8 (10); book 7's average has too few ratings to
+    /// count.
+    func testHotTakesRankTheWidestGapsInOneDirection() {
+        let takes = ShareTemplate.hotTakes
+        XCTAssertEqual(takes.books(from: Self.books, in: .year(2025)).map(\.id), [4, 8])
+        XCTAssertEqual(
+            takes.books(from: Self.books, in: .year(2025), direction: .lovedLess).map(\.id),
+            [10, 5, 2], "Up to three, widest gap first")
+        XCTAssertNil(Self.books[6].ratingGap, "Book 7 has 12 ratings")
+        XCTAssertEqual(HotTakesCard.signed(-0.75), "−0.8")
+        XCTAssertEqual(HotTakesCard.signed(1.5), "+1.5")
+    }
+
+    /// A Hot Takes choice without takes gives way to the other direction only when that one has
+    /// some, so the preview never goes blank over the choice.
+    func testHotTakesShowTheOnlyDirectionWithTakes() {
+        let onlyLess: (HotTakeDirection) -> Bool = { $0 == .lovedLess }
+        XCTAssertEqual(HotTakeDirection.lovedMore.shown(hasTakes: onlyLess), .lovedLess)
+        XCTAssertEqual(HotTakeDirection.lovedLess.shown(hasTakes: onlyLess), .lovedLess)
+        XCTAssertEqual(
+            HotTakeDirection.lovedMore.shown { _ in true }, .lovedMore, "Both have takes")
+        XCTAssertEqual(HotTakeDirection.lovedLess.shown { _ in false }, .lovedLess, "Neither has")
+    }
+
+    /// Taste Match, Book Swap, and Hot Takes with another reader draw at every size, with flat
+    /// and 3D covers, a long name, and a reader without a profile photo. The other reader rates
+    /// the fixture's rated books but one 1.5 stars lower, plus two books the owner doesn't have.
+    @MainActor
+    func testSocialTemplatesRenderAtExactPixelSizeWithContent() throws {
+        let owner = ReaderProfile(id: 1, username: "fictional_owner", name: "Fictional Owner")
+        let reader = ReaderProfile(
+            id: 2, username: "fictional_friend", name: "Wilhelmina Featherstonehaugh-Smythe")
+        // Book 14, rated 4.5 stars, stays a pick for them.
+        var theirs = Self.books.compactMap { book -> CloudBook? in
+            guard let rating = book.rating, book.id != 14 else { return nil }
+            var copy = book
+            copy.rating = max(0.5, rating - 1.5)
+            return copy
+        }
+        theirs += [17, 18]
+            .map {
+                CloudBook(
+                    id: $0, title: "Fictional Pick \($0)", author: "Author \($0)", coverURL: nil,
+                    detailCoverURL: nil, rating: 5)
+            }
+        let match = TasteMatch(mine: Self.books, theirs: theirs)
+        XCTAssertNotNil(match.score)
+        XCTAssertFalse(match.fights.isEmpty)
+        XCTAssertFalse(match.forThem.isEmpty)
+        XCTAssertFalse(match.forMe.isEmpty)
+        for template in [ShareTemplate.tasteMatch, .bookSwap, .hotTakes] {
+            let books = template.books(
+                from: Self.books, in: .lifetime, direction: .lovedMore, match: match)
+            XCTAssertFalse(books.isEmpty, "\(template)")
+            for aspect in ShareAspect.allCases {
+                for style in ShareCoverStyle.allCases {
+                    let label = "\(template) \(aspect) \(style)"
+                    try autoreleasepool {
+                        var input = ShareInput(
+                            template: template, aspect: aspect, books: books, looks: Self.looks,
+                            frame: .lifetime, coverStyle: style, seed: 7)
+                        input.social = ShareSocial(owner: owner, reader: reader, match: match)
+                        let image = try XCTUnwrap(input.render()?.cgImage, label)
+                        XCTAssertEqual(image.width, Int(aspect.size.width), label)
+                        XCTAssertEqual(image.height, Int(aspect.size.height), label)
+                        XCTAssertGreaterThan(
+                            try differingFraction(image), 0.05, "\(label) is a flat color")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Review signs the long review with the byline at every size, for a reader with a long
+    /// name and no photo, and for one without a name, and leaves the profile link out.
+    @MainActor
+    func testReviewBylineRendersAtExactPixelSizeInPlaceOfTheProfileLink() throws {
+        let books = ShareTemplate.review.books(from: Self.books, in: .lifetime, bookID: 4)
+        XCTAssertEqual(books.map(\.id), [4])
+        let readers = [
+            ReaderProfile(
+                id: 2, username: "fictional_friend", name: "Wilhelmina Featherstonehaugh-Smythe"),
+            ReaderProfile(id: 3, username: "fictional_nameless"),
+        ]
+        for aspect in ShareAspect.allCases {
+            for reader in readers {
+                let label = "\(aspect) \(reader.username)"
+                try autoreleasepool {
+                    var input = ShareInput(
+                        template: .review, aspect: aspect, books: books, looks: Self.looks,
+                        frame: .lifetime, seed: 7, username: reader.username)
+                    input.owner = reader
+                    XCTAssertTrue(input.hasByline, label)
+                    let image = try XCTUnwrap(input.render()?.cgImage, label)
+                    XCTAssertEqual(image.width, Int(aspect.size.width), label)
+                    XCTAssertEqual(image.height, Int(aspect.size.height), label)
+                    XCTAssertGreaterThan(
+                        try differingFraction(image), 0.05, "\(label) is a flat color")
+                }
+            }
+        }
+    }
+
+    /// Currently Reading signs the card with the reader's chip at every size, for a reader with
+    /// a long name and no photo, and for one without a name, and leaves the profile link out.
+    /// Without a profile, or with the profile link turned off, the card doesn't sign.
+    @MainActor
+    func testReaderChipsRenderAtExactPixelSize() throws {
+        let books = ShareTemplate.currentlyReading.books(
+            from: Self.books, in: .lifetime, bookID: 15)
+        XCTAssertEqual(books.map(\.id), [15])
+        let readers = [
+            ReaderProfile(
+                id: 2, username: "fictional_friend", name: "Wilhelmina Featherstonehaugh-Smythe"),
+            ReaderProfile(id: 3, username: "fictional_nameless"),
+        ]
+        for aspect in ShareAspect.allCases {
+            for reader in readers {
+                let label = "\(aspect) \(reader.username)"
+                try autoreleasepool {
+                    var input = ShareInput(
+                        template: .currentlyReading, aspect: aspect, books: books,
+                        looks: Self.looks, frame: .lifetime, seed: 7, username: reader.username)
+                    XCTAssertFalse(input.hasByline, label)
+                    input.owner = reader
+                    XCTAssertTrue(input.hasByline, label)
+                    let image = try XCTUnwrap(input.render()?.cgImage, label)
+                    XCTAssertEqual(image.width, Int(aspect.size.width), label)
+                    XCTAssertEqual(image.height, Int(aspect.size.height), label)
+                    XCTAssertGreaterThan(
+                        try differingFraction(image), 0.05, "\(label) is a flat color")
+                }
+            }
+        }
+        var finished = ShareInput(
+            template: .justFinished, aspect: .story, books: books, looks: Self.looks,
+            frame: .lifetime, username: "fictional_friend")
+        finished.owner = readers[0]
+        XCTAssertFalse(finished.hasByline, "Just Finished keeps the profile link")
+        var unlinked = ShareInput(
+            template: .currentlyReading, aspect: .story, books: books, looks: Self.looks)
+        unlinked.owner = readers[0]
+        XCTAssertFalse(unlinked.hasByline, "No profile link, no chip")
+        XCTAssertEqual(readers[0].hardcoverHandle, "@fictional_friend on Hardcover")
+        XCTAssertEqual(readers[1].hardcoverHandle, "on Hardcover")
+    }
+
+    /// Currently Reading stacks the reader's chip where the book keeps 40 percent of the image's
+    /// height with it, and otherwise letters the chip on one line: always on Square, and on Story
+    /// and Portrait under a long title and author.
+    @MainActor
+    func testReaderChipTakesOneLineWhereHeightIsShort() throws {
+        XCTAssertEqual(ShareReaderChip.designs(for: .story), [.stacked, .row])
+        XCTAssertEqual(ShareReaderChip.designs(for: .portrait), [.stacked, .row])
+        XCTAssertEqual(ShareReaderChip.designs(for: .square), [.row])
+        XCTAssertEqual(ShareReaderChip.minimumHeroHeight(.story), 768)
+        XCTAssertEqual(ShareReaderChip.minimumHeroHeight(.portrait), 540)
+
+        let short = try XCTUnwrap(Self.books.first { $0.id == 15 })
+        let long = CloudBook(
+            id: 15,
+            title: "An Invented Title That Runs On and On Across Three Whole Lines of the Card",
+            author: "Wilhelmina Featherstonehaugh-Smythe and Bartholomew Ashworth-Pennington",
+            coverURL: nil, detailCoverURL: nil, pages: 1_234, isReading: true, progress: 0.35,
+            started: "2025-11-20")
+        // A magenta photo shows where the chip puts it: centered over the name when stacked, or
+        // at the start of a row.
+        let avatar = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 64))
+            .image {
+                UIColor.magenta.setFill()
+                $0.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
+            }
+        let cases: [(ShareAspect, CloudBook, ShareReaderChip.Design)] = [
+            (.story, short, .stacked), (.portrait, short, .stacked), (.square, short, .row),
+            (.story, long, .row), (.portrait, long, .row),
+        ]
+        for (aspect, book, design) in cases {
+            let label = "\(aspect) \(book.title)"
+            try autoreleasepool {
+                var input = ShareInput(
+                    template: .currentlyReading, aspect: aspect, books: [book], looks: Self.looks,
+                    frame: .lifetime, seed: 7, username: "fictional_reader")
+                input.owner = ReaderProfile(
+                    id: 2, username: "fictional_reader", name: "Fictional Reader")
+                input.avatar = avatar
+                let image = try XCTUnwrap(input.render()?.cgImage, label)
+                let photo = try XCTUnwrap(magentaColumn(image), "\(label) shows no photo")
+                let offset = aspect.size.width / 2 - photo
+                switch design {
+                case .stacked: XCTAssertEqual(offset, 0, accuracy: 4, "\(label) is stacked")
+                case .row: XCTAssertGreaterThan(offset, 100, "\(label) is a row")
+                }
+            }
+        }
+    }
+
+    func testExcerptEndsAtASentenceOrWordWithAnEllipsis() {
+        XCTAssertEqual(ShareStyle.excerpt("Short\n\nand  sweet.", limit: 40), "Short and sweet.")
+        let excerpt = ShareStyle.excerpt("One two three, four five six.", limit: 18)
+        XCTAssertEqual(excerpt, "One two three…")
+        let long = ShareStyle.excerpt(Self.longReview, limit: 300)
+        XCTAssertLessThanOrEqual(long.count, 300)
+        XCTAssertTrue(long.hasSuffix("…"))
+        XCTAssertEqual(ShareStyle.excerpt("Unbreakableword", limit: 6), "Unbre…")
+        XCTAssertEqual(
+            ShareStyle.excerpt("First sentence here. Second one goes on and on.", limit: 30),
+            "First sentence here. …", "A sentence ending late in the excerpt ends it")
+        XCTAssertEqual(
+            ShareStyle.excerpt(
+                "Solid. I would give it 4.5 stars overall even though the last act drags.",
+                limit: 40),
+            "Solid. I would give it 4.5 stars…", "A decimal point doesn't end a sentence")
+        XCTAssertEqual(
+            ShareStyle.excerpt(
+                "Loved it. Then I met Mr. Darcy and everything changed for the better.", limit: 36),
+            "Loved it. Then I met Mr. Darcy and…", "An abbreviation doesn't end a sentence")
+        XCTAssertEqual(
+            ShareStyle.excerpt(
+                "He paused. She said \"Stop.\" Then she walked away from all of it.", limit: 40),
+            "He paused. She said \"Stop.\" …", "A closing quote stays with its sentence")
+    }
+
+    func testTitleFormsDropSeriesTagsThenSubtitles() {
+        func titles(_ title: String, series: String? = nil) -> [String] {
+            ShareStyle.titles(
+                CloudBook(
+                    id: 1, title: title, author: "Author", coverURL: nil, detailCoverURL: nil,
+                    seriesID: series == nil ? nil : 5, seriesName: series))
+        }
+        XCTAssertEqual(titles("Fictional Book"), ["Fictional Book"])
+        XCTAssertEqual(titles("The Gilded Ferry (Ferry Saga, #4)"), ["The Gilded Ferry"])
+        XCTAssertEqual(titles("Salt Roads (The Tidewater 3)"), ["Salt Roads"])
+        XCTAssertEqual(titles("Salt Roads (Tidewater)", series: "Tidewater"), ["Salt Roads"])
+        XCTAssertEqual(titles("Salt Roads (Illustrated)"), ["Salt Roads (Illustrated)"])
+        XCTAssertEqual(titles("(Untitled)"), ["(Untitled)"])
+        XCTAssertEqual(
+            titles("Ledger: A Critique of Imaginary Economics, Volume 1"),
+            ["Ledger: A Critique of Imaginary Economics, Volume 1", "Ledger"])
+        XCTAssertEqual(
+            titles("Harbor — A Memoir (Harbor Days, #1)"), ["Harbor — A Memoir", "Harbor"])
+        XCTAssertEqual(
+            titles("Star Rangers: Nightfall", series: "Star Rangers"),
+            ["Star Rangers: Nightfall", "Nightfall"], "A series prefix goes, not the rest")
+        XCTAssertEqual(
+            titles("Star Rangers: Nightfall: A Novel", series: "star rangers"),
+            ["Star Rangers: Nightfall: A Novel", "Nightfall: A Novel", "Nightfall"])
+        XCTAssertEqual(titles(": Colon First"), [": Colon First"])
+    }
+
+    /// The largest difference in any color channel between two renders of the same size.
+    private func largestChannelDifference(_ lhs: Data, _ rhs: Data) -> Int {
+        guard lhs != rhs else { return 0 }
+        return zip(lhs, rhs).reduce(0) { max($0, abs(Int($1.0) - Int($1.1))) }
+    }
+
+    /// The share of pixels that differ from the first pixel.
+    private func differingFraction(_ image: CGImage) throws -> Double {
+        let pixels = rgba(image)
+        let first = try XCTUnwrap(pixels.first)
+        return Double(pixels.count(where: { $0 != first })) / Double(pixels.count)
+    }
+
+    /// The mean column of the pixels that are nearly pure magenta, or `nil` without any.
+    private func magentaColumn(_ image: CGImage) -> CGFloat? {
+        let pixels = rgba(image)
+        let columns = pixels.indices
+            .filter {
+                let pixel = pixels[$0]
+                return pixel & 0xFF > 220 && pixel >> 8 & 0xFF < 40 && pixel >> 16 & 0xFF > 220
+            }
+            .map { $0 % image.width }
+        return columns.isEmpty ? nil : CGFloat(columns.reduce(0, +)) / CGFloat(columns.count)
+    }
+
+    /// The image's pixels from the top left, each with red in its lowest byte.
+    private func rgba(_ image: CGImage) -> [UInt32] {
+        let (width, height) = (image.width, image.height)
+        var pixels = [UInt32](repeating: 0, count: width * height)
+        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard
+                let context = CGContext(
+                    data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                    bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return pixels
+    }
+}

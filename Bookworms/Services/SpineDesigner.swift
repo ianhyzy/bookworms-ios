@@ -1,0 +1,900 @@
+import CoreGraphics
+import Foundation
+import FoundationModels
+import ImageIO
+import UniformTypeIdentifiers
+
+/// The reader's backup model, which designs spines when Private Cloud Compute isn't available, or
+/// before it when the reader prefers it (`overridesPrivateCloudCompute`): a third-party provider
+/// chosen in Settings on the Mac or from the Spines tab on the iPhone. The `.apple` choice means
+/// no backup, so Apple's on-device model, or without it local defaults, designs when Private
+/// Cloud Compute isn't available (`ModelTier`).
+///
+/// The choice, model name, each provider's thinking level, whether the choice overrides Private
+/// Cloud Compute, and which providers the reader allowed live in `UserDefaults`; each provider's
+/// API key lives in this device's Keychain (`KeychainSecret`), never synced.
+/// Third-party providers answer through `ProviderModel`, so `BookAnalyzer` asks every provider
+/// the same questions with the same schemas.
+struct SpineDesigner: Hashable, Sendable {
+    enum Provider: String, CaseIterable, Identifiable, Decodable, Sendable {
+        case apple, anthropic, openAI, google, custom
+
+        var id: Self { self }
+
+        /// The choice's name as the **Model** picker lists it. Only third-party providers'
+        /// names go into messages, because the Apple choice's name marks it as the default. In
+        /// builds with Private Cloud Compute, the Apple choice designs with Private Cloud Compute
+        /// when it is available and with the on-device model otherwise, so its name names
+        /// neither.
+        var name: String {
+            switch self {
+            #if NO_PCC
+                case .apple: "Apple on-device (default)"
+            #else
+                case .apple: "Apple (default)"
+            #endif
+            case .anthropic: "Anthropic"
+            case .openAI: "OpenAI"
+            case .google: "Google Gemini"
+            case .custom: "OpenAI-compatible endpoint"
+            }
+        }
+
+        /// The model a new choice of this provider starts with: the recommended model of
+        /// `DesignModels`, each provider's fast, low-cost tier. The reader can pick or type
+        /// another. Empty for the Apple choice and the custom endpoint.
+        var defaultModel: String { DesignModels.bundled.recommended(for: self)?.id ?? "" }
+
+        /// The endpoint for the provider's API. A custom provider names its own.
+        var defaultBaseURL: String {
+            switch self {
+            case .apple, .custom: ""
+            case .anthropic: "https://api.anthropic.com/v1"
+            case .openAI: "https://api.openai.com/v1"
+            case .google: "https://generativelanguage.googleapis.com/v1beta"
+            }
+        }
+
+        /// The Keychain item that holds this provider's API key.
+        var key: KeychainSecret { KeychainSecret(service: Self.keyService, account: rawValue) }
+
+        /// What this device holds of the provider's API key.
+        enum SavedKey {
+            /// No key.
+            case none
+            /// A key that requests can carry.
+            case usable
+            /// A key of a provider the reader hasn't allowed on this device, which counts as not
+            /// saved until the reader allows it (`SpineDesigner.requestKey(loadKey:)`).
+            case awaitsConsent
+        }
+
+        /// Whether the Keychain holds the provider's key and requests can carry it. It never
+        /// reads the key, so a Mac shows no prompt for it.
+        func savedKey() -> SavedKey {
+            guard key.exists() else { return .none }
+            return SpineDesigner.hasConsent(of: self) ? .usable : .awaitsConsent
+        }
+
+        /// Unit tests keep keys of their own, so a test run never reads the keys that the app
+        /// saved on the same device. So does a test copy launched with a preview folder
+        /// (`TestCopy`, `-BookwormsPreviewFolder`), such as a scratch build that runs spine
+        /// batches, so it never prompts for or overwrites the reader's key. Every iPhone build
+        /// counts as a test copy, so every iPhone preview launch keeps scratch keys; only the
+        /// installed Mac app's preview launches keep the reader's key, which its spine batches
+        /// use. Every other launch keeps this copy's keys
+        /// (`TestCopy.keychainService(_:bundleID:)`).
+        private static let keyService =
+            SpineDesigner.isUnitTest
+            ? "gay.ian.Bookworms.ai-provider.tests"
+            : UserDefaults.standard.string(forKey: "BookwormsPreviewFolder") != nil
+                && TestCopy.isTestCopy(bundleID: Bundle.main.bundleIdentifier)
+                ? "gay.ian.Bookworms.ai-provider.scratch"
+                : TestCopy.keychainService(
+                    "gay.ian.Bookworms.ai-provider", bundleID: Bundle.main.bundleIdentifier)
+    }
+
+    /// No backup model.
+    static let appleOnly = SpineDesigner(provider: .apple, model: "", baseURL: "")
+
+    var provider: Provider
+    var model: String
+    var baseURL: String
+    /// The thinking level that each request asks for, in the provider's own words, such as
+    /// Gemini's `thinkingLevel` "low" or Anthropic's effort "medium"; empty, so requests set
+    /// none, unless `DesignModels` lists the model with thinking levels. `ProviderModel` declares
+    /// reasoning only when it is set.
+    var thinking = ""
+
+    private static let providerKey = "SpineDesignerProvider"
+    private static let overridesPCCKey = "SpineDesignerOverridesPCC"
+    private static let modelKey = "SpineDesignerModel"
+    private static let baseURLKey = "SpineDesignerBaseURL"
+    private static let rejectionKey = "SpineDesignerRejection"
+    /// Each provider keeps its own thinking level, so switching providers and back restores it.
+    private static func thinkingKey(_ provider: Provider) -> String {
+        "SpineDesignerThinking.\(provider.rawValue)"
+    }
+
+    private static func consentKey(_ provider: Provider) -> String {
+        "SpineDesignerConsent.\(provider.rawValue)"
+    }
+
+    /// The user defaults that hold the choice and the remembered rejection. Unit tests keep a
+    /// suite of their own, as they keep their own keys, so a test run never reads or changes the
+    /// choice that the app saved on the same device.
+    private static var defaults: UserDefaults {
+        isUnitTest ? UserDefaults(suiteName: "gay.ian.Bookworms.tests")! : .standard
+    }
+    private static let isUnitTest =
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+
+    /// The saved choice, or no backup model.
+    static var current: SpineDesigner {
+        let provider = defaults.string(forKey: providerKey).flatMap(Provider.init) ?? .apple
+        let model = defaults.string(forKey: modelKey) ?? provider.defaultModel
+        return SpineDesigner(
+            provider: provider, model: model,
+            baseURL: defaults.string(forKey: baseURLKey) ?? provider.defaultBaseURL,
+            thinking: thinking(
+                saved: defaults.string(forKey: thinkingKey(provider)), provider: provider,
+                model: model))
+    }
+
+    /// Whether the chosen provider designs instead of Private Cloud Compute, which then designs
+    /// only while the provider can't
+    /// (`BookAnalyzer.bestStatus(pcc:backup:onDevice:prefersBackup:)`). Off by default. It never
+    /// lets a run replace Private Cloud Compute's designs (`ModelTier.isReplaced(by:)`), but the
+    /// reader's redesign of a book with the provider does
+    /// (`ModelTier.redesignRank(prefersBackup:)`). Builds without Private Cloud Compute
+    /// (`NO_PCC`) read it as off.
+    static var overridesPrivateCloudCompute: Bool {
+        get {
+            #if NO_PCC
+                false
+            #else
+                defaults.bool(forKey: overridesPCCKey)
+            #endif
+        }
+        set { defaults.set(newValue, forKey: overridesPCCKey) }
+    }
+
+    /// Whether the reader allowed `provider` to receive each book's cover, title, and author on
+    /// this device, which an alert asks before the provider's first key saves
+    /// (`SpineDesignerSettings`). Apple's models need no consent. Every request to a provider
+    /// checks it (`requestKey(loadKey:)`).
+    static func hasConsent(of provider: Provider) -> Bool {
+        provider == .apple || defaults.bool(forKey: consentKey(provider))
+    }
+
+    /// Remembers on this device that the reader allowed `provider` (`hasConsent(of:)`).
+    static func allow(_ provider: Provider) {
+        defaults.set(true, forKey: consentKey(provider))
+    }
+
+    /// The thinking level for `model`: `saved` when `DesignModels` lists the model with that
+    /// level, else the listed model's default. A model that the list doesn't name, or names
+    /// without levels, gets none, as does the custom endpoint, which has no list: a model can
+    /// think yet reject a level, as Gemini 2.5 rejects `thinkingLevel`, which would fail every
+    /// request.
+    static func thinking(saved: String?, provider: Provider, model: String) -> String {
+        guard let listed = DesignModels.bundled.model(model, of: provider),
+            let levels = listed.thinking
+        else { return "" }
+        if let saved, levels.contains(saved) { return saved }
+        return listed.thinkingDefault ?? ""
+    }
+
+    func save() {
+        Self.defaults.set(provider.rawValue, forKey: Self.providerKey)
+        Self.defaults.set(model, forKey: Self.modelKey)
+        Self.defaults.set(baseURL, forKey: Self.baseURLKey)
+        Self.defaults.set(thinking, forKey: Self.thinkingKey(provider))
+    }
+
+    /// Asks the provider whether this device's key can use `model` (`ProviderHTTP.check(_:key:)`),
+    /// away from the main actor, because it reads the Keychain and waits for the network. Returns
+    /// `nil` without a key that a request can carry (`requestKey(loadKey:)`) or when the
+    /// provider's answer doesn't say.
+    @concurrent func availability() async -> ModelCheck? {
+        guard case .key(let key) = requestKey(), !key.isEmpty else { return nil }
+        return await ProviderHTTP.check(self, key: key)
+    }
+
+    /// Why this choice cannot design yet, such as no provider, a missing key or model name, or a
+    /// key the Keychain refused to read; `nil` when it can. It reads the Keychain. The text names
+    /// no place, because the Spines tab shows it beside **Choose model**, which opens Settings on
+    /// the Mac.
+    var problem: String? { readiness().problem }
+
+    /// `problem`, and whether it is a saved key that the Keychain refused to read for now
+    /// (`KeychainSecret.Unreadable.mayPass`), as before the first unlock after a restart or after
+    /// the reader declines a Mac's prompt. The key may still be saved, so a run waits for it
+    /// instead of designing with another model (`BookAnalyzer.bestStatus`). A read that fails
+    /// the same way every time counts as no key. `loadKey` reads the key; tests pass their own.
+    func readiness(loadKey: (() throws -> String?)? = nil) -> (
+        problem: String?, keyIsUnreadable: Bool
+    ) {
+        switch provider {
+        case .apple: return ("Choose a provider.", false)
+        case .custom where !hasWebAddress: return (Self.missingBaseURLMessage, false)
+        default: break
+        }
+        switch requestKey(loadKey: loadKey) {
+        case .unreadable(let message): return (message, true)
+        case .missing(let message): return (message, false)
+        case .key: return (model.isEmpty ? "Enter a model name." : nil, false)
+        }
+    }
+
+    /// What `requestKey(loadKey:)` found for a request to the provider.
+    enum RequestKey: Equatable {
+        /// The key the request carries; empty for a custom endpoint that needs none.
+        case key(String)
+        /// No request can go until the reader takes the step the message names.
+        case missing(String)
+        /// The Keychain refused to read the saved key for now (`readiness(loadKey:)`).
+        case unreadable(String)
+    }
+
+    /// The API key for a request to the provider, or why no request can go. `readiness` and
+    /// every request ask here (`ProviderHTTP.send`, `availability()`), so none reaches a provider
+    /// the reader hasn't allowed on this device (`hasConsent(of:)`).
+    ///
+    /// Such a provider counts as not set up, whatever the Keychain holds: deleting the app clears
+    /// the consent record but can leave the key, and the message then names the entry whose save
+    /// asks for consent, the key or a custom endpoint's base URL. `loadKey` reads the key; tests
+    /// pass their own.
+    func requestKey(loadKey: (() throws -> String?)? = nil) -> RequestKey {
+        guard Self.hasConsent(of: provider) else {
+            return .missing(provider == .custom ? Self.missingBaseURLMessage : missingKeyMessage)
+        }
+        let key: String
+        do {
+            key = try (loadKey ?? provider.key.load)() ?? ""
+        } catch let error as KeychainSecret.Unreadable where error.mayPass {
+            return .unreadable(unreadableKeyMessage)
+        } catch {
+            key = ""
+        }
+        // A custom endpoint may need no key.
+        if key.isEmpty, provider != .custom { return .missing(missingKeyMessage) }
+        return .key(key)
+    }
+
+    /// Whether `baseURL` is an address a request can go to: `http` or `https` with a host. An
+    /// address typed without a scheme, such as `localhost:1234/v1`, parses with its host as the
+    /// scheme.
+    private var hasWebAddress: Bool {
+        guard let url = URL(string: baseURL), url.host() != nil else { return false }
+        return ["http", "https"].contains(url.scheme?.lowercased())
+    }
+
+    /// The message for a preset provider without a saved key.
+    var missingKeyMessage: String { "Add your \(provider.name) API key." }
+
+    /// The message for a custom endpoint without a base URL that a request can go to.
+    private static let missingBaseURLMessage =
+        "Enter your endpoint's base URL, starting with http:// or https://."
+
+    /// The message for a saved key that the Keychain refused to read for now. It names what
+    /// lets the Keychain read the key again: on a Mac, allowing its prompt; elsewhere, the first
+    /// unlock after a restart.
+    var unreadableKeyMessage: String {
+        let key = provider == .custom ? "your endpoint's" : "your \(provider.name)"
+        #if os(macOS)
+            return "Couldn't read \(key) API key. Allow access when the Mac asks, then try again."
+        #else
+            return "Couldn't read \(key) API key. Unlock this \(ThisDevice.name), then try again."
+        #endif
+    }
+
+    /// The provider's message when it last rejected these settings for every request, such as a
+    /// revoked key, an unknown model name, or an account without credit
+    /// (`ProviderError.isLasting`); `nil` when it hasn't. It reads the Keychain.
+    ///
+    /// The rejection lasts until the reader changes the provider, model name, base URL, thinking
+    /// level, or key, or starts **Generate now** or **Redesign spine** (`forgetRejection()`), so
+    /// runs don't send each book's first request to a model that refuses them all.
+    var rejection: String? {
+        guard
+            let saved = Self.defaults.dictionary(forKey: Self.rejectionKey)
+                as? [String: String],
+            saved["settings"] == settingsID
+        else { return nil }
+        return saved["message"]
+    }
+
+    /// Remembers `message` as the provider's lasting rejection of these settings (`rejection`),
+    /// unless this device's key is no longer `sentKey`, the key read when the book's design began.
+    /// The rejected request reads the key again (`ProviderHTTP.send`), so it may have sent a newer
+    /// one. A late rejection of a key the reader has since replaced says nothing about the new key,
+    /// which the settings ID can't tell apart. The keys are compared in memory, and nothing about
+    /// them is saved. Returns whether it remembered the rejection.
+    @discardableResult func rememberRejection(_ message: String, sentKey: String?) -> Bool {
+        guard provider.key.read() == sentKey else { return false }
+        Self.defaults.set(["settings": settingsID, "message": message], forKey: Self.rejectionKey)
+        return true
+    }
+
+    /// Forgets a remembered rejection, because the reader changed the settings or started
+    /// **Generate now** or **Redesign spine**, and returns its message, or `nil` without one. A
+    /// new key needs this: the settings ID records only whether a key exists.
+    @discardableResult static func forgetRejection() -> String? {
+        let message = (defaults.dictionary(forKey: rejectionKey) as? [String: String])?["message"]
+        defaults.removeObject(forKey: rejectionKey)
+        return message
+    }
+
+    /// Identifies these settings for `rejection`: the provider, model name, base URL, thinking
+    /// level, and whether this device holds a key, never the key itself, which stays in the
+    /// Keychain.
+    private var settingsID: String {
+        let hasKey = !(provider.key.read()?.isEmpty ?? true)
+        return [provider.rawValue, model, baseURL, thinking, hasKey ? "key" : "no key"]
+            .joined(separator: "\n")
+    }
+
+    /// The model token for a design this backup model makes, such as
+    /// "model:anthropic/claude-haiku-5-5", within `provenance`'s 80 characters; `nil` without a
+    /// backup model.
+    var provenance: String? {
+        guard provider != .apple else { return nil }
+        return String("model:\(provider.rawValue)/\(model)".prefix(80))
+    }
+}
+
+extension SpineDesigner {
+    /// A new choice of `provider`: its recommended model and endpoint, at the thinking level
+    /// saved for the provider when that model takes it.
+    init(choosing provider: Provider) {
+        self.init(
+            provider: provider, model: provider.defaultModel, baseURL: provider.defaultBaseURL)
+        thinking = Self.thinking(
+            saved: Self.defaults.string(forKey: Self.thinkingKey(provider)), provider: provider,
+            model: model)
+    }
+}
+
+/// The models that the **Model name** picker lists for each preset provider, read from the
+/// bundled `DesignModels.json`, which `README-AI.md`'s "Design model list" describes. A monthly
+/// check edits that file, so the code names no model.
+struct DesignModels: Sendable {
+    struct Model: Decodable, Hashable, Identifiable, Sendable {
+        var provider: SpineDesigner.Provider
+        var id: String
+        var label: String
+        /// "low-cost" or "stronger".
+        var tier: String
+        /// Whether a new choice of the provider starts with this model.
+        var recommended: Bool?
+        /// The provider's thinking levels for this model, cheapest first; `nil` for a model
+        /// without them.
+        var thinking: [String]?
+        var thinkingDefault: String?
+
+        /// The picker's label, with a star for the provider's recommended model.
+        var pickerLabel: String { recommended == true ? "★ \(label)" : label }
+    }
+
+    /// The day someone last checked the list against the providers' model pages, as yyyy-MM-dd.
+    let checked: String
+    /// Each preset provider's models, in the file's order.
+    let models: [SpineDesigner.Provider: [Model]]
+
+    static let bundled = DesignModels(
+        contentsOf: Bundle.main.url(forResource: "DesignModels", withExtension: "json"))
+
+    /// Decodes the list at `url`. A missing or malformed file lists no models, so each picker
+    /// offers only **Custom…**; the unit tests check the bundled file.
+    init(contentsOf url: URL?) {
+        struct File: Decodable {
+            var checked: String
+            var models: [Model]
+        }
+        let file = url.flatMap { try? Data(contentsOf: $0) }
+            .flatMap { try? JSONDecoder().decode(File.self, from: $0) }
+        checked = file?.checked ?? ""
+        models = Dictionary(grouping: file?.models ?? [], by: \.provider)
+    }
+
+    func model(_ id: String, of provider: SpineDesigner.Provider) -> Model? {
+        models[provider]?.first { $0.id == id }
+    }
+
+    func recommended(for provider: SpineDesigner.Provider) -> Model? {
+        models[provider]?.first { $0.recommended == true }
+    }
+}
+
+/// What a provider's get-model endpoint says about the chosen model and key
+/// (`ProviderHTTP.check(_:key:)`).
+enum ModelCheck: Equatable, Sendable {
+    /// The key can use the model. Its thinking levels come only from `DesignModels`, because a
+    /// model that its details say thinks may still reject a level.
+    case available
+    /// The provider answered 403 or 404: this key can't use the model.
+    case unavailable
+    /// The provider rejected the key itself.
+    case keyRejected
+}
+
+/// A failed request to a third-party provider.
+struct ProviderError: LocalizedError {
+    let provider: SpineDesigner.Provider
+    /// The HTTP status, or `nil` when the response had no usable answer.
+    let status: Int?
+    let retryAfter: Date?
+    let message: String
+    /// The error body's `error.code`, else its `error.type`, else the first reason in Gemini's
+    /// error details, such as OpenAI's "insufficient_quota" or Gemini's "API_KEY_INVALID".
+    var code: String? = nil
+    /// Whether the request carried an API key, which a custom endpoint may not need.
+    var sentKey = true
+
+    /// A lasting rejection names the problem and its fix in the settings check's terms
+    /// (`ProviderHTTP.check(_:key:)`: a 401 is the key, a 403 or 404 the model). So does an
+    /// Anthropic account without credit, which Anthropic answers with an HTTP 400 that only its
+    /// message identifies. Any other error keeps the provider's own message after its name, which
+    /// for a custom endpoint is "Your endpoint", as the Spines tab's **Model** row names it.
+    /// `SpineWorker.RefusalStreak` compares these descriptions, so every 400 for a lack of credit
+    /// counts as the same refusal.
+    var errorDescription: String? {
+        let anthropicCredit =
+            provider == .anthropic && status == 400
+            && message.localizedCaseInsensitiveContains("credit balance")
+        let raw = "\(provider == .custom ? "Your endpoint" : provider.name): \(message)"
+        guard isLasting || anthropicCredit else { return raw }
+        if provider == .custom {
+            switch status {
+            case 401, 403:
+                return sentKey
+                    ? "Your endpoint didn't accept your API key."
+                    : "Your endpoint refused the request without an API key."
+            // A wrong base URL also answers 404.
+            case 404:
+                return "Your endpoint didn't find this model. Check the model name and base URL."
+            default: return raw
+            }
+        }
+        if status == 402 || code == "insufficient_quota" || anthropicCredit {
+            return "Your \(provider.name) account is out of credit."
+        }
+        if status == 401 || code == "API_KEY_INVALID" {
+            return "\(provider.name) didn't accept your API key."
+        }
+        return "\(provider.name) can't use this model with your key."
+    }
+
+    /// A rejected key or model name, or an account without credit, which every later request
+    /// with these settings repeats: a 401 or 403, a 402 Payment Required, a 404, OpenAI's
+    /// `insufficient_quota`, which it sends with a 429, or Gemini's `API_KEY_INVALID`, which it
+    /// sends with a 400. Any other failure but a rate limit or a server error fails one book,
+    /// such as a 400 for its crop, unless the same message refuses several books in a row
+    /// (`SpineWorker.RefusalStreak`).
+    var isLasting: Bool {
+        [401, 402, 403, 404].contains(status)
+            || ["insufficient_quota", "API_KEY_INVALID"].contains(code)
+    }
+    /// A server error, such as an outage or an overloaded model, which may pass.
+    var isServerError: Bool { (status ?? 0) >= 500 }
+}
+
+/// A third-party model behind Apple's `LanguageModel` protocol, so `LanguageModelSession`
+/// drives it with the same prompts, image attachments, and generation schemas as Apple's
+/// models.
+///
+/// The executor turns the session's transcript into one HTTP request: instructions become the
+/// system prompt, prompts and responses become user and assistant turns, images go as PNG data,
+/// and the request's schema becomes the provider's JSON-schema output format. The answer's JSON
+/// goes back to the session, which decodes it as `GeneratedContent`.
+///
+/// The model declares reasoning only with a thinking level (`SpineDesigner.thinking`), because
+/// a session refuses a request with a reasoning level for a model without it before sending
+/// anything. Every request then carries the reader's level in the provider's own terms, whatever
+/// reasoning level the session's request names.
+struct ProviderModel: LanguageModel {
+    typealias Executor = ProviderExecutor
+
+    let designer: SpineDesigner
+
+    var capabilities: LanguageModelCapabilities {
+        LanguageModelCapabilities(
+            designer.thinking.isEmpty
+                ? [.vision, .guidedGeneration] : [.vision, .guidedGeneration, .reasoning])
+    }
+
+    var executorConfiguration: SpineDesigner { designer }
+}
+
+struct ProviderExecutor: LanguageModelExecutor {
+    typealias Model = ProviderModel
+
+    let designer: SpineDesigner
+
+    init(configuration: SpineDesigner) throws {
+        designer = configuration
+    }
+
+    nonisolated(nonsending) func respond(
+        to request: LanguageModelExecutorGenerationRequest, model: ProviderModel,
+        streamingInto channel: LanguageModelExecutorGenerationChannel
+    ) async throws {
+        var conversation = ProviderConversation(request.transcript)
+        let schema = try request.schema.map(ProviderConversation.jsonSchema)
+        if let schema, let text = try? JSONSerialization.data(withJSONObject: schema) {
+            // Also in words, for endpoints that ignore the output format.
+            conversation.system +=
+                "\nAnswer with only a JSON object that matches this JSON Schema: "
+                + String(decoding: text, as: UTF8.self)
+        }
+        let text = try await ProviderHTTP.send(
+            conversation, schema: schema, designer: designer)
+        await channel.send(.response(action: .appendText(text, tokenCount: 0)))
+    }
+}
+
+/// A transcript flattened into the system prompt and alternating turns that HTTP chat APIs take.
+struct ProviderConversation {
+    enum Part {
+        case text(String)
+        case png(Data)
+    }
+
+    struct Turn {
+        var isUser: Bool
+        var parts: [Part]
+    }
+
+    var system = ""
+    var turns: [Turn] = []
+
+    init(_ transcript: Transcript) {
+        for entry in transcript {
+            switch entry {
+            case .instructions(let instructions):
+                system += Self.parts(instructions.segments).compactMap(\.text).joined()
+            case .prompt(let prompt):
+                turns.append(Turn(isUser: true, parts: Self.parts(prompt.segments)))
+            case .response(let response):
+                turns.append(Turn(isUser: false, parts: Self.parts(response.segments)))
+            default:
+                // Reasoning and tool entries have no counterpart in these requests.
+                break
+            }
+        }
+    }
+
+    private static func parts(_ segments: [Transcript.Segment]) -> [Part] {
+        segments.compactMap { segment in
+            switch segment {
+            case .text(let text): .text(text.content)
+            case .structure(let structure): .text(structure.content.jsonString)
+            case .attachment(let attachment):
+                switch attachment.content {
+                case .image(let image): png(image.cgImage).map(Part.png)
+                @unknown default: nil
+                }
+            @unknown default: nil
+            }
+        }
+    }
+
+    private static func png(_ image: CGImage) -> Data? {
+        let data = NSMutableData()
+        guard
+            let destination = CGImageDestinationCreateWithData(
+                data, UTType.png.identifier as CFString, 1, nil)
+        else { return nil }
+        CGImageDestinationAddImage(destination, image, nil)
+        return CGImageDestinationFinalize(destination) ? data as Data : nil
+    }
+
+    /// The schema as plain JSON Schema, without Apple's `x-order` key or the array bounds and
+    /// titles that some providers' structured outputs reject. Callers still check the answer.
+    static func jsonSchema(_ schema: GenerationSchema) throws -> [String: Any] {
+        let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(schema))
+        return (strip(object) as? [String: Any]) ?? [:]
+    }
+
+    private static func strip(_ value: Any) -> Any {
+        if let object = value as? [String: Any] {
+            var kept: [String: Any] = [:]
+            for (key, child) in object where !["x-order", "title", "maxItems"].contains(key) {
+                kept[key] = strip(child)
+            }
+            if let minimum = kept["minItems"] as? Int, minimum > 1 { kept["minItems"] = 1 }
+            return kept
+        }
+        if let array = value as? [Any] { return array.map(strip) }
+        return value
+    }
+}
+
+extension ProviderConversation.Part {
+    var text: String? {
+        if case .text(let text) = self { text } else { nil }
+    }
+}
+
+/// The request and response shapes of each provider's chat API.
+enum ProviderHTTP {
+    static func send(
+        _ conversation: ProviderConversation, schema: [String: Any]?, designer: SpineDesigner
+    ) async throws -> String {
+        let provider = designer.provider
+        // A refused read stops the run, and a provider without a key or the reader's consent
+        // moves it to the next tier (`SpineWorker.newDesign`), instead of sending the request,
+        // such as after the reader removed the key during the run (`SpineDesigner.readiness`).
+        let key: String
+        switch designer.requestKey() {
+        case .key(let saved): key = saved
+        case .unreadable(let message): throw CompanionError.keyUnreadable(message)
+        case .missing(let message): throw CompanionError.providerRejected(message)
+        }
+        let base = designer.baseURL.isEmpty ? provider.defaultBaseURL : designer.baseURL
+        guard let root = URL(string: base) else {
+            throw ProviderError(
+                provider: provider, status: nil, retryAfter: nil, message: "The URL is invalid.")
+        }
+        var request: URLRequest
+        let body: [String: Any]
+        switch provider {
+        case .anthropic:
+            request = URLRequest(url: root.appending(path: "messages"))
+            request.setValue(key, forHTTPHeaderField: "x-api-key")
+            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+            body = anthropicBody(conversation, schema: schema, designer: designer)
+        case .google:
+            request = URLRequest(
+                url: root.appending(path: "models/\(designer.model):generateContent"))
+            request.setValue(key, forHTTPHeaderField: "x-goog-api-key")
+            body = googleBody(conversation, schema: schema, thinking: designer.thinking)
+        case .openAI, .custom:
+            request = URLRequest(url: root.appending(path: "chat/completions"))
+            if !key.isEmpty {
+                request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            }
+            body = openAIBody(conversation, schema: schema, designer: designer)
+        case .apple:
+            preconditionFailure("Apple's models answer through LanguageModelSession directly.")
+        }
+        request.httpMethod = "POST"
+        request.timeoutInterval = 300
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let result: (Data, URLResponse)
+        do {
+            result = try await URLSession.shared.data(for: request)
+        } catch let error as URLError where !SpineWorker.offlineErrors.contains(error.code) {
+            // A timeout, a failed connection, or a bad reply may pass, so the worker retries the
+            // book and then designs it with another model (`SpineWorker.newDesign`). App
+            // Transport Security blocks every `http` request to a public host name until the
+            // reader changes the base URL, so the run moves to the next tier. Another failure,
+            // such as an endpoint whose host can't be found, would fail every book, so the run
+            // stops and a later run tries again.
+            if SpineWorker.unreachableErrors.contains(error.code) {
+                throw CompanionError.providerUnreachable
+            }
+            if error.code == .appTransportSecurityRequiresSecureConnection {
+                throw CompanionError.providerRejected(
+                    "Your endpoint's base URL needs https://. Only local servers can use http://.")
+            }
+            throw CompanionError.modelBusy(nil)
+        }
+        let (data, response) = result
+        let http = response as? HTTPURLResponse
+        let status = http?.statusCode ?? 0
+        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard (200..<300).contains(status) else {
+            let retryAfter = http?.value(forHTTPHeaderField: "Retry-After")
+                .flatMap(TimeInterval.init).map { Date.now.addingTimeInterval($0) }
+            let error = json?["error"] as? [String: Any]
+            var message =
+                error?["message"] as? String
+                ?? HTTPURLResponse.localizedString(forStatusCode: status)
+            // The app saves the message with the run's outcome and as a remembered rejection
+            // (`SpineDesigner.rememberRejection(_:sentKey:)`), so a key that an endpoint echoes is
+            // removed from it.
+            if !key.isEmpty { message = message.replacingOccurrences(of: key, with: "…") }
+            throw ProviderError(
+                provider: provider, status: status, retryAfter: retryAfter, message: message,
+                code: errorCode(in: json), sentKey: !key.isEmpty)
+        }
+        // As a guardrail violation, a refusal lets a design fall back to the title crop instead of
+        // failing the book.
+        if isRefusal(json, provider: provider) {
+            throw LanguageModelError.guardrailViolation(
+                .init(debugDescription: "\(provider.name) refused the request."))
+        }
+        guard let text = answer(in: json, provider: provider), !text.isEmpty else {
+            throw ProviderError(
+                provider: provider, status: nil, retryAfter: nil,
+                message: "The response had no answer.")
+        }
+        return text
+    }
+
+    /// Asks the provider's get-model endpoint whether `key` can use `designer.model`: Gemini's
+    /// `GET models/{id}`, or Anthropic's or OpenAI's `GET v1/models/{id}`. It sends one request,
+    /// never retries, and returns `nil` when the answer doesn't say, such as after a network
+    /// failure, a timeout, or a server error, so a failed check never claims that the model is
+    /// missing. Nothing about the key leaves this function except in the request's header.
+    static func check(_ designer: SpineDesigner, key: String) async -> ModelCheck? {
+        let provider = designer.provider
+        let base = designer.baseURL.isEmpty ? provider.defaultBaseURL : designer.baseURL
+        guard let root = URL(string: base), !designer.model.isEmpty else { return nil }
+        var request = URLRequest(url: root.appending(path: "models/\(designer.model)"))
+        request.timeoutInterval = 15
+        switch provider {
+        case .anthropic:
+            request.setValue(key, forHTTPHeaderField: "x-api-key")
+            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        case .google:
+            request.setValue(key, forHTTPHeaderField: "x-goog-api-key")
+        case .openAI:
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        case .apple, .custom:
+            return nil
+        }
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+            let status = (response as? HTTPURLResponse)?.statusCode
+        else { return nil }
+        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        switch status {
+        case 200..<300: return .available
+        case 403, 404: return .unavailable
+        case 401: return .keyRejected
+        case 400 where errorCode(in: json) == "API_KEY_INVALID": return .keyRejected
+        default: return nil
+        }
+    }
+
+    /// An error body's `error.code`, else its `error.type`, else the first reason in Gemini's
+    /// error details.
+    private static func errorCode(in json: [String: Any]?) -> String? {
+        let error = json?["error"] as? [String: Any]
+        let details = error?["details"] as? [[String: Any]]
+        return error?["code"] as? String ?? error?["type"] as? String
+            ?? details?.lazy.compactMap { $0["reason"] as? String }.first
+    }
+
+    /// Whether `json` declines the request. Anthropic answers content it won't process with a
+    /// refusal stop reason; Gemini blocks the prompt with a block reason or stops its answer for
+    /// safety; and OpenAI-compatible chat endpoints answer with a refusal message instead of
+    /// content.
+    static func isRefusal(_ json: [String: Any]?, provider: SpineDesigner.Provider) -> Bool {
+        switch provider {
+        case .anthropic:
+            return json?["stop_reason"] as? String == "refusal"
+        case .google:
+            let candidate = (json?["candidates"] as? [[String: Any]])?.first
+            let safety = ["SAFETY", "PROHIBITED_CONTENT", "IMAGE_SAFETY", "BLOCKLIST", "SPII"]
+            return (json?["promptFeedback"] as? [String: Any])?["blockReason"] != nil
+                || safety.contains(candidate?["finishReason"] as? String ?? "")
+        case .openAI, .custom:
+            let choice = (json?["choices"] as? [[String: Any]])?.first
+            let refusal = (choice?["message"] as? [String: Any])?["refusal"] as? String
+            return refusal?.isEmpty == false
+        case .apple:
+            return false
+        }
+    }
+
+    /// The answer's text: Anthropic's text blocks, Gemini's first candidate, or the first chat
+    /// choice's message.
+    private static func answer(in json: [String: Any]?, provider: SpineDesigner.Provider)
+        -> String?
+    {
+        switch provider {
+        case .anthropic:
+            return (json?["content"] as? [[String: Any]])?
+                .filter { $0["type"] as? String == "text" }
+                .compactMap { $0["text"] as? String }.joined()
+        case .google:
+            let candidate = (json?["candidates"] as? [[String: Any]])?.first
+            let parts = (candidate?["content"] as? [String: Any])?["parts"] as? [[String: Any]]
+            return parts?.compactMap { $0["text"] as? String }.joined()
+        default:
+            let choice = (json?["choices"] as? [[String: Any]])?.first
+            return (choice?["message"] as? [String: Any])?["content"] as? String
+        }
+    }
+
+    private static func anthropicBody(
+        _ conversation: ProviderConversation, schema: [String: Any]?, designer: SpineDesigner
+    ) -> [String: Any] {
+        let messages = conversation.turns.map { turn in
+            [
+                "role": turn.isUser ? "user" : "assistant",
+                "content": turn.parts.map { part -> [String: Any] in
+                    switch part {
+                    case .text(let text): ["type": "text", "text": text]
+                    case .png(let data):
+                        [
+                            "type": "image",
+                            "source": [
+                                "type": "base64", "media_type": "image/png",
+                                "data": data.base64EncodedString(),
+                            ],
+                        ]
+                    }
+                },
+            ] as [String: Any]
+        }
+        var body: [String: Any] = [
+            "model": designer.model, "max_tokens": 16000, "messages": messages,
+            "system": conversation.system,
+        ]
+        var output: [String: Any] = [:]
+        if let schema { output["format"] = ["type": "json_schema", "schema": schema] }
+        // Adaptive thinking is on by default; effort sets how much the model thinks.
+        if !designer.thinking.isEmpty { output["effort"] = designer.thinking }
+        if !output.isEmpty { body["output_config"] = output }
+        return body
+    }
+
+    private static func openAIBody(
+        _ conversation: ProviderConversation, schema: [String: Any]?, designer: SpineDesigner
+    ) -> [String: Any] {
+        var messages: [[String: Any]] = [["role": "system", "content": conversation.system]]
+        messages += conversation.turns.map { turn in
+            [
+                "role": turn.isUser ? "user" : "assistant",
+                "content": turn.parts.map { part -> [String: Any] in
+                    switch part {
+                    case .text(let text): ["type": "text", "text": text]
+                    case .png(let data):
+                        [
+                            "type": "image_url",
+                            "image_url": [
+                                "url": "data:image/png;base64," + data.base64EncodedString()
+                            ],
+                        ]
+                    }
+                },
+            ]
+        }
+        var body: [String: Any] = ["model": designer.model, "messages": messages]
+        if !designer.thinking.isEmpty { body["reasoning_effort"] = designer.thinking }
+        if let schema {
+            body["response_format"] = [
+                "type": "json_schema",
+                "json_schema": ["name": "answer", "schema": schema, "strict": false],
+            ]
+        }
+        return body
+    }
+
+    private static func googleBody(
+        _ conversation: ProviderConversation, schema: [String: Any]?, thinking: String
+    ) -> [String: Any] {
+        let contents = conversation.turns.map { turn in
+            [
+                "role": turn.isUser ? "user" : "model",
+                "parts": turn.parts.map { part -> [String: Any] in
+                    switch part {
+                    case .text(let text): ["text": text]
+                    case .png(let data):
+                        [
+                            "inline_data": [
+                                "mime_type": "image/png", "data": data.base64EncodedString(),
+                            ]
+                        ]
+                    }
+                },
+            ] as [String: Any]
+        }
+        var config: [String: Any] = [:]
+        if let schema {
+            config["responseMimeType"] = "application/json"
+            config["responseJsonSchema"] = schema
+        }
+        if !thinking.isEmpty { config["thinkingConfig"] = ["thinkingLevel": thinking] }
+        return [
+            "systemInstruction": ["parts": [["text": conversation.system]]],
+            "contents": contents, "generationConfig": config,
+        ]
+    }
+}
