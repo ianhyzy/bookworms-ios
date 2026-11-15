@@ -2438,6 +2438,62 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(try equal.stored()[7], made)
     }
 
+    /// **Redesign all spines** designs anew, with the chosen model, every design made before the
+    /// request, even Private Cloud Compute's, which a run otherwise keeps. Designs made since,
+    /// such as another device's redesign, and spines the reader customized stay.
+    func testRedesignAllRedesignsUncustomizedDesignsMadeBeforeIt() async throws {
+        let books = [7, 8, 9].map { LocalRun.book($0, cover: CoverStub.numbered($0)) }
+        let hash = String(repeating: "c", count: 64)
+        let request = Date()
+        let pcc = LocalRun.design(for: books[0], coverHash: hash)
+        let since = LocalRun.design(
+            for: books[1], coverHash: hash, generatedAt: request.addingTimeInterval(60))
+        let customized = LocalRun.design(
+            for: books[2], coverHash: hash, provenance: SpineDesignV1.readerFontToken)
+        let run = try LocalRun(books: books, designs: [pcc, since, customized])
+        defer { run.remove() }
+        let worker = run.worker(
+            status: .backupStub,
+            designBook: { book, accountID, workItemHash, cover, model in
+                LocalRun.design(
+                    of: book, accountID: accountID, workItemHash: workItemHash, cover: cover,
+                    model: model)
+            })
+        let checkedAll = await worker.reconcile(mode: .foreground, redesigningAllBefore: request)
+        _ = await LocalRun.updates(of: worker)
+        XCTAssertTrue(checkedAll, "The run checked the whole library")
+        let stored = try run.stored()
+        XCTAssertEqual(stored[7]?.tier, .backup, "The chosen model replaced the old design")
+        XCTAssertEqual(stored[8], since, "A design made since the request stays")
+        XCTAssertEqual(stored[9], customized, "A customized spine stays")
+    }
+
+    /// In a look group, a library redesign designs anew only the look's source book, which remakes
+    /// the look, and only while the reader left the look alone.
+    func testRedesignAllRemakesOnlyAnUneditedLookThroughItsSource() throws {
+        let book = LocalRun.book(7)
+        let hash = String(repeating: "c", count: 64)
+        let request = Date()
+        let saved = LocalRun.design(for: book, coverHash: hash)
+        XCTAssertEqual(
+            SpineWorker.redesignsAll(saved, look: nil, bookID: 7, before: request), false)
+        XCTAssertNil(
+            SpineWorker.redesignsAll(
+                saved, look: nil, bookID: 7, before: saved.generatedAt),
+            "A design made at or after the request stays")
+        let look = SeriesLookV1(
+            design: saved, key: SeriesLookKey(seriesID: 501, group: "a"),
+            createdAt: Date(timeIntervalSince1970: 1_000_000))
+        XCTAssertEqual(
+            SpineWorker.redesignsAll(saved, look: look, bookID: 7, before: request), true)
+        XCTAssertNil(
+            SpineWorker.redesignsAll(saved, look: look, bookID: 8, before: request),
+            "Another member copies the remade look")
+        var edited = look
+        edited.editedAt = request
+        XCTAssertNil(SpineWorker.redesignsAll(saved, look: edited, bookID: 7, before: request))
+    }
+
     /// A redesign that the backup model's lasting rejection moved to a weaker tier keeps the
     /// backup model's saved design or look, as a redesign from that tier would.
     func testRedesignsCheckTheTierAgainAfterAFallback() {
@@ -4792,12 +4848,12 @@ private struct LocalRun {
     /// A design of `book` as it is now, in the system typeface, which letters any title.
     static func design(
         for book: CloudBook, coverHash: String, generator: String = CloudContract.generatorVersion,
-        provenance: String? = nil
+        provenance: String? = nil, generatedAt: Date = Date(timeIntervalSince1970: 1_000_000)
     ) -> SpineDesignV1 {
         SpineDesignV1(
             version: 1, accountID: accountID, bookID: book.id, workItemHash: workHash(book),
             coverHash: coverHash, generatorVersion: generator,
-            generatedAt: Date(timeIntervalSince1970: 1_000_000), backgroundHex: "#101010",
+            generatedAt: generatedAt, backgroundHex: "#101010",
             foregroundHex: "#F4EEE2", accentHex: "#7A1F1F", typeface: "serif", weight: 700,
             uppercase: false, provenance: provenance)
     }
