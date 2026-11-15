@@ -678,6 +678,11 @@ private struct BinderyHeader: View, Equatable {
         }
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
+        #if os(iOS)
+            // No side margins, so the board runs to the screen's edges; a row's cell clips its
+            // content, so the board can't draw past the margins.
+            .listSectionMargins(.horizontal, 0)
+        #endif
         .onChange(of: model.designRevision, initial: true) { prepare() }
     }
 
