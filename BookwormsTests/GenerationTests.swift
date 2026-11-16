@@ -1770,7 +1770,11 @@ final class GenerationTests: XCTestCase {
 
     /// Stop cancels every book in flight at once, and the run saves nothing from them.
     func testStopCancelsEveryBookInFlight() async throws {
-        let books = (1...6).map { LocalRun.book($0, cover: CoverStub.numbered($0)) }
+        // More books than the run designs at once, so some wait in the queue.
+        let books = (1...(SpineWorker.backupConcurrency + 2))
+            .map {
+                LocalRun.book($0, cover: CoverStub.numbered($0))
+            }
         let stub = DesignStub(delay: .seconds(30))
         let run = try LocalRun(books: books, designs: [])
         defer { run.remove() }
@@ -1779,7 +1783,7 @@ final class GenerationTests: XCTestCase {
         let reconcile = Task { await worker.reconcile(mode: .foreground) }
         while await stub.inFlight.count < SpineWorker.backupConcurrency {
             guard start.duration(to: .now) < .seconds(10) else {
-                return XCTFail("The run never had four books in flight")
+                return XCTFail("The run never had a full set of books in flight")
             }
             try await Task.sleep(for: .milliseconds(10))
         }
@@ -2547,7 +2551,11 @@ final class GenerationTests: XCTestCase {
     func testALastingBackupRejectionMovesARunToAnotherTier() async throws {
         SpineDesigner.forgetRejection()
         defer { SpineDesigner.forgetRejection() }
-        let books = (1...6).map { LocalRun.book($0, cover: CoverStub.numbered($0)) }
+        // More books than the run designs at once, so some start after the rejection.
+        let books = (1...(SpineWorker.backupConcurrency + 2))
+            .map {
+                LocalRun.book($0, cover: CoverStub.numbered($0))
+            }
         let run = try LocalRun(books: books, designs: [])
         defer { run.remove() }
         let rejection = "Custom: Unknown model."
@@ -2582,7 +2590,9 @@ final class GenerationTests: XCTestCase {
         for book in books {
             let design = try XCTUnwrap(saved.first { $0.bookID == book.id })
             XCTAssertEqual(
-                design.tier, (2...4).contains(book.id) ? .backup : .local, "Book \(book.id)")
+                design.tier,
+                (2...SpineWorker.backupConcurrency).contains(book.id) ? .backup : .local,
+                "Book \(book.id)")
             // The backup designs that finished after the move stand in for no tier.
             let standsIn = await run.ledger.standsIn(
                 recordName: LocalRun.recordName(book.id), for: .local, design: design)
