@@ -214,14 +214,17 @@ actor BookAnalyzer {
 
     /// Reads the best tier available now, with `designer` as the backup model, which designs
     /// before Private Cloud Compute when the reader prefers it
-    /// (`SpineDesigner.overridesPrivateCloudCompute`,
+    /// (`prefersBackup`, by default `SpineDesigner.overridesPrivateCloudCompute`;
     /// `bestStatus(pcc:backup:onDevice:prefersBackup:)`). Creates the Private Cloud Compute
     /// model on first use.
-    func status(for designer: SpineDesigner = .current) -> ModelStatus {
+    func status(
+        for designer: SpineDesigner = .current,
+        prefersBackup: Bool = SpineDesigner.overridesPrivateCloudCompute
+    ) -> ModelStatus {
         Self.bestStatus(
             pcc: status(of: .privateCloudCompute, designer: designer),
             backup: Self.backupStatus(designer), onDevice: Self.onDeviceStatus(),
-            prefersBackup: SpineDesigner.overridesPrivateCloudCompute)
+            prefersBackup: prefersBackup)
     }
 
     /// Reads `tier`'s availability now, without falling to another tier, so a run can watch its

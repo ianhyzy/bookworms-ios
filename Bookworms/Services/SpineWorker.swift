@@ -312,6 +312,13 @@ actor SpineWorker {
     private var looks: [SeriesLookKey: SeriesLookV1?] = [:]
     /// The book that the reader asked to design anew in this run, until the run tries it.
     private var redesign: (bookID: Int, remakesLook: Bool)?
+    /// When the reader asked to design the whole library anew (**Redesign all spines**), while
+    /// this run continues that request: designs made before it give way to the chosen model
+    /// (`redesignsAll(_:look:bookID:before:)`). `nil` between runs.
+    private var redesignsAllBefore: Date?
+    /// The books in flight that the library redesign designs anew, and whether each one's look
+    /// group's look follows, until the run tries them.
+    private var libraryRedesigns: [Int: Bool] = [:]
     /// The model this run designs with: the best tier when the run first loaded the library, or
     /// the best one without the backup model after the backup's lasting rejection, including the
     /// same refusal of several books in a row (`newDesign`). `nil` between runs.
@@ -460,13 +467,31 @@ actor SpineWorker {
     /// the next book reads it. A stop from any book, such as a rate limit, stops the run once:
     /// it cancels the other books in flight and saves nothing from them, and they stay queued
     /// for the next run.
-    func reconcile(mode: RunMode, redesigning: (bookID: Int, remakesLook: Bool)? = nil) async {
+    ///
+    /// With `redesigningAllBefore`, the date of the reader's **Redesign all spines**, the run
+    /// prefers the chosen model to Private Cloud Compute (`prefersBackup`). When the chosen model
+    /// designs, the run checks every book with a cover and designs anew each design made before
+    /// that date that the reader didn't customize (`redesignsAll(_:look:bookID:before:)`). Those
+    /// books claim their designs as on any run, so two devices redesigning the library don't
+    /// both design a book; a design another device made after the date counts as done. When
+    /// another model designs, the redesign never falls back to it: the run designs as any other
+    /// would and says that the redesign waits (`redesignsLibrary(at:)`).
+    ///
+    /// Returns whether the run checked every book it queued, as a finished or up-to-date run
+    /// does, rather than stopping or pausing, and no library redesign waits for its model.
+    @discardableResult
+    func reconcile(
+        mode: RunMode, redesigning: (bookID: Int, remakesLook: Bool)? = nil,
+        redesigningAllBefore: Date? = nil
+    ) async -> Bool {
         // Overlapping runs are rare, and polling keeps the wait cancellable.
         while isRunning {
-            do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            do { try await Task.sleep(for: .seconds(1)) } catch { return false }
         }
         isRunning = true
         redesign = redesigning
+        redesignsAllBefore = redesigningAllBefore
+        libraryRedesigns = [:]
         runModel = nil
         refusals = RefusalStreak()
         unreachableBooks = 0
@@ -483,7 +508,19 @@ actor SpineWorker {
         }
         // The work kept changing. The books left in `queue` keep the charging task scheduled.
         if changed { snapshot.phase = "Ready to continue" }
+        // The tier the run ended at, after any fallback, decides whether the redesign waits.
+        let redesignWaits =
+            redesignsAllBefore != nil && runModel.map { !Self.isChosenModel($0.tier) } == true
+        if redesignWaits, snapshot.error == nil {
+            snapshot.error = [
+                "Redesign all spines waits until \(SpineDesigner.current.provider.name) can design.",
+                runModel?.backupUnavailableReason,
+            ]
+            .compactMap { $0 }.joined(separator: " ")
+        }
         redesign = nil
+        redesignsAllBefore = nil
+        libraryRedesigns = [:]
         runModel = nil
         // The best tier again, as the next run would pick it, such as below a backup model that
         // this run found rejected.
@@ -491,6 +528,63 @@ actor SpineWorker {
         snapshot = snapshot.ended(at: Date())
         isRunning = false
         publish()
+        return !redesignWaits
+            && [WorkerSnapshot.finishedPhase, WorkerSnapshot.upToDatePhase]
+                .contains(snapshot.phase)
+    }
+
+    /// Whether `tier` is the chosen model's: the chosen provider's, or with Apple chosen, an
+    /// Apple model.
+    private static func isChosenModel(_ tier: ModelTier) -> Bool {
+        SpineDesigner.current.provider == .apple ? tier > .local : tier == .backup
+    }
+
+    /// Whether the library redesign designs books anew at `tier`: only with the chosen model
+    /// (`isChosenModel(_:)`). At another tier, as when the provider's key or consent is missing
+    /// on this device or the provider rejected these settings, the run designs as any other
+    /// would, and the redesign waits for a later run.
+    private func redesignsLibrary(at tier: ModelTier) -> Bool {
+        redesignsAllBefore != nil && Self.isChosenModel(tier)
+    }
+
+    /// Whether the chosen backup model designs before Private Cloud Compute and its redesigns
+    /// rank with Private Cloud Compute's (`ModelTier.redesignRank(prefersBackup:)`): while the
+    /// reader prefers it (`SpineDesigner.overridesPrivateCloudCompute`), and in a library
+    /// redesign, which always uses the chosen model.
+    private var prefersBackup: Bool {
+        SpineDesigner.overridesPrivateCloudCompute || redesignsAllBefore != nil
+    }
+
+    /// Whether this run designs the book `id` anew at the reader's request, as **Redesign
+    /// spine** or the library redesign asked, and if so, whether its group's look follows.
+    private func redesignRemakesLook(_ id: Int) -> Bool? {
+        redesign?.bookID == id ? redesign?.remakesLook : libraryRedesigns[id]
+    }
+
+    /// Ends the reader's request to design the book `id` anew, once the run tried it or kept a
+    /// better tier's design.
+    private func dropRedesign(of id: Int) {
+        if redesign?.bookID == id { redesign = nil }
+        libraryRedesigns[id] = nil
+    }
+
+    /// Whether a library redesign asked at `date` designs the book `bookID` anew over its `saved`
+    /// design, and if so, whether its group's `look` follows (`SeriesLookV1.remade(from:at:)`);
+    /// `nil` leaves the book to the tier rule. It designs anew a design made before `date`
+    /// without the reader's edits that is no series copy. In a look group, only the look's
+    /// source book is designed anew, while the look predates `date` and keeps the generator's
+    /// colors and font; the group's other books then copy the remade look.
+    static func redesignsAll(
+        _ saved: SpineDesignV1, look: SeriesLookV1?, bookID: Int, before date: Date
+    ) -> Bool? {
+        guard saved.generatedAt < date, !saved.hasReaderEdits, !saved.isSeriesReuse else {
+            return nil
+        }
+        guard let look else { return false }
+        guard look.sourceBookID == bookID, look.editedAt == nil,
+            !look.design(bookID: bookID).hasReaderEdits, (look.remadeAt ?? look.createdAt) < date
+        else { return nil }
+        return true
     }
 
     /// Returns `true` when the Apple TV or the reader's cover choice changed the work during the
@@ -526,7 +620,9 @@ actor SpineWorker {
             let work = await Self.work(
                 books, accountID: accountID, ledger: ledger, tier: model.tier,
                 upgradeTier: upgradeTier)
-            var queue = SeriesDesigns.sourceFirst(work.queue)
+            // A library redesign checks every book; `design` decides which it designs anew.
+            var queue = SeriesDesigns.sourceFirst(
+                redesignsLibrary(at: model.tier) ? books : work.queue)
             if let redesign, let book = books.first(where: { $0.id == redesign.bookID }) {
                 queue.removeAll { $0.id == book.id }
                 queue.insert(book, at: 0)
@@ -625,8 +721,8 @@ actor SpineWorker {
                     let workHash = CloudContract.workItemHash(accountID: accountID, book: book)
                     let recordName = Self.recordName(accountID, book)
                     // `design` drops a redesign that would replace a better tier's design.
-                    let redesigned = redesign?.bookID == book.id ? redesign : nil
-                    let remakesLook = redesigned?.remakesLook == true
+                    let redesigned = redesignRemakesLook(book.id)
+                    let remakesLook = redesigned == true
                     do {
                         let outcome = try finished.outcome.get()
                         // The design iCloud holds for the book after this check.
@@ -747,7 +843,7 @@ actor SpineWorker {
                                 "Some books could not be designed. Bookworms tries them again tomorrow."
                         }
                     }
-                    if redesigned != nil { redesign = nil }
+                    dropRedesign(of: book.id)
                     snapshot.queue -= 1
                     if stopForModel(await readModel(), mode: mode) {
                         group.cancelAll()
@@ -877,6 +973,17 @@ actor SpineWorker {
         // A ledger miss is not proof: another device may have saved this work already. A
         // redesign reads it too, to keep a better tier's design.
         let saved = try await store.savedDesign(accountID: context.accountID, bookID: book.id)
+        var redesign = redesign
+        // A book requeued after a tier change is decided again at the new tier.
+        libraryRedesigns[book.id] = nil
+        if redesign == nil, let date = redesignsAllBefore, redesignsLibrary(at: runTier),
+            let saved,
+            let remakesLook = Self.redesignsAll(
+                saved, look: savedLook, bookID: book.id, before: date)
+        {
+            redesign = (book.id, remakesLook)
+            libraryRedesigns[book.id] = remakesLook
+        }
         var forced = redesign != nil
         let recordName = Self.recordName(context.accountID, book)
         let readerChoseCover = await ledger.readerChoseCover(
@@ -1004,10 +1111,10 @@ actor SpineWorker {
             let better = Self.betterDesign(
                 than: runTier, saved: saved, remadeLook: remadeLook,
                 newCover: newCover || redoesStandIn,
-                prefersBackup: SpineDesigner.overridesPrivateCloudCompute)
+                prefersBackup: prefersBackup)
         {
             forced = false
-            self.redesign = nil
+            dropRedesign(of: book.id)
             snapshot.error = Self.keptMessage(for: better, runTier: runTier)
         }
         // A saved design from another cover than the reader's choice gives way at any tier, and
@@ -1068,7 +1175,8 @@ actor SpineWorker {
         // chose always make theirs, and local defaults send none. A sync's sharper default cover
         // claims like any other design, because every device finds it at once.
         let readerCover = newCover && (readerChoseCover || fromChosenCover)
-        if !forced, !readerCover, runTier > .local,
+        // A library redesign claims its books too, so two devices don't both redesign one.
+        if !forced || libraryRedesigns[book.id] != nil, !readerCover, runTier > .local,
             !(await store.claimDesign(accountID: context.accountID, bookID: book.id))
         {
             throw ClaimedElsewhere()
@@ -1094,9 +1202,9 @@ actor SpineWorker {
             Self.betterDesign(
                 than: made.tier, saved: saved, remadeLook: remadeLook,
                 newCover: newCover || redoesStandIn,
-                prefersBackup: SpineDesigner.overridesPrivateCloudCompute) != nil
+                prefersBackup: prefersBackup) != nil
         {
-            self.redesign = nil
+            dropRedesign(of: book.id)
             if let saved, saved.outlasts(made, replacing: replacing) {
                 return .keep(await kept(saved))
             }
@@ -1567,7 +1675,7 @@ actor SpineWorker {
     /// The best tier's status (`BookAnalyzer.status(for:)`), or the pinned status.
     private func bestStatus() async -> ModelStatus {
         if let pinnedStatus { return pinnedStatus }
-        return await analyzer.status()
+        return await analyzer.status(prefersBackup: prefersBackup)
     }
 
     /// How many books the pass designs at once: `backupConcurrency` at the backup tier until its

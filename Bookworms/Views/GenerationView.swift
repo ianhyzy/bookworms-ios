@@ -4,10 +4,10 @@ import SwiftUI
     import UIKit
 #endif
 
-/// The **Spines** tab, on paper: a bindery shelf of the latest designed spines over a gauge of
-/// the library's designs (`BinderyHeader`), generator progress, the models that made the saved
-/// designs (`SavedDesigns`), the model this device designs with and its quota, and the charging
-/// preference. The toolbar opens the Hardcover account sheet, which shows where the library comes
+/// The **Spines** tab, on paper: a bindery shelf of the latest designed spines
+/// (`BinderyHeader`), generator progress with a gauge of the library's designs, the models that
+/// made the saved designs (`SavedDesigns`), the model this device designs with and its quota,
+/// and the charging preference. The toolbar opens the Hardcover account sheet, which shows where the library comes
 /// from and when it last synced; on the iPhone, a gear opens it as **Settings**, with the app's
 /// settings after the account. A spine on the shelf opens its book's details.
 struct GenerationView: View {
@@ -15,7 +15,7 @@ struct GenerationView: View {
     @Environment(GenerationController.self) private var generation
     @Environment(\.scenePhase) private var scenePhase
     @State private var showsAccount = false
-    @State private var showsModelInfo = false
+    @State private var confirmsRedesignAll = false
     @State private var path = NavigationPath()
     #if os(macOS)
         @Environment(\.openSettings) private var openSettings
@@ -44,13 +44,19 @@ struct GenerationView: View {
                     }
                     designModel
                     Section {
-                        Toggle(Self.chargingLabel, isOn: $generation.generatesWhileCharging)
+                        Toggle(isOn: $generation.generatesWhileCharging) {
+                            HStack(spacing: 6) {
+                                Text(Self.chargingLabel)
+                                InfoButton("About \(Self.chargingLabel.lowercased())") {
+                                    Text(Self.chargingFooter)
+                                }
+                            }
+                        }
                     } footer: {
+                        // A warning stays in view: it says why the toggle does nothing.
                         if generation.generatesWhileCharging, let warning = backgroundRefreshWarning
                         {
                             Text(warning)
-                        } else {
-                            Text(Self.chargingFooter)
                         }
                     }
                 }
@@ -168,14 +174,24 @@ struct GenerationView: View {
         #endif
     }
 
+    /// The **Generation** section: the run's progress or the last run's outcome and time, the
+    /// gauge of the library's designs, the run's message, and the buttons that start and stop
+    /// runs. The details that don't need the reader's attention wait behind an info button
+    /// (`GenerationInfo`).
     private var progress: some View {
         let status = generation.status
         return Section {
-            runProgress(status)
-            if let lastRun = status.lastRunAt {
-                // An absolute time stays true while the tab stays open.
-                LabeledContent("Last run", value: LibrarySync.time(of: lastRun))
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                runProgress(status).frame(maxWidth: .infinity, alignment: .leading)
+                if !status.isRunning, let lastRun = status.lastRunAt {
+                    // An absolute time stays true while the tab stays open.
+                    Text(LibrarySync.time(of: lastRun))
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Last run \(LibrarySync.time(of: lastRun))")
+                }
+                GenerationInfo()
             }
+            if model.library != nil { DesignGauge() }
             if let error = status.error {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.secondary)
@@ -186,11 +202,44 @@ struct GenerationView: View {
                 Button("Generate now") { generation.generateNow() }
                     .disabled(status.isRunning)
             }
+            // Only a library with designs has spines to design anew.
+            if model.library?.designs.isEmpty == false {
+                Button("Redesign all spines…") { confirmsRedesignAll = true }
+                    .disabled(status.isRunning)
+                    .confirmationDialog(
+                        "Redesign all spines with \(Self.redesignModelName)?",
+                        isPresented: $confirmsRedesignAll, titleVisibility: .visible
+                    ) {
+                        Button("Redesign All Spines") { generation.redesignAll() }
+                    } message: {
+                        Text(Self.redesignAllMessage)
+                    }
+            }
         } header: {
             Text("Generation").bookHeading()
-        } footer: {
-            GenerationFooter()
         }
+    }
+
+    /// The model that **Redesign all spines** designs with: the chosen model, as if the reader
+    /// preferred it to Private Cloud Compute (`SpineWorker.reconcile(mode:redesigning:
+    /// redesigningAllBefore:)`). Apple's choice is Private Cloud Compute, or the on-device model
+    /// in builds without it (`NO_PCC`).
+    private static var redesignModelName: String {
+        let designer = SpineDesigner.current
+        #if NO_PCC
+            let apple = ModelTier.onDevice
+        #else
+            let apple = ModelTier.privateCloudCompute
+        #endif
+        return (designer.provider == .apple ? apple : .backup).name(backup: designer)
+    }
+
+    /// The confirmation's message: what stays, and what the redesign costs. A provider bills each
+    /// request; the model info button says the same of each new spine.
+    private static var redesignAllMessage: String {
+        let kept = "Spines you customized stay as they are."
+        return SpineDesigner.current.provider == .apple
+            ? kept : "\(kept) Each spine costs about one request."
     }
 
     /// The run's progress (`WorkerSnapshot.headline`): while it runs, a bar of its books, the
@@ -268,16 +317,7 @@ struct GenerationView: View {
             LabeledContent("Model") {
                 HStack(spacing: 6) {
                     Text(Self.modelName(status))
-                    Button("About the model", systemImage: "info.circle") {
-                        showsModelInfo = true
-                    }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .help("Show details about this model")
-                    .popover(isPresented: $showsModelInfo) {
-                        modelInfo(status: status, tier: tier)
-                            .presentationCompactAdaptation(.popover)
-                    }
+                    InfoButton("About the model") { modelInfo(status: status, tier: tier) }
                 }
             }
             if let status, !status.isAvailable, let reason = status.unavailableReason {
@@ -364,13 +404,13 @@ struct GenerationView: View {
         return provider == .apple ? apple : provider.name
     }
 
-    /// The Generation section's note about books without a cover, which draw the default cover
+    /// The Generation info's note about books without a cover, which draw the default cover
     /// and spine; `nil` when every book has one.
     static func coverlessNote(_ count: Int) -> String? {
         switch count {
         case ..<1: nil
-        case 1: "1 book had no cover, so its cover and spine use a default style."
-        default: "\(count) books had no cover, so their covers and spines use a default style."
+        case 1: "1 book has no cover, so it gets a default style."
+        default: "\(count) books have no cover, so they get a default style."
         }
     }
 
@@ -389,16 +429,10 @@ struct GenerationView: View {
             }
         let reason = Self.infoReason(
             status: status, tier: tier, overrides: SpineDesigner.overridesPrivateCloudCompute)
-        return ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(note)
-                if let reason { Text(reason) }
-            }
-            .padding()
-            .frame(idealWidth: 340, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
+        return Group {
+            Text(note)
+            if let reason { Text(reason) }
         }
-        .frame(maxHeight: 420)
     }
 
     /// The info button's one reason why a better model can't design: under default styling,
@@ -468,13 +502,18 @@ private struct SavedDesigns: View {
 
     var body: some View {
         Section {
-            ForEach(sources, id: \.name) { source in
-                LabeledContent(source.name) { Text(source.count, format: .number) }
+            // A wide window, such as the Mac's, sets the counts in columns, so each count stays
+            // near its model's name; a phone's width keeps one column.
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 240), spacing: 32, alignment: .leading)],
+                alignment: .leading, spacing: 12
+            ) {
+                ForEach(sources, id: \.name) { source in
+                    LabeledContent(source.name) { Text(source.count, format: .number) }
+                }
             }
         } header: {
             Text("Saved designs").bookHeading()
-        } footer: {
-            Text("Designs from your other devices count here too.")
         }
         .onChange(of: model.designRevision, initial: true) {
             sources = GenerationView.designSources(model.books.compactMap(model.design(for:)))
@@ -482,31 +521,66 @@ private struct SavedDesigns: View {
     }
 }
 
-/// The Generation section's footer: the books without a cover, the background run in progress,
-/// and where a run's books come from. It counts the books without a cover when the library or
-/// its designs change (`AppModel.designRevision`), so only the footer, not the whole tab,
-/// redraws for each saved design.
-private struct GenerationFooter: View {
+/// A small info button that shows `content`, details the tab keeps off the screen, in a
+/// popover.
+private struct InfoButton<Content: View>: View {
+    let label: String
+    @ViewBuilder let content: () -> Content
+    @State private var isPresented = false
+
+    init(_ label: String, @ViewBuilder content: @escaping () -> Content) {
+        self.label = label
+        self.content = content
+    }
+
+    var body: some View {
+        Button(label, systemImage: "info.circle") { isPresented = true }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .help(label)
+            .popover(isPresented: $isPresented) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) { content() }
+                        .padding()
+                        .frame(idealWidth: 340, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxHeight: 420)
+                .presentationCompactAdaptation(.popover)
+            }
+    }
+}
+
+/// The Generation section's info button: the books without a cover, the background run in
+/// progress, and where a run's books come from, or nothing when none applies. It counts the
+/// books without a cover when the library or its designs change (`AppModel.designRevision`), so
+/// only the button, not the whole tab, redraws for each saved design.
+private struct GenerationInfo: View {
     @Environment(AppModel.self) private var model
     @Environment(GenerationController.self) private var generation
     /// How many books have no cover and draw no design (`AppModel.defaultStyledBookCount()`).
     @State private var coverless = 0
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if let note = GenerationView.coverlessNote(coverless) { Text(note) }
+        let notes = [
+            GenerationView.coverlessNote(coverless),
             // Names the run that dims **Generate now** on the iPhone, and that **Stop** ends on
             // the Mac.
-            if generation.status.isRunning, !generation.isGenerating {
-                Text("A background run is in progress.")
-            }
-            // The worklist choice explains why a run may design books the shelf's gauge
-            // doesn't count. A worklist decides only for a newer copy of this account's library
+            generation.status.isRunning && !generation.isGenerating
+                ? "A background run is in progress." : nil,
+            // Why a run may design books the gauge doesn't count. A worklist decides only for a
+            // newer copy of this account's library
             // (`WorkSource.init(worklist:signedInAccountID:phone:)`).
-            if model.account.isSignedIn, !model.isPreview {
-                Text(
-                    "When your Apple TV has a newer copy of your library, Bookworms designs from it."
-                )
+            model.account.isSignedIn && !model.isPreview
+                ? "When your Apple TV has a newer copy of your library, Bookworms designs from it."
+                : nil,
+        ]
+        .compactMap { $0 }
+        Group {
+            if !notes.isEmpty {
+                InfoButton("About generation") {
+                    ForEach(notes, id: \.self) { Text($0) }
+                }
             }
         }
         .onChange(of: model.designRevision, initial: true) {
@@ -516,14 +590,14 @@ private struct GenerationFooter: View {
 }
 
 /// The top of the Spines tab: a bindery shelf of the latest designed spines, newest at the
-/// right, and under it a gauge of the library in its designed books' colors. While a run
-/// designs, the book in progress stands at the shelf's end in blank cloth, with its cover in a
-/// row below; when its design saves, its lettering appears like a foil stamp. Without a library,
-/// the shelf stands empty with **Connect Hardcover**. A spine opens its book's details.
+/// right, standing on a bare board that runs past the window's edges, with no card around it.
+/// While a run designs, the book in progress stands at the shelf's end in blank cloth, with its
+/// cover in a row below; when its design saves, its lettering appears like a foil stamp. Without
+/// a library, the shelf stands empty with **Connect Hardcover**. A spine opens its book's
+/// details.
 ///
-/// The shelf's books and the gauge's colors are prepared when the books' designs change
-/// (`AppModel.designRevision`), not in the body. The header is equal for the same book in
-/// progress, and SwiftUI compares an equatable view that isn't plain data by its `==`, so a run's
+/// The shelf's books are prepared when the books' designs change (`AppModel.designRevision`),
+/// not in the body. The header is equal for the same book in progress, and SwiftUI compares an equatable view that isn't plain data by its `==`, so a run's
 /// other progress updates skip it. `.equatable()` would also hide the section's rows from the
 /// form, which then draws them as one.
 private struct BinderyHeader: View, Equatable {
@@ -533,16 +607,10 @@ private struct BinderyHeader: View, Equatable {
     @Binding var showsAccount: Bool
 
     @Environment(AppModel.self) private var model
-    @State private var prepared = Prepared()
 
-    /// What the header draws, prepared from every design in the library.
-    private struct Prepared {
-        /// The latest designed books, oldest first: one more than the shelf shows, so it stays
-        /// full without the book in progress, which stands at its end.
-        var designed: [CloudBook] = []
-        /// The designed books' spine colors, in the library's order, for the gauge.
-        var colors: [ColorValue] = []
-    }
+    /// The latest designed books, oldest first: one more than the shelf shows, so it stays full
+    /// without the book in progress, which stands at its end.
+    @State private var designed: [CloudBook] = []
 
     /// How many designed books the shelf shows: fewer on the iPhone, so the books stand large
     /// enough that thin spines letter their authors legibly.
@@ -560,34 +628,40 @@ private struct BinderyHeader: View, Equatable {
         Section {
             if model.library != nil {
                 let books = shelfBooks
-                let length = books.reduce(0) { $0 + $1.size.width + 1 }
-                let shelf = ShortShelf(height: Bookcase.height(scale: Self.scale), length: length) {
-                    HStack(alignment: .bottom, spacing: 1) {
-                        ForEach(books, id: \.book.id) { item in
-                            // A navigation link in a form row would add a disclosure chevron.
-                            Button {
-                                path.append(item.book.id)
-                            } label: {
-                                BinderySpine(book: item.book, look: item.look, size: item.size)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(
-                                item.look == nil
-                                    ? "\(item.book.title), being designed"
-                                    : "\(item.book.title), by \(item.book.author)"
-                            )
-                            .accessibilityHint("Opens the book's details.")
+                let shelf = HStack(alignment: .bottom, spacing: 1) {
+                    ForEach(books, id: \.book.id) { item in
+                        // A navigation link in a form row would add a disclosure chevron.
+                        Button {
+                            path.append(item.book.id)
+                        } label: {
+                            BinderySpine(book: item.book, look: item.look, size: item.size)
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(
+                            item.look == nil
+                                ? "\(item.book.title), being designed"
+                                : "\(item.book.title), by \(item.book.author)"
+                        )
+                        .accessibilityHint("Opens the book's details.")
                     }
                 }
-                ViewThatFits(in: .horizontal) {
-                    shelf
-                    ScrollView(.horizontal) { shelf }.defaultScrollAnchor(.trailing)
+                .padding(.horizontal, 16)
+                // The books stand partway back on the board's top, over it.
+                VStack(spacing: -Bookcase.surface * 0.55) {
+                    ViewThatFits(in: .horizontal) {
+                        shelf
+                        ScrollView(.horizontal) { shelf }
+                            .defaultScrollAnchor(.trailing)
+                            .scrollIndicators(.hidden)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .zIndex(1)
+                    FloatingShelfBoard()
                 }
-                .frame(maxWidth: .infinity)
+                .padding(.top, 12)
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("Latest designs")
-                DesignGauge(colors: prepared.colors, total: model.books.count)
+                .listRowInsets(EdgeInsets())
                 if let current { CurrentBookRow(book: current) }
             } else {
                 VStack(spacing: 16) {
@@ -604,6 +678,11 @@ private struct BinderyHeader: View, Equatable {
         }
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
+        #if os(iOS)
+            // No side margins, so the board runs to the screen's edges; a row's cell clips its
+            // content, so the board can't draw past the margins.
+            .listSectionMargins(.horizontal, 0)
+        #endif
         .onChange(of: model.designRevision, initial: true) { prepare() }
     }
 
@@ -611,7 +690,7 @@ private struct BinderyHeader: View, Equatable {
     /// leaves the designed books here, in the body, so the pass where a run moves to it never
     /// lists it twice.
     private var shelfBooks: [(book: CloudBook, look: SpineLook?, size: CGSize)] {
-        var books = prepared.designed.filter { $0.id != current?.id }.suffix(Self.shown)
+        var books = designed.filter { $0.id != current?.id }.suffix(Self.shown)
             .map { (book: $0, look: Optional(model.look(for: $0))) }
         if let current {
             books.append((book: model.book(id: current.id) ?? current, look: nil))
@@ -620,19 +699,10 @@ private struct BinderyHeader: View, Equatable {
     }
 
     private func prepare() {
-        guard let library = model.library else {
-            prepared = Prepared()
-            return
-        }
-        let latest = library.designs.values
+        let latest = (model.library.map { Array($0.designs.values) } ?? [])
             .sorted { $0.generatedAt > $1.generatedAt }
             .prefix(Self.shown + 1)
-        prepared = Prepared(
-            designed: latest.reversed()
-                .compactMap { model.book(id: $0.bookID) },
-            colors: model.books.compactMap {
-                model.design(for: $0).flatMap { ColorValue(hex: $0.backgroundHex) }
-            })
+        designed = latest.reversed().compactMap { model.book(id: $0.bookID) }
     }
 }
 
@@ -715,17 +785,18 @@ private struct CurrentBookRow: View {
 }
 
 /// How much of the library has a design: the count, and a gauge of one sliver per book, the
-/// designed books' in their spines' colors from the left. The canvas draws again only when the
-/// colors change.
+/// designed books' in their spines' colors from the left, as a row of the Generation section.
+/// It gathers the colors when the books' designs change (`AppModel.designRevision`), and the
+/// canvas draws again only when they change.
 private struct DesignGauge: View {
-    /// The designed books' spine colors.
-    let colors: [ColorValue]
-    /// The library's book count.
-    let total: Int
+    @Environment(AppModel.self) private var model
+    /// The designed books' spine colors, in the library's order.
+    @State private var colors: [ColorValue] = []
 
     var body: some View {
+        let total = model.books.count
         VStack(alignment: .leading, spacing: 8) {
-            Text("\(colors.count) of \(total) books designed").font(.headline)
+            Text("\(colors.count) of \(total) books designed")
             GaugeSlivers(colors: colors, total: total)
                 .frame(height: 12)
         }
@@ -733,6 +804,11 @@ private struct DesignGauge: View {
         .accessibilityRepresentation {
             ProgressView(
                 "Books designed", value: Double(colors.count), total: Double(max(total, 1)))
+        }
+        .onChange(of: model.designRevision, initial: true) {
+            colors = model.books.compactMap {
+                model.design(for: $0).flatMap { ColorValue(hex: $0.backgroundHex) }
+            }
         }
     }
 }

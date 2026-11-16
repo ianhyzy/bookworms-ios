@@ -1745,6 +1745,29 @@ private struct ShelfBoard: View {
     }
 }
 
+/// A bare shelf board with no case around it, for the Spines tab's bindery shelf: its top, its
+/// front edge, and its shadow on the wall. It fills its frame's width and draws on past both
+/// edges, so it runs past the form's margins to the window's edges.
+struct FloatingShelfBoard: View {
+    /// How many wood tiles the board draws: wider than any window.
+    private static let tiles = 16
+    private static let tile: CGFloat = 240
+
+    static let height = Bookcase.surface + Bookcase.lip + Bookcase.drop
+
+    var body: some View {
+        // Wider than its frame, which centers it, so it overflows both edges equally.
+        HStack(spacing: 0) {
+            ForEach(0..<Self.tiles, id: \.self) { _ in
+                ShelfBoard(tile: Self.tile).frame(width: Self.tile)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: Self.height)
+        .accessibilityHidden(true)
+    }
+}
+
 /// The board under **Stack**, so the stacks rest on it rather than over the empty wall.
 /// Side-by-side stacks share one board, since they rest on one line. It reaches a little past
 /// the longest book any stack could hold. Place its front edge on the bottom books' bottom edge.
