@@ -407,11 +407,7 @@ struct RootView: View {
 
             override func viewDidMoveToWindow() {
                 super.viewDidMoveToWindow()
-                collapse = sidebar?
-                    .observe(\.isCollapsed) { [weak self] _, _ in
-                        // KVO may report mid-animation, off the current update.
-                        DispatchQueue.main.async { self?.update() }
-                    }
+                collapse = nil
                 update()
             }
 
@@ -431,6 +427,15 @@ struct RootView: View {
             }
 
             private func update() {
+                // The split view may join the window after this view, so each update watches
+                // the sidebar until it finds it.
+                if collapse == nil {
+                    collapse = sidebar?
+                        .observe(\.isCollapsed) { [weak self] _, _ in
+                            // KVO may report mid-animation, off the current update.
+                            DispatchQueue.main.async { self?.update() }
+                        }
+                }
                 let button = window?.toolbar?.items.first { $0.itemIdentifier == .toggleSidebar }
                 button?.badge = marked && sidebar?.isCollapsed == true ? .text("!") : nil
             }

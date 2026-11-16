@@ -6,8 +6,8 @@ import SwiftUI
 
 /// The **Spines** tab, on paper: a bindery shelf of the latest designed spines
 /// (`BinderyHeader`), generator progress with a gauge of the library's designs, the models that
-/// made the saved designs (`SavedDesigns`), the model this device designs with and its quota, and the charging
-/// preference. The toolbar opens the Hardcover account sheet, which shows where the library comes
+/// made the saved designs (`SavedDesigns`), the model this device designs with and its quota,
+/// and the charging preference. The toolbar opens the Hardcover account sheet, which shows where the library comes
 /// from and when it last synced; on the iPhone, a gear opens it as **Settings**, with the app's
 /// settings after the account. A spine on the shelf opens its book's details.
 struct GenerationView: View {
@@ -591,13 +591,13 @@ private struct GenerationInfo: View {
 
 /// The top of the Spines tab: a bindery shelf of the latest designed spines, newest at the
 /// right, standing on a bare board that runs past the window's edges, with no card around it.
-/// While a run designs, the book in progress stands at the shelf's end in blank cloth, with its cover in a
-/// row below; when its design saves, its lettering appears like a foil stamp. Without a library,
-/// the shelf stands empty with **Connect Hardcover**. A spine opens its book's details.
+/// While a run designs, the book in progress stands at the shelf's end in blank cloth, with its
+/// cover in a row below; when its design saves, its lettering appears like a foil stamp. Without
+/// a library, the shelf stands empty with **Connect Hardcover**. A spine opens its book's
+/// details.
 ///
 /// The shelf's books are prepared when the books' designs change (`AppModel.designRevision`),
-/// not in the body. The header is equal for the same book in
-/// progress, and SwiftUI compares an equatable view that isn't plain data by its `==`, so a run's
+/// not in the body. The header is equal for the same book in progress, and SwiftUI compares an equatable view that isn't plain data by its `==`, so a run's
 /// other progress updates skip it. `.equatable()` would also hide the section's rows from the
 /// form, which then draws them as one.
 private struct BinderyHeader: View, Equatable {

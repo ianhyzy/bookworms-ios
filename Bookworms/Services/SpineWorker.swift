@@ -319,10 +319,6 @@ actor SpineWorker {
     /// The books in flight that the library redesign designs anew, and whether each one's look
     /// group's look follows, until the run tries them.
     private var libraryRedesigns: [Int: Bool] = [:]
-    /// Whether this run met a book that the library redesign would design anew while the run's
-    /// tier wasn't the chosen model's (`redesignsLibrary(at:)`), so the redesign waits for a
-    /// later run.
-    private var libraryRedesignWaits = false
     /// The model this run designs with: the best tier when the run first loaded the library, or
     /// the best one without the backup model after the backup's lasting rejection, including the
     /// same refusal of several books in a row (`newDesign`). `nil` between runs.
@@ -474,12 +470,12 @@ actor SpineWorker {
     ///
     /// With `redesigningAllBefore`, the date of the reader's **Redesign all spines**, the run
     /// prefers the chosen model to Private Cloud Compute (`prefersBackup`). When the chosen model
-    /// designs, the run checks every book with a cover and designs anew each design made before that
-    /// date that the reader didn't customize (`redesignsAll(_:look:bookID:before:)`). Those books
-    /// claim their designs as on any run, so two devices redesigning the library don't both
-    /// design a book; a design another device made after the date counts as done. When another
-    /// model designs, the redesign never falls back to it: the run designs as any other would
-    /// and says that the redesign waits (`redesignsLibrary(at:)`).
+    /// designs, the run checks every book with a cover and designs anew each design made before
+    /// that date that the reader didn't customize (`redesignsAll(_:look:bookID:before:)`). Those
+    /// books claim their designs as on any run, so two devices redesigning the library don't
+    /// both design a book; a design another device made after the date counts as done. When
+    /// another model designs, the redesign never falls back to it: the run designs as any other
+    /// would and says that the redesign waits (`redesignsLibrary(at:)`).
     ///
     /// Returns whether the run checked every book it queued, as a finished or up-to-date run
     /// does, rather than stopping or pausing, and no library redesign waits for its model.
@@ -496,7 +492,6 @@ actor SpineWorker {
         redesign = redesigning
         redesignsAllBefore = redesigningAllBefore
         libraryRedesigns = [:]
-        libraryRedesignWaits = false
         runModel = nil
         refusals = RefusalStreak()
         unreachableBooks = 0
@@ -513,7 +508,10 @@ actor SpineWorker {
         }
         // The work kept changing. The books left in `queue` keep the charging task scheduled.
         if changed { snapshot.phase = "Ready to continue" }
-        if libraryRedesignWaits, snapshot.error == nil {
+        // The tier the run ended at, after any fallback, decides whether the redesign waits.
+        let redesignWaits =
+            redesignsAllBefore != nil && runModel.map { !Self.isChosenModel($0.tier) } == true
+        if redesignWaits, snapshot.error == nil {
             snapshot.error = [
                 "Redesign all spines waits until \(SpineDesigner.current.provider.name) can design.",
                 runModel?.backupUnavailableReason,
@@ -530,22 +528,23 @@ actor SpineWorker {
         snapshot = snapshot.ended(at: Date())
         isRunning = false
         publish()
-        return !libraryRedesignWaits
+        return !redesignWaits
             && [WorkerSnapshot.finishedPhase, WorkerSnapshot.upToDatePhase]
                 .contains(snapshot.phase)
     }
 
-    /// Whether the library redesign designs books anew at `tier`: only with the chosen model, the
-    /// chosen provider's, or with Apple chosen, an Apple model. At another tier, as when the
-    /// provider's key or consent is missing on this device or the provider rejected these
-    /// settings, the redesign waits for a later run (`libraryRedesignWaits`), and this run
-    /// designs as any other would.
+    /// Whether `tier` is the chosen model's: the chosen provider's, or with Apple chosen, an
+    /// Apple model.
+    private static func isChosenModel(_ tier: ModelTier) -> Bool {
+        SpineDesigner.current.provider == .apple ? tier > .local : tier == .backup
+    }
+
+    /// Whether the library redesign designs books anew at `tier`: only with the chosen model
+    /// (`isChosenModel(_:)`). At another tier, as when the provider's key or consent is missing
+    /// on this device or the provider rejected these settings, the run designs as any other
+    /// would, and the redesign waits for a later run.
     private func redesignsLibrary(at tier: ModelTier) -> Bool {
-        guard redesignsAllBefore != nil else { return false }
-        let chosen =
-            SpineDesigner.current.provider == .apple ? tier > .local : tier == .backup
-        if !chosen { libraryRedesignWaits = true }
-        return chosen
+        redesignsAllBefore != nil && Self.isChosenModel(tier)
     }
 
     /// Whether the chosen backup model designs before Private Cloud Compute and its redesigns
@@ -975,6 +974,8 @@ actor SpineWorker {
         // redesign reads it too, to keep a better tier's design.
         let saved = try await store.savedDesign(accountID: context.accountID, bookID: book.id)
         var redesign = redesign
+        // A book requeued after a tier change is decided again at the new tier.
+        libraryRedesigns[book.id] = nil
         if redesign == nil, let date = redesignsAllBefore, redesignsLibrary(at: runTier),
             let saved,
             let remakesLook = Self.redesignsAll(
