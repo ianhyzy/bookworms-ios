@@ -34,7 +34,6 @@ struct GenerationView: View {
         NavigationStack(path: $path) {
             ScrollViewReader { proxy in
                 Form {
-                    BinderyHeader(path: $path, showsAccount: $showsAccount)
                     progress
                     // A library with no designs yet has nothing to count.
                     if model.library?.designs.isEmpty == false {
@@ -214,7 +213,12 @@ struct GenerationView: View {
                     }
             }
         } header: {
-            Text("Generation").bookHeading()
+            // The shelf heads the section, because the Mac's grouped form draws a card behind
+            // a section's rows, and an empty section of its own changes the next header's style.
+            VStack(alignment: .leading, spacing: 12) {
+                BinderyHeader(path: $path, showsAccount: $showsAccount)
+                Text("Generation").bookHeading()
+            }
         }
     }
 
@@ -593,8 +597,7 @@ private struct GenerationInfo: View {
 /// off the left edge, or under Reduce Motion fades in. Without a library, the bookcase stands
 /// empty with **Connect Hardcover**. A spine opens its book's details.
 ///
-/// The shelf is the header of an empty section, because the Mac's grouped form draws a card
-/// behind a section's rows whatever their background, and it spans the scroll view's width
+/// The shelf stands in the Generation section's header, and it spans the scroll view's width
 /// (`containerRelativeFrame`), not the form's inset width. The latest designs are prepared when
 /// the books' designs change (`AppModel.designRevision`), not in the body, which takes as many of
 /// the newest as fill the width. Nothing a run's progress changes reaches the header, so `==`
@@ -619,19 +622,30 @@ private struct BinderyHeader: View, Equatable {
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool { true }
 
     var body: some View {
-        Section {
-        } header: {
-            Group {
-                if model.library != nil { shelf } else { emptyShelf }
-            }
-            .textCase(nil)
+        Group {
+            if model.library != nil { shelf } else { emptyShelf }
         }
+        .textCase(nil)
         .onChange(of: model.designRevision, initial: true) { old, new in
             prepare(animated: old != new)
         }
     }
 
+    /// The shelf's height: the tallest book, the space above it, and the board below.
+    static let height =
+        CGFloat(BookShape.longest) * scale + 12 + FloatingShelfBoard.height
+        - Bookcase.surface * 0.55
+
+    /// The shelf, laid out at the header's width and drawn across the scroll view's, so its width
+    /// leaves the form's layout of the header, and the next section's, as it is.
     private var shelf: some View {
+        Color.clear
+            .frame(height: Self.height)
+            .frame(maxWidth: .infinity)
+            .overlay(alignment: .bottom) { wideShelf }
+    }
+
+    private var wideShelf: some View {
         VStack(spacing: -Bookcase.surface * 0.55) {
             // Trailing, so the newest book stands at the right edge and the shelf overflows
             // to the left, where the scroll view cuts it off.
@@ -661,7 +675,6 @@ private struct BinderyHeader: View, Equatable {
             .zIndex(1)
             FloatingShelfBoard()
         }
-        .padding(.top, 12)
         .containerRelativeFrame(.horizontal)
         .onGeometryChange(for: CGFloat.self) {
             $0.size.width
