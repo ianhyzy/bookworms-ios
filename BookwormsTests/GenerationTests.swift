@@ -2468,6 +2468,25 @@ final class GenerationTests: XCTestCase {
         XCTAssertEqual(stored[9], customized, "A customized spine stays")
     }
 
+    /// A library redesign never falls back to another model: while the chosen model can't
+    /// design, the run keeps the old designs, says that the redesign waits, and leaves the
+    /// request for a later run.
+    func testRedesignAllWaitsForTheChosenModel() async throws {
+        let book = LocalRun.book(7, cover: CoverStub.numbered(7))
+        let pcc = LocalRun.design(for: book, coverHash: String(repeating: "c", count: 64))
+        let run = try LocalRun(books: [book], designs: [pcc])
+        defer { run.remove() }
+        // Default styling stands in for a model other than the chosen one.
+        let worker = run.worker(status: .local)
+        let checkedAll = await worker.reconcile(mode: .foreground, redesigningAllBefore: Date())
+        let status = await LocalRun.updates(of: worker).statuses.last
+        XCTAssertFalse(checkedAll, "The request waits for a later run")
+        XCTAssertEqual(try run.stored()[7], pcc, "The old design stays")
+        XCTAssertTrue(
+            status?.error?.hasPrefix("Redesign all spines waits until") == true,
+            String(describing: status?.error))
+    }
+
     /// In a look group, a library redesign designs anew only the look's source book, which remakes
     /// the look, and only while the reader left the look alone.
     func testRedesignAllRemakesOnlyAnUneditedLookThroughItsSource() throws {
