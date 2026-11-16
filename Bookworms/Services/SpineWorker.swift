@@ -265,10 +265,11 @@ actor SpineWorker {
 
     /// How many books a pass designs at once with the backup model, whose time per book is
     /// mostly the wait for the provider's answer. A rate limit or another stop from any of them
-    /// stops the whole run (`disposition(of:)`). Apple's tiers design one book at a time:
+    /// stops the whole run (`disposition(of:)`), so a key whose limit is lower costs a pause
+    /// until the provider's retry date, not a lost design. Apple's tiers design one book at a time:
     /// Private Cloud Compute counts each request against a daily limit, and the on-device model
     /// and local defaults run on this device.
-    static let backupConcurrency = 4
+    static let backupConcurrency = 8
 
     enum Disposition: Equatable {
         /// Stop the run. The next attempt should start no earlier than the date, when known.
