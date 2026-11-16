@@ -28,12 +28,23 @@ final class GenerationController {
     static let continuedTaskPrefix = "gay.ian.Bookworms.iOS.generate."
     private static let chargingKey = "GeneratesWhileCharging"
     private static let lastRunKey = "LastGenerationRun"
+    private static let redesignAllKey = "RedesignAllBefore"
 
     /// The current run's progress, or the last run's saved outcome, because the charging task
     /// runs unseen.
     private(set) var status: WorkerSnapshot
     /// Whether a user-started run is in progress.
     private(set) var isGenerating = false
+    /// When the reader asked to design every spine anew with the chosen model (`redesignAll()`),
+    /// until a run checks the whole library. Every run until then continues the request
+    /// (`SpineWorker.reconcile(mode:redesigning:redesigningAllBefore:)`), so a run that pauses
+    /// or stops, in the app or in the background, leaves the rest to the next one, even after a
+    /// relaunch.
+    private(set) var redesignsAllBefore =
+        UserDefaults.standard.object(forKey: redesignAllKey) as? Date
+    {
+        didSet { UserDefaults.standard.set(redesignsAllBefore, forKey: Self.redesignAllKey) }
+    }
     /// Whether **Stop** has a run to cancel (`stop()`): a user-started run, or on the Mac the
     /// idle run in progress. iOS runs its charging task unseen, so only a user-started run stops.
     var canStop: Bool {
@@ -150,6 +161,26 @@ final class GenerationController {
             redesigning: (model.designSource(for: book).id, model.lookDesigns[book.id] != nil))
     }
 
+    /// Starts a user-requested run that designs every spine anew with the chosen model, except
+    /// the spines the reader customized, unless a run is in progress. A request that an earlier
+    /// run left unfinished continues with its own date, so the books it already designed stay.
+    func redesignAll() {
+        guard userRun == nil, !AppModel.shared.isExample else { return }
+        if redesignsAllBefore == nil { redesignsAllBefore = .now }
+        generateNow()
+    }
+
+    /// Runs the worker with the library redesign in progress, if any, and ends the redesign once
+    /// a run has checked the whole library.
+    private func reconcile(
+        mode: RunMode, redesigning: (bookID: Int, remakesLook: Bool)? = nil
+    ) async {
+        let before = redesignsAllBefore
+        let checkedAll = await worker.reconcile(
+            mode: mode, redesigning: redesigning, redesigningAllBefore: before)
+        if checkedAll, before != nil, redesignsAllBefore == before { redesignsAllBefore = nil }
+    }
+
     private func startRun(redesigning: (bookID: Int, remakesLook: Bool)?) {
         // The example profile is read-only, and a run would design this device's own library.
         guard userRun == nil, !AppModel.shared.isExample else { return }
@@ -161,7 +192,7 @@ final class GenerationController {
         userRun = Task {
             await requestContinuedProcessing()
             let started = Date.now
-            await worker.reconcile(mode: .foreground, redesigning: redesigning)
+            await reconcile(mode: .foreground, redesigning: redesigning)
             #if !os(macOS)
                 finishContinuedTask()
             #endif
@@ -277,7 +308,7 @@ final class GenerationController {
         guard generatesWhileCharging, userRun == nil, !AppModel.shared.isExample else { return }
         resumeDate = nil
         let started = Date.now
-        await worker.reconcile(mode: .background)
+        await reconcile(mode: .background)
         await scheduleChargingTask(hasNewWork: receivedWork(since: started))
     }
 

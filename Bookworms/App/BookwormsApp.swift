@@ -321,6 +321,7 @@ struct RootView: View {
             .tabViewStyle(.sidebarAdaptable)
             .tabViewSidebarHeader { SidebarAccount(showsAccount: $showsAccount) }
             .tabViewSidebarFooter { SidebarMinimumWidth().accessibilityHidden(true) }
+            .background { SidebarButtonBadge().accessibilityHidden(true) }
         #endif
         .environment(\.fullSizeShareImage, $fullSizeShareImage)
         .overlay {
@@ -381,6 +382,66 @@ struct RootView: View {
 }
 
 #if os(macOS)
+    /// Marks the window's sidebar button with "!" while the sidebar is hidden and its account
+    /// row carries a mark (`AccountControl.mark`), such as after Hardcover rejected the login, so
+    /// the reader knows to open the sidebar. SwiftUI can't badge the tab view's sidebar button,
+    /// so an AppKit probe sets the toolbar item's badge and watches the sidebar's collapsed
+    /// state.
+    private struct SidebarButtonBadge: View {
+        @Environment(AppModel.self) private var model
+
+        var body: some View { Probe(marked: AccountControl(model).mark != nil) }
+
+        private struct Probe: NSViewRepresentable {
+            let marked: Bool
+
+            func makeNSView(context: Context) -> BadgeView { BadgeView() }
+            func updateNSView(_ view: BadgeView, context: Context) { view.marked = marked }
+        }
+
+        final class BadgeView: NSView {
+            var marked = false {
+                didSet { if marked != oldValue { update() } }
+            }
+            private var collapse: NSKeyValueObservation?
+
+            override func viewDidMoveToWindow() {
+                super.viewDidMoveToWindow()
+                collapse = nil
+                update()
+            }
+
+            /// The split view item that holds the tab view's sidebar.
+            private var sidebar: NSSplitViewItem? {
+                var controllers = window?.contentViewController.map { [$0] } ?? []
+                while !controllers.isEmpty {
+                    let controller = controllers.removeFirst()
+                    if let split = controller as? NSSplitViewController,
+                        let item = split.splitViewItems.first(where: { $0.behavior == .sidebar })
+                    {
+                        return item
+                    }
+                    controllers += controller.children
+                }
+                return nil
+            }
+
+            private func update() {
+                // The split view may join the window after this view, so each update watches
+                // the sidebar until it finds it.
+                if collapse == nil {
+                    collapse = sidebar?
+                        .observe(\.isCollapsed) { [weak self] _, _ in
+                            // KVO may report mid-animation, off the current update.
+                            DispatchQueue.main.async { self?.update() }
+                        }
+                }
+                let button = window?.toolbar?.items.first { $0.itemIdentifier == .toggleSidebar }
+                button?.badge = marked && sidebar?.isCollapsed == true ? .text("!") : nil
+            }
+        }
+    }
+
     /// Keeps the Mac's sidebar wide enough for the sidebar button beside the window's buttons.
     ///
     /// SwiftUI lets the tab view's sidebar narrow to 140 points, and no SwiftUI modifier sets its
