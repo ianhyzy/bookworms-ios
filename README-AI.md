@@ -962,6 +962,18 @@ Each open finding wraps the one assertion that shows it in `XCTExpectFailure`, w
 | A pinch, a drag, or **Back to desk** that takes over from **Follow** | `PileCamera(matching:)` leaves out roll. |
 | A book from Library that turns through 45 degrees while the drift sways it | `BookProjection.turn(by:)` switches the face it turns exactly. |
 
+### Crash reports
+
+Run `python3 script/crash-reports.py` with the Bash sandbox off, after `. ~/.appstoreconnect/bookworms.env`. It collects Bookworms crash reports from three places and prints a summary of each one it hasn't printed before: the time, the bundle ID, version and build, the device and OS, the exception, and the crashed thread's top frames.
+
+| Source | What it reads |
+|---|---|
+| `mac` | `~/Library/Logs/DiagnosticReports` and its `Retired` folder on this Mac, which hold a report for every copy of the app. For a crash still in the system log, the summary adds Swift's `Fatal error` line, which the report leaves out. |
+| `iphone` | Each paired iPhone's crash logs, copied with `xcrun devicectl` over the network. An iPhone that can't be reached is skipped with a note. |
+| `testflight` | Crashes that a tester shared from TestFlight's crash prompt, for this app and the Apple TV app, through the App Store Connect API with the release key. Crashes nobody shared reach only Xcode's Organizer, which the API doesn't serve. |
+
+The script never contacts an Apple TV, so it can run during TV quiet hours; Apple TV crashes arrive only through TestFlight. It copies every report to `.local/crash-reports/<source>/` and records the printed ones in `.local/crash-reports/seen.json`. `--all` prints every report again. It exits with 0 when nothing is new, 1 when it printed new reports, and 2 when a source failed.
+
 ## Credits
 
 Spine fonts and Checkout Card's handwriting, Caveat, are open-source Google Fonts families (SIL Open Font License or Apache License), downloaded at runtime with their license files. The design models' readings choose among them with the classification, theme, and mood tags of the [Google Fonts repository](https://github.com/google/fonts/tree/main/tags) (`tags/all/families.csv`), which `script/spine-font-tags.py` copies into `Bookworms/SpineFontTags.json` for the atlas's families. The license of that tag data is unconfirmed; see [google/fonts issue #9347](https://github.com/google/fonts/issues/9347). The app icon is rendered from the Bookworms Apple TV repository's Blender model.
