@@ -1733,7 +1733,11 @@ final class GenerationTests: XCTestCase {
     /// flight, starts no more, and saves or records nothing for them, so every book stays
     /// queued for the next run, which waits for the provider's retry time.
     func testARateLimitStopsTheRunAndCancelsTheOtherBooks() async throws {
-        let books = (1...8).map { LocalRun.book($0, cover: CoverStub.numbered($0)) }
+        // Twice as many books as the run designs at once, so some wait in the queue.
+        let books = (1...(2 * SpineWorker.backupConcurrency))
+            .map {
+                LocalRun.book($0, cover: CoverStub.numbered($0))
+            }
         let retry = Date().addingTimeInterval(120)
         let limited = try XCTUnwrap(
             BookAnalyzer.modelFailure(
@@ -1758,7 +1762,9 @@ final class GenerationTests: XCTestCase {
         let started = Set(await stub.started)
         let cancelled = await stub.cancelled
         XCTAssertTrue(started.contains(3))
-        XCTAssertTrue(started.isSubset(of: [1, 2, 3, 4]), "The run started books after the stop")
+        XCTAssertTrue(
+            started.isSubset(of: Set(1...SpineWorker.backupConcurrency)),
+            "The run started books after the stop")
         XCTAssertEqual(Set(cancelled), started.subtracting([3]))
         XCTAssertEqual(cancelled.count, started.count - 1)
         for book in books {
