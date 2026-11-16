@@ -161,11 +161,14 @@ final class GenerationController {
             redesigning: (model.designSource(for: book).id, model.lookDesigns[book.id] != nil))
     }
 
-    /// Starts a user-requested run that designs every spine anew with the chosen model, except
-    /// the spines the reader customized, unless a run is in progress. A request that an earlier
+    /// Starts a user-requested run that designs every spine anew with the chosen provider's
+    /// cloud model, except the spines the reader customized, unless a run is in progress or
+    /// Apple's models are chosen, which never redesign the library. A request that an earlier
     /// run left unfinished continues with its own date, so the books it already designed stay.
     func redesignAll() {
-        guard userRun == nil, !AppModel.shared.isExample else { return }
+        guard userRun == nil, !AppModel.shared.isExample,
+            SpineDesigner.current.provider != .apple
+        else { return }
         if redesignsAllBefore == nil { redesignsAllBefore = .now }
         generateNow()
     }

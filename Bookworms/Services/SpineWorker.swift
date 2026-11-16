@@ -513,11 +513,7 @@ actor SpineWorker {
         let redesignWaits =
             redesignsAllBefore != nil && runModel.map { !Self.isChosenModel($0.tier) } == true
         if redesignWaits, snapshot.error == nil {
-            snapshot.error = [
-                "Redesign all spines waits until \(SpineDesigner.current.provider.name) can design.",
-                runModel?.backupUnavailableReason,
-            ]
-            .compactMap { $0 }.joined(separator: " ")
+            snapshot.error = "To redesign all spines, add an API key."
         }
         redesign = nil
         redesignsAllBefore = nil
@@ -534,11 +530,10 @@ actor SpineWorker {
                 .contains(snapshot.phase)
     }
 
-    /// Whether `tier` is the chosen model's: the chosen provider's, or with Apple chosen, an
-    /// Apple model.
-    private static func isChosenModel(_ tier: ModelTier) -> Bool {
-        SpineDesigner.current.provider == .apple ? tier > .local : tier == .backup
-    }
+    /// Whether `tier` redesigns the library: only a provider's cloud model with the reader's
+    /// key, the backup tier. Apple's models never do, because the redesign exists to replace
+    /// their designs with a cloud model's.
+    private static func isChosenModel(_ tier: ModelTier) -> Bool { tier == .backup }
 
     /// Whether the library redesign designs books anew at `tier`: only with the chosen model
     /// (`isChosenModel(_:)`). At another tier, as when the provider's key or consent is missing

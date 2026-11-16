@@ -16,6 +16,9 @@ struct GenerationView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var showsAccount = false
     @State private var confirmsRedesignAll = false
+    /// Whether **Redesign all spines** asks the reader to choose a cloud model first, because
+    /// Apple's models are chosen.
+    @State private var asksForCloudModel = false
     @State private var path = NavigationPath()
     #if os(macOS)
         @Environment(\.openSettings) private var openSettings
@@ -201,16 +204,31 @@ struct GenerationView: View {
             }
             // Only a library with designs has spines to design anew.
             if model.library?.designs.isEmpty == false {
-                Button("Redesign all spines…") { confirmsRedesignAll = true }
-                    .disabled(status.isRunning)
-                    .confirmationDialog(
-                        "Redesign all spines with \(Self.redesignModelName)?",
-                        isPresented: $confirmsRedesignAll, titleVisibility: .visible
-                    ) {
-                        Button("Redesign All Spines") { generation.redesignAll() }
-                    } message: {
-                        Text(Self.redesignAllMessage)
+                Button("Redesign all spines…") {
+                    if SpineDesigner.current.provider == .apple {
+                        asksForCloudModel = true
+                    } else {
+                        confirmsRedesignAll = true
                     }
+                }
+                .disabled(status.isRunning)
+                .confirmationDialog(
+                    "Redesign all spines with \(Self.redesignModelName)?",
+                    isPresented: $confirmsRedesignAll, titleVisibility: .visible
+                ) {
+                    Button("Redesign All Spines") { generation.redesignAll() }
+                } message: {
+                    Text(
+                        "Spines you customized stay as they are. Each spine costs about one request."
+                    )
+                }
+                .alert("Choose a cloud model first", isPresented: $asksForCloudModel) {
+                    Button("OK") {}
+                } message: {
+                    Text(
+                        "Redesign all spines uses Anthropic, OpenAI, Google Gemini, or an OpenAI-compatible endpoint. Choose one under Choose model."
+                    )
+                }
             }
         } header: {
             // The shelf heads the section, because the Mac's grouped form draws a card behind
@@ -222,26 +240,11 @@ struct GenerationView: View {
         }
     }
 
-    /// The model that **Redesign all spines** designs with: the chosen model, as if the reader
-    /// preferred it to Private Cloud Compute (`SpineWorker.reconcile(mode:redesigning:
-    /// redesigningAllBefore:)`). Apple's choice is Private Cloud Compute, or the on-device model
-    /// in builds without it (`NO_PCC`).
+    /// The cloud model that **Redesign all spines** designs with: the chosen provider's, as if
+    /// the reader preferred it to Private Cloud Compute (`SpineWorker.reconcile(mode:redesigning:
+    /// redesigningAllBefore:)`).
     private static var redesignModelName: String {
-        let designer = SpineDesigner.current
-        #if NO_PCC
-            let apple = ModelTier.onDevice
-        #else
-            let apple = ModelTier.privateCloudCompute
-        #endif
-        return (designer.provider == .apple ? apple : .backup).name(backup: designer)
-    }
-
-    /// The confirmation's message: what stays, and what the redesign costs. A provider bills each
-    /// request; the model info button says the same of each new spine.
-    private static var redesignAllMessage: String {
-        let kept = "Spines you customized stay as they are."
-        return SpineDesigner.current.provider == .apple
-            ? kept : "\(kept) Each spine costs about one request."
+        ModelTier.backup.name(backup: SpineDesigner.current)
     }
 
     /// The run's progress (`WorkerSnapshot.headline`): while it runs, a bar of its books, the
