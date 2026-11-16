@@ -19,7 +19,10 @@ struct GenerationView: View {
     /// Whether **Redesign all spines** asks the reader to choose a cloud model first, because
     /// Apple's models are chosen.
     @State private var asksForCloudModel = false
-    @State private var path = NavigationPath()
+    /// The book IDs pushed onto the tab's stack. On the Mac every section's stack shares the
+    /// split view's detail column, so this has Library's and Desk's type: a `NavigationPath` here
+    /// makes SwiftUI trap when it compares the two after a section switch.
+    @State private var path: [Int] = []
     #if os(macOS)
         @Environment(\.openSettings) private var openSettings
         @AppStorage(SettingsPane.key) private var settingsPane = SettingsPane.general
@@ -607,7 +610,7 @@ private struct GenerationInfo: View {
 /// lets SwiftUI skip it for each progress update.
 private struct BinderyHeader: View, Equatable {
     /// The tab's navigation path, which a spine pushes its book's details onto.
-    @Binding var path: NavigationPath
+    @Binding var path: [Int]
     @Binding var showsAccount: Bool
 
     @Environment(AppModel.self) private var model
