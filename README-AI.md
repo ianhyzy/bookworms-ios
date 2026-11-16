@@ -974,6 +974,16 @@ Run `python3 script/crash-reports.py` with the Bash sandbox off, after `. ~/.app
 
 The script never contacts an Apple TV, so it can run during TV quiet hours; Apple TV crashes arrive only through TestFlight. It copies every report to `.local/crash-reports/<source>/` and records the printed ones in `.local/crash-reports/seen.json`. `--all` prints every report again. It exits with 0 when nothing is new, 1 when it printed new reports, and 2 when a source failed.
 
+### Overnight runs on the Mac
+
+Click tests on the Mac need it unlocked, and macOS locks it whenever the display turns off, so the lid must stay open. `python3 script/overnight.py on`, with the Bash sandbox off, prepares the Mac for a night of tests:
+
+- It works only on the home network, which it recognizes by the router's hardware address in `~/.config/bookworms/home-router`. `remember-home` records the current router, and `status` says whether this is home.
+- It sets Amphetamine's session to keep the display awake, or starts one that never ends, so macOS never locks.
+- It turns the built-in display's brightness to zero.
+
+`off` puts back the display-sleep setting and the brightness, from what `on` saved in `~/.config/bookworms/overnight.json`. Neither command changes a password or lock setting, and the screen saver stays as Amphetamine's session sets it.
+
 ## Credits
 
 Spine fonts and Checkout Card's handwriting, Caveat, are open-source Google Fonts families (SIL Open Font License or Apache License), downloaded at runtime with their license files. The design models' readings choose among them with the classification, theme, and mood tags of the [Google Fonts repository](https://github.com/google/fonts/tree/main/tags) (`tags/all/families.csv`), which `script/spine-font-tags.py` copies into `Bookworms/SpineFontTags.json` for the atlas's families. The license of that tag data is unconfirmed; see [google/fonts issue #9347](https://github.com/google/fonts/issues/9347). The app icon is rendered from the Bookworms Apple TV repository's Blender model.
