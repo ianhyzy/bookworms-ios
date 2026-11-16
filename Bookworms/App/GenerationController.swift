@@ -161,20 +161,25 @@ final class GenerationController {
             redesigning: (model.designSource(for: book).id, model.lookDesigns[book.id] != nil))
     }
 
-    /// Starts a user-requested run that designs every spine anew with the chosen model, except
-    /// the spines the reader customized, unless a run is in progress. A request that an earlier
+    /// Starts a user-requested run that designs every spine anew with the chosen provider's
+    /// cloud model, except the spines the reader customized, unless a run is in progress or
+    /// Apple's models are chosen, which never redesign the library. A request that an earlier
     /// run left unfinished continues with its own date, so the books it already designed stay.
     func redesignAll() {
-        guard userRun == nil, !AppModel.shared.isExample else { return }
+        guard userRun == nil, !AppModel.shared.isExample,
+            SpineDesigner.current.provider != .apple
+        else { return }
         if redesignsAllBefore == nil { redesignsAllBefore = .now }
         generateNow()
     }
 
     /// Runs the worker with the library redesign in progress, if any, and ends the redesign once
-    /// a run has checked the whole library.
+    /// a run has checked the whole library, or once the reader chose Apple's models, which never
+    /// redesign the library.
     private func reconcile(
         mode: RunMode, redesigning: (bookID: Int, remakesLook: Bool)? = nil
     ) async {
+        if SpineDesigner.current.provider == .apple { redesignsAllBefore = nil }
         let before = redesignsAllBefore
         let checkedAll = await worker.reconcile(
             mode: mode, redesigning: redesigning, redesigningAllBefore: before)
