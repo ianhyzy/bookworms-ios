@@ -34,9 +34,7 @@ struct GenerationView: View {
         NavigationStack(path: $path) {
             ScrollViewReader { proxy in
                 Form {
-                    BinderyHeader(
-                        current: generation.status.currentBook, path: $path,
-                        showsAccount: $showsAccount)
+                    BinderyHeader(path: $path, showsAccount: $showsAccount)
                     progress
                     // A library with no designs yet has nothing to count.
                     if model.library?.designs.isEmpty == false {
@@ -589,198 +587,127 @@ private struct GenerationInfo: View {
     }
 }
 
-/// The top of the Spines tab: a bindery shelf of the latest designed spines, newest at the
-/// right, standing on a bare board that runs past the window's edges, with no card around it.
-/// While a run designs, the book in progress stands at the shelf's end in blank cloth, with its
-/// cover in a row below; when its design saves, its lettering appears like a foil stamp. Without
-/// a library, the shelf stands empty with **Connect Hardcover**. A spine opens its book's
-/// details.
+/// The top of the Spines tab: the latest designed spines, newest at the right, standing edge to
+/// edge across the window on a bare board, with no card around them. A book joins the shelf only
+/// once its design is saved: it slides in from the right, pushing the others left and the oldest
+/// off the left edge, or under Reduce Motion fades in. Without a library, the bookcase stands
+/// empty with **Connect Hardcover**. A spine opens its book's details.
 ///
-/// The shelf's books are prepared when the books' designs change (`AppModel.designRevision`),
-/// not in the body. The header is equal for the same book in progress, and SwiftUI compares an equatable view that isn't plain data by its `==`, so a run's
-/// other progress updates skip it. `.equatable()` would also hide the section's rows from the
-/// form, which then draws them as one.
+/// The shelf is the header of an empty section, because the Mac's grouped form draws a card
+/// behind a section's rows whatever their background, and it spans the scroll view's width
+/// (`containerRelativeFrame`), not the form's inset width. The latest designs are prepared when
+/// the books' designs change (`AppModel.designRevision`), not in the body, which takes as many of
+/// the newest as fill the width. Nothing a run's progress changes reaches the header, so `==`
+/// lets SwiftUI skip it for each progress update.
 private struct BinderyHeader: View, Equatable {
-    let current: CloudBook?
     /// The tab's navigation path, which a spine pushes its book's details onto.
     @Binding var path: NavigationPath
     @Binding var showsAccount: Bool
 
     @Environment(AppModel.self) private var model
-
-    /// The latest designed books, oldest first: one more than the shelf shows, so it stays full
-    /// without the book in progress, which stands at its end.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The latest designed books, oldest first, up to `pool`.
     @State private var designed: [CloudBook] = []
+    /// The shelf's width: the scroll view's.
+    @State private var width: CGFloat = 0
 
-    /// How many designed books the shelf shows: fewer on the iPhone, so the books stand large
-    /// enough that thin spines letter their authors legibly.
-    #if os(macOS)
-        static let shown = 10
-    #else
-        static let shown = 6
-    #endif
     /// The books' size.
     static let scale: CGFloat = 128
+    /// How many of the latest designs the shelf keeps ready: more than the widest window holds.
+    static let pool = 60
 
-    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.current == rhs.current }
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { true }
 
     var body: some View {
         Section {
-            if model.library != nil {
-                let books = shelfBooks
-                let shelf = HStack(alignment: .bottom, spacing: 1) {
-                    ForEach(books, id: \.book.id) { item in
-                        // A navigation link in a form row would add a disclosure chevron.
-                        Button {
-                            path.append(item.book.id)
-                        } label: {
-                            BinderySpine(book: item.book, look: item.look, size: item.size)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(
-                            item.look == nil
-                                ? "\(item.book.title), being designed"
-                                : "\(item.book.title), by \(item.book.author)"
+        } header: {
+            Group {
+                if model.library != nil { shelf } else { emptyShelf }
+            }
+            .textCase(nil)
+        }
+        .onChange(of: model.designRevision, initial: true) { old, new in
+            prepare(animated: old != new)
+        }
+    }
+
+    private var shelf: some View {
+        VStack(spacing: -Bookcase.surface * 0.55) {
+            // Trailing, so the newest book stands at the right edge and the shelf overflows
+            // to the left, where the scroll view cuts it off.
+            HStack(alignment: .bottom, spacing: 1) {
+                ForEach(shelfBooks, id: \.book.id) { item in
+                    // A navigation link would add a disclosure chevron.
+                    Button {
+                        path.append(item.book.id)
+                    } label: {
+                        UprightSpineView(
+                            book: item.book, look: item.look, height: item.size.height,
+                            thickness: item.size.width
                         )
-                        .accessibilityHint("Opens the book's details.")
+                        .frame(width: item.size.width, height: item.size.height)
+                        .background(alignment: .bottom) { ContactShadow(width: item.size.width) }
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(item.book.title), by \(item.book.author)")
+                    .accessibilityHint("Opens the book's details.")
+                    .transition(
+                        reduceMotion
+                            ? .opacity
+                            : .asymmetric(insertion: .move(edge: .trailing), removal: .opacity))
                 }
-                .padding(.horizontal, 16)
-                // The books stand partway back on the board's top, over it.
-                VStack(spacing: -Bookcase.surface * 0.55) {
-                    ViewThatFits(in: .horizontal) {
-                        shelf
-                        ScrollView(.horizontal) { shelf }
-                            .defaultScrollAnchor(.trailing)
-                            .scrollIndicators(.hidden)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .zIndex(1)
-                    FloatingShelfBoard()
-                }
-                .padding(.top, 12)
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel("Latest designs")
-                .listRowInsets(EdgeInsets())
-                if let current { CurrentBookRow(book: current) }
-            } else {
-                VStack(spacing: 16) {
-                    EmptyBookcase()
-                    Text("No library yet").font(.title3.weight(.semibold)).bookHeading()
-                    if !model.isPreview {
-                        Button("Connect Hardcover") { showsAccount = true }
-                            .buttonStyle(.glassProminent)
-                            .controlSize(.large)
-                    }
-                }
-                .frame(maxWidth: .infinity)
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .zIndex(1)
+            FloatingShelfBoard()
+        }
+        .padding(.top, 12)
+        .containerRelativeFrame(.horizontal)
+        .onGeometryChange(for: CGFloat.self) {
+            $0.size.width
+        } action: {
+            width = $0
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Latest designs")
+    }
+
+    private var emptyShelf: some View {
+        VStack(spacing: 16) {
+            EmptyBookcase()
+            Text("No library yet").font(.title3.weight(.semibold)).bookHeading()
+            if !model.isPreview {
+                Button("Connect Hardcover") { showsAccount = true }
+                    .buttonStyle(.glassProminent)
+                    .controlSize(.large)
             }
         }
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-        #if os(iOS)
-            // No side margins, so the board runs to the screen's edges; a row's cell clips its
-            // content, so the board can't draw past the margins.
-            .listSectionMargins(.horizontal, 0)
-        #endif
-        .onChange(of: model.designRevision, initial: true) { prepare() }
+        .frame(maxWidth: .infinity)
     }
 
-    /// The latest designed books, then the book in progress without a look. The book in progress
-    /// leaves the designed books here, in the body, so the pass where a run moves to it never
-    /// lists it twice.
-    private var shelfBooks: [(book: CloudBook, look: SpineLook?, size: CGSize)] {
-        var books = designed.filter { $0.id != current?.id }.suffix(Self.shown)
-            .map { (book: $0, look: Optional(model.look(for: $0))) }
-        if let current {
-            books.append((book: model.book(id: current.id) ?? current, look: nil))
+    /// The newest designed books that fill the shelf's width, oldest first; the oldest may stand
+    /// partly past the left edge.
+    private var shelfBooks: [(book: CloudBook, look: SpineLook, size: CGSize)] {
+        var shown: [(book: CloudBook, look: SpineLook, size: CGSize)] = []
+        var used: CGFloat = 0
+        for book in designed.reversed() where used < width {
+            let size = book.shelfSpineSize(scale: Self.scale)
+            shown.append((book, model.look(for: book), size))
+            used += size.width + 1
         }
-        return books.map { ($0.book, $0.look, $0.book.shelfSpineSize(scale: Self.scale)) }
+        return shown.reversed()
     }
 
-    private func prepare() {
+    /// Gathers the latest designs, animating the change when it follows a saved design rather
+    /// than the tab's appearance.
+    private func prepare(animated: Bool) {
         let latest = (model.library.map { Array($0.designs.values) } ?? [])
             .sorted { $0.generatedAt > $1.generatedAt }
-            .prefix(Self.shown + 1)
-        designed = latest.reversed().compactMap { model.book(id: $0.bookID) }
-    }
-}
-
-/// A spine on the bindery shelf: blank cloth while its book is being designed, then its design,
-/// whose lettering appears as a foil stamp: the cloth over it fades as a brief glint of gold
-/// passes, or under Reduce Motion, a plain cross-fade. A spine that appears designed shows its
-/// lettering at once.
-private struct BinderySpine: View {
-    let book: CloudBook
-    let look: SpineLook?
-    let size: CGSize
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    /// A foil stamp's progress: blank cloth over the lettering, and the glint.
-    private struct Stamp {
-        var cover = 0.0
-        var glint = 0.0
-    }
-
-    var body: some View {
-        // One view in both states, so the animator sees the design arrive.
-        ZStack {
-            if let look {
-                UprightSpineView(
-                    book: book, look: look, height: size.height, thickness: size.width)
-            }
-        }
-        .frame(width: size.width, height: size.height)
-        .keyframeAnimator(initialValue: Stamp(), trigger: look != nil) { content, stamp in
-            content.overlay {
-                PlainSpine(
-                    cloth: look?.background
-                        ?? SpineLook(book: book, design: nil, face: nil).background
-                )
-                .opacity(look == nil ? 1 : stamp.cover)
-                ShelfPalette.gold.opacity(stamp.glint)
-            }
-        } keyframes: { _ in
-            KeyframeTrack(\.cover) {
-                LinearKeyframe(1, duration: 0)
-                CubicKeyframe(0, duration: reduceMotion ? 0.4 : 0.8)
-            }
-            // Under Reduce Motion, the glint stays at zero.
-            KeyframeTrack(\.glint) {
-                CubicKeyframe(reduceMotion ? 0 : 0.35, duration: 0.25)
-                CubicKeyframe(0, duration: 0.55)
-            }
-        }
-        .background(alignment: .bottom) { ContactShadow(width: size.width) }
-    }
-}
-
-/// The book a run is designing: its cover, small, beside its title.
-private struct CurrentBookRow: View {
-    let book: CloudBook
-
-    @Environment(AppModel.self) private var model
-    @State private var cover: UIImage?
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Color.clear
-                .frame(width: 36, height: 54)
-                .overlay {
-                    if let cover { Image(uiImage: cover).resizable().scaledToFill() }
-                }
-                .background(.quaternary)
-                .clipShape(.rect(cornerRadius: 2))
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Designing").font(.catalogLabel).foregroundStyle(.secondary)
-                BookText(book.title, of: book).lineLimit(2)
-            }
-            Spacer(minLength: 0)
-        }
-        .accessibilityElement(children: .combine)
-        .task(id: book.id) { cover = await model.covers.image(for: book, maximumPixelSize: 180) }
+            .prefix(Self.pool)
+        let books = latest.reversed().compactMap { model.book(id: $0.bookID) }
+        let animation: Animation? =
+            animated ? (reduceMotion ? .easeInOut(duration: 0.3) : .snappy(duration: 0.6)) : nil
+        withAnimation(animation) { designed = books }
     }
 }
 
