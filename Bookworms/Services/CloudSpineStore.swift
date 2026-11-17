@@ -291,14 +291,16 @@ actor CloudSpineStore: SpineStore {
     /// Runs `save` after every earlier save of the reader's edits has finished, so colors and
     /// fonts reach CloudKit in the order the reader chose them. A failed save doesn't hold up the
     /// next one.
-    private func inRecolorOrder(_ save: @escaping @Sendable () async throws -> Void) async throws {
+    private func inRecolorOrder<T: Sendable>(_ save: @escaping @Sendable () async throws -> T)
+        async throws -> T
+    {
         let previous = recolorTail
         let current = Task {
             await previous?.value
             try await save()
         }
         recolorTail = Task { _ = try? await current.value }
-        try await current.value
+        return try await current.value
     }
 
     /// Writes the design that `update` returns, given the record's valid design if any, to the
@@ -488,21 +490,27 @@ actor CloudSpineStore: SpineStore {
         }
     }
 
-    func saveReaderEdit(_ edit: SeriesLookEdit, at date: Date, to look: SeriesLookV1) async throws {
+    func saveReaderEdit(_ edit: SeriesLookEdit, at date: Date, to look: SeriesLookV1) async throws
+        -> SeriesLookV1
+    {
         try await inRecolorOrder {
-            try await self.write(
+            let payload = try await self.write(
                 recordType: "SeriesLookV1",
                 recordName: CloudContract.seriesLookRecordName(
                     accountID: look.accountID, key: look.key)
             ) { record in
+                // Saving over a newer build's look would drop the fields this build can't read.
+                if Self.holdsOtherVersion(record["payload"] as? Data) {
+                    throw CompanionError.unsupportedCloudData
+                }
                 guard let saved = Self.payload(SeriesLookV1.self, in: record) else {
                     throw CompanionError.designChanged
                 }
                 let edited = edit.applied(to: saved, at: date)
-                guard edited != saved else { return nil }
                 try edited.validate()
                 return try JSONEncoder().encode(edited)
             }
+            return try JSONDecoder().decode(SeriesLookV1.self, from: payload ?? Data())
         }
     }
 
@@ -522,10 +530,11 @@ actor CloudSpineStore: SpineStore {
     /// Saves the payload that `update` returns for the named record, given the record as fetched
     /// or a new one when it is missing; keeps the record when `update` returns `nil`, and saves
     /// nothing when it throws. Saves with `ifServerRecordUnchanged` and retries up to three
-    /// times when another device changes the record meanwhile.
-    private func write(
+    /// times when another device changes the record meanwhile. Returns the payload the record
+    /// holds afterward.
+    @discardableResult private func write(
         recordType: String, recordName: String, as update: (CKRecord) throws -> Data?
-    ) async throws {
+    ) async throws -> Data? {
         let id = CKRecord.ID(recordName: recordName)
         for _ in 0..<3 {
             let record: CKRecord
@@ -535,11 +544,11 @@ actor CloudSpineStore: SpineStore {
                 record = CKRecord(recordType: recordType, recordID: id)
             }
             guard record.recordType == recordType else { throw CompanionError.invalidCloudData }
-            guard let payload = try update(record) else { return }
+            guard let payload = try update(record) else { return record["payload"] as? Data }
             record["payload"] = payload as CKRecordValue
             do {
                 try await database.saveIfUnchanged(record)
-                return
+                return payload
             } catch let error as CKError where error.code == .serverRecordChanged {
                 continue
             }

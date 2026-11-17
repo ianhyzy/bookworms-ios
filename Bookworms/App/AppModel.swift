@@ -979,8 +979,8 @@ final class AppModel {
     }
 
     /// Shows `look` with the reader's `edit` and saves the edit to the look iCloud holds
-    /// (`SpineStore.saveReaderEdit(_:at:to:)`), so that a reload that starts before the save
-    /// lands still shows the edit (`lookEditsSaving`). Throws `CompanionError.invalidDesign`,
+    /// (`SpineStore.saveReaderEdit(_:at:to:)`), then shows the look as saved. A reload that
+    /// starts before the save lands still shows the edit (`lookEditsSaving`). Throws `CompanionError.invalidDesign`,
     /// before showing anything, when the edited look is not valid.
     private func saveLookEdit(_ edit: SeriesLookEdit, of look: SeriesLookV1) async throws {
         let date = Date.now
@@ -990,8 +990,15 @@ final class AppModel {
         let key = edited.key
         lookEditsSaving[key] = edited
         defer { if lookEditsSaving[key] == edited { lookEditsSaving[key] = nil } }
-        try await store.saveReaderEdit(edit, at: date, to: look)
-        if isLoading { looksAppliedDuringLoad.append(edited) }
+        let saved = try await store.saveReaderEdit(edit, at: date, to: look)
+        // The saved look also keeps what another device changed, such as its font under these
+        // colors. A newer edit of the group, still saving, shows instead.
+        guard lookEditsSaving[key] == edited else { return }
+        if saved == edited {
+            if isLoading { looksAppliedDuringLoad.append(edited) }
+        } else {
+            apply([saved])
+        }
     }
 
     /// Saves `edit`, the reader's edit of a design that `apply(_:)` shows, with `save`, so that

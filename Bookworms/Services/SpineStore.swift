@@ -92,10 +92,13 @@ protocol SpineStore: Sendable {
     /// edited.
     func saveEdited(_ look: SeriesLookV1, replacing base: SeriesLookV1) async throws
     /// Applies the reader's `edit`, made at `date`, to the look that `look`'s group has saved
-    /// now, whatever another device changed in it, and saves the result, so only the edited
-    /// colors or font change. Throws `CompanionError.designChanged` when the group has no saved
-    /// look, and `CompanionError.invalidDesign` when the edited look is not valid.
-    func saveReaderEdit(_ edit: SeriesLookEdit, at date: Date, to look: SeriesLookV1) async throws
+    /// now, whatever another device changed in it, saves the result, so only the edited colors
+    /// or font change, and returns it. Throws `CompanionError.designChanged` when the group has
+    /// no saved look, `CompanionError.unsupportedCloudData` when the saved look is of another
+    /// contract version, and `CompanionError.invalidDesign` when the edited look is not valid.
+    @discardableResult func saveReaderEdit(
+        _ edit: SeriesLookEdit, at date: Date, to look: SeriesLookV1
+    ) async throws -> SeriesLookV1
     /// Returns the active account's books, every valid saved design, and the saved looks of the
     /// books' look groups, or `nil` before there is a library.
     func loadLibrary() async throws -> LibrarySnapshot?
@@ -413,14 +416,18 @@ actor LocalSpineStore: SpineStore {
         try write(all, "series-looks-v1.json")
     }
 
-    func saveReaderEdit(_ edit: SeriesLookEdit, at date: Date, to look: SeriesLookV1) async throws {
+    @discardableResult func saveReaderEdit(
+        _ edit: SeriesLookEdit, at date: Date, to look: SeriesLookV1
+    ) async throws -> SeriesLookV1 {
         var all = try looks()
         let name = CloudContract.seriesLookRecordName(accountID: look.accountID, key: look.key)
         guard let saved = all[name] else { throw CompanionError.designChanged }
+        if saved.version != 1 { throw CompanionError.unsupportedCloudData }
         let edited = edit.applied(to: saved, at: date)
         try edited.validate()
         all[name] = edited
         try write(all, "series-looks-v1.json")
+        return edited
     }
 
     func loadLibrary() async throws -> LibrarySnapshot? {

@@ -506,9 +506,11 @@ struct HeldStore: SpineStore {
         try await local.saveEdited(look, replacing: base)
     }
 
-    func saveReaderEdit(_ edit: SeriesLookEdit, at date: Date, to look: SeriesLookV1) async throws {
+    func saveReaderEdit(_ edit: SeriesLookEdit, at date: Date, to look: SeriesLookV1) async throws
+        -> SeriesLookV1
+    {
         await saves.pass()
-        try await local.saveReaderEdit(edit, at: date, to: look)
+        return try await local.saveReaderEdit(edit, at: date, to: look)
     }
 
     func loadWork() async throws -> WorkContext? { try await local.loadWork() }
