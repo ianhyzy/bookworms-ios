@@ -6,11 +6,13 @@ Steps, each printed as one PASS, FAIL, or SKIP line, with full output in the log
   tree   the working tree has no uncommitted or untracked files, so the pass names one commit
   lint   `swift-format lint --strict` on the Swift files changed against the base
   build  Release builds for the iPhone simulator and for the Mac
-  test   the unit tests on one slim iPhone simulator, which the script creates and deletes
+  test   the unit test classes the change touches on one slim iPhone simulator, which the
+         script creates and deletes (see `test_scope`); `--all-tests` runs every class
   links  relative links in the changed Markdown files
 
 A change that touches only documentation (Markdown files, docs/, and LICENSE) skips lint,
-build, and test. When every step passes, the script writes `premerge/<commit>.json` in the
+build, and test. A change to the scripts alone skips test, and one whose code no test class names
+only compiles the tests. When every step passes, the script writes `premerge/<commit>.json` in the
 repository's shared Git folder, which all worktrees use. The workspace's merge gate refuses
 `gh pr merge` for a head commit without that file. The file also lists the views the change
 touches (script/visual-check.py --list), and the last line names the visual check for a commit
@@ -33,6 +35,14 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = Path(__file__).resolve().parent.relative_to(ROOT)
 DOCUMENTATION = re.compile(r"(^|/)[^/]+\.md$|^docs/|^LICENSE")
 LINK = re.compile(r"\]\(([^)#\s]+)(?:#[^)\s]*)?\)")
+# Attributes and modifiers before a Swift declaration, which may be indented, such as in `#if`.
+PREFIX = (r"^[ \t]*(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:public|package|open|private|fileprivate|internal|final"
+          r"|nonisolated|indirect|distributed)\s+)*")
+# A type a Swift file declares or extends, as `Book` in `extension Bookworms.Book` or `extension [Book]`.
+DECLARATION = re.compile(
+    PREFIX + r"(?:class|struct|enum|actor|protocol|extension|typealias)\s+\[?(?:\w+\.)*([A-Z]\w*)", re.M)
+TEST_CLASS = re.compile(PREFIX + r"class\s+(\w+)(?:<[^>]*>)?\s*:\s*XCTestCase", re.M)
+TYPE_NAME = re.compile(r"\b[A-Z]\w*\b")
 
 
 def git(*arguments):
@@ -154,7 +164,32 @@ def boot_slim(simulator, command):
     return None
 
 
-def test(run):
+def test_scope(base, changed):
+    """Returns the test classes that `changed`, the files changed since `base`, touches, or
+    `None` for every class, with the reason; README-AI.md's Pre-merge check gives the rules.
+    """
+    tests = {path: path.read_text(errors="replace") for path in (ROOT / "BookwormsTests").rglob("*.swift")}
+    classes = {path: TEST_CLASS.findall(text) for path, text in tests.items()}
+    names = {path: set(TYPE_NAME.findall(text)) for path, text in tests.items()}
+    selected = set()
+    for name in changed:
+        if DOCUMENTATION.search(name) or name.startswith(f"{SCRIPTS}/"):
+            continue
+        if not name.endswith(".swift") or not name.startswith(("Bookworms/", "BookwormsTests/")):
+            return None, f"{name} isn't app or test Swift code"
+        path = ROOT / name
+        # A test file runs its classes, and the helpers it declares run the classes using them.
+        selected.update(classes.get(path, []))
+        versions = [git("show", f"{base}:{name}"), path.read_text(errors="replace") if path.is_file() else ""]
+        declared = {type_name for text in versions for type_name in DECLARATION.findall(text)}
+        if not declared and not classes.get(path):
+            return None, f"{name} declares no type"
+        selected.update(test_class for test_file, test_classes in classes.items()
+                        if names[test_file] & declared for test_class in test_classes)
+    return sorted(selected), "the classes that name the changed code"
+
+
+def test(run, scope):
     limit = simulator_limit()
     if limit:
         return run.check("test", False, f"no simulator started: {limit}")
@@ -166,7 +201,8 @@ def test(run):
             "xcodebuild", "-project", "Bookworms.xcodeproj", "-scheme", "Bookworms",
             "-destination", f"platform=iOS Simulator,id={simulator}",
             "-derivedDataPath", str(run.folder.parent / "DerivedData-test"),
-            "OTHER_SWIFT_FLAGS=-disable-sandbox", "test"])
+            "OTHER_SWIFT_FLAGS=-disable-sandbox", "test",
+            *(f"-only-testing:BookwormsTests/{test_class}" for test_class in scope or [])])
     finally:
         run.command(["xcrun", "simctl", "shutdown", simulator])
         deleted = run.command(["xcrun", "simctl", "delete", simulator]) == 0
@@ -175,7 +211,8 @@ def test(run):
     counts = re.findall(r"Executed (\d+) tests?, with (\d+) failures?", run.log.read_text(errors="replace"))
     executed, failures = counts[-1] if counts else ("0", "0")
     run.check("test", code == 0 and deleted and executed != "0",
-              f"{executed} unit tests, {failures} failures, on one slim simulator"
+              f"{executed} unit tests, {failures} failures, on one slim simulator, "
+              + (f"in {len(scope)} classes: {', '.join(scope)}" if scope else "every class")
               + ("" if deleted else "; the simulator wasn't deleted"))
 
 
@@ -183,6 +220,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--base", default="origin/main",
                         help="branch the pull request merges into (default: origin/main)")
+    parser.add_argument("--all-tests", action="store_true",
+                        help="run every test class, not only the ones the change touches")
     arguments = parser.parse_args()
 
     sha = git("rev-parse", "HEAD")
@@ -198,10 +237,11 @@ def main():
     if not base:
         run.check("base", False, f"no merge base with {arguments.base}")
     # A deleted file counts as a change to the code, but has nothing to lint or to link from.
-    every_change = [name for name in git("diff", "--name-only", base, "HEAD").splitlines() if name]
+    every_change = [name for name in git("diff", "--name-only", "--no-renames", base, "HEAD").splitlines() if name]
     code_changed = [name for name in every_change if not DOCUMENTATION.search(name)]
     changed = [name for name in every_change if (ROOT / name).is_file()]
 
+    scope = []
     if not run.failed and not code_changed:
         for step in ("lint", "build iPhone", "build Mac", "test"):
             run.report(step, "SKIP", "documentation only")
@@ -211,10 +251,24 @@ def main():
             ["xcrun", "swift-format", "lint", "--strict", "--configuration", ".swift-format", *swift]) == 0,
             f"{len(swift)} changed Swift files")
         build(run)
-        if not {"build iPhone", "build Mac"} & set(run.failed):
-            test(run)
-        else:
+        scope, reason = (None, "--all-tests") if arguments.all_tests else test_scope(base, every_change)
+        print(f"     {'tests':<14} {'every class' if scope is None else ', '.join(scope) or 'none'} ({reason})",
+              flush=True)
+        if {"build iPhone", "build Mac"} & set(run.failed):
             run.report("test", "SKIP", "the build failed")
+        elif not any(name.startswith(("Bookworms/", "BookwormsTests/")) for name in code_changed):
+            run.report("test", "SKIP", "no app or test code changed")
+        elif scope == []:
+            # A test may still use what changed through a name the scan misses, so the tests
+            # must at least compile.
+            run.check("test", run.command([
+                "xcodebuild", "-quiet", "-project", "Bookworms.xcodeproj", "-scheme", "Bookworms",
+                "-destination", "generic/platform=iOS Simulator",
+                "-derivedDataPath", str(run.folder.parent / "DerivedData-test"),
+                "CODE_SIGNING_ALLOWED=NO", "OTHER_SWIFT_FLAGS=-disable-sandbox", "build-for-testing"]) == 0,
+                "no test class names the changed code; the tests compile")
+        else:
+            test(run, scope)
     if not run.failed:
         broken = broken_links([name for name in changed if name.endswith(".md")])
         run.check("links", not broken, "; ".join(broken[:5]) or "relative links in changed Markdown resolve")
@@ -237,6 +291,7 @@ def main():
     marker = markers / f"{sha}.json"
     marker.write_text(json.dumps({
         "sha": sha, "base": base, "steps": run.results, "visual_surfaces": surfaces,
+        "test_classes": "all" if scope is None else scope,
         "passed_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}, indent=2) + "\n")
     print(f"PASS premerge {sha[:9]}; marker {marker}")
     if surfaces:
