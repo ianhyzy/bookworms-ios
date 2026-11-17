@@ -262,7 +262,7 @@ actor CloudSpineStore: SpineStore {
         guard let colors = design.colors else { throw CompanionError.invalidDesign }
         try await inRecolorOrder {
             try await self.write(design) { existing in
-                guard let existing, existing.isSameDesign(as: design) else {
+                guard let existing else {
                     throw CompanionError.designChanged
                 }
                 // Only the colors change in the stored record.
@@ -276,7 +276,7 @@ actor CloudSpineStore: SpineStore {
         guard let family = design.fontFamily else { throw CompanionError.invalidDesign }
         try await inRecolorOrder {
             try await self.write(design) { existing in
-                guard let existing, existing.isSameDesign(as: design) else {
+                guard let existing else {
                     throw CompanionError.designChanged
                 }
                 // Only the font changes in the stored record.
@@ -484,6 +484,24 @@ actor CloudSpineStore: SpineStore {
                     saved == base || saved == look
                 else { throw CompanionError.designChanged }
                 return saved == look
+            }
+        }
+    }
+
+    func saveReaderEdit(_ edit: SeriesLookEdit, at date: Date, to look: SeriesLookV1) async throws {
+        try await inRecolorOrder {
+            try await self.write(
+                recordType: "SeriesLookV1",
+                recordName: CloudContract.seriesLookRecordName(
+                    accountID: look.accountID, key: look.key)
+            ) { record in
+                guard let saved = Self.payload(SeriesLookV1.self, in: record) else {
+                    throw CompanionError.designChanged
+                }
+                let edited = edit.applied(to: saved, at: date)
+                guard edited != saved else { return nil }
+                try edited.validate()
+                return try JSONEncoder().encode(edited)
             }
         }
     }

@@ -39,14 +39,15 @@ protocol SpineStore: Sendable {
     @discardableResult func save(
         _ design: SpineDesignV1, replacing: Bool, ifUnchangedFrom base: SpineDesignV1?
     ) async throws -> SpineDesignV1
-    /// Saves `design`'s colors to the saved design that it recolors (see
-    /// `SpineDesignV1.isSameDesign(as:)`), keeping the saved font and every other field. Throws
-    /// `CompanionError.designChanged` when the saved design is another one.
+    /// Saves `design`'s colors, the reader's choice, to the book's saved design, keeping the
+    /// saved font and every other field, even when another device redesigned the book or changed
+    /// its font meanwhile. Throws `CompanionError.designChanged` when the book has no saved
+    /// design.
     func saveRecolored(_ design: SpineDesignV1) async throws
     /// Saves `design`'s font, the reader's choice, to the saved design that it sets in that font
     /// (see `SpineDesignV1.refonted(family:postScriptName:instanceWeight:typeface:)`), keeping the
-    /// saved colors and every other field. Throws `CompanionError.designChanged` when the saved
-    /// design is another one.
+    /// saved colors and every other field, as `saveRecolored(_:)` does. Throws
+    /// `CompanionError.designChanged` when the book has no saved design.
     func saveRefonted(_ design: SpineDesignV1) async throws
     /// Saves the reader's cover for a book, replacing an earlier choice.
     func save(_ choice: CoverChoiceV1) async throws
@@ -85,11 +86,16 @@ protocol SpineStore: Sendable {
     /// Throws `CompanionError.unsupportedCloudData` when the group's saved look is of another
     /// contract version.
     func save(_ look: SeriesLookV1) async throws
-    /// Saves `look`, such as the reader's edit of `base` or an upgrade of a look made from a
-    /// stand-in, over its group's saved look while that is still `base`. Throws
-    /// `CompanionError.designChanged` when the group's saved look is missing or another one,
-    /// such as a look another device remade or edited.
+    /// Saves `look`, such as an upgrade of a look made from a stand-in, over its group's saved
+    /// look while that is still `base`. Throws `CompanionError.designChanged` when the group's
+    /// saved look is missing or another one, such as a look another device remade or the reader
+    /// edited.
     func saveEdited(_ look: SeriesLookV1, replacing base: SeriesLookV1) async throws
+    /// Applies the reader's `edit`, made at `date`, to the look that `look`'s group has saved
+    /// now, whatever another device changed in it, and saves the result, so only the edited
+    /// colors or font change. Throws `CompanionError.designChanged` when the group has no saved
+    /// look, and `CompanionError.invalidDesign` when the edited look is not valid.
+    func saveReaderEdit(_ edit: SeriesLookEdit, at date: Date, to look: SeriesLookV1) async throws
     /// Returns the active account's books, every valid saved design, and the saved looks of the
     /// books' look groups, or `nil` before there is a library.
     func loadLibrary() async throws -> LibrarySnapshot?
@@ -278,11 +284,13 @@ actor LocalSpineStore: SpineStore {
         let name = CloudContract.designRecordName(
             accountID: design.accountID, bookID: design.bookID)
         var all = try designs()
-        guard let saved = all[name], saved.isSameDesign(as: design) else {
+        guard let saved = all[name] else {
             throw CompanionError.designChanged
         }
         // Keeps the saved font, as `CloudSpineStore` does.
-        all[name] = saved.recolored(colors)
+        let recolored = saved.recolored(colors)
+        try recolored.validate()
+        all[name] = recolored
         try write(all, "spine-designs-v1.json")
     }
 
@@ -292,13 +300,15 @@ actor LocalSpineStore: SpineStore {
         let name = CloudContract.designRecordName(
             accountID: design.accountID, bookID: design.bookID)
         var all = try designs()
-        guard let saved = all[name], saved.isSameDesign(as: design) else {
+        guard let saved = all[name] else {
             throw CompanionError.designChanged
         }
         // Keeps the saved colors, as `CloudSpineStore` does.
-        all[name] = saved.refonted(
+        let refonted = saved.refonted(
             family: family, postScriptName: design.fontPostScriptName,
             instanceWeight: design.instanceWeight, typeface: design.typeface)
+        try refonted.validate()
+        all[name] = refonted
         try write(all, "spine-designs-v1.json")
     }
 
@@ -400,6 +410,16 @@ actor LocalSpineStore: SpineStore {
             throw CompanionError.designChanged
         }
         all[name] = look
+        try write(all, "series-looks-v1.json")
+    }
+
+    func saveReaderEdit(_ edit: SeriesLookEdit, at date: Date, to look: SeriesLookV1) async throws {
+        var all = try looks()
+        let name = CloudContract.seriesLookRecordName(accountID: look.accountID, key: look.key)
+        guard let saved = all[name] else { throw CompanionError.designChanged }
+        let edited = edit.applied(to: saved, at: date)
+        try edited.validate()
+        all[name] = edited
         try write(all, "series-looks-v1.json")
     }
 

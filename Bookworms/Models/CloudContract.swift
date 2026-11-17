@@ -975,6 +975,29 @@ struct SeriesLookV1: Codable, Sendable, Hashable {
     }
 }
 
+/// The reader's edit of a series look: new colors or a new font. A save applies only the edit to
+/// the look as iCloud holds it (`SpineStore.saveReaderEdit(_:at:to:)`), so another device's
+/// edit of the other field stays, as with a design's edits (`SpineStore.saveRecolored(_:)`,
+/// `SpineStore.saveRefonted(_:)`).
+enum SeriesLookEdit: Hashable, Sendable {
+    case colors(SpineColors)
+    /// The family's instance `postScriptName`, which weighs `instanceWeight`, with `typeface` as
+    /// its system stand-in.
+    case font(family: String, postScriptName: String?, instanceWeight: Int?, typeface: String)
+
+    /// Returns `look` with this edit, edited at `date`.
+    func applied(to look: SeriesLookV1, at date: Date) -> SeriesLookV1 {
+        switch self {
+        case .colors(let colors):
+            look.recolored(colors, at: date)
+        case .font(let family, let postScriptName, let instanceWeight, let typeface):
+            look.refonted(
+                family: family, postScriptName: postScriptName, instanceWeight: instanceWeight,
+                typeface: typeface, at: date)
+        }
+    }
+}
+
 extension SeriesLookV1 {
     /// A look for the group `key`, made from `design`'s colors and type, with `design`'s tier
     /// tokens (`SpineDesignV1.tierTokens`) as its `provenance`. The design's other tokens
@@ -1230,8 +1253,9 @@ enum CompanionError: LocalizedError, Equatable, Sendable {
     /// gives one.
     case fontServiceUnavailable(Date?)
     case cloudConflict
-    /// iCloud holds another design than the one the reader recolored, such as a redesign from
-    /// another device.
+    /// iCloud no longer holds the design or look an edit started from: for the reader's colors
+    /// or font, the record is gone, and for a generated upgrade, another device remade or the
+    /// reader edited the look first.
     case designChanged
     /// A third-party spine designer rejected its settings, such as its key, model name, or
     /// account, or is not set up, with the reason.
@@ -1300,7 +1324,7 @@ enum CompanionError: LocalizedError, Equatable, Sendable {
         case .fontServiceUnavailable: "Google Fonts is unavailable. Bookworms will retry."
         case .cloudConflict: "A concurrent iCloud update prevented saving."
         case .designChanged:
-            "The spine was redesigned on another device, so these colors were not saved."
+            "The spine changed on another device, so these colors were not saved. Try again."
         case .coverTextTimedOut:
             "Reading a book cover's text took too long. Bookworms tries again later."
         case .coverTextBusy:

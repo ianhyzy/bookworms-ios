@@ -1096,7 +1096,7 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertEqual(stored?.instanceWeight, 700)
     }
 
-    func testPreviewStoreReplacesOnlyTheRecoloredDesign() async throws {
+    func testPreviewStoreRecolorsTheSavedDesign() async throws {
         let folder = FileManager.default.temporaryDirectory
             .appending(path: "bookworms-colors-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -1109,8 +1109,8 @@ final class SpineColorsTests: XCTestCase {
         let saved = try await store.savedDesign(accountID: "42", bookID: 7)
         XCTAssertEqual(saved?.colors, reader)
 
-        // A run's design leaves the recolored one, and a redesign the reader asked for since
-        // they started picking colors wins.
+        // A run's design leaves the recolored one. Colors picked on a design that another device
+        // redesigned meanwhile apply to the redesign.
         let redesigned = SpineDesignV1(
             version: 1, accountID: "42", bookID: 7, workItemHash: work, coverHash: cover,
             generatorVersion: CloudContract.generatorVersion,
@@ -1120,12 +1120,15 @@ final class SpineColorsTests: XCTestCase {
         let recolored = try await store.save(redesigned)
         XCTAssertEqual(recolored.colors, reader)
         try await store.save(redesigned, replacing: true)
-        do {
-            try await store.saveRecolored(generated.recolored(reader))
-            XCTFail("A recoloring of a replaced design was saved")
-        } catch CompanionError.designChanged {}
+        try await store.saveRecolored(generated.recolored(reader))
         let kept = try await store.savedDesign(accountID: "42", bookID: 7)
-        XCTAssertEqual(kept, redesigned)
+        XCTAssertEqual(kept, redesigned.recolored(reader))
+
+        // Only a book without a saved design refuses the colors.
+        do {
+            try await store.saveRecolored(design(for: 8).recolored(reader))
+            XCTFail("Colors were saved for a book without a design")
+        } catch CompanionError.designChanged {}
     }
 
     /// The CloudKit store keeps a design another device saved between a save's read and write
