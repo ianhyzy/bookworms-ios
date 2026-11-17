@@ -120,7 +120,8 @@ struct FontPicker: View {
     /// Why a pick failed, in the reader's terms.
     private static func message(for error: any Error) -> String {
         switch error {
-        case CompanionError.designChanged: "The spine was redesigned on another device."
+        case CompanionError.designChanged:
+            "Another device is changing this spine. Try again in a few minutes."
         case CompanionError.invalidDesign: "Bookworms can't letter this spine in it."
         case is GoogleFonts.Unavailable: "Google Fonts is unavailable. Try again later."
         default: SpineWorker.iCloudMessage(for: error) ?? error.localizedDescription

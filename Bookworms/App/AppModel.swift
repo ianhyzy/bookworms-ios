@@ -86,14 +86,6 @@ final class AppModel {
     let social = SocialModel()
     @ObservationIgnored let covers = CoverStore()
     @ObservationIgnored let store: any SpineStore
-    /// The looks as iCloud last confirmed them, by group: an edit saves over its group's entry
-    /// (`SpineStore.saveEdited(_:replacing:)`), so an edit retried after a failed save, whose
-    /// look shows on screen unsaved, still finds its base.
-    @ObservationIgnored private var persistedLooks: [SeriesLookKey: SeriesLookV1] = [:]
-    /// The latest look edit saving, and the last one this device saved, by group
-    /// (`saveEdited(_:over:)`).
-    @ObservationIgnored private var lookSaves: [SeriesLookKey: Task<Void, any Error>] = [:]
-    @ObservationIgnored private var savedEdits: [SeriesLookKey: SeriesLookV1] = [:]
     /// The latest font pick per series look or design it edits (`setFont(_:for:)`).
     @ObservationIgnored private var fontPicks: [String: UUID] = [:]
     /// Whether the app reads a local preview folder instead of iCloud.
@@ -413,7 +405,6 @@ final class AppModel {
         coversChosenDuringLoad = []
         linksChosenDuringLoad = []
         looksAppliedDuringLoad = []
-        let persistedBefore = persistedLooks
         if !isPreview {
             await checkICloudAccounts()
             await account.syncIfStale()
@@ -432,13 +423,6 @@ final class AppModel {
                     {
                         snapshot.keepChoices(of: shown)
                     }
-                    // A look saved during the load can be newer than the fetched one, and the
-                    // next edit of its group saves over it.
-                    let savedDuringLoad = persistedLooks.filter {
-                        persistedBefore[$0.key] != $0.value
-                            && $0.value.accountID == snapshot.accountID
-                    }
-                    persistedLooks = snapshot.looks.merging(savedDuringLoad) { $1 }
                     // The newest design wins, and of designs made at the same time, the last one
                     // applied: a recoloring keeps its design's `generatedAt`. Edits still saving
                     // count as applied last.
@@ -852,12 +836,10 @@ final class AppModel {
     }
 
     /// Shows series looks that the generator, the catch-up after a reload, or `recolor(_:to:)`
-    /// saves, without a reload. Like `apply(_:)` for designs, it defers the cache write. An edit
-    /// shows its look before saving it (`persisted` false).
-    func apply(_ looks: [SeriesLookV1], persisted: Bool = true) {
+    /// saves, without a reload. Like `apply(_:)` for designs, it defers the cache write.
+    func apply(_ looks: [SeriesLookV1]) {
         guard !isExample else { return }
         if isLoading { looksAppliedDuringLoad += looks }
-        if persisted { for look in looks { persistedLooks[look.key] = look } }
         guard var library else { return }
         for look in looks where look.accountID == library.accountID {
             library.looks[look.key] = look
@@ -901,20 +883,20 @@ final class AppModel {
     /// A book that draws its series' look recolors the look, and a book that shares its series
     /// source's design recolors that design; either recolors every book that draws it.
     ///
+    /// The save changes only the colors of the design or look iCloud holds, so another device's
+    /// font, or its redesign, stays under the reader's colors.
+    ///
     /// Throws when the colors cannot be saved, and then they stay on screen until the next
     /// reload. Throws `CompanionError.invalidDesign`, before showing anything, when the colors
     /// are not readable, and `CompanionError.bookNotInLibrary` when the book has no design.
-    /// When iCloud holds another design or look, such as a redesign from another device, reloads
-    /// to show it and throws `CompanionError.designChanged`.
+    /// When iCloud no longer holds the design or look, tries once more after a reload
+    /// (`savingAfterReload(_:)`).
     func recolor(_ book: CloudBook, to colors: SpineColors) async throws {
         // The example is read-only; its views offer no edits.
         guard !isExample else { return }
-        do {
+        try await savingAfterReload {
             if let look = drawnLook(of: book) {
-                let recolored = look.recolored(colors, at: .now)
-                try recolored.validate()
-                apply([recolored], persisted: false)
-                try await saveEdited(recolored, over: look)
+                try await saveLookEdit(.colors(colors), of: look)
                 return
             }
             guard let design = savedDesign(for: book) else {
@@ -924,9 +906,6 @@ final class AppModel {
             try recolored.validate()
             apply(recolored)
             try await saveEdit(recolored) { try await store.saveRecolored(recolored) }
-        } catch CompanionError.designChanged {
-            await reload()
-            throw CompanionError.designChanged
         }
     }
 
@@ -945,10 +924,10 @@ final class AppModel {
     /// or one without glyphs for the lettering of every book that shares the design
     /// (`sharedLettering(of:uppercase:)`), and `CompanionError.bookNotInLibrary`
     /// when the book has no design. A later pick for the same look or design replaces one still
-    /// downloading, which then changes nothing. A failed save leaves the
-    /// font on screen until the next reload. When iCloud holds another design or look, such as a
-    /// redesign from another device, reloads to show it and throws
-    /// `CompanionError.designChanged`.
+    /// downloading, which then changes nothing. As with `recolor(_:to:)`, the save changes only
+    /// the font of the design or look iCloud holds. A failed save leaves the font on screen until
+    /// the next reload. When iCloud no longer holds the design or look, tries once more after a
+    /// reload (`savingAfterReload(_:)`).
     func setFont(_ family: String, for book: CloudBook) async throws {
         guard !isExample else { return }
         guard let weight = drawnLook(of: book)?.weight ?? savedDesign(for: book)?.weight else {
@@ -967,19 +946,19 @@ final class AppModel {
         let font = try await fonts.downloader.download(family: family, weight: weight)
         let typeface = await Self.fallbackTypeface(of: family)
         guard fontPicks[target] == pick else { return }
-        let uppercase = drawnLook(of: book)?.uppercase ?? savedDesign(for: book)?.uppercase
-        guard font.covers(sharedLettering(of: book, uppercase: uppercase ?? false)) else {
-            throw CompanionError.invalidDesign
-        }
-        do {
-            // Read after the download, so the edit starts from the library as it is now.
+        try await savingAfterReload {
+            // Read after the download, and again after a reload, so the edit starts from the
+            // library as it is now.
+            let uppercase = drawnLook(of: book)?.uppercase ?? savedDesign(for: book)?.uppercase
+            guard font.covers(sharedLettering(of: book, uppercase: uppercase ?? false)) else {
+                throw CompanionError.invalidDesign
+            }
             if let look = drawnLook(of: book) {
-                let refonted = look.refonted(
-                    family: family, postScriptName: font.postScriptName,
-                    instanceWeight: font.weight, typeface: typeface, at: .now)
-                try refonted.validate()
-                apply([refonted], persisted: false)
-                try await saveEdited(refonted, over: look)
+                try await saveLookEdit(
+                    .font(
+                        family: family, postScriptName: font.postScriptName,
+                        instanceWeight: font.weight, typeface: typeface),
+                    of: look)
                 return
             }
             guard let design = savedDesign(for: book) else {
@@ -991,36 +970,44 @@ final class AppModel {
             try refonted.validate()
             apply(refonted)
             try await saveEdit(refonted) { try await store.saveRefonted(refonted) }
-        } catch CompanionError.designChanged {
-            await reload()
-            throw CompanionError.designChanged
         }
     }
 
-    /// Saves `edited`, the reader's edit of `look`, after any earlier edit of the group saves,
-    /// over the look as iCloud last confirmed it, so overlapping edits each start from the look
-    /// the previous one left and a failed one leaves the next one its base. Throws
-    /// `CompanionError.designChanged` when another look, such as a redesign, replaced that base
-    /// while the edit waited, so the edit never undoes it.
-    private func saveEdited(_ edited: SeriesLookV1, over look: SeriesLookV1) async throws {
+    /// Runs `save`, a reader's edit; when iCloud no longer holds the design or look it edits
+    /// (`CompanionError.designChanged`), such as after another device moved the book out of its
+    /// series, reloads and runs it once more, so the edit lands on what the book draws now. Throws
+    /// `designChanged` when the second try fails the same way, such as while another device keeps
+    /// changing the spine.
+    private func savingAfterReload(_ save: () async throws -> Void) async throws {
+        do {
+            try await save()
+        } catch CompanionError.designChanged {
+            await reload()
+            try await save()
+        }
+    }
+
+    /// Shows `look` with the reader's `edit` and saves the edit to the look iCloud holds
+    /// (`SpineStore.saveReaderEdit(_:at:to:)`), then shows the look as saved. A reload that
+    /// starts before the save lands still shows the edit (`lookEditsSaving`). Throws `CompanionError.invalidDesign`,
+    /// before showing anything, when the edited look is not valid.
+    private func saveLookEdit(_ edit: SeriesLookEdit, of look: SeriesLookV1) async throws {
+        let date = Date.now
+        let edited = edit.applied(to: look, at: date)
+        try edited.validate()
+        apply([edited])
         let key = edited.key
-        let base = persistedLooks[key] ?? look
-        let previous = lookSaves[key]
         lookEditsSaving[key] = edited
         defer { if lookEditsSaving[key] == edited { lookEditsSaving[key] = nil } }
-        let save = Task {
-            _ = await previous?.result
-            let current = persistedLooks[key] ?? look
-            guard current == base || current == savedEdits[key] else {
-                throw CompanionError.designChanged
-            }
-            try await store.saveEdited(edited, replacing: current)
-            persistedLooks[key] = edited
-            savedEdits[key] = edited
+        let saved = try await store.saveReaderEdit(edit, at: date, to: look)
+        // The saved look also keeps what another device changed, such as its font under these
+        // colors. A newer edit of the group, still saving, shows instead.
+        guard lookEditsSaving[key] == edited else { return }
+        if saved == edited {
             if isLoading { looksAppliedDuringLoad.append(edited) }
+        } else {
+            apply([saved])
         }
-        lookSaves[edited.key] = save
-        try await save.value
     }
 
     /// Saves `edit`, the reader's edit of a design that `apply(_:)` shows, with `save`, so that
@@ -1153,8 +1140,6 @@ final class AppModel {
         // A deferred write would restore the cleared library.
         persistTask?.cancel()
         persistTask = nil
-        persistedLooks = [:]
-        savedEdits = [:]
         library = nil
         designRevision += 1
         showsLoadedLibrary = false

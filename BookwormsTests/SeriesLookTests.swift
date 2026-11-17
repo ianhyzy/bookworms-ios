@@ -771,40 +771,52 @@ final class SeriesLookTests: XCTestCase {
         XCTAssertEqual(edited[first.key]?.editedAt, created.addingTimeInterval(60))
     }
 
-    func testRecoloringALookKeepsARemakeFromAnotherDevice() async throws {
+    /// A reader's edit applies to the look as the store holds it: another device's font stays
+    /// under this device's colors, and a remake from another device takes the reader's font.
+    /// Only a group without a look refuses the edit. A generated upgrade still saves only over
+    /// the look it read (`saveEdited(_:replacing:)`).
+    func testReaderEditsApplyToTheLookAnotherDeviceChanged() async throws {
         let folder = FileManager.default.temporaryDirectory
             .appending(path: "bookworms-looks-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let store = LocalSpineStore(folder: folder)
         let first = try await store.createLook(look())
-        let colors = SpineColors(
-            background: ColorValue(hex: "#000000")!, foreground: ColorValue(hex: "#FFFFFF")!,
-            accent: ColorValue(hex: "#FF0000")!)
-        let recolored = first.recolored(colors, at: created.addingTimeInterval(60))
-        try await store.saveEdited(recolored, replacing: first)
+        let lora = SeriesLookEdit.font(
+            family: "Lora", postScriptName: "Lora-Bold", instanceWeight: 700, typeface: "serif")
 
-        // Another device remade the look in another font before this one saved its colors.
+        // Another device sets the font; this one, still showing `first`, then sets colors.
+        try await store.saveReaderEdit(lora, at: created.addingTimeInterval(60), to: first)
+        try await store.saveReaderEdit(
+            .colors(colors), at: created.addingTimeInterval(120), to: first)
+        var saved = try await store.seriesLooks(accountID: "42", keys: [first.key])
+        XCTAssertEqual(saved[first.key]?.fontFamily, "Lora")
+        XCTAssertEqual(saved[first.key]?.backgroundHex, colors.background.hex)
+        XCTAssertEqual(saved[first.key]?.editedAt, created.addingTimeInterval(120))
+
+        // A generated upgrade from `first` leaves the edited look.
+        do {
+            try await store.saveEdited(
+                first.upgraded(from: design(7, at: 180), at: created.addingTimeInterval(180)),
+                replacing: first)
+            XCTFail("An upgrade replaced the reader's edits")
+        } catch CompanionError.designChanged {}
+
+        // Another device remakes the look; a font picked on `first` lands on the remake.
         let remade = first.remade(
-            from: design(7, at: 60, family: "Lora"), at: created.addingTimeInterval(120))
+            from: design(7, at: 240, family: "EB Garamond"), at: created.addingTimeInterval(240))
         try await store.save(remade)
+        try await store.saveReaderEdit(lora, at: created.addingTimeInterval(300), to: first)
+        saved = try await store.seriesLooks(accountID: "42", keys: [first.key])
+        XCTAssertEqual(
+            saved[first.key], lora.applied(to: remade, at: created.addingTimeInterval(300)))
+
         do {
-            try await store.saveEdited(
-                recolored.recolored(colors, at: created.addingTimeInterval(180)),
-                replacing: recolored)
-            XCTFail("A recoloring of a remade look was saved")
+            try await store.saveReaderEdit(
+                .colors(colors), at: created.addingTimeInterval(360),
+                to: look("Ankh-Morpork|terrypratchett"))
+            XCTFail("An edit was saved for a group without a look")
         } catch CompanionError.designChanged {}
-        // Nor does a font choice, though the remake differs from the edited look only in its font.
-        do {
-            try await store.saveEdited(
-                recolored.refonted(
-                    family: "Lora", postScriptName: "Lora-Regular", instanceWeight: 400,
-                    typeface: "serif", at: created.addingTimeInterval(180)),
-                replacing: recolored)
-            XCTFail("A font choice over a remade look was saved")
-        } catch CompanionError.designChanged {}
-        let kept = try await store.seriesLooks(accountID: "42", keys: [first.key])
-        XCTAssertEqual(kept[first.key], remade)
     }
 
     /// A design finished after the reader changed the book's series choice is stale, so it
@@ -894,26 +906,32 @@ final class SeriesLookTests: XCTestCase {
         } catch CompanionError.unsupportedCloudData {}
     }
 
-    func testCloudStoreSavesALookEditOnlyOverTheLookItEdits() async throws {
+    /// A reader's edit that races another device's remake applies to the remake, and a
+    /// generated upgrade saves only over the look it read.
+    func testCloudStoreAppliesAReaderEditToTheLookItHolds() async throws {
         let database = ChangeTagDatabase()
         let store = try await CloudSpineStore.checked(database)
         let first = look()
         try await database.put(first, type: "SeriesLookV1", name: lookName)
-        let recolored = first.recolored(colors, at: created.addingTimeInterval(60))
-        try await store.saveEdited(recolored, replacing: first)
 
         // Another device remakes the look between the next save's read and write.
-        let remade = recolored.remade(
-            from: design(7, at: 60, family: "Lora"), at: created.addingTimeInterval(120))
+        let remade = first.remade(
+            from: design(7, at: 60, family: "Lora"), at: created.addingTimeInterval(60))
         try await database.putAfterNextFetch(remade, type: "SeriesLookV1", name: lookName)
+        try await store.saveReaderEdit(
+            .colors(colors), at: created.addingTimeInterval(120), to: first)
+        var kept = try await store.seriesLooks(accountID: "42", keys: [first.key])
+        XCTAssertEqual(
+            kept[first.key], remade.recolored(colors, at: created.addingTimeInterval(120)))
+
         do {
             try await store.saveEdited(
-                recolored.recolored(colors, at: created.addingTimeInterval(180)),
-                replacing: recolored)
-            XCTFail("A recoloring of a remade look was saved")
+                first.upgraded(from: design(7, at: 180), at: created.addingTimeInterval(180)),
+                replacing: first)
+            XCTFail("An upgrade replaced a look it didn't read")
         } catch CompanionError.designChanged {}
-        let kept = try await store.seriesLooks(accountID: "42", keys: [first.key])
-        XCTAssertEqual(kept[first.key], remade)
+        kept = try await store.seriesLooks(accountID: "42", keys: [first.key])
+        XCTAssertEqual(kept[first.key]?.backgroundHex, colors.background.hex)
     }
 
     func testCloudStoreSavesOnlyTheSeriesChoicesTheReaderChanged() async throws {

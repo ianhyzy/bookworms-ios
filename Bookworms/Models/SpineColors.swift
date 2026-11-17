@@ -103,7 +103,7 @@ extension SpineDesignV1 {
 
     /// Returns this design set in `family`, the reader's choice: its instance `postScriptName`,
     /// which weighs `instanceWeight`, with `typeface` as its system stand-in. Keeps the colors and
-    /// every other field, so the result is the same design (`isSameDesign(as:)`).
+    /// every other field, including `generatedAt`.
     ///
     /// The provenance gains `readerFontToken` and loses `systemFontToken`, since the design no
     /// longer awaits a font, and stays within 80 characters as `fitted(_:)` describes.
@@ -145,14 +145,6 @@ extension SpineDesignV1 {
             tokens[model] = String(tokens[model].dropLast(joined().count - 80))
         }
         return tokens.isEmpty ? nil : joined()
-    }
-
-    /// Whether `other` is this design, a recoloring or another font of it, or it moved to
-    /// another work-item hash (`SavedDesignAction.save(_:)`): the same account, book, cover
-    /// hash, generator, and `generatedAt`.
-    func isSameDesign(as other: SpineDesignV1) -> Bool {
-        accountID == other.accountID && bookID == other.bookID && coverHash == other.coverHash
-            && generatorVersion == other.generatorVersion && generatedAt == other.generatedAt
     }
 
     /// Whether saving `design` leaves this saved design of the same book in place: `design` doesn't

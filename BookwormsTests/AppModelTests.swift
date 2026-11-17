@@ -108,6 +108,34 @@ final class AppModelTests: XCTestCase {
         try await designSaving.value
     }
 
+    /// A reader's edit keeps another device's change of the look, and when the look is gone from
+    /// iCloud, it lands after a reload on the look the book draws then.
+    @MainActor
+    func testEditsLandOnTheLookAsAnotherDeviceLeftIt() async throws {
+        let books = [book(1, position: 1), book(2, position: 2)]
+        let folder = try previewFolder(books: books, designs: books.map { design(for: $0) })
+        let local = LocalSpineStore(folder: folder)
+        let model = AppModel(previewFolder: folder, store: HeldStore(local: local))
+        await model.reload()
+        let look = try XCTUnwrap(model.drawnLook(of: books[0]))
+
+        // Another device sets the series' font; this one, still showing `look`, sets colors.
+        try await local.saveReaderEdit(
+            .font(
+                family: "Lora", postScriptName: "Lora-Bold", instanceWeight: 700,
+                typeface: "serif"),
+            at: .now, to: look)
+        try await model.recolor(books[0], to: colors("#1A2B3C"))
+        XCTAssertEqual(model.drawnLook(of: books[0])?.fontFamily, "Lora")
+        XCTAssertEqual(model.look(for: books[1]).background, colors("#1A2B3C").background)
+
+        // Another device's change leaves the group without a look: after the reload, the edit
+        // lands on what the series draws then.
+        try Data("{}".utf8).write(to: folder.appending(path: "series-looks-v1.json"))
+        try await model.recolor(books[0], to: colors("#2B1A3C"))
+        XCTAssertEqual(model.look(for: books[1]).background, colors("#2B1A3C").background)
+    }
+
     @MainActor
     func testAPinChangedDuringASyncKeepsAnotherDevicesPin() async throws {
         let folder = try previewFolder(books: [1, 2, 3].map { book($0, series: nil) }, designs: [])
@@ -504,6 +532,13 @@ struct HeldStore: SpineStore {
     func saveEdited(_ look: SeriesLookV1, replacing base: SeriesLookV1) async throws {
         await saves.pass()
         try await local.saveEdited(look, replacing: base)
+    }
+
+    func saveReaderEdit(_ edit: SeriesLookEdit, at date: Date, to look: SeriesLookV1) async throws
+        -> SeriesLookV1
+    {
+        await saves.pass()
+        return try await local.saveReaderEdit(edit, at: date, to: look)
     }
 
     func loadWork() async throws -> WorkContext? { try await local.loadWork() }

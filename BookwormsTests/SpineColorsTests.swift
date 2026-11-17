@@ -36,7 +36,7 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertEqual(recolored.generatedColors, original)
         XCTAssertEqual(
             recolored.provenance, "series-reuse:12 generated-colors:000000,FFFFFF,FF0000")
-        XCTAssertTrue(recolored.isSameDesign(as: generated))
+        XCTAssertEqual(recolored.generatedAt, generated.generatedAt)
         XCTAssertEqual(recolored.fontFamily, generated.fontFamily)
 
         // A second change keeps the generator's colors, not the first change's.
@@ -443,7 +443,7 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertFalse(pcc.outlasts(laterOnDevice, replacing: true))
 
         // A move decided before the reader recolored the design or set it in another font
-        // leaves the reader's edit, and an edit of the design saves over its move.
+        // leaves the reader's edit.
         guard
             case .save(let staleMove) = onDevice.action(
                 workItemHash: otherWork, coverHash: cover, readerChoseCover: false,
@@ -454,9 +454,6 @@ final class SpineColorsTests: XCTestCase {
         let refonted = onDevice.refonted(
             family: "Lora", postScriptName: "Lora-Bold", instanceWeight: 700, typeface: "serif")
         XCTAssertTrue(refonted.outlasts(staleMove, replacing: false))
-        XCTAssertTrue(staleMove.isSameDesign(as: onDevice.recolored(reader)))
-        XCTAssertTrue(staleMove.isSameDesign(as: refonted))
-        XCTAssertFalse(staleMove.isSameDesign(as: laterOnDevice), "A redesign is another design")
     }
 
     func testDesignsReadTheirTierFromProvenance() {
@@ -1096,7 +1093,7 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertEqual(stored?.instanceWeight, 700)
     }
 
-    func testPreviewStoreReplacesOnlyTheRecoloredDesign() async throws {
+    func testPreviewStoreRecolorsTheSavedDesign() async throws {
         let folder = FileManager.default.temporaryDirectory
             .appending(path: "bookworms-colors-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -1109,8 +1106,8 @@ final class SpineColorsTests: XCTestCase {
         let saved = try await store.savedDesign(accountID: "42", bookID: 7)
         XCTAssertEqual(saved?.colors, reader)
 
-        // A run's design leaves the recolored one, and a redesign the reader asked for since
-        // they started picking colors wins.
+        // A run's design leaves the recolored one. Colors picked on a design that another device
+        // redesigned meanwhile apply to the redesign.
         let redesigned = SpineDesignV1(
             version: 1, accountID: "42", bookID: 7, workItemHash: work, coverHash: cover,
             generatorVersion: CloudContract.generatorVersion,
@@ -1120,12 +1117,15 @@ final class SpineColorsTests: XCTestCase {
         let recolored = try await store.save(redesigned)
         XCTAssertEqual(recolored.colors, reader)
         try await store.save(redesigned, replacing: true)
-        do {
-            try await store.saveRecolored(generated.recolored(reader))
-            XCTFail("A recoloring of a replaced design was saved")
-        } catch CompanionError.designChanged {}
+        try await store.saveRecolored(generated.recolored(reader))
         let kept = try await store.savedDesign(accountID: "42", bookID: 7)
-        XCTAssertEqual(kept, redesigned)
+        XCTAssertEqual(kept, redesigned.recolored(reader))
+
+        // Only a book without a saved design refuses the colors.
+        do {
+            try await store.saveRecolored(design(for: 8).recolored(reader))
+            XCTFail("Colors were saved for a book without a design")
+        } catch CompanionError.designChanged {}
     }
 
     /// The CloudKit store keeps a design another device saved between a save's read and write
@@ -1153,6 +1153,33 @@ final class SpineColorsTests: XCTestCase {
         let recolored = try await store.savedDesign(accountID: "42", bookID: 7)
         XCTAssertEqual(recolored?.colors, reader)
         XCTAssertEqual(recolored?.workItemHash, moved.workItemHash)
+    }
+
+    /// The CloudKit store applies the reader's colors and font to the design it holds, even one
+    /// another device redesigned after this device read it, and refuses them only for a book
+    /// without a design.
+    func testCloudStoreAppliesReaderEditsToTheDesignItHolds() async throws {
+        let database = ChangeTagDatabase()
+        let store = try await CloudSpineStore.checked(database)
+        let name = CloudContract.designRecordName(accountID: "42", bookID: 7)
+        let read = design()
+        let redesigned = read.copy(generatedAt: read.generatedAt.addingTimeInterval(60))
+        try await database.put(redesigned, type: "SpineDesignV1", name: name)
+
+        try await store.saveRefonted(
+            read.refonted(
+                family: "Lora", postScriptName: "Lora-Bold", instanceWeight: 700,
+                typeface: "serif"))
+        try await store.saveRecolored(read.recolored(reader))
+        let saved = try await store.savedDesign(accountID: "42", bookID: 7)
+        XCTAssertEqual(saved?.generatedAt, redesigned.generatedAt)
+        XCTAssertEqual(saved?.fontFamily, "Lora")
+        XCTAssertEqual(saved?.colors, reader)
+
+        do {
+            try await store.saveRecolored(design(for: 8).recolored(reader))
+            XCTFail("Colors were saved for a book without a design")
+        } catch CompanionError.designChanged {}
     }
 
     /// A design of another contract version, such as a newer build's, is neither read nor
@@ -1207,7 +1234,7 @@ final class SpineColorsTests: XCTestCase {
         XCTAssertEqual(chosen.fontPostScriptName, picked.postScriptName)
         XCTAssertEqual(chosen.instanceWeight, 600)
         XCTAssertEqual(chosen.colors, generated.colors)
-        XCTAssertTrue(chosen.isSameDesign(as: generated))
+        XCTAssertEqual(chosen.generatedAt, generated.generatedAt)
         XCTAssertTrue(chosen.hasReaderFont)
         XCTAssertTrue(chosen.hasReaderEdits)
         XCTAssertNil(chosen.generatedColors)
