@@ -1324,7 +1324,7 @@ enum CompanionError: LocalizedError, Equatable, Sendable {
         case .fontServiceUnavailable: "Google Fonts is unavailable. Bookworms will retry."
         case .cloudConflict: "A concurrent iCloud update prevented saving."
         case .designChanged:
-            "The spine changed on another device, so these colors were not saved. Try again."
+            "Another device is changing this spine, so these colors were not saved. Try again in a few minutes."
         case .coverTextTimedOut:
             "Reading a book cover's text took too long. Bookworms tries again later."
         case .coverTextBusy:

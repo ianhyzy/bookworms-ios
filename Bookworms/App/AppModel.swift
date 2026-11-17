@@ -889,12 +889,12 @@ final class AppModel {
     /// Throws when the colors cannot be saved, and then they stay on screen until the next
     /// reload. Throws `CompanionError.invalidDesign`, before showing anything, when the colors
     /// are not readable, and `CompanionError.bookNotInLibrary` when the book has no design.
-    /// When iCloud no longer holds the design or look, reloads and throws
-    /// `CompanionError.designChanged`.
+    /// When iCloud no longer holds the design or look, tries once more after a reload
+    /// (`savingAfterReload(_:)`).
     func recolor(_ book: CloudBook, to colors: SpineColors) async throws {
         // The example is read-only; its views offer no edits.
         guard !isExample else { return }
-        do {
+        try await savingAfterReload {
             if let look = drawnLook(of: book) {
                 try await saveLookEdit(.colors(colors), of: look)
                 return
@@ -906,9 +906,6 @@ final class AppModel {
             try recolored.validate()
             apply(recolored)
             try await saveEdit(recolored) { try await store.saveRecolored(recolored) }
-        } catch CompanionError.designChanged {
-            await reload()
-            throw CompanionError.designChanged
         }
     }
 
@@ -929,8 +926,8 @@ final class AppModel {
     /// when the book has no design. A later pick for the same look or design replaces one still
     /// downloading, which then changes nothing. As with `recolor(_:to:)`, the save changes only
     /// the font of the design or look iCloud holds. A failed save leaves the font on screen until
-    /// the next reload. When iCloud no longer holds the design or look, reloads and throws
-    /// `CompanionError.designChanged`.
+    /// the next reload. When iCloud no longer holds the design or look, tries once more after a
+    /// reload (`savingAfterReload(_:)`).
     func setFont(_ family: String, for book: CloudBook) async throws {
         guard !isExample else { return }
         guard let weight = drawnLook(of: book)?.weight ?? savedDesign(for: book)?.weight else {
@@ -949,12 +946,13 @@ final class AppModel {
         let font = try await fonts.downloader.download(family: family, weight: weight)
         let typeface = await Self.fallbackTypeface(of: family)
         guard fontPicks[target] == pick else { return }
-        let uppercase = drawnLook(of: book)?.uppercase ?? savedDesign(for: book)?.uppercase
-        guard font.covers(sharedLettering(of: book, uppercase: uppercase ?? false)) else {
-            throw CompanionError.invalidDesign
-        }
-        do {
-            // Read after the download, so the edit starts from the library as it is now.
+        try await savingAfterReload {
+            // Read after the download, and again after a reload, so the edit starts from the
+            // library as it is now.
+            let uppercase = drawnLook(of: book)?.uppercase ?? savedDesign(for: book)?.uppercase
+            guard font.covers(sharedLettering(of: book, uppercase: uppercase ?? false)) else {
+                throw CompanionError.invalidDesign
+            }
             if let look = drawnLook(of: book) {
                 try await saveLookEdit(
                     .font(
@@ -972,9 +970,20 @@ final class AppModel {
             try refonted.validate()
             apply(refonted)
             try await saveEdit(refonted) { try await store.saveRefonted(refonted) }
+        }
+    }
+
+    /// Runs `save`, a reader's edit; when iCloud no longer holds the design or look it edits
+    /// (`CompanionError.designChanged`), such as after another device moved the book out of its
+    /// series, reloads and runs it once more, so the edit lands on what the book draws now. Throws
+    /// `designChanged` when the second try fails the same way, such as while another device keeps
+    /// changing the spine.
+    private func savingAfterReload(_ save: () async throws -> Void) async throws {
+        do {
+            try await save()
         } catch CompanionError.designChanged {
             await reload()
-            throw CompanionError.designChanged
+            try await save()
         }
     }
 
