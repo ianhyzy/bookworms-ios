@@ -297,7 +297,7 @@ actor CloudSpineStore: SpineStore {
         let previous = recolorTail
         let current = Task {
             await previous?.value
-            try await save()
+            return try await save()
         }
         recolorTail = Task { _ = try? await current.value }
         return try await current.value
