@@ -11,8 +11,8 @@ Steps, each printed as one PASS, FAIL, or SKIP line, with full output in the log
   links  relative links in the changed Markdown files
 
 A change that touches only documentation (Markdown files, docs/, and LICENSE) skips lint,
-build, and test. A change to the scripts alone skips test, and so does one whose code no test
-class names. When every step passes, the script writes `premerge/<commit>.json` in the
+build, and test. A change to the scripts alone skips test, and one whose code no test class names
+only compiles the tests. When every step passes, the script writes `premerge/<commit>.json` in the
 repository's shared Git folder, which all worktrees use. The workspace's merge gate refuses
 `gh pr merge` for a head commit without that file. The file also lists the views the change
 touches (script/visual-check.py --list), and the last line names the visual check for a commit
@@ -35,11 +35,13 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = Path(__file__).resolve().parent.relative_to(ROOT)
 DOCUMENTATION = re.compile(r"(^|/)[^/]+\.md$|^docs/|^LICENSE")
 LINK = re.compile(r"\]\(([^)#\s]+)(?:#[^)\s]*)?\)")
-# A type a Swift file declares or extends at the top level.
+# Attributes and modifiers before a Swift declaration, which may be indented, such as in `#if`.
+PREFIX = (r"^[ \t]*(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:public|package|open|private|fileprivate|internal|final"
+          r"|nonisolated|indirect|distributed)\s+)*")
+# A type a Swift file declares or extends, as `Book` in `extension Bookworms.Book` or `extension [Book]`.
 DECLARATION = re.compile(
-    r"^(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:public|private|fileprivate|internal|final|nonisolated"
-    r"|indirect)\s+)*(?:class|struct|enum|actor|protocol|extension|typealias)\s+([A-Z]\w*)", re.M)
-TEST_CLASS = re.compile(r"^(?:@\w+\s+)*(?:final\s+)?class\s+(\w+)\s*:\s*XCTestCase", re.M)
+    PREFIX + r"(?:class|struct|enum|actor|protocol|extension|typealias)\s+\[?(?:\w+\.)*([A-Z]\w*)", re.M)
+TEST_CLASS = re.compile(PREFIX + r"class\s+(\w+)(?:<[^>]*>)?\s*:\s*XCTestCase", re.M)
 TYPE_NAME = re.compile(r"\b[A-Z]\w*\b")
 
 
@@ -164,16 +166,7 @@ def boot_slim(simulator, command):
 
 def test_scope(base, changed):
     """Returns the test classes that `changed`, the files changed since `base`, touches, or
-    `None` for every class, with the reason.
-
-    A test class touches a changed app file when its test file names a type that the app file
-    declares or extends, before or after the change; a changed test file runs its own classes,
-    and a changed helper without a class runs the classes whose files name its types. This
-    follows direct references only: a change can still break a class that reaches the changed
-    code through other code. The full suite catches that: `--all-tests`, and the run on each
-    build-number change, which edits project.yml. Every class runs for a change to anything else that builds into the app or its
-    tests, such as project.yml or a resource, and for a changed Swift file that declares no type.
-    Scripts and documentation select none.
+    `None` for every class, with the reason; README-AI.md's Pre-merge check gives the rules.
     """
     tests = {path: path.read_text(errors="replace") for path in (ROOT / "BookwormsTests").rglob("*.swift")}
     classes = {path: TEST_CLASS.findall(text) for path, text in tests.items()}
@@ -185,12 +178,11 @@ def test_scope(base, changed):
         if not name.endswith(".swift") or not name.startswith(("Bookworms/", "BookwormsTests/")):
             return None, f"{name} isn't app or test Swift code"
         path = ROOT / name
-        if name.startswith("BookwormsTests/") and classes.get(path):
-            selected.update(classes[path])
-            continue
+        # A test file runs its classes, and the helpers it declares run the classes using them.
+        selected.update(classes.get(path, []))
         versions = [git("show", f"{base}:{name}"), path.read_text(errors="replace") if path.is_file() else ""]
         declared = {type_name for text in versions for type_name in DECLARATION.findall(text)}
-        if not declared:
+        if not declared and not classes.get(path):
             return None, f"{name} declares no type"
         selected.update(test_class for test_file, test_classes in classes.items()
                         if names[test_file] & declared for test_class in test_classes)
@@ -245,7 +237,7 @@ def main():
     if not base:
         run.check("base", False, f"no merge base with {arguments.base}")
     # A deleted file counts as a change to the code, but has nothing to lint or to link from.
-    every_change = [name for name in git("diff", "--name-only", base, "HEAD").splitlines() if name]
+    every_change = [name for name in git("diff", "--name-only", "--no-renames", base, "HEAD").splitlines() if name]
     code_changed = [name for name in every_change if not DOCUMENTATION.search(name)]
     changed = [name for name in every_change if (ROOT / name).is_file()]
 
@@ -260,12 +252,21 @@ def main():
             f"{len(swift)} changed Swift files")
         build(run)
         scope, reason = (None, "--all-tests") if arguments.all_tests else test_scope(base, every_change)
-        print(f"     tests          {'every class' if scope is None else ', '.join(scope) or 'none'} "
-              f"({reason})", flush=True)
+        print(f"     {'tests':<14} {'every class' if scope is None else ', '.join(scope) or 'none'} ({reason})",
+              flush=True)
         if {"build iPhone", "build Mac"} & set(run.failed):
             run.report("test", "SKIP", "the build failed")
+        elif not any(name.startswith(("Bookworms/", "BookwormsTests/")) for name in code_changed):
+            run.report("test", "SKIP", "no app or test code changed")
         elif scope == []:
-            run.report("test", "SKIP", "no test class names the changed code")
+            # A test may still use what changed through a name the scan misses, so the tests
+            # must at least compile.
+            run.check("test", run.command([
+                "xcodebuild", "-quiet", "-project", "Bookworms.xcodeproj", "-scheme", "Bookworms",
+                "-destination", "generic/platform=iOS Simulator",
+                "-derivedDataPath", str(run.folder.parent / "DerivedData-test"),
+                "CODE_SIGNING_ALLOWED=NO", "OTHER_SWIFT_FLAGS=-disable-sandbox", "build-for-testing"]) == 0,
+                "no test class names the changed code; the tests compile")
         else:
             test(run, scope)
     if not run.failed:
