@@ -256,8 +256,8 @@ def main():
               flush=True)
         if {"build iPhone", "build Mac"} & set(run.failed):
             run.report("test", "SKIP", "the build failed")
-        elif not any(name.startswith(("Bookworms/", "BookwormsTests/")) for name in code_changed):
-            run.report("test", "SKIP", "no app or test code changed")
+        elif all(name.startswith(f"{SCRIPTS}/") for name in code_changed):
+            run.report("test", "SKIP", f"only {SCRIPTS}/ changed")
         elif scope == []:
             # A test may still use what changed through a name the scan misses, so the tests
             # must at least compile.
