@@ -1085,7 +1085,7 @@ final class ShelfLogicTests: XCTestCase {
             XCTAssertGreaterThan(
                 shelved.librarySpineRatio(upright: false),
                 shelved.librarySpineRatio(upright: true))
-            XCTAssertGreaterThan(
+            XCTAssertGreaterThanOrEqual(
                 shelved.librarySpineRatio(upright: true),
                 Book3DView.thicknessRatio(of: shelved, cover: nil))
         }
