@@ -122,7 +122,7 @@ DETAILS = [Shot("flight", ["-BookwormsShelfMode", "stack", "-BookwormsStackStyle
 # A fixed time frame shows the same books before and after a change to the default one.
 # The other launches cover what the first can't show: a period's name as its books fall, the
 # gather that a double tap on the bare desk starts, the time frame Desk opens on by default, and
-# a lifted book's details with the Back that fades them and returns the book.
+# a lifted book's details with the Back that fades them and returns the book, and **Arrange**.
 DESK = [
     Shot("drop", ["-BookwormsShelfMode", "pile", "-BookwormsPileFrame", "year:2025"], 35, motion=True),
     Shot("months", ["-BookwormsShelfMode", "pile", "-BookwormsPileFrame", "year:2025",
@@ -132,6 +132,12 @@ DESK = [
     Shot("default", ["-BookwormsShelfMode", "pile"], 30),
     Shot("back", ["-BookwormsShelfMode", "pile", "-BookwormsPileFrame", "year:2025", "-BookwormsOpenBook", "buried",
                   "-BookwormsPileBack", "2"], 25, motion=True),
+] + [
+    # **Arrange**'s shapes, from a year's pile, and the largest shape, from every book.
+    Shot(name, ["-BookwormsShelfMode", "pile", "-BookwormsPileFrame", frame,
+                "-BookwormsPileArrange", shape], 35, motion=True)
+    for name, shape, frame in (("cube", "cube", "year:2025"), ("pyramid", "pyramid", "year:2025"),
+                               ("wall", "wall", "year:2025"), ("all-time-cube", "cube", "lifetime"))
 ]
 DOMINOES = [Shot("run", ["-BookwormsTab", "desk", "-BookwormsSetUpDominoes", "YES", "-BookwormsDominoPush", "3",
                          "-BookwormsPileFrame", "month:2025-8"], 60, motion=True)]

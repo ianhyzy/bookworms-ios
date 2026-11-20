@@ -37,19 +37,19 @@ enum PileShape: String, CaseIterable, Identifiable {
 
     /// The room between neighboring books in a course, in units, which also keeps their turns
     /// from touching.
-    static let gap: Float = 0.1
+    static let gap: Float = 0.15
     /// The most a book turns about the vertical, in radians, and shifts along its row, in
     /// units.
     static let turn: Float = 2 * .pi / 180
     static let shift: Float = 0.03
-    /// How far two footprints may overlap without one book resting on the other, and the air
-    /// under each book, in units.
-    static let graze: Float = 0.05
+    /// The air under each book, in units.
     static let air: Float = 0.002
     /// How far a pyramid's tiers rise for each unit they step in.
     static let slope: Float = 1.1
     /// How long a wall is for its height.
     static let wallLength: Float = 2.5
+    /// How much higher than other shapes a wall may rise.
+    static let wallRise: Float = 1.5
 
     /// One course: how many books lie side by side along x, how many rows of them lie along z,
     /// and how far along x its rows shift, in units.
@@ -120,12 +120,13 @@ enum PileShape: String, CaseIterable, Identifiable {
                     Array(repeating: course, count: tier == 0 ? base : best.high)
                 }
         case .wall:
-            // The thinnest wall, one row deep if it can be, no higher than `height`, about
-            // `wallLength` times as long as it is high.
+            // The thinnest wall, one row deep if it can be, no higher than `wallRise` times
+            // `height`, since a thin wall hides little behind it, about `wallLength` times as
+            // long as it is high.
             for r in 1...rows {
                 let fits = (1...columns)
                     .filter {
-                        Float(layers($0 * r)) * thickness <= height
+                        Float(layers($0 * r)) * thickness <= Self.wallRise * height
                     }
                 guard
                     let c = fits.min(by: { first, second in
@@ -155,14 +156,14 @@ enum PileShape: String, CaseIterable, Identifiable {
     func places(for sizes: [SIMD3<Float>], in tray: PileTray) -> [(book: Int, pose: Transform)] {
         guard !sizes.isEmpty else { return [] }
         let average = sizes.reduce(.zero, +) / Float(sizes.count)
-        let narrowest = min(tray.farHalfWidth, tray.nearHalfWidth)
+        let middle = (tray.farZ + tray.nearZ) / 2
         let courses = courses(
-            count: sizes.count, size: average, width: 1.8 * narrowest,
+            count: sizes.count, size: average, width: 1.9 * tray.halfWidth(at: middle),
             depth: 0.9 * (tray.nearZ - tray.farZ), height: PileTray.tallestPile)
         let order = sizes.indices.sorted { (sizes[$0].z, $1) > (sizes[$1].z, $0) }
-        let center = SIMD2(tray.centerX, (tray.farZ + tray.nearZ) / 2)
+        let center = SIMD2(tray.centerX, middle)
         // Each laid book's footprint on the table, before the tray turns, and its top.
-        var laid: [(low: SIMD2<Float>, high: SIMD2<Float>, top: Float)] = []
+        var laid: [(footprint: DominoSetup.Footprint, top: Float)] = []
         var places: [(book: Int, pose: Transform)] = []
         var next = order[...]
         for course in courses where !next.isEmpty {
@@ -191,24 +192,18 @@ enum PileShape: String, CaseIterable, Identifiable {
                     let middle = SIMD2<Float>(
                         x + pitch / 2 + wobble(31) * Self.shift, z + depth / 2)
                     x += pitch
-                    // The turned footprint's half extents.
-                    let cosine: Float = abs(cos(yaw))
-                    let sine: Float = abs(sin(yaw))
-                    let half =
-                        SIMD2<Float>(
-                            cosine * size.y + sine * size.x, sine * size.y + cosine * size.x) / 2
-                    let low = middle - half
-                    let high = middle + half
-                    // Footprints that only graze, as turned neighbors' corners may, carry
-                    // nothing. A sliver of air under each book keeps it off the book below as
-                    // its physics starts.
+                    // Where it lies before the tray turns, and its footprint there.
+                    let flat = simd_quatf(angle: yaw, axis: [0, 1, 0]) * PileLayout.lyingFlat
+                    let footprint = DominoSetup.Footprint(
+                        DominoSetup.Box(
+                            Transform(rotation: flat, translation: [middle.x, 0, middle.y]),
+                            size: size))
+                    // A sliver of air under each book keeps it off the book below as its
+                    // physics starts.
                     let bottom =
-                        (laid.filter {
-                            $0.low.x < high.x - Self.graze && low.x + Self.graze < $0.high.x
-                                && $0.low.y < high.y - Self.graze && low.y + Self.graze < $0.high.y
-                        }
-                        .map(\.top).max() ?? 0) + Self.air
-                    laid.append((low, high, bottom + size.z))
+                        (laid.filter { $0.footprint.overlaps(footprint) }.map(\.top).max() ?? 0)
+                        + Self.air
+                    laid.append((footprint, bottom + size.z))
                     places.append(
                         (
                             book,
