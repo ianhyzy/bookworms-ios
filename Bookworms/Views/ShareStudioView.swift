@@ -228,9 +228,22 @@ struct ShareStudioView: View {
         pins: [Int]?, direction: HotTakeDirection
     ) -> [CloudBook] {
         if mode == .friends && reader?.match == nil { return [] }
+        if template == .seesaw {
+            guard let balance = seesawBalance(frame: frame, reader: reader) else { return [] }
+            return balance.mine.books + balance.theirs.books
+        }
         return template.books(
             from: library, in: frame, bookID: bookID, direction: direction, match: reader?.match,
             pinned: pins)
+    }
+
+    /// Seesaw's weighing of the books the owner and `reader` finished in `frame`, or `nil`
+    /// before the reader's library downloads.
+    private func seesawBalance(frame: TimeFrame, reader: SocialModel.Reader?) -> SeesawBalance? {
+        guard let reader, let theirs = model.social.snapshot?.libraries[reader.id]?.books else {
+            return nil
+        }
+        return SeesawBalance(frame: frame, mine: library, theirs: theirs)
     }
 
     /// What chooses the drawn books: the library, the options that pick from it, and with
@@ -1055,6 +1068,11 @@ struct ShareStudioView: View {
                 "Books you both rated at least half a star apart appear here. You have \(both) "
                     + "in common."
             )
+        case .seesaw:
+            return (
+                "Nothing to weigh in \(shownFrame.title)",
+                "Neither of you finished a book then. Choose another time frame."
+            )
         default:
             return (
                 "Nothing to swap yet",
@@ -1396,6 +1414,20 @@ struct ShareStudioView: View {
                 return
             } catch {
                 Self.log.error("The desk image failed: \(error)")
+            }
+        } else if template == .seesaw, let social = input.social,
+            let balance = seesawBalance(frame: request.frame, reader: reader)
+        {
+            do {
+                rendered = try await SeesawRenderer.render(
+                    balance, social: social, period: input.period, aspect: request.aspect,
+                    theme: input.theme, base: SeesawScene.sampleBase, model: model
+                ).image
+                try Task.checkCancellation()
+            } catch is CancellationError {
+                return
+            } catch {
+                Self.log.error("The seesaw image failed: \(error)")
             }
         } else if template == .checkoutCard {
             // A Checkout Card draws no covers or spines, only its handwriting.

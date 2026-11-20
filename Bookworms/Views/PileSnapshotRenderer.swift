@@ -141,9 +141,7 @@ enum PileSnapshotRenderer {
     /// Lays the books out, then renders one frame and copies it into a `CGImage`.
     ///
     /// RealityKit renders into a private texture, which a blit copies into memory once the
-    /// render signals its event (`FrameTarget`). The texture is `bgra8Unorm_srgb`, and
-    /// `RealityRenderer` writes Display P3 primaries with the sRGB transfer curve, so the image is
-    /// tagged P3. The books are static bodies, so the few steps before the frame move nothing.
+    /// render signals its event (`FrameTarget`). The books are static bodies, so the few steps before the frame move nothing.
     private static func renderPile(
         _ books: [CloudBook], layout: PileSnapshotLayout, seed: UInt64, model: AppModel
     ) async throws -> (image: CGImage, late: [CloudBook]) {
@@ -170,18 +168,7 @@ enum PileSnapshotRenderer {
             deltaTime: 1.0 / 60, cameraOutput: target.output,
             actionsAfterRender: [.signal(target.event, value: 1)])
         try await target.read(after: 1, before: .now + .seconds(10))
-        let pixels = Data(bytes: target.buffer.contents(), count: target.bytesPerRow * height)
-        guard !target.isBlank,
-            let space = CGColorSpace(name: CGColorSpace.displayP3),
-            let provider = CGDataProvider(data: pixels as CFData),
-            let image = CGImage(
-                width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
-                bytesPerRow: target.bytesPerRow, space: space,
-                bitmapInfo: CGBitmapInfo(
-                    rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue
-                        | CGBitmapInfo.byteOrder32Little.rawValue),
-                provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
-        else { throw PileSnapshotError.drawingFailed }
+        let image = try target.image()
         #if DEBUG
             if UserDefaults.standard.bool(forKey: "BookwormsPileCoverLog") {
                 try await checkCovers(
