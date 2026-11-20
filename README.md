@@ -15,14 +15,14 @@ Bookworms loads your library from Hardcover, and can display your library in 3D.
 
 ## Screenshots
 
-Book details on Mac
+Share and Library stack on iPhone
 
-![House of Leaves in book details on Mac](screenshots/mac-book-details.jpg)
+<img src="screenshots/iphone-share.jpg" alt="Top Five share image on iPhone" width="350"> <img src="screenshots/iphone-library-stack.jpg" alt="Library stack on iPhone" width="350">
 
 Desk on Mac, all time
 
 ![Every book read on the Desk on Mac](screenshots/mac-desk.jpg)
 
-Library stack on iPhone
+Book details on Mac
 
-<img src="screenshots/iphone-library-stack.jpg" alt="Library stack on iPhone" width="350">
+![House of Leaves in book details on Mac](screenshots/mac-book-details.jpg)
