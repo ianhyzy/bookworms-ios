@@ -1,5 +1,7 @@
 # Bookworms for iOS and macOS
 
+[![Download on the App Store for iPhone and Mac](https://img.shields.io/badge/App_Store-iPhone_and_Mac-0D96F6?style=for-the-badge&logo=apple&logoColor=white)](https://apps.apple.com/app/id6832390609)
+
 Bookworms is delightful app for sharing your reading activity and making your ebook library feel _real_. 
 
 Bookworms loads your library from Hardcover, and can display your library in 3D. 
@@ -11,3 +13,16 @@ Bookworms loads your library from Hardcover, and can display your library in 3D.
 * Set up your reads from the year on a desk like dominos, watch them fall, then watch them magically fly into a spread for you to share on socials 
 * Your customizations sync with iCloud so you can view your library on [Apple TV](https://apps.apple.com/us/app/bookworms-ebook-display/id6813137450), Mac, and iPhone.
 
+## Screenshots
+
+Book details on Mac
+
+![House of Leaves in book details on Mac](screenshots/mac-book-details.jpg)
+
+Desk on Mac, all time
+
+![Every book read on the Desk on Mac](screenshots/mac-desk.jpg)
+
+Library stack on iPhone
+
+<img src="screenshots/iphone-library-stack.jpg" alt="Library stack on iPhone" width="350">
