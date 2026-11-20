@@ -52,14 +52,22 @@ enum PileShape: String, CaseIterable, Identifiable {
     /// How steeply the camera looks down at a shape, so its height shows: less steeply than
     /// the pile's `PileCamera.pitch`.
     static let viewPitch: Float = 40 * .pi / 180
+    /// How high a shape rises where its books allow, in units. The camera zooms out to show it
+    /// whole, so it may rise above the pile's tallest, which keeps a big pyramid or cube in
+    /// proportion rather than flattening it.
+    static let tallest: Float = 12
     /// The farthest the camera zooms out to show a whole shape, as `PileCamera.zoom`.
     static let farthest: Float = 0.4
 
-    /// Whether a point at `ndc`, in normalized device coordinates, shows clear of the bars and
-    /// the view's sides: the navigation bar covers about the top eighth of an iPhone's view and
-    /// the tab bar about the bottom tenth.
-    static func shows(_ ndc: SIMD2<Float>) -> Bool {
-        abs(ndc.x) < 0.9 && ndc.y < 0.7 && ndc.y > -0.75
+    /// How far inside the view's clear part a shape stays, in normalized device coordinates.
+    static let margin: Float = 0.08
+
+    /// Whether a point at `ndc`, in normalized device coordinates, shows inside `clear`, the
+    /// part of the view the bars leave clear, by `margin`.
+    static func shows(_ ndc: SIMD2<Float>, within clear: (low: SIMD2<Float>, high: SIMD2<Float>))
+        -> Bool
+    {
+        all(ndc .> clear.low + margin) && all(ndc .< clear.high - margin)
     }
 
     /// How fast a book must strike a standing shape to knock it down, in units a second: well
@@ -178,7 +186,7 @@ enum PileShape: String, CaseIterable, Identifiable {
         let middle = (tray.farZ + tray.nearZ) / 2
         let courses = courses(
             count: sizes.count, size: average, width: 1.7 * tray.halfWidth(at: middle),
-            depth: 0.9 * (tray.nearZ - tray.farZ), height: PileTray.tallestPile)
+            depth: 0.9 * (tray.nearZ - tray.farZ), height: Self.tallest)
         let order = sizes.indices.sorted { (sizes[$0].z, $1) > (sizes[$1].z, $0) }
         let center = SIMD2(tray.centerX, middle)
         // Each laid book's footprint on the table, before the tray turns, and its top.

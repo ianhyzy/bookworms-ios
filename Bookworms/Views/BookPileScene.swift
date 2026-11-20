@@ -742,6 +742,9 @@ final class BookPileScene {
     /// Whether the books are the dominoes' handed back (`adopt`), rather than a drop's.
     private var isAdopted = false
     private var aspect: Float = 0.5
+    /// The part of the view that the bars and the Mac's sidebar leave clear, in normalized
+    /// device coordinates, which an arranged shape fills (see `arrange(_:)`).
+    private var clearView = (low: SIMD2<Float>(-1, -1), high: SIMD2<Float>(1, 1))
     private var tray: PileTray?
     private var cameraMove: (start: PileCamera, focus: SIMD3<Float>)?
     private var plan: [PileSlot] = []
@@ -1028,6 +1031,12 @@ final class BookPileScene {
             tray != self.tray
         else { return false }
         aspect = Float(viewport.size.width / viewport.size.height)
+        let size = SIMD2(Float(viewport.size.width), Float(viewport.size.height))
+        let insets = viewport.insets
+        clearView = (
+            low: SIMD2(Float(insets.leading), Float(insets.bottom)) / size * 2 - 1,
+            high: 1 - SIMD2(Float(insets.trailing), Float(insets.top)) / size * 2
+        )
         box = PileBox(viewport: viewport)
         build(tray)
         return true
@@ -1966,13 +1975,13 @@ final class BookPileScene {
         }
         let places = shape.places(for: sizes, in: tray)
         let ordered = places.map { books[$0.book] }
-        // The camera looks across the shape, keeping the reader's zoom and turn.
+        // The camera looks across the shape, keeping the reader's turn.
         var goal = view
         goal.pitch = PileShape.viewPitch
         goal.target =
             places.map(\.pose.translation).reduce(.zero, +) / Float(places.count) * [1, 0, 1]
-        // It zooms out, past the pile's farthest view if it must, until the whole shape shows
-        // between the bars, as a tall shape on a narrow view needs.
+        // It zooms as close as it can while the whole shape shows clear of the bars, and out
+        // past the pile's farthest view if a tall shape on a narrow view needs it.
         let bounds = places.map { DominoSetup.Box($0.pose, size: sizes[$0.book]).bounds }
         let low = bounds.map(\.low).reduce(SIMD3(repeating: .infinity)) { simd_min($0, $1) }
         let high = bounds.map(\.high).reduce(SIMD3(repeating: -.infinity)) { simd_max($0, $1) }
@@ -1982,8 +1991,11 @@ final class BookPileScene {
                     $0 & 1 == 0 ? low.x : high.x, $0 & 2 == 0 ? low.y : high.y,
                     $0 & 4 == 0 ? low.z : high.z)
             }
+        goal.zoom = PileCamera.zoomRange.upperBound
         while goal.zoom > PileShape.farthest,
-            !corners.allSatisfy({ PileShape.shows(goal.project($0, aspect: aspect)) })
+            !corners.allSatisfy({
+                PileShape.shows(goal.project($0, aspect: aspect), within: clearView)
+            })
         {
             goal.zoom -= 0.05
         }

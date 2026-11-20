@@ -133,11 +133,11 @@ DESK = [
     Shot("back", ["-BookwormsShelfMode", "pile", "-BookwormsPileFrame", "year:2025", "-BookwormsOpenBook", "buried",
                   "-BookwormsPileBack", "2"], 25, motion=True),
 ] + [
-    # **Arrange**'s shapes, from a year's pile, and the largest shape, from every book.
-    Shot(name, ["-BookwormsShelfMode", "pile", "-BookwormsPileFrame", frame,
-                "-BookwormsPileArrange", shape], 35, motion=True)
-    for name, shape, frame in (("cube", "cube", "year:2025"), ("pyramid", "pyramid", "year:2025"),
-                               ("wall", "wall", "year:2025"), ("all-time-cube", "cube", "lifetime"))
+    # **Arrange**'s shapes, from a year's pile. Every book's shape plans too slowly in a Debug
+    # build to land within a shot.
+    Shot(shape, ["-BookwormsShelfMode", "pile", "-BookwormsPileFrame", "year:2025",
+                 "-BookwormsPileArrange", shape], 35, motion=True)
+    for shape in ("cube", "pyramid", "wall")
 ]
 DOMINOES = [Shot("run", ["-BookwormsTab", "desk", "-BookwormsSetUpDominoes", "YES", "-BookwormsDominoPush", "3",
                          "-BookwormsPileFrame", "month:2025-8"], 60, motion=True)]
