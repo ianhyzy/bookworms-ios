@@ -27,7 +27,7 @@ This checklist covers what a TestFlight or App Store build of the iPhone and Mac
    | `com.apple.security.network.client`, `com.apple.security.personal-information.photos-library`, and `com.apple.security.files.user-selected.read-write` | Absent | `true` |
 
 3. **CloudKit production schema.** Production has the `SpineWorklistV1`, `SpineDesignV1`, `CoverChoiceV1`, `SeriesLookV1`, `SeriesLinkV1`, `TopFivePinsV1`, and `SpineClaimV1` record types, each with a `payload` field of type Bytes. Without `SpineClaimV1`, runs still design every book, but two devices that run at once may each send a request for the same book. The app also writes the `LibraryArchive` record type, whose `archive` asset field the Apple TV app's release workflow already requires in Production; confirm it is there, or every library upload fails and each device downloads from Hardcover on its own.
-4. **Apple TV build.** Ship an Apple TV build that includes the companion-designs and series-look work, which publishes `SpineWorklistV1`, draws `SpineDesignV1` designs on Book Wall, shows covers chosen in `CoverChoiceV1`, applies `SeriesLinkV1` choices, and creates and draws `SeriesLookV1` looks (see `README-AI.md`'s [iCloud contract](../README-AI.md#icloud-contract)). Until then an iPhone without a Hardcover sign-in designs the newest Hardcover snapshot in `library-v1`, and the TV ignores the designs, looks, and choices. Books from the archive of an Apple TV build that does not download `seriesMemberships` group by their featured series. Ship the Apple TV's shared-library work as well, which reads `library-v1` before a due Hardcover fetch, keeps each book's covers fixed by the same rule as this app, and keeps `review` and `editionFormat`. Released Apple TV builds fetch on their own schedule and drop `review` from every snapshot when they upload, and their covers can differ from this app's after the reader changes an edition, so some designs that a signed-in iPhone makes for its own copy may not match those books on that Apple TV.
+4. **Apple TV build.** Apple TV 1.2.0 and later include the companion-designs and series-look work: they publish `SpineWorklistV1`, draw `SpineDesignV1` designs on Book Wall, show covers chosen in `CoverChoiceV1`, apply `SeriesLinkV1` choices, and create and draw `SeriesLookV1` looks (see `README-AI.md`'s [iCloud contract](../README-AI.md#icloud-contract)). They also include the shared-library work, which reads `library-v1` before a due Hardcover fetch, keeps each book's covers fixed by the same rule as this app, and keeps `review`, `editionFormat`, and `seriesMemberships`. Keep that work in every later Apple TV build. Apple TV 1.1.0 and earlier ignore the designs, looks, and choices, fetch on their own schedule, and drop `review` from every snapshot when they upload. Their covers can differ from this app's after the reader changes an edition, so some designs that a signed-in iPhone makes for its own copy may not match those books on that Apple TV. Books from the snapshots of an Apple TV build that doesn't download `seriesMemberships` group by their featured series.
 5. **Privacy manifest.** Confirm that each archived `Bookworms.app` contains `PrivacyInfo.xcprivacy`, at the bundle's root on iPhone and in `Contents/Resources` on Mac (`script/release.sh check` prints it), and that each archive's privacy report (Organizer, **Generate Privacy Report**) shows only the declared UserDefaults (CA92.1) and file timestamp (C617.1) reasons. The Keychain needs no declared reason.
 6. **App Privacy answers.** Ian decides these answers. The recommended answer for both platforms is **Data Not Collected**, as for the Apple TV app in the tvOS release workflow, because the developer receives none of the data the app sends:
    - **Hardcover.** The app sends the reader's Hardcover tokens only to Hardcover. It reads the reader's own library and block list, and the public profiles, names, photo links, ratings, and finish dates of the readers the account follows or looks up. The friends' data (`social-snapshot.json`) and the image cache, which holds their profile photos, stay on the device, and signing out deletes both. **With friends**, **My reading**, and **Share desk** images carry the reader's Hardcover username and profile link only when the reader shares them; **My reading** and **Share desk** images also show it in the preview, and leave it out when the reader turns off **Show profile link**.
@@ -74,7 +74,7 @@ Each file uploaded in step 5 of **Before each archive** becomes a TestFlight bui
    - **Beta App Review Information**: the owner's contact details, the Hardcover demo account that the tvOS release workflow lists for App Review, and the review notes under **App Review** with their Beta App Review ending. Enter the contact details and the demo sign-in only in App Store Connect.
 4. **Internal testers.** Add both builds to an internal group, whose members are App Store Connect users on the team. Internal builds need no Beta App Review. `project.yml` declares `ITSAppUsesNonExemptEncryption: false`, so a build doesn't wait for an export compliance answer. Run the **Production cross-device check** with these builds before you invite external testers.
 5. **External testers.** Add both builds to an external group. On each platform, the first build of a version that goes to external testers waits for Beta App Review, which reads the test information; later builds of the same version may not need a full review. A build stays available for 90 days.
-6. **Apple TV testers.** Add the same people to the same kind of group on the Apple TV app's record, `gay.ian.Bookworms`, with a 1.2.0 build. The Apple TV's **Settings > Spines** sends readers to this app, so an Apple TV tester without it follows that pointer to an app they can't install.
+6. **Apple TV testers.** Add the same people to the same kind of group on the Apple TV app's record, `gay.ian.Bookworms`, with a 1.2.0 or later build. The Apple TV's **Settings > Spines** sends readers to this app, so an Apple TV tester without it follows that pointer to an app they can't install.
 7. **What to Test.** Each build has its own **What to Test** text. Start from this text for 1.0.0, and leave out the Apple TV item when the testers have no Apple TV build:
 
    ```text
@@ -114,7 +114,7 @@ Without a Hardcover sign-in, every tab depends on a library that the reviewer's 
 - Confirm that the demo account follows readers who have rated books, so that the Share tab's **With friends** templates have readers to compare.
 - Attach a demo video, made with the demo account, of all four tabs: **Share**, **Library**, **Desk**, and **Spines**. The example profile hides the **Spines** tab.
 
-Use these review notes for both platforms, for App Review and for Beta App Review, adjusted to the build. End them with the paragraph below that fits the review:
+Use these review notes for both platforms, for App Review and for Beta App Review, adjusted to the build, and end them with the Apple TV paragraph that follows them:
 
 ```text
 Bookworms shows a Hardcover (hardcover.app) reading library on iPhone and Mac and designs book spines for it. It only reads the Hardcover account; it never changes it. The app has four tabs: Share, Library, Desk, and Spines. On the Mac, they are sections in the sidebar.
@@ -130,16 +130,8 @@ A copy of the reader's Hardcover library, including their reviews, and their spi
 With friends compares the reader's ratings with the readers the account follows and with public readers looked up by username. It shows their profiles and ratings, never review text. Hardcover moderates its profiles; users report and block readers in the Hardcover app and website. Bookworms reads the account's block list and never shows readers the account blocked.
 ```
 
-For App Review, when Apple TV 1.2.0 is submitted with this app (see **Joint release with Apple TV 1.2.0**):
-
 ```text
-Bookworms for Apple TV 1.2.0 is submitted to App Review at the same time. To see the designs there, use an Apple TV 4K (2nd generation) or later on the same iCloud account, install it, connect the same demo account, and turn on iCloud storage in Settings > General and Book Wall in Settings > Views.
-```
-
-For Beta App Review, once the owner confirms that an Apple TV 1.2.0 build is in TestFlight:
-
-```text
-Bookworms for Apple TV 1.2.0 is in TestFlight too. Earlier Apple TV versions don't show these designs. Its Book Wall shows them on an Apple TV 4K (2nd generation) or later on the same iCloud account, with the same demo account connected, iCloud storage on in Settings > General, and Book Wall on in Settings > Views. This app works without it.
+Bookworms for Apple TV, on the App Store, shows these designs on Book Wall. To see them there, use an Apple TV 4K (2nd generation) or later on the same iCloud account, install it, connect the same demo account, and turn on iCloud storage in Settings > General and Book Wall in Settings > Views. This app works without it.
 ```
 
 ## Signed device checks
@@ -202,7 +194,7 @@ Check the Spines tab on a recent iPhone during a long **Generate now** run in an
 
 ## Production cross-device check
 
-Every check above can run on development-signed builds, which use the CloudKit Development environment. Before submitting, check iCloud in Production with production-signed builds: the iPhone and Mac TestFlight builds (for the iPhone, a **Release Testing** export from Organizer also works), and the Apple TV on TestFlight build 12 or later, all on one Apple Account whose iCloud holds no Bookworms data from another Hardcover account, with the Apple TV connected to the demo Hardcover account, its **iCloud storage** on in Settings > General, and **Book Wall** on in Settings > Views. Run the Apple TV part after 8 a.m. Then:
+Every check above can run on development-signed builds, which use the CloudKit Development environment. Before submitting, check iCloud in Production with production-signed builds: the iPhone and Mac TestFlight builds (for the iPhone, a **Release Testing** export from Organizer also works), and Apple TV 1.2.0 or later, from the App Store or TestFlight, all on one Apple Account whose iCloud holds no Bookworms data from another Hardcover account, with the Apple TV connected to the demo Hardcover account, its **iCloud storage** on in Settings > General, and **Book Wall** on in Settings > Views. Run the Apple TV part after 8 a.m. Then:
 
 1. Sign in to Hardcover on the iPhone with the demo account, and check that **Last synced** on the Mac matches the iPhone's sync.
 2. Run **Generate now** for a few books, and check that the Apple TV's Book Wall draws their designs.
@@ -213,12 +205,3 @@ Every check above can run on development-signed builds, which use the CloudKit D
 7. On the Mac, sign out of Hardcover and sign in with a second account whose library includes the book whose cover you chose in step 3. Check that the Mac asks about the demo account, and that **Merge** shows that cover on the Mac. Check that the iPhone and the Apple TV then ask about the second account. Run this step last, because the merge stays in iCloud.
 
 Record the results, with the commit and build numbers, alongside the candidates.
-
-## Joint release with Apple TV 1.2.0
-
-Release this app together with Apple TV 1.2.0, whose **Settings > Spines** sends readers to the iPhone and Mac app.
-
-1. Under **App Store Version Release**, choose **Manually release this version** for the iOS and macOS versions and for Apple TV 1.2.0.
-2. Submit the iOS and macOS versions, and Apple TV 1.2.0, to App Review.
-3. Once all three are approved, release the iPhone and Mac versions, then Apple TV 1.2.0 the same day. Never release Apple TV 1.2.0 first.
-4. After Apple TV 1.2.0 is live, update this workflow's Apple TV build step and the current limits in `README-AI.md`'s [iCloud contract](../README-AI.md#icloud-contract), which describe released Apple TV builds without the companion work.
