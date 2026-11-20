@@ -124,9 +124,17 @@ enum PileShape: String, CaseIterable, Identifiable {
         case .wall:
             // The thinnest wall, one row deep if it can be, no higher than `wallRise` times
             // `height`, since a thin wall hides little behind it, about `wallLength` times as
-            // long as it is high.
+            // long as it is high. Its courses shift a quarter book either way, so the wall's
+            // half-book bond stays centered, and that half book comes out of its width.
+            let bonded = max(1, Int((width - along / 2 + Self.gap) / along))
+            func wall(_ c: Int, _ r: Int) -> [Course] {
+                (0..<layers(c * r))
+                    .map {
+                        Course(columns: c, rows: r, shift: ($0 % 2 == 0 ? -1 : 1) * along / 4)
+                    }
+            }
             for r in 1...rows {
-                let fits = (1...columns)
+                let fits = (1...bonded)
                     .filter {
                         Float(layers($0 * r)) * thickness <= Self.wallRise * height
                     }
@@ -140,15 +148,9 @@ enum PileShape: String, CaseIterable, Identifiable {
                         return miss(first) < miss(second)
                     })
                 else { continue }
-                return (0..<layers(c * r))
-                    .map {
-                        Course(columns: c, rows: r, shift: $0 % 2 == 0 ? 0 : along / 2)
-                    }
+                return wall(c, r)
             }
-            return (0..<layers(columns * rows))
-                .map {
-                    Course(columns: columns, rows: rows, shift: $0 % 2 == 0 ? 0 : along / 2)
-                }
+            return wall(bonded, rows)
         }
     }
 
@@ -160,7 +162,7 @@ enum PileShape: String, CaseIterable, Identifiable {
         let average = sizes.reduce(.zero, +) / Float(sizes.count)
         let middle = (tray.farZ + tray.nearZ) / 2
         let courses = courses(
-            count: sizes.count, size: average, width: 1.9 * tray.halfWidth(at: middle),
+            count: sizes.count, size: average, width: 1.7 * tray.halfWidth(at: middle),
             depth: 0.9 * (tray.nearZ - tray.farZ), height: PileTray.tallestPile)
         let order = sizes.indices.sorted { (sizes[$0].z, $1) > (sizes[$1].z, $0) }
         let center = SIMD2(tray.centerX, middle)
