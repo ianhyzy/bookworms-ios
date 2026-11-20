@@ -946,7 +946,7 @@ struct ShareStudioView: View {
             }
             if template.rendersScene && isPending {
                 // A scene takes seconds to load its covers and lay its books out.
-                ProgressView(template == .pile ? "Dropping books" : template == .tower ? "Stacking books" : "Weighing books")
+                ProgressView(template.sceneProgressTitle)
                     .padding()
                     .background(.regularMaterial, in: .rect(cornerRadius: 12))
             } else if image == nil {

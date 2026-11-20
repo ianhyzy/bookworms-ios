@@ -60,6 +60,15 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
     /// `SeesawRenderer`), which takes seconds and waits for its own fonts and covers.
     var rendersScene: Bool { self == .pile || self == .tower || self == .seesaw }
 
+    /// The label beside the progress indicator while a scene template renders.
+    var sceneProgressTitle: String {
+        switch self {
+        case .tower: "Stacking books"
+        case .seesaw: "Weighing books"
+        default: "Dropping books"
+        }
+    }
+
     /// Whether the card features one book, which the reader can choose.
     var isSingleBook: Bool { self == .justFinished || self == .review || self == .currentlyReading }
 
