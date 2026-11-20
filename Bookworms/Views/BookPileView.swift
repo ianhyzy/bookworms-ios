@@ -242,10 +242,13 @@ struct BookPileView: View {
                         if !Task.isCancelled { scene.gatherBooks() }
                     }
                     // `-BookwormsPileArrange <cube|pyramid|wall>` arranges the books into that
-                    // shape a second after the drop, as **Arrange** does.
+                    // shape a second after the drop lands, as **Arrange** does.
                     if let shape = UserDefaults.standard.string(forKey: "BookwormsPileArrange")
                         .flatMap(PileShape.init(rawValue:))
                     {
+                        while scene.status.isDropping, !Task.isCancelled {
+                            try? await Task.sleep(for: .seconds(0.1))
+                        }
                         try? await Task.sleep(for: .seconds(1))
                         await desk.awake()
                         if !Task.isCancelled { scene.arrange(shape) }
