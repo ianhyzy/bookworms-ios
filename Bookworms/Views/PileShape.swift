@@ -12,7 +12,8 @@ import simd
 enum PileShape: String, CaseIterable, Identifiable {
     /// Rows of stacks about as wide, deep, and high as one another.
     case cube
-    /// Tiers that narrow by a book on every side as they rise.
+    /// Tiers that each lose a book along their rows and a row as they rise, centered on the
+    /// tier below.
     case pyramid
     /// Courses shifted by half a book from the course below, as bricks are laid.
     case wall
@@ -59,7 +60,7 @@ enum PileShape: String, CaseIterable, Identifiable {
 
     /// One course: how many books lie side by side along x, how many rows of them lie along z,
     /// and how far along x its rows shift, in units.
-    struct Course: Equatable {
+    struct Course {
         let columns: Int
         let rows: Int
         var shift: Float = 0
