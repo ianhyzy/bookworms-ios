@@ -325,12 +325,6 @@ struct BookPileView: View {
             }
             .toolbar {
                 if details.lift == nil {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button(dropTitle, systemImage: "arrow.counterclockwise") {
-                            desk.pileGeneration += 1
-                        }
-                        .help(reduceMotion ? "Stack the books again" : "Drop the books again")
-                    }
                     ToolbarItem(placement: .topBarLeading) { arrangeMenu }
                     // The example profile's books are not the viewer's to share.
                     if !model.isExample {
@@ -405,21 +399,25 @@ struct BookPileView: View {
 
     private var dropTitle: String { reduceMotion ? "Stack again" : "Drop again" }
 
-    /// **Arrange**, which flies the books on the desk into a shape (`BookPileScene.arrange(_:)`),
-    /// unavailable while books drop or already fly into one.
+    /// **Arrange**, every way to lay the books out: **Drop again**, and the shapes the books on
+    /// the desk fly into (`BookPileScene.arrange(_:)`), which are unavailable while books drop or
+    /// already fly into one. One menu keeps the iPhone's bar room for the time frame button.
     private var arrangeMenu: some View {
         Menu("Arrange", systemImage: "square.stack.3d.up") {
-            ForEach(PileShape.allCases) { shape in
-                Button(shape.title, systemImage: shape.systemImage) {
-                    Task {
-                        await desk.awake()
-                        scene.arrange(shape)
+            Button(dropTitle, systemImage: "arrow.counterclockwise") { desk.pileGeneration += 1 }
+            Section {
+                ForEach(PileShape.allCases) { shape in
+                    Button(shape.title, systemImage: shape.systemImage) {
+                        Task {
+                            await desk.awake()
+                            scene.arrange(shape)
+                        }
                     }
                 }
             }
+            .disabled(scene.status.isDropping || scene.status.isArranging)
         }
-        .disabled(scene.status.isDropping || scene.status.isArranging)
-        .help("Arrange the books into a shape")
+        .help("Drop the books again, or arrange them into a shape")
     }
 
     /// The scene's gestures as VoiceOver hints them, in the words of the Mac's pointer or the
