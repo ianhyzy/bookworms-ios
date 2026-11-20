@@ -408,9 +408,13 @@ def forget_mac_copy():
 
 
 def capture_mac(app, home, helper, shot, book, prefix):
-    """Launches the Mac copy for one shot and photographs its window: `<prefix>.png` and, for
-    motion, `<prefix>-motion.png`, eight pictures taken at even intervals."""
+    """Launches the Mac copy for one shot and photographs its window: `<prefix>.png`, or the
+    shot's `file` in place of it, and, for motion, `<prefix>-motion.png`, eight pictures taken at
+    even intervals."""
     forget_mac_copy()
+    written = home / "Library/Caches/Bookworms" / shot.file if shot.file else None
+    if written:
+        written.unlink(missing_ok=True)
     arguments = ["-BookwormsPreviewFolder", "preview", "-ApplePersistenceIgnoreState", "YES",
                  "-BookwormsTips", "hide", *[argument.format(book=book) for argument in shot.arguments]]
     process = subprocess.Popen([app / "Contents/MacOS/Bookworms", *arguments],
@@ -424,7 +428,15 @@ def capture_mac(app, home, helper, shot, book, prefix):
             time.sleep(shot.wait / 8)
             if shot.motion:
                 photograph(process.pid, shot.window, helper, still)
-        photograph(process.pid, shot.window, helper, prefix.with_name(prefix.name + ".png"))
+        picture = prefix.with_name(prefix.name + ".png")
+        if written:
+            if written.exists():
+                shutil.copy(written, picture)
+            # A video's still keeps its movie beside it.
+            if (movie := written.with_suffix(".mp4")).exists():
+                shutil.copy(movie, picture.with_suffix(".mp4"))
+        else:
+            photograph(process.pid, shot.window, helper, picture)
         tile([still for still in stills if still.exists()], prefix.with_name(prefix.name + "-motion.png"),
              scratch, "4x2")
     finally:
