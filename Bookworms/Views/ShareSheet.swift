@@ -85,8 +85,9 @@ enum ShareOutcome: Equatable {
     case action(String)
 
     #if os(iOS)
-        /// The outcome of `UIActivityViewController`'s completion handler. An error that reports a
-        /// cancel counts as a cancel.
+        /// The outcome of `UIActivityViewController`'s completion handler. A finished activity
+        /// whose type is one of `actions`' IDs is that action, and an error that reports a cancel
+        /// counts as a cancel.
         init(
             activity: UIActivity.ActivityType?, completed: Bool, error: (any Error)?,
             actions: [ShareAction] = []

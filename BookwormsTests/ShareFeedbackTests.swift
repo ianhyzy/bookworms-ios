@@ -27,6 +27,18 @@ final class ShareFeedbackTests: XCTestCase {
         XCTAssertEqual(ShareOutcome.savedToPhotos.toast?.message, "Saved to Photos")
         XCTAssertEqual(ShareOutcome.shared.toast?.message, "Shared")
         XCTAssertNil(ShareOutcome.cancelled.toast)
+        // The app's own action reports its ID and shows no toast; backing out of it is a cancel.
+        let room = ShareAction(id: "fixture.room", title: "Fixture", systemImage: "cube")
+        let roomType = UIActivity.ActivityType(room.id)
+        XCTAssertEqual(
+            ShareOutcome(activity: roomType, completed: true, error: nil, actions: [room]),
+            .action(room.id))
+        XCTAssertEqual(
+            ShareOutcome(activity: roomType, completed: false, error: nil, actions: [room]),
+            .cancelled)
+        XCTAssertEqual(
+            ShareOutcome(activity: roomType, completed: true, error: nil), .shared)
+        XCTAssertNil(ShareOutcome.action(room.id).toast)
         XCTAssertEqual(ShareOutcome.failed("Couldn't share").toast?.isError, true)
     }
 
