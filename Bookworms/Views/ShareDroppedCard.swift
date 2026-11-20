@@ -29,16 +29,16 @@ struct DroppedCard: View {
     /// The newest `maximumBooks` of the dropped books, which the card draws.
     var shown: [CloudBook] { Array(input.books.prefix(Self.maximumBooks)) }
 
-    /// The `basketCoverLimit` books of `books` that the most Hardcover readers rated, newest
-    /// first on a tie, in `books`' order.
-    static func popular(_ books: [CloudBook]) -> [CloudBook] {
+    /// The `limit` books of `books` that the most Hardcover readers rated, newest first on a
+    /// tie, in `books`' order.
+    static func popular(_ books: [CloudBook], limit: Int = basketCoverLimit) -> [CloudBook] {
         let kept = Set(
             books.enumerated()
                 .sorted {
                     ($0.element.ratingsCount ?? 0, -$0.offset)
                         > ($1.element.ratingsCount ?? 0, -$1.offset)
                 }
-                .prefix(basketCoverLimit).map(\.element.id))
+                .prefix(limit).map(\.element.id))
         return books.filter { kept.contains($0.id) }
     }
 

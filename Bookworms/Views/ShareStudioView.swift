@@ -280,7 +280,8 @@ struct ShareStudioView: View {
         // restarting a pile would only delay it. Other templates re-render only when a face for
         // one of their own books arrives.
         let loadedFaces =
-            template == .pile ? 0 : designs.count { model.fonts.face(for: $0) != nil }
+            template == .pile || template == .tower
+            ? 0 : designs.count { model.fonts.face(for: $0) != nil }
         var request = RenderRequest(
             template: template, aspect: aspect, frame: frame, bookID: bookID,
             coverStyle: coverStyle, direction: direction,
@@ -370,7 +371,7 @@ struct ShareStudioView: View {
             NavigationStack {
                 PileVideoSheet(
                     books: film.books, title: film.title, aspect: aspect, seed: seed,
-                    showsClose: true)
+                    template: template, showsClose: true)
             }
             .presentationSizing(.page)
         }
@@ -902,9 +903,9 @@ struct ShareStudioView: View {
                         #endif
                     }
             }
-            if template == .pile && isPending {
-                // A pile takes seconds to load its covers and lay its books out.
-                ProgressView("Dropping books")
+            if (template == .pile || template == .tower) && isPending {
+                // A pile or a tower takes seconds to load its covers and lay its books out.
+                ProgressView(template == .pile ? "Dropping books" : "Stacking books")
                     .padding()
                     .background(.regularMaterial, in: .rect(cornerRadius: 12))
             } else if image == nil {
@@ -1314,19 +1315,21 @@ struct ShareStudioView: View {
         if showsShuffle {
             Button("Shuffle", systemImage: "shuffle") { seed = .random(in: 1 ... .max) }
         }
-        if template == .pile && exports {
-            Button("Video", systemImage: "video") {
-                let frame = shownFrame
-                let books = ShareTemplate.pile.books(from: library, in: frame, direction: direction)
-                let input = ShareInput(
-                    template: .pile, aspect: aspect, books: books, frame: frame,
-                    coverStyle: coverStyle, direction: direction, showsRatings: showsRatings,
-                    seed: seed)
-                film = (books, input.period)
-                filmsPile = true
-            }
-            .disabled(hasNoBooks)
+        if (template == .pile || template == .tower) && exports {
+            Button("Video", systemImage: "video", action: startFilm)
+                .disabled(hasNoBooks)
         }
+    }
+
+    /// Opens the video of the Desk or Tall Stack template's books.
+    private func startFilm() {
+        let frame = shownFrame
+        let books = template.books(from: library, in: frame, direction: direction)
+        let input = ShareInput(
+            template: template, aspect: aspect, books: books, frame: frame,
+            coverStyle: coverStyle, direction: direction, showsRatings: showsRatings, seed: seed)
+        film = (books, input.period)
+        filmsPile = true
     }
 
     /// Whether **My reading** images can letter the sharer's profile link, which needs the
@@ -1397,6 +1400,20 @@ struct ShareStudioView: View {
             } catch {
                 Self.log.error("The desk image failed: \(error)")
             }
+        } else if template == .tower {
+            // A tower's covers face up, out of the low camera's view, so a late cover draws
+            // no redraw.
+            do {
+                let tower = try await TowerSnapshotRenderer.render(
+                    books: books, title: input.period, aspect: request.aspect,
+                    seed: request.seed, username: request.username, model: model)
+                try Task.checkCancellation()
+                rendered = tower.image
+            } catch is CancellationError {
+                return
+            } catch {
+                Self.log.error("The tower image failed: \(error)")
+            }
         } else if template == .checkoutCard {
             // A Checkout Card draws no covers or spines, only its handwriting.
             input.card = request.card
@@ -1444,6 +1461,12 @@ struct ShareStudioView: View {
         #endif
         #if DEBUG
             ShareDebug.write(image)
+            // `-BookwormsPileVideo YES` films the first Desk or Tall Stack image.
+            if PileVideoDebug.opensSheet, film.books.isEmpty, image != nil,
+                template == .pile || template == .tower
+            {
+                startFilm()
+            }
             // `-BookwormsShareFullSize YES` shows each image full size, as holding the preview
             // does.
             if UserDefaults.standard.bool(forKey: "BookwormsShareFullSize"), let image {

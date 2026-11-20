@@ -12,6 +12,7 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
     case yearInBooks, topFive, hotTakes, pile, justFinished, review
     case currentlyReading, tasteMatch, bookSwap
     case checkoutCard, dropped
+    case tower
 
     var id: Self { self }
 
@@ -28,6 +29,7 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         case .bookSwap: "Book Swap"
         case .checkoutCard: "Checkout Card"
         case .dropped: "Dropped"
+        case .tower: "Tall Stack"
         }
     }
 
@@ -44,6 +46,7 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         case .bookSwap: "arrow.left.arrow.right"
         case .checkoutCard: "list.bullet.rectangle.portrait"
         case .dropped: "trash"
+        case .tower: "ruler"
         }
     }
 
@@ -54,9 +57,9 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
     /// Whether the card features one book, which the reader can choose.
     var isSingleBook: Bool { self == .justFinished || self == .review || self == .currentlyReading }
 
-    /// Whether the card draws covers that can be 3D books or flat. A pile's books are always 3D,
-    /// and Checkout Card draws no covers.
-    var hasCoverStyle: Bool { self != .pile && self != .checkoutCard }
+    /// Whether the card draws covers that can be 3D books or flat. A pile's and a tower's books
+    /// are always 3D, and Checkout Card draws no covers.
+    var hasCoverStyle: Bool { self != .pile && self != .checkoutCard && self != .tower }
 
     /// Whether the card shows the reader's ratings, which the studio can hide. Hot Takes is
     /// about ratings, so it always shows them.
@@ -388,8 +391,9 @@ struct ShareCanvas: View {
             case .yearInBooks: YearInBooksCard(input: input)
             case .topFive: TopFiveCard(input: input)
             case .hotTakes: HotTakesCard(input: input)
-            // `PileSnapshotRenderer` draws piles: `ImageRenderer` cannot capture RealityKit.
-            case .pile: EmptyView()
+            // `PileSnapshotRenderer` draws piles, and `TowerSnapshotRenderer` towers:
+            // `ImageRenderer` cannot capture RealityKit.
+            case .pile, .tower: EmptyView()
             case .justFinished, .currentlyReading: FeaturedBookCard(input: input)
             case .review: ReviewCard(input: input)
             case .tasteMatch: TasteMatchCard(input: input)

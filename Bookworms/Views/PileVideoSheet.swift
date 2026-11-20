@@ -37,6 +37,9 @@ struct PileVideoSheet: View {
     let title: String
     let aspect: ShareAspect
     let seed: UInt64
+    /// What the video films: the Desk's pile dropping, or a Tall Stack toppling
+    /// (`TowerSnapshotRenderer.renderMovie`).
+    var template = ShareTemplate.pile
     /// Whether the view is a sheet's root, which closes with **Cancel** or the close button,
     /// rather than pushed, which goes back with the back button, or on a Mac, whose sheets draw
     /// none, with **Back** in the row under the clip.
@@ -219,9 +222,14 @@ struct PileVideoSheet: View {
             defer { application.isIdleTimerDisabled = wasIdleTimerDisabled }
         #endif
         do {
-            let made = try await PileSnapshotRenderer.renderMovie(
-                books: books, title: title, aspect: aspect, seed: seed, model: model,
-                progress: { progress = $0 }, preview: { frame = $0 })
+            let made =
+                template == .tower
+                ? try await TowerSnapshotRenderer.renderMovie(
+                    books: books, title: title, aspect: aspect, seed: seed, model: model,
+                    progress: { progress = $0 }, preview: { frame = $0 })
+                : try await PileSnapshotRenderer.renderMovie(
+                    books: books, title: title, aspect: aspect, seed: seed, model: model,
+                    progress: { progress = $0 }, preview: { frame = $0 })
             frame = nil
             // A render cancelled after its last check still returns.
             guard !Task.isCancelled else { return made.remove() }
@@ -403,7 +411,7 @@ struct PileVideoSheet: View {
     /// Simulator hooks, since a script cannot tap **Video**.
     ///
     /// With `-BookwormsPileShare YES`, `-BookwormsPileVideo YES` also opens the pile's video
-    /// sheet, and each finished video is copied to `Library/Caches/Bookworms/pile-video-debug.mp4`,
+    /// sheet, or in the Share tab, the Desk or Tall Stack template's, and each finished video is copied to `Library/Caches/Bookworms/pile-video-debug.mp4`,
     /// with its Live Photo copy at `pile-video-debug.mov` and its still at
     /// `pile-video-debug.jpg`.
     enum PileVideoDebug {
