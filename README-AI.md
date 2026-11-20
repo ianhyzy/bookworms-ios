@@ -852,9 +852,9 @@ This app also writes one `TopFivePinsV1` record per account for the books pinned
 
 Current limits:
 
-- Apple TV builds that include the companion-designs work cache companion designs and draw them on Book Wall while `BookPresentation.showsCompanionSpines` is on, and show chosen covers first while `BookPresentation.showsCompanionCovers` is on, both with the Apple TV's **iCloud storage** on. Only Apple TV builds that include the series-look work read `SeriesLinkV1` records and create and draw `SeriesLookV1` records. No released Apple TV build includes that work yet; released builds ignore designs, looks, and choices and show the default covers.
+- Apple TV builds that include the companion-designs work cache companion designs and draw them on Book Wall while `BookPresentation.showsCompanionSpines` is on, and show chosen covers first while `BookPresentation.showsCompanionCovers` is on, both with the Apple TV's **iCloud storage** on. Only Apple TV builds that include the series-look work read `SeriesLinkV1` records and create and draw `SeriesLookV1` records. Apple TV 1.2.0 and later include both; Apple TV 1.1.0 and earlier ignore designs, looks, and choices and show the default covers.
 - A development-signed build uses the CloudKit Development environment. It does not see data that App Store or TestFlight Apple TV builds write to Production.
-- The [release workflow](docs/RELEASING.md) lists the App Store Connect, signing, production schema, App Review, Production iCloud, and joint-release steps that remain before shipping.
+- The [release workflow](docs/RELEASING.md) lists the App Store Connect, signing, production schema, App Review, and Production iCloud steps for each release.
 
 Before a device asks a model for a book's design, it saves one `SpineClaimV1` record for the book (see [Spine generation](#spine-generation)). The Apple TV doesn't read it:
 
