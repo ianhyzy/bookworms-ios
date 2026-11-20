@@ -15,7 +15,7 @@
 
         /// Whether the iPhone has LiDAR, whose scene mesh tells a shelf's height and side panels.
         /// Without it, books could stand through the shelf above or over a panel in front of
-        /// them, so iPhones without LiDAR get the stack alone (Ian's choice, 2026-11-20).
+        /// them, so iPhones without LiDAR get the stack alone.
         static var supportsShelf: Bool {
             ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
         }
@@ -58,7 +58,7 @@
             ZStack {
                 RoomARContainer(scene: scene)
                     .ignoresSafeArea()
-                    .onTapGesture { scene.isPlaced.toggle() }
+                    .onTapGesture { scene.tap() }
                     .accessibilityHidden(true)
                 // The whole screen, as the camera view and its snapshot fill it.
                 GeometryReader { proxy in framing(in: proxy.size) }
@@ -68,7 +68,7 @@
             }
             .statusBarHidden()
             .task { await scene.load(request.books, model: model) }
-            .onChange(of: PileSnapshotRenderer.isRendering) { _, isRendering in
+            .onChange(of: PileSnapshotRenderer.isRendering, initial: true) { _, isRendering in
                 // RealityKit's renderer and this view's share one engine (`isRendering`).
                 scene.isDetached = isRendering
             }
@@ -184,11 +184,13 @@
         @ObservationIgnored private let shelfRoot = Entity()
         @ObservationIgnored private let reticle = RoomPhotoScene.makeReticle()
         @ObservationIgnored private var tower: BookTower?
-        /// The books the room may show, most popular first (`RoomPlacement.maximumBooks`),
-        /// oldest first.
+        /// The books the room may show: the most popular `RoomPlacement.maximumBooks`, oldest
+        /// first.
         @ObservationIgnored private var books: [CloudBook] = []
         @ObservationIgnored private var fill: ShelfFill?
         @ObservationIgnored private var space: ShelfSpace?
+        /// Each stacked book's entity, by book ID.
+        @ObservationIgnored private var stacked: [Int: Entity] = [:]
         /// Each shelf book's entity, by book ID, made once and reused as the space changes.
         @ObservationIgnored private var shelved: [Int: Entity] = [:]
         @ObservationIgnored private var updates: (any Cancellable)?
@@ -201,6 +203,19 @@
             anchor.addChild(reticle)
             stackRoot.isEnabled = false
             shelfRoot.isEnabled = false
+            // A cover or font that arrives after the books were made retextures them in both
+            // arrangements.
+            factory.retextured = { [weak self] id, materials in
+                for entity in [self?.stacked[id], self?.shelved[id]].compactMap({ $0 }) {
+                    entity.components[ModelComponent.self]?.materials = materials
+                }
+            }
+        }
+
+        /// Sets the books down where they show, or picks them up again. A tap with no books in
+        /// view does nothing.
+        func tap() {
+            if isPlaced || isShowingBooks { isPlaced.toggle() }
         }
 
         /// The books the photo shows.
@@ -268,6 +283,7 @@
             for slot in tower.slots {
                 guard let book = factory.makeModel(slot.book.id, lighting: nil) else { continue }
                 book.transform = slot.transform
+                stacked[slot.book.id] = book
                 stackRoot.addChild(book)
             }
         }
@@ -281,6 +297,7 @@
             view = nil
             stackRoot.children.removeAll()
             shelfRoot.children.removeAll()
+            stacked = [:]
             shelved = [:]
             factory.release(keeping: [])
         }
@@ -443,7 +460,7 @@
                 width: fitted.width, height: fitted.height)
         }
 
-        /// "1 book" or "11 books, 32 cm tall", with the height as the iPhone's region writes it
+        /// "1 book, 2 cm tall" or "11 books, 32 cm tall", with the height as the iPhone's region writes it
         /// (`BookTower.heightText`).
         static func line(count: Int, stackHeight: Float, locale: Locale = .current) -> String {
             "\(books(count)), \(BookTower.heightText(stackHeight, locale: locale)) tall"

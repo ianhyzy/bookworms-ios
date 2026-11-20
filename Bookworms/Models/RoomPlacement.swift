@@ -57,8 +57,8 @@ enum ShelfProbe {
     /// `cast(origin, direction, length)` returns the distance, in meters, to the first scene
     /// surface along a ray, or `nil` if there is none within `length`. The frame's origin is
     /// the space's left end, where the board meets the back; its +x runs along the board to
-    /// the right, its +y up, and its +z out of the shelf toward the camera, and it scales
-    /// scene units to meters as `RoomPlacement.root` does. The space ends at each side where
+    /// the right, its +y up, and its +z out of the shelf toward the camera
+    /// (`RoomPlacement.root(at:facing:)`). The space ends at each side where
     /// a ray along the board meets something, such as a side panel or a vase, or where the
     /// board itself ends, so no book stands over air.
     static func measure(
@@ -88,10 +88,7 @@ enum ShelfProbe {
         let left = reach(-right)
         let width = left + reach(right)
         let origin = point + inward * back - right * left
-        let frame = Transform(
-            scale: SIMD3(repeating: RoomPlacement.metersPerUnit),
-            rotation: simd_quatf(angle: atan2(-inward.x, -inward.z), axis: up),
-            translation: origin)
+        let frame = RoomPlacement.root(at: origin, facing: origin - inward)
         let units = 1 / RoomPlacement.metersPerUnit
         return (frame, ShelfSpace(width: width * units, clearance: clearance * units))
     }
@@ -101,8 +98,8 @@ enum ShelfProbe {
 /// upright from the left end, spines out, fore edges near the back, with the last three lying
 /// flat as a bookend, as a reader shelves books by hand.
 ///
-/// The shelf shows the most popular books that fit (`DroppedCard.popular(_:limit:)`), up to
-/// `RoomPlacement.maximumBooks`, in finishing order from the left. Books taller than the
+/// The shelf shows the most popular books that fit (`DroppedCard.popular(_:limit:)`), in
+/// finishing order from the left. Books taller than the
 /// shelf's clearance can't stand in it and are left out. Three or fewer books lie flat as one
 /// small stack. A shelf longer than the books leaves its right end empty.
 struct ShelfFill {
@@ -113,6 +110,10 @@ struct ShelfFill {
 
     /// The gap between the last standing book and the bookend, in units: half a centimeter.
     static let bookendGap: Float = 0.05
+    /// How far each bookend book may shift past the gap, in units: half a centimeter.
+    static let bookendShift: Float = 0.05
+    /// How far each bookend book may turn about the vertical, in radians: about 3 degrees.
+    static let bookendTurn = 0.05
     /// How many books lie flat at the end.
     static let bookendCount = 3
 
@@ -124,7 +125,7 @@ struct ShelfFill {
         shape: (CloudBook) -> BookShape = { BookShape(of: $0, coverAspect: 2 / 3) }
     ) {
         let standing = books.filter { shape($0).size.y <= space.clearance }
-        var count = min(standing.count, RoomPlacement.maximumBooks)
+        var count = standing.count
         while count > 0 {
             let shown = DroppedCard.popular(standing, limit: count)
             if let fill = ShelfFill(layout: shown, in: space, seed: seed, shape: shape) {
@@ -145,11 +146,29 @@ struct ShelfFill {
         let shapes = books.map(shape)
         let flat = books.count <= Self.bookendCount ? books.count : Self.bookendCount
         let upright = books.count - flat
-        // A standing book's thickness runs along the board; a lying one's length does.
+        // The bookend: the largest book at the bottom, each flat on the one below, turned a
+        // little and shifted away from the row, never toward it.
+        let lying = zip(books.suffix(flat), shapes.suffix(flat))
+            .sorted { $0.1.size.x * $0.1.size.y > $1.1.size.x * $1.1.size.y }
+            .map { book, shape in
+                let turn = Float(
+                    StackArrangement.twist(of: book, seed: seed, maximum: Self.bookendTurn))
+                let shift = Float(ShareStyle.unit(seed, book.id, 94)) * Self.bookendShift
+                // Half the turned book's reach along the board, where its length runs, and
+                // into the shelf, where its width runs.
+                let reach =
+                    shape.size.y / 2 * abs(cos(turn)) + shape.size.x / 2 * abs(sin(turn))
+                let depth =
+                    shape.size.x / 2 * abs(cos(turn)) + shape.size.y / 2 * abs(sin(turn))
+                return (
+                    book: book, shape: shape, turn: turn, shift: shift, reach: reach, depth: depth
+                )
+            }
+        // A standing book's thickness runs along the board.
         let rowWidth = shapes.prefix(upright).reduce(0) { $0 + $1.size.z }
-        let bookend = shapes.suffix(flat).map(\.size.y).max() ?? 0
         let gap = upright > 0 && flat > 0 ? Self.bookendGap : 0
-        let pile = shapes.suffix(flat).reduce(0) { $0 + $1.size.z }
+        let bookend = lying.map { 2 * $0.reach + $0.shift }.max() ?? 0
+        let pile = lying.reduce(0) { $0 + $1.shape.size.z }
         guard rowWidth + gap + bookend <= space.width, pile <= space.clearance else {
             return nil
         }
@@ -169,25 +188,22 @@ struct ShelfFill {
                         ])))
             x += shape.size.z
         }
-        // The bookend: the largest book at the bottom, each flat on the one below.
-        let center = x + gap + bookend / 2
+        let start = x + gap
         var y: Float = 0
-        let lying = zip(books.suffix(flat), shapes.suffix(flat))
-            .sorted { $0.1.size.x * $0.1.size.y > $1.1.size.x * $1.1.size.y }
-        for (book, shape) in lying {
-            let shift = (Float(ShareStyle.unit(seed, book.id, 94)) * 2 - 1) * 0.08
-            let turn = Float(StackArrangement.twist(of: book, seed: seed, maximum: 0.05))
+        for book in lying {
             slots.append(
                 .init(
-                    book: book, shape: shape,
+                    book: book.book, shape: book.shape,
                     transform: Transform(
-                        rotation: simd_quatf(angle: turn, axis: [0, 1, 0]) * PileLayout.lyingFlat,
+                        rotation: simd_quatf(angle: book.turn, axis: [0, 1, 0])
+                            * PileLayout.lyingFlat,
                         translation: [
-                            center + shift, y + shape.size.z / 2, 0.05 + shape.size.x / 2,
+                            start + book.shift + book.reach, y + book.shape.size.z / 2,
+                            0.05 + book.depth,
                         ])))
-            y += shape.size.z
+            y += book.shape.size.z
         }
         self.slots = slots
-        width = x + gap + bookend
+        width = start + bookend
     }
 }

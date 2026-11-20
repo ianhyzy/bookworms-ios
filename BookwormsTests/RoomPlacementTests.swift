@@ -131,13 +131,20 @@ final class RoomPlacementTests: XCTestCase {
             XCTAssertLessThanOrEqual(slot.shape.size.y, space.clearance)
             edge += slot.shape.size.z
         }
-        // The bookend lies flat, each book on the one below, past the standing row.
+        // The bookend lies flat, each book on the one below, turned but clear of the standing
+        // row, inside the space, and in front of the back.
         var top: Float = 0
         for slot in lying {
             XCTAssertEqual(slot.transform.rotation.act([0, 0, 1]).y, 1, accuracy: 1e-5)
             XCTAssertEqual(
                 slot.transform.translation.y - slot.shape.size.z / 2, top, accuracy: 1e-5)
-            XCTAssertGreaterThan(slot.transform.translation.x - slot.shape.size.y / 2, edge - 0.1)
+            let half = slot.shape.size / 2
+            let corners = [-1, 1].flatMap { x in [-1, 1].map { y in SIMD3<Float>(x, y, 0) } }
+                .map { slot.transform.translation + slot.transform.rotation.act($0 * half) }
+            XCTAssertGreaterThanOrEqual(
+                corners.map(\.x).min() ?? 0, edge + ShelfFill.bookendGap - 1e-4)
+            XCTAssertLessThanOrEqual(corners.map(\.x).max() ?? 0, fill.width + 1e-4)
+            XCTAssertGreaterThanOrEqual(corners.map(\.z).min() ?? 0, 0)
             top += slot.shape.size.z
         }
         // The shelf keeps the books' finishing order among the standing books.

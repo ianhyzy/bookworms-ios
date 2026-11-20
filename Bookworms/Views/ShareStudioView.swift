@@ -792,7 +792,7 @@ struct ShareStudioView: View {
             guard RoomCamera.isSupported, request.readerID == nil, request.template.usesTimeFrame,
                 request.template != .dropped
             else { return nil }
-            let books = Array(request.frame.books(in: library).reversed())
+            let books = ShareTemplate.tower.books(from: library, in: request.frame)
             guard !books.isEmpty else { return nil }
             return RoomPhotoRequest(
                 books: books, period: request.frame.period(of: books), aspect: request.aspect,
