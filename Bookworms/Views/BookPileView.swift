@@ -241,6 +241,15 @@ struct BookPileView: View {
                         await desk.awake()
                         if !Task.isCancelled { scene.gatherBooks() }
                     }
+                    // `-BookwormsPileArrange <cube|pyramid|wall>` arranges the books into that
+                    // shape a second after the drop, as **Arrange** does.
+                    if let shape = UserDefaults.standard.string(forKey: "BookwormsPileArrange")
+                        .flatMap(PileShape.init(rawValue:))
+                    {
+                        try? await Task.sleep(for: .seconds(1))
+                        await desk.awake()
+                        if !Task.isCancelled { scene.arrange(shape) }
+                    }
                     // `-BookwormsPileRedrops <n>` drops again, as **Drop again** does, until the
                     // drop with generation n.
                     if !Task.isCancelled,
@@ -319,6 +328,7 @@ struct BookPileView: View {
                         }
                         .help(reduceMotion ? "Stack the books again" : "Drop the books again")
                     }
+                    ToolbarItem(placement: .topBarLeading) { arrangeMenu }
                     // The example profile's books are not the viewer's to share.
                     if !model.isExample {
                         ToolbarItem(placement: .topBarTrailing) {
@@ -391,6 +401,23 @@ struct BookPileView: View {
     }
 
     private var dropTitle: String { reduceMotion ? "Stack again" : "Drop again" }
+
+    /// **Arrange**, which flies the books on the desk into a shape (`BookPileScene.arrange(_:)`),
+    /// unavailable while books drop or already fly into one.
+    private var arrangeMenu: some View {
+        Menu("Arrange", systemImage: "square.stack.3d.up") {
+            ForEach(PileShape.allCases) { shape in
+                Button(shape.title, systemImage: shape.systemImage) {
+                    Task {
+                        await desk.awake()
+                        scene.arrange(shape)
+                    }
+                }
+            }
+        }
+        .disabled(scene.status.isDropping || scene.status.isArranging)
+        .help("Arrange the books into a shape")
+    }
 
     /// The scene's gestures as VoiceOver hints them, in the words of the Mac's pointer or the
     /// iPhone's touch.
@@ -543,6 +570,8 @@ struct BookPileView: View {
     /// (`BookPileScene.gatherBooks()`). A tap on a paused desk wakes it, if the touch did not
     /// already, and the returning view takes a few frames before the scene's rays find books.
     private func tap(at point: CGPoint, in size: CGSize) {
+        // Books flying into a shape open nothing, as the dominoes' gathering books don't.
+        guard !scene.status.isArranging else { return }
         Task {
             await desk.awake()
             if let entity = scene.book(at: point, in: size) {

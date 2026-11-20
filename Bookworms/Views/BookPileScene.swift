@@ -659,6 +659,8 @@ enum PileLayout {
 @MainActor @Observable
 final class PileStatus {
     fileprivate(set) var isDropping = false
+    /// Whether the books fly into a shape (`BookPileScene.arrange(_:)`).
+    fileprivate(set) var isArranging = false
 }
 
 /// The pile's RealityKit content: the desk and its lamp (`DeskStage`), invisible walls and
@@ -763,6 +765,8 @@ final class BookPileScene {
     /// The pull of `gatherBooks()` while it lasts: the point on the table the books slide
     /// toward, and the seconds it has pulled.
     private var gather: (center: SIMD3<Float>, elapsed: Float)?
+    /// The books' flight into a shape while it lasts (see `arrange(_:)`).
+    private var arrangement: Arrangement?
     private var tiltReference: SIMD3<Double>?
     private var tilt = PileTilt.off
     /// Whether motion is sampled, for tilt and shakes.
@@ -838,6 +842,17 @@ final class BookPileScene {
         var height: Float
         var velocity = SIMD3<Float>.zero
         var swing = PileSwing()
+    }
+
+    /// The books flying into a shape: in the shape's order, with their places, their ways
+    /// there once planned, the seconds since those ways started, and the books that have
+    /// landed.
+    private struct Arrangement {
+        let books: [ModelEntity]
+        var gather: DominoFinale.Gather?
+        var clock: Float = 0
+        var landed: [Bool]
+        let planning: Task<Void, Never>?
     }
 
     /// The collision group of a held book, which the sweep under it leaves out.
@@ -1280,6 +1295,7 @@ final class BookPileScene {
         carry = nil
         cameraMove = nil
         gather = nil
+        endArrangement()
         lifter.reset()
         spawned = 0
         periods = nil
@@ -1314,6 +1330,7 @@ final class BookPileScene {
     /// takes them back first.
     func removeBooks() {
         endDrag()
+        endArrangement()
         lifter.reset()
         shelf.children.removeAll()
         bookIDs = [:]
@@ -1414,6 +1431,7 @@ final class BookPileScene {
         }
         calendar.advance(by: Float(deltaTime))
         pullTogether(by: Float(deltaTime))
+        moveArrangement(by: Float(deltaTime))
         // A resting pile waits for its still, so a book that starts moving then stirs it at
         // once, before the still can replace the view.
         if stage.rest.isResting, shelf.children.contains(where: Self.moves) { stage.rest.stir() }
@@ -1430,7 +1448,7 @@ final class BookPileScene {
         defer { checkedCamera = camera }
         return carry == nil && cameraMove == nil && !isFlying && !tracksMotion
             && !loading.isLoading && spawned == plan.count && falling.isEmpty
-            && camera == checkedCamera && !calendar.isGlowing && gather == nil
+            && camera == checkedCamera && !calendar.isGlowing && gather == nil && arrangement == nil
             && !shelf.children.contains(where: Self.moves)
     }
 
@@ -1450,7 +1468,8 @@ final class BookPileScene {
     /// it from swinging and makes a throw a drop. Among Reduce Motion's still stacks, the books
     /// that lay over it start moving too, so they settle into its place.
     func pickUp(at point: CGPoint, in size: CGSize, gentle: Bool) -> Bool {
-        guard carry == nil, cameraMove == nil, let ray = ray(through: point, in: size),
+        guard carry == nil, cameraMove == nil, arrangement == nil,
+            let ray = ray(through: point, in: size),
             let book = book(at: point, in: size), book !== lifter.book
         else { return false }
         return pickUp(book, along: ray, gentle: gentle)
@@ -1667,7 +1686,7 @@ final class BookPileScene {
     /// The camera eases to its default framing, keeping its turn, so the book in front of it
     /// clears the pile at any zoom (see `aim`). The pile keeps simulating behind the veil.
     func lift(_ id: Int, aspect: Float) -> Double? {
-        guard !isFlying, root.scene != nil, factory.parts[id] != nil,
+        guard !isFlying, arrangement == nil, root.scene != nil, factory.parts[id] != nil,
             let book = shelf.children.first(where: { bookIDs[$0.id] == id }) as? ModelEntity
         else { return nil }
         endDrag()
@@ -1871,7 +1890,9 @@ final class BookPileScene {
     /// at its details.
     func gatherBooks() {
         let books = freeBooks
-        guard !holdsStill, !isFlying, gather == nil, books.count > 1 else { return }
+        guard !holdsStill, !isFlying, gather == nil, arrangement == nil, books.count > 1 else {
+            return
+        }
         var center =
             books.map { $0.position(relativeTo: root) }.reduce(.zero, +) / Float(books.count)
         center.y = 0
@@ -1897,6 +1918,92 @@ final class BookPileScene {
                 PileLayout.gatherPull(toward: offset, after: gather.elapsed) * mass * deltaTime,
                 relativeTo: nil)
         }
+    }
+
+    /// Flies every book on the desk into `shape` (`PileShape.places(for:in:)`), centered
+    /// between the walls, along the ways the dominoes' books take into their spread
+    /// (`DominoFinale.Gather`): the books rise at once into a messy cloud, then land one by one,
+    /// bottom course first, along ways planned so that no book passes through another. Each
+    /// lands with a soft knock. Once the last has landed, the books are rigid bodies again, so a
+    /// thrown book knocks the shape down. Reduce Motion's still stacks move straight to their
+    /// places and stay still.
+    ///
+    /// Does nothing while books drop, a book is held or flies to or from its details, or the
+    /// books already fly into a shape.
+    func arrange(_ shape: PileShape) {
+        let books = shelf.children.compactMap { $0 as? ModelEntity }
+        guard let tray, !status.isDropping, !isFlying, carry == nil, arrangement == nil,
+            !books.isEmpty
+        else { return }
+        gather = nil
+        let sizes = books.map { book in
+            bookIDs[book.id].flatMap { factory.parts[$0]?.shape.size } ?? [1.4, 2.1, 0.25]
+        }
+        let places = shape.places(for: sizes, in: tray)
+        let ordered = places.map { books[$0.book] }
+        for book in ordered {
+            book.components[PhysicsBodyComponent.self]?.mode = .kinematic
+            book.components.set(PhysicsMotionComponent())
+        }
+        stage.rest.stir()
+        guard !holdsStill else {
+            for (book, place) in zip(ordered, places) { book.transform = place.pose }
+            return
+        }
+        let hops = zip(ordered, places)
+            .map { book, place in
+                (from: book.transform, to: place.pose, size: sizes[place.book])
+            }
+        let planning = Task { [weak self] in
+            let gather = await Self.planArrangement(hops)
+            guard !Task.isCancelled, let self, self.arrangement != nil else { return }
+            self.arrangement?.gather = gather
+        }
+        arrangement = Arrangement(
+            books: ordered, landed: Array(repeating: false, count: ordered.count),
+            planning: planning)
+        status.isArranging = true
+    }
+
+    /// The books' ways into a shape, away from the main actor, every book landing within
+    /// `DominoFinale.gatherBudget` if speeding up allows.
+    @concurrent
+    nonisolated private static func planArrangement(
+        _ books: [(from: Transform, to: Transform, size: SIMD3<Float>)]
+    ) async -> DominoFinale.Gather {
+        DominoFinale.Gather(books, budget: DominoFinale.gatherBudget, holdsLast: false)
+    }
+
+    /// Moves the books on their ways into the shape by `deltaTime`, at most a twentieth of a
+    /// second, so a stalled frame slows them rather than skipping their moves, and lands each
+    /// with a soft knock. Once every book has landed, they turn back into rigid bodies.
+    private func moveArrangement(by deltaTime: Float) {
+        guard var arrangement, let gather = arrangement.gather else { return }
+        arrangement.clock += min(deltaTime, 1.0 / 20)
+        for (order, flight) in gather.flights.enumerated() where !arrangement.landed[order] {
+            let book = arrangement.books[order]
+            guard arrangement.clock < flight.landing else {
+                book.transform = flight.to
+                arrangement.landed[order] = true
+                land(book, speed: 0.9)
+                continue
+            }
+            book.transform = flight.pose(at: arrangement.clock)
+        }
+        self.arrangement = arrangement
+        guard !arrangement.landed.contains(false) else { return }
+        for book in arrangement.books {
+            book.components[PhysicsBodyComponent.self]?.mode = .dynamic
+            book.components.set(PhysicsMotionComponent())
+        }
+        endArrangement()
+    }
+
+    /// Stops the books' flight into a shape, where they are.
+    private func endArrangement() {
+        arrangement?.planning?.cancel()
+        arrangement = nil
+        if status.isArranging { status.isArranging = false }
     }
 
     /// Throws every free book against a hard shake's jolt (see `PileLayout.shakeKick`), each a
