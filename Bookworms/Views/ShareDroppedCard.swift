@@ -19,7 +19,7 @@ struct DroppedCard: View {
     static let coverLimit = 6
     /// The most covers the wastebasket stands, so each stays large: of more books, up to
     /// `coverLimit`, the most popular (`popular(_:)`).
-    static let basketCoverLimit = 4
+    nonisolated static let basketCoverLimit = 4
 
     /// The most books the card draws. Up to about this many books of typical thickness, two
     /// flat stacks fill the card's width before its height in every aspect, so spines keep the
@@ -31,7 +31,9 @@ struct DroppedCard: View {
 
     /// The `limit` books of `books` that the most Hardcover readers rated, newest first on a
     /// tie, in `books`' order.
-    static func popular(_ books: [CloudBook], limit: Int = basketCoverLimit) -> [CloudBook] {
+    nonisolated static func popular(_ books: [CloudBook], limit: Int = basketCoverLimit)
+        -> [CloudBook]
+    {
         let kept = Set(
             books.enumerated()
                 .sorted {

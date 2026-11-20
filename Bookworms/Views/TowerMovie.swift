@@ -210,13 +210,16 @@ extension TowerSnapshotRenderer {
         var cameras = [TowerCamera](repeating: stage.camera, count: TowerMovieTiming.hold + 1)
         for frame in (TowerMovieTiming.hold + 1)..<recorded {
             let ahead = poses[min(frame + 6, recorded - 1)]
-            let corners = zip(ahead, shapes).flatMap { pose, size in
-                (0..<8).map { corner -> SIMD3<Float> in
-                    let sign = SIMD3<Float>(
-                        corner & 1 == 0 ? -1 : 1, corner & 2 == 0 ? -1 : 1, corner & 4 == 0 ? -1 : 1)
-                    return pose.translation + pose.rotation.act(sign * size / 2)
+            let corners = zip(ahead, shapes)
+                .flatMap { pose, size in
+                    (0..<8)
+                        .map { corner -> SIMD3<Float> in
+                            let sign = SIMD3<Float>(
+                                corner & 1 == 0 ? -1 : 1, corner & 2 == 0 ? -1 : 1,
+                                corner & 4 == 0 ? -1 : 1)
+                            return pose.translation + pose.rotation.act(sign * size / 2)
+                        }
                 }
-            }
             let fraction = min(Float(frame - TowerMovieTiming.hold) / 40, 1)
             let rise = fraction * fraction * (3 - 2 * fraction)
             let low = stage.camera.eye.y

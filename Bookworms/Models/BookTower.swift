@@ -31,13 +31,15 @@ struct BookTower {
         /// The corners of the book's box, where they lie.
         var corners: [SIMD3<Float>] {
             let half = shape.size / 2
-            return (0..<8).map { corner in
-                transform.translation
-                    + transform.rotation.act(
-                        SIMD3(
-                            corner & 1 == 0 ? -half.x : half.x, corner & 2 == 0 ? -half.y : half.y,
-                            corner & 4 == 0 ? -half.z : half.z))
-            }
+            return (0..<8)
+                .map { corner in
+                    transform.translation
+                        + transform.rotation.act(
+                            SIMD3(
+                                corner & 1 == 0 ? -half.x : half.x,
+                                corner & 2 == 0 ? -half.y : half.y,
+                                corner & 4 == 0 ? -half.z : half.z))
+                }
         }
     }
 
@@ -72,7 +74,8 @@ struct BookTower {
             let thickness = shape.size.z
             let shift = (Float(ShareStyle.unit(seed, book.id, 91)) * 2 - 1) * Self.maximumShift
             let depth = (Float(ShareStyle.unit(seed, book.id, 92)) * 2 - 1) * Self.maximumShift / 2
-            let turn = Float(StackArrangement.twist(of: book, seed: seed, maximum: Self.maximumTwist))
+            let turn = Float(
+                StackArrangement.twist(of: book, seed: seed, maximum: Self.maximumTwist))
             defer { y += thickness }
             return Slot(
                 book: book, shape: shape,
@@ -84,7 +87,9 @@ struct BookTower {
 
     /// The height of the stacked books, in units, which can be less than `height` when the
     /// tower leaves books out.
-    var stackHeight: Float { slots.last.map { $0.transform.translation.y + $0.shape.size.z / 2 } ?? 0 }
+    var stackHeight: Float {
+        slots.last.map { $0.transform.translation.y + $0.shape.size.z / 2 } ?? 0
+    }
 
     /// The corners of every book's box, for framing the tower in a view.
     var corners: [SIMD3<Float>] { slots.flatMap(\.corners) }
@@ -106,7 +111,8 @@ struct BookTower {
             let format = IntegerFormatStyle<Int>(locale: locale)
             if feet == 0 { return "\(rest.formatted(format)) in" }
             return rest == 0
-                ? "\(feet.formatted(format)) ft" : "\(feet.formatted(format)) ft \(rest.formatted(format)) in"
+                ? "\(feet.formatted(format)) ft"
+                : "\(feet.formatted(format)) ft \(rest.formatted(format)) in"
         }
         let style: Measurement<UnitLength>.FormatStyle
         let value: Measurement<UnitLength>

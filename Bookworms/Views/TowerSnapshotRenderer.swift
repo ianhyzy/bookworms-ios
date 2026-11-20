@@ -77,7 +77,9 @@ final class TowerStage {
         let scene = BookPileScene(textureScale: shown.count <= 60 ? 2 : 1)
         late = await scene.prepareStill(shown, model: model)
         try Task.checkCancellation()
-        let tower = BookTower(books: books, seed: seed) { scene.shape(of: $0.id) ?? BookShape(of: $0, coverAspect: 2 / 3) }
+        let tower = BookTower(books: books, seed: seed) {
+            scene.shape(of: $0.id) ?? BookShape(of: $0, coverAspect: 2 / 3)
+        }
         self.tower = tower
         self.scene = scene
         theme = ShareTheme(looks: shown.map(model.look(for:)))
@@ -266,7 +268,9 @@ struct TowerCamera: Equatable {
             Float(2 * rect.minX / size.width - 1), Float(1 - 2 * rect.maxY / size.height))
         let high = SIMD2(
             Float(2 * rect.maxX / size.width - 1), Float(1 - 2 * rect.minY / size.height))
-        guard let first = points.first else { return TowerCamera(eye: [0, eyeHeight, 10], target: .zero) }
+        guard let first = points.first else {
+            return TowerCamera(eye: [0, eyeHeight, 10], target: .zero)
+        }
         let least = points.reduce(first, pointwiseMin)
         let most = points.reduce(first, pointwiseMax)
         let middle = (least + most) / 2
@@ -346,7 +350,8 @@ struct TowerProps {
         hook.position = [bladeX + hookLength / 2, height + 0.015 * scale, 0]
         let tapeCase = ModelEntity(
             mesh: .generateBox(size: caseSize, cornerRadius: caseSize.x * 0.18),
-            materials: [BookFactory.surface(nil, tint: Self.yellow, roughness: 0.45, specular: 0.4)])
+            materials: [BookFactory.surface(nil, tint: Self.yellow, roughness: 0.45, specular: 0.4)]
+        )
         tapeCase.position = [bladeX - caseSize.x / 2 + 0.05 * scale, caseSize.y / 2, 0]
         let band = ModelEntity(
             mesh: .generateBox(
@@ -454,7 +459,8 @@ struct TowerProps {
             worm.addChild(sphere)
         }
         let head = points.last!.0
-        let eye = BookFactory.surface(nil, tint: UIColor(white: 0.08, alpha: 1), roughness: 0.2, specular: 0.8)
+        let eye = BookFactory.surface(
+            nil, tint: UIColor(white: 0.08, alpha: 1), roughness: 0.2, specular: 0.8)
         for side: Float in [-1, 1] {
             let dot = ModelEntity(mesh: .generateSphere(radius: radius * 0.22), materials: [eye])
             dot.position = head + SIMD3(side * radius * 0.42, radius * 0.25, radius * 0.86)
