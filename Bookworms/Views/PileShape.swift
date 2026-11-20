@@ -48,6 +48,8 @@ enum PileShape: String, CaseIterable, Identifiable {
     static let slope: Float = 1.1
     /// How long a wall is for its height.
     static let wallLength: Float = 2.5
+    /// How fast a book must strike a standing shape to knock it down, in units a second.
+    static let strike: Float = 1
     /// How much higher than other shapes a wall may rise.
     static let wallRise: Float = 1.5
 

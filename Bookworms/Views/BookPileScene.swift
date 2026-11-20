@@ -767,6 +767,11 @@ final class BookPileScene {
     private var gather: (center: SIMD3<Float>, elapsed: Float)?
     /// The books' flight into a shape while it lasts (see `arrange(_:)`).
     private var arrangement: Arrangement?
+    /// Whether a landed shape's books stand still as kinematic bodies until a book strikes
+    /// them (`releaseIfStruck`). Picking up one frees it and the books resting on it, as among
+    /// Reduce Motion's still stacks. Tall shapes of uneven books would otherwise slip and fall
+    /// as the simulation settles them, which real books stacked as carefully don't.
+    private var standing = false
     private var tiltReference: SIMD3<Double>?
     private var tilt = PileTilt.off
     /// Whether motion is sampled, for tilt and shakes.
@@ -910,6 +915,7 @@ final class BookPileScene {
             guard let self else { return }
             land(event.entityA)
             land(event.entityB)
+            releaseIfStruck(event)
             guard !lifter.handle(event) else { return }
             feedback.collide(event, pan: pan)
         }
@@ -1296,6 +1302,7 @@ final class BookPileScene {
         cameraMove = nil
         gather = nil
         endArrangement()
+        standing = false
         lifter.reset()
         spawned = 0
         periods = nil
@@ -1331,6 +1338,7 @@ final class BookPileScene {
     func removeBooks() {
         endDrag()
         endArrangement()
+        standing = false
         lifter.reset()
         shelf.children.removeAll()
         bookIDs = [:]
@@ -1493,7 +1501,7 @@ final class BookPileScene {
                 over.min.x < bounds.max.x, over.max.z > bounds.min.z, over.min.z < bounds.max.z
             else { continue }
             riders.insert(other.id)
-            if holdsStill { setMode(.dynamic, of: other) }
+            if holdsStill || standing { setMode(.dynamic, of: other) }
         }
         setMode(.dynamic, of: book)
         book.components[CollisionComponent.self]?.filter = CollisionFilter(
@@ -1924,8 +1932,8 @@ final class BookPileScene {
     /// between the walls, along the ways the dominoes' books take into their spread
     /// (`DominoFinale.Gather`): the books rise at once into a messy cloud, then land one by one,
     /// bottom course first, along ways planned so that no book passes through another. Each
-    /// lands with a soft knock. Once the last has landed, the books are rigid bodies again, so a
-    /// thrown book knocks the shape down. Reduce Motion's still stacks move straight to their
+    /// lands with a soft knock. Once the last has landed, the shape stands still until a thrown
+    /// book knocks it down (see `standing`). Reduce Motion's still stacks move straight to their
     /// places and stay still.
     ///
     /// Does nothing while books drop, a book is held or flies to or from its details, or the
@@ -1976,7 +1984,7 @@ final class BookPileScene {
 
     /// Moves the books on their ways into the shape by `deltaTime`, at most a twentieth of a
     /// second, so a stalled frame slows them rather than skipping their moves, and lands each
-    /// with a soft knock. Once every book has landed, they turn back into rigid bodies.
+    /// with a soft knock. Once every book has landed, the shape stands (see `standing`).
     private func moveArrangement(by deltaTime: Float) {
         guard var arrangement, let gather = arrangement.gather else { return }
         arrangement.clock += min(deltaTime, 1.0 / 20)
@@ -1992,11 +2000,26 @@ final class BookPileScene {
         }
         self.arrangement = arrangement
         guard !arrangement.landed.contains(false) else { return }
-        for book in arrangement.books {
-            book.components[PhysicsBodyComponent.self]?.mode = .dynamic
-            book.components.set(PhysicsMotionComponent())
-        }
         endArrangement()
+        standing = true
+    }
+
+    /// Turns a standing shape's books back into rigid bodies once a book strikes one of them
+    /// faster than `PileShape.strike`, so the hit knocks the shape down. A book that settles
+    /// onto one, such as a book resting on a book picked up, strikes too softly.
+    private func releaseIfStruck(_ event: CollisionEvents.Began) {
+        let bodies = [event.entityA, event.entityB]
+            .compactMap { $0.components[PhysicsBodyComponent.self] }
+        guard standing, event.impulse.isFinite, bodies.contains(where: { $0.mode == .kinematic }),
+            let mass = bodies.filter({ $0.mode == .dynamic }).map(\.massProperties.mass).max(),
+            event.impulse > PileShape.strike * mass
+        else { return }
+        standing = false
+        for case let book as ModelEntity in shelf.children
+        where book !== lifter.book && book.components[PhysicsBodyComponent.self]?.mode == .kinematic
+        {
+            setMode(.dynamic, of: book)
+        }
     }
 
     /// Stops the books' flight into a shape, where they are.
