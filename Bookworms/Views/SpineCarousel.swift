@@ -483,6 +483,11 @@ private struct SpineButton<Label: View>: View {
             if (point != nil) != hovered { hover(point != nil) }
             lean = hovered ? point.map { PullOutPath.lean(atX: $0.x, width: width) } ?? 0 : 0
         }
+        #if DEBUG
+            // Screenshot hook: `-BookwormsPointerLean <-1...1>` turns every book as the pointer
+            // resting on it would.
+            .onAppear { lean = UserDefaults.standard.double(forKey: "BookwormsPointerLean") }
+        #endif
         #if os(macOS)
             .contextMenu { BookMenu(book: book, open: open, changeCover: changeCover) }
         #endif
