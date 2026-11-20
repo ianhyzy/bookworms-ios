@@ -19,14 +19,15 @@ import SwiftUI
 enum TowerSnapshotRenderer {
     /// Renders `books`, oldest first, finished in the time frame named `title`, at the pixel
     /// size of `aspect`, with `username`'s profile link when there is one. `seed` varies each
-    /// book's shift and turn. Returns the image and the books whose covers missed the wait.
+    /// book's shift and turn. Covers face up, out of the low camera's view except on the
+    /// shortest towers, so the image draws no redraw for a cover that misses the wait.
     ///
     /// - Throws: `CancellationError` when the task is cancelled, and `PileSnapshotError` when
     ///   Metal fails or the frame is blank.
     static func render(
         books: [CloudBook], title: String, aspect: ShareAspect, seed: UInt64,
         username: String? = nil, model: AppModel
-    ) async throws -> (image: UIImage, late: [CloudBook]) {
+    ) async throws -> UIImage {
         try await PileSnapshotRenderer.claim()
         defer { PileSnapshotRenderer.release() }
         let stage = try await TowerStage(books: books, aspect: aspect, seed: seed, model: model)
@@ -40,7 +41,7 @@ enum TowerSnapshotRenderer {
         renderer.scale = 1
         renderer.isOpaque = true
         guard let image = renderer.uiImage else { throw PileSnapshotError.drawingFailed }
-        return (image, stage.late)
+        return image
     }
 }
 
@@ -60,7 +61,6 @@ final class TowerStage {
     let scene: BookPileScene
     let renderer: RealityRenderer
     let theme: ShareTheme
-    let late: [CloudBook]
     let props: TowerProps
     /// The books' bodies, bottom up.
     let books: [ModelEntity]
@@ -78,9 +78,9 @@ final class TowerStage {
     static let lampColor = UIColor(red: 1, green: 0.88, blue: 0.76, alpha: 1)
 
     init(books: [CloudBook], aspect: ShareAspect, seed: UInt64, model: AppModel) async throws {
-        let shown = BookTower(books: books, seed: seed).slots.map(\.book)
+        let shown = BookTower.shown(books)
         let scene = BookPileScene(textureScale: shown.count <= 60 ? 2 : 1)
-        late = await scene.prepareStill(shown, model: model)
+        await scene.prepareStill(shown, model: model)
         try Task.checkCancellation()
         let tower = BookTower(books: books, seed: seed) {
             scene.shape(of: $0.id) ?? BookShape(of: $0, coverAspect: 2 / 3)
@@ -152,6 +152,8 @@ final class TowerStage {
 
     /// Renders one frame through `camera` into `target`, and copies it into an image with
     /// premultiplied alpha.
+    ///
+    /// - Throws: `PileSnapshotError` when the frame is blank.
     private func frame(_ target: FrameTarget, from camera: Entity, value: UInt64) async throws
         -> CGImage
     {
@@ -161,20 +163,7 @@ final class TowerStage {
             deltaTime: 1.0 / 60, cameraOutput: target.output,
             actionsAfterRender: [.signal(target.event, value: value)])
         try await target.read(after: value, before: .now + .seconds(10))
-        let width = target.texture.width
-        let height = target.texture.height
-        let pixels = Data(bytes: target.buffer.contents(), count: target.bytesPerRow * height)
-        guard let space = CGColorSpace(name: CGColorSpace.displayP3),
-            let provider = CGDataProvider(data: pixels as CFData),
-            let image = CGImage(
-                width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
-                bytesPerRow: target.bytesPerRow, space: space,
-                bitmapInfo: CGBitmapInfo(
-                    rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue
-                        | CGBitmapInfo.byteOrder32Little.rawValue),
-                provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
-        else { throw PileSnapshotError.drawingFailed }
-        return image
+        return try target.image(alpha: true)
     }
 
     /// Where the top book's tail end shows in the image, in pixels, which the loupe's line
@@ -263,8 +252,8 @@ struct TowerCamera: Equatable {
     /// `rect`, and slides the target to center them, as `PileCamera.framing` slides its
     /// target. With `standsOnBottom`, the points sit on the rect's bottom instead of in its
     /// middle, so a short, wide tower leaves its spare room above it, under the headline,
-    /// rather than an empty floor below. The eye
-    /// keeps its height, so the camera looks up at a tall tower.
+    /// rather than an empty floor below. The eye keeps its height, so the camera looks up at a
+    /// tall tower.
     static func framing(
         _ points: [SIMD3<Float>], eyeHeight: Float, in rect: CGRect, of size: CGSize,
         standsOnBottom: Bool = true
@@ -335,9 +324,11 @@ struct TowerProps {
             tower.slots.last.flatMap { $0.corners.map(\.x).min() } ?? left
         let bladeX = left - 0.1 * scale
         let bladeWidth: Float = 0.19 * scale
-        let caseSize = SIMD3<Float>(0.75, 0.75, 0.38) * scale
+        // A short tower gets a smaller case, at most 60 percent of its height, so the blade
+        // still rises from the case's slot to the hook over the top book.
+        let caseSize = SIMD3<Float>(0.75, 0.75, 0.38) * min(scale, height * 0.8)
         slotHeight = caseSize.y * 0.85
-        let length = max(height - slotHeight, 0.1)
+        let length = height - slotHeight
         blade = ModelEntity(
             mesh: .generateBox(width: 0.004 * scale, height: 1, depth: bladeWidth),
             materials: [Self.bladeMaterial()])
@@ -413,13 +404,7 @@ struct TowerProps {
         }
         var material = BookFactory.surface(texture, roughness: 0.4, specular: 0.4)
         if let texture {
-            let sampler = MTLSamplerDescriptor()
-            sampler.sAddressMode = .repeat
-            sampler.tAddressMode = .repeat
-            sampler.minFilter = .linear
-            sampler.magFilter = .linear
-            sampler.mipFilter = .linear
-            material.baseColor.texture = .init(texture, sampler: .init(sampler))
+            material.baseColor.texture = .init(texture, sampler: BookFactory.repeatingSampler())
         }
         return material
     }

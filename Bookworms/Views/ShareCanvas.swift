@@ -57,9 +57,20 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
     /// Whether the card features one book, which the reader can choose.
     var isSingleBook: Bool { self == .justFinished || self == .review || self == .currentlyReading }
 
-    /// Whether the card draws covers that can be 3D books or flat. A pile's and a tower's books
-    /// are always 3D, and Checkout Card draws no covers.
-    var hasCoverStyle: Bool { self != .pile && self != .checkoutCard && self != .tower }
+    /// Whether the card draws covers that can be 3D books or flat. A rendered scene's books are
+    /// always 3D, and Checkout Card draws no covers.
+    var hasCoverStyle: Bool { !rendersScene && self != .checkoutCard }
+
+    /// Whether a RealityKit scene renders the card (`PileSnapshotRenderer`,
+    /// `TowerSnapshotRenderer`), which loads its own covers and fonts and takes seconds, rather
+    /// than `ShareCanvas`.
+    var rendersScene: Bool { self == .pile || self == .tower }
+
+    /// What the preview says while a rendered scene's books load and settle.
+    var sceneProgressTitle: String { self == .tower ? "Stacking books" : "Dropping books" }
+
+    /// Whether **Video** films the card's books: the Desk's drop, or the Tall Stack's topple.
+    var hasVideo: Bool { self == .pile || self == .tower }
 
     /// Whether the card shows the reader's ratings, which the studio can hide. Hot Takes is
     /// about ratings, so it always shows them.

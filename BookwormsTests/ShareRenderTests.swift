@@ -81,7 +81,7 @@ final class ShareRenderTests: XCTestCase {
         ]
         // Social templates need another reader (`testSocialTemplatesRender...`).
         for template in ShareTemplate.allCases
-        where template != .pile && template != .tower && !template.isSocial {
+        where !template.rendersScene && !template.isSocial {
             for (frame, style) in cases {
                 let library = template == .dropped ? Self.books + Self.dropped : Self.books
                 let books = template.books(from: library, in: frame)
@@ -148,7 +148,7 @@ final class ShareRenderTests: XCTestCase {
             return look
         }
         for template in ShareTemplate.allCases
-        where template != .pile && template != .tower && !template.isSocial {
+        where !template.rendersScene && !template.isSocial {
             let library = template == .dropped ? Self.books + Self.dropped : Self.books
             // An empty Dropped list draws only the card's heading and count.
             let lists =
@@ -312,8 +312,9 @@ final class ShareRenderTests: XCTestCase {
                 return book
             }
         XCTAssertEqual(DroppedCard.basketCoverLimit, 4)
-        XCTAssertEqual(DroppedCard.popular(books).map(\.id), [3, 4, 5, 6])
-        XCTAssertEqual(DroppedCard.popular(Array(books.prefix(3))).map(\.id), [1, 2, 3])
+        let limit = DroppedCard.basketCoverLimit
+        XCTAssertEqual(books.popular(limit).map(\.id), [3, 4, 5, 6])
+        XCTAssertEqual(Array(books.prefix(3)).popular(limit).map(\.id), [1, 2, 3])
     }
 
     /// A lifetime Dropped image, whose file the period names, spans the years the books were

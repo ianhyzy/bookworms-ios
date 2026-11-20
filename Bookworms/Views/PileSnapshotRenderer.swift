@@ -170,18 +170,7 @@ enum PileSnapshotRenderer {
             deltaTime: 1.0 / 60, cameraOutput: target.output,
             actionsAfterRender: [.signal(target.event, value: 1)])
         try await target.read(after: 1, before: .now + .seconds(10))
-        let pixels = Data(bytes: target.buffer.contents(), count: target.bytesPerRow * height)
-        guard !target.isBlank,
-            let space = CGColorSpace(name: CGColorSpace.displayP3),
-            let provider = CGDataProvider(data: pixels as CFData),
-            let image = CGImage(
-                width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
-                bytesPerRow: target.bytesPerRow, space: space,
-                bitmapInfo: CGBitmapInfo(
-                    rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue
-                        | CGBitmapInfo.byteOrder32Little.rawValue),
-                provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
-        else { throw PileSnapshotError.drawingFailed }
+        let image = try target.image()
         #if DEBUG
             if UserDefaults.standard.bool(forKey: "BookwormsPileCoverLog") {
                 try await checkCovers(

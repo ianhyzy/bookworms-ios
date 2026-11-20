@@ -2237,12 +2237,11 @@ extension ClosedRange where Bound == Float {
 
 extension BookPileScene {
     /// Builds `books` for a still scene that nothing draws again, as `prepareSpread` does:
-    /// waiting for every spine font, and giving covers up to 10 seconds. Returns the books whose
-    /// covers came too late, which show their titles on the cloth.
-    func prepareStill(_ books: [CloudBook], model: AppModel) async -> [CloudBook] {
-        let late = await factory.prepare(
+    /// waiting for every spine font, and giving covers up to 10 seconds. A book whose cover came
+    /// too late shows its title on the cloth.
+    func prepareStill(_ books: [CloudBook], model: AppModel) async {
+        await factory.prepare(
             books, prefetching: [], loadWait: .seconds(10), waitsForFonts: true, model: model)
-        return books.filter { late.contains($0.id) }
     }
 
     /// The shape the scene builds the book with `id` in, once `prepareStill` built it.

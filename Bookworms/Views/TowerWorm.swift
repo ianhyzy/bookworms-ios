@@ -32,8 +32,8 @@ enum TowerWorm {
     private static let pupil = UIColor(red: 0.04, green: 0.02, blue: 0.03, alpha: 1)
     private static let plum = UIColor(red: 0.31, green: 0.2, blue: 0.3, alpha: 1)
 
-    /// How far the worm reaches from its base, in units of `height`: left, right, back, and
-    /// front, for framing.
+    /// How far the worm reaches from its base to its left, its right, and its front, as
+    /// fractions of its height, for framing.
     static let reach = (
         left: (0.64 * coil + bodyRadius) / modelHeight, right: (coil + bodyRadius) / modelHeight,
         front: (coil + bodyRadius) / modelHeight
