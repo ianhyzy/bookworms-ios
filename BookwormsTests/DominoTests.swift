@@ -537,7 +537,9 @@ final class DominoTests: XCTestCase {
         XCTAssertEqual(
             path.point(at: path.start(ofRow: 1) + 10).position.x, -8, accuracy: 1e-4)
         XCTAssertEqual(path.point(at: path.start(ofRow: 2)).position.x, -8, accuracy: 1e-4)
-        XCTAssertEqual(path.point(at: path.start(ofRow: 2)).position.y, 8, accuracy: 1e-4)
+        XCTAssertEqual(
+            path.point(at: path.start(ofRow: 2)).position.y, 4 * DominoLayout.turnRadius,
+            accuracy: 1e-4)
         // Past the given rows, each is as long as the last and alternates between its ends.
         XCTAssertEqual(path.rowLength(5), 6)
         XCTAssertEqual(path.point(at: path.start(ofRow: 3)).position.x, -2, accuracy: 1e-4)

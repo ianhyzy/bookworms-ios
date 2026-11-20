@@ -20,7 +20,7 @@ struct Book3DView: View {
     /// Rotation about the horizontal axis in radians. Negative tips the head toward the viewer.
     var pitch = BookPose.resting.pitch
     /// The thickness as a share of the height, or `nil` for the book's own proportion. A shelf's
-    /// spine is thicker than its book (`CloudBook.shelfSpineSize(scale:)`), so a book pulled off
+    /// spine is at least as thick as its book (`CloudBook.shelfSpineSize(scale:)`), so a book pulled off
     /// the shelf, and the details it flies to, keep the spine's proportion.
     var thicknessRatio: CGFloat? = nil
     /// How much of the light's shading the faces show, from 0, every face evenly lit as a flat

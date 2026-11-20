@@ -1598,7 +1598,7 @@ extension CloudBook {
     ///
     /// Heights keep the shape's proportions. Thickness grows from `floor` decimeters by `growth`
     /// times the book's own thickness, so a 120-page book's spine still fits legible lettering,
-    /// and a 900-page book's is about two and a half times as thick, where in life it is five
+    /// and a 900-page book's is about three times as thick, where in life it is five
     /// times. A spine is never thinner than the book itself.
     func shelfSpineSize(scale: CGFloat, floor: CGFloat = 0.12, growth: CGFloat = 0.7) -> CGSize {
         let size = BookShape(of: self, coverAspect: 2 / 3).size

@@ -152,7 +152,7 @@ enum DominoLayout {
     static let turnRadius: Float = 2.5
     static let shortestRow: Float = 6
     /// How deep the rows may reach, and the longest a row may be. The longest chain, 300 of the
-    /// thickest and longest books, runs about 410 units, which fits in rows well short of this,
+    /// thickest and longest books, runs about 520 units, which fits in rows well short of this,
     /// so the path and the books that fall past its ends stay on the 90-unit table.
     static let deepest: Float = 72
     /// The space a turn keeps between the inner corners of neighboring books.
