@@ -127,6 +127,14 @@ enum TimeFrame: Hashable, Sendable {
         return (years, sorted)
     }
 
+    /// The frame's name, such as "2025" or "August 2025", or for a lifetime the years `books`
+    /// span, such as "2019–2026": the years they were finished in, or with `dropped`, dropped
+    /// in.
+    func period(of books: [CloudBook], dropped: Bool = false) -> String {
+        guard self == .lifetime else { return title }
+        return Self.yearSpan(of: books, dropped: dropped) ?? ""
+    }
+
     /// The years `books` were finished in, or with `dropped`, dropped in, such as "2019–2026",
     /// or `nil` when none has a date. Every finish counts, so a reread's earlier reads widen the
     /// span.
