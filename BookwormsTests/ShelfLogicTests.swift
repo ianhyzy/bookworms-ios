@@ -1837,6 +1837,18 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(end.distance, BookProjection.standardDistance * 380, accuracy: 0.001)
         XCTAssertEqual(end.eye, .zero)
     }
+
+    /// A book faces the pointer from its leading edge to its trailing edge, level at its middle,
+    /// in tenths, and never past either edge.
+    func testBookLeansTowardThePointerInTenths() {
+        XCTAssertEqual(PullOutPath.lean(atX: 0, width: 200), -1)
+        XCTAssertEqual(PullOutPath.lean(atX: 100, width: 200), 0)
+        XCTAssertEqual(PullOutPath.lean(atX: 200, width: 200), 1)
+        XCTAssertEqual(PullOutPath.lean(atX: 130, width: 200), 0.3)
+        XCTAssertEqual(PullOutPath.lean(atX: -40, width: 200), -1)
+        XCTAssertEqual(PullOutPath.lean(atX: 260, width: 200), 1)
+        XCTAssertEqual(PullOutPath.lean(atX: 50, width: 0), 0)
+    }
 }
 
 /// Runs `body` as `pullOut`'s value at `keyPath` is about to change for the `count`th time, while

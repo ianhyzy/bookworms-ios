@@ -428,8 +428,9 @@ private final class CarouselScrolling {
 ///
 /// With a pointer, the book eases a little way out of its place while the pointer rests on it,
 /// straight toward the reader along the way its spine faces, with no tilt (`PullOutPath.nudge`),
-/// and its tooltip names it. The hover is the button's own state, so a pointer moving over the
-/// books updates only the books it enters and leaves. Books that scroll under a resting pointer
+/// and its tooltip names it, and it turns a degree or two to face the pointer as the pointer
+/// moves along it (`PullOutPath.pointerTurn`). The hover is the button's own state, so a pointer
+/// moving over the books updates only the book under it. Books that scroll under a resting pointer
 /// stay in place, so a fling doesn't ripple. Reduce Motion keeps the book still. A pull starts
 /// from the eased-out book (`ShelfPullOut.nudgedID`). On the Mac, its context menu offers what its
 /// details do (`BookMenu`).
@@ -445,6 +446,9 @@ private struct SpineButton<Label: View>: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovered = false
+    /// Which way the book faces the pointer (`PullOutPath.lean(atX:width:)`), 0 at rest.
+    @State private var lean = 0.0
+    @State private var width: CGFloat = 0
 
     var body: some View {
         Button {
@@ -456,24 +460,44 @@ private struct SpineButton<Label: View>: View {
                 // Only the iPhone zooms pushed details out of the book. On the Mac, the source
                 // clips the book to its place, which would cut off a pulled book's slide.
                 label(hovered)
+                    // A turn about the screen's vertical axis, which keeps a lying book on the
+                    // book below it and a standing one on the board.
+                    .rotation3DEffect(
+                        .degrees(PullOutPath.pointerTurn * lean), axis: (x: 0, y: 1, z: 0)
+                    )
+                    .animation(.smooth(duration: 0.3), value: lean)
             #endif
+        }
+        .onGeometryChange(for: CGFloat.self) {
+            $0.size.width
+        } action: {
+            width = $0
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(book.title), by \(book.author)")
         .accessibilityHint("Opens the book's details.")
         .help("\(book.title) — \(book.author)")
-        .onHover { inside in
-            guard !inside || !(reduceMotion || scrolling.isScrolling) else { return }
-            withAnimation(.spring(PullOutPath.nudgeSpring)) { hovered = inside }
-            if inside {
-                pullOut.nudge(book.id)
-            } else if pullOut.nudgedID == book.id {
-                pullOut.nudge(nil)
-            }
+        .onContinuousHover { phase in
+            var point: CGPoint?
+            if case .active(let location) = phase { point = location }
+            if (point != nil) != hovered { hover(point != nil) }
+            lean = hovered ? point.map { PullOutPath.lean(atX: $0.x, width: width) } ?? 0 : 0
         }
         #if os(macOS)
             .contextMenu { BookMenu(book: book, open: open, changeCover: changeCover) }
         #endif
+    }
+
+    /// Eases the book out as the pointer enters it, unless Reduce Motion is on or the books
+    /// scroll under the pointer, and back as the pointer leaves.
+    private func hover(_ inside: Bool) {
+        guard !inside || !(reduceMotion || scrolling.isScrolling) else { return }
+        withAnimation(.spring(PullOutPath.nudgeSpring)) { hovered = inside }
+        if inside {
+            pullOut.nudge(book.id)
+        } else if pullOut.nudgedID == book.id {
+            pullOut.nudge(nil)
+        }
     }
 }
 

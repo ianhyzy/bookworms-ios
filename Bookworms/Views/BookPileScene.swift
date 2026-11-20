@@ -1387,6 +1387,16 @@ final class BookPileScene {
     /// The ID of the book an entity belongs to, or `nil` for the table.
     func bookID(for entity: Entity) -> Int? { bookIDs[entity.id] }
 
+    /// Each book's pose on the table, by book ID, as `place(_:mode:)` takes them.
+    var poses: [Int: Transform] {
+        Dictionary(
+            shelf.children.compactMap { book in bookIDs[book.id].map { ($0, book.transform) } }
+        ) { first, _ in first }
+    }
+
+    /// Whether no book is held and every book has slowed below a crawl.
+    var isSettled: Bool { carry == nil && !shelf.children.contains(where: Self.moves) }
+
     // MARK: Interaction
 
     private func update(_ deltaTime: TimeInterval) {
@@ -2188,9 +2198,12 @@ extension BookPileScene {
         PileSpread(books, in: rect, of: size, seed: seed)
     }
 
-    /// Adds the books of `slots` at their poses, in order, and returns them.
+    /// Adds the books of `slots` at their poses, in order, and returns them. Books that don't
+    /// move on their own hold still as a tidy stack's do: picking one up frees it and the books
+    /// resting on it.
     @discardableResult
     func place(_ slots: [PileSlot], mode: PhysicsBodyMode) -> [ModelEntity] {
+        holdsStill = mode != .dynamic
         let books = slots.compactMap { spawn($0, mode: mode) }
         #if DEBUG
             if UserDefaults.standard.bool(forKey: "BookwormsPileShareGlare") { faceGlare(books) }
