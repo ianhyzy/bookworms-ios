@@ -2248,9 +2248,10 @@ extension BookPileScene {
     /// The shape the scene builds the book with `id` in, once `prepareStill` built it.
     func shape(of id: Int) -> BookShape? { factory.parts[id]?.shape }
 
-    /// Adds the table and the lamp, whose pool of light covers a circle of `radius` around
-    /// `center`, and waits until the room's light reaches the scene.
-    func light(pool center: SIMD3<Float>, radius: Float) async {
+    /// Adds the table and the lamp, shining `color`, whose pool of light covers a circle of
+    /// `radius` around `center`, and waits until the room's light reaches the scene.
+    func light(pool center: SIMD3<Float>, radius: Float, color: UIColor) async {
+        stage.lampTint = color
         stage.build(pool: center, radius: radius)
         await stage.lit()
     }

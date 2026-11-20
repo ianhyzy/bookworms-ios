@@ -62,6 +62,9 @@ final class DeskStage {
 
     /// The lamp's color: an incandescent bulb's warm white, about 2700 K.
     nonisolated static let lampColor = UIColor(red: 1, green: 0.78, blue: 0.55, alpha: 1)
+    /// This stage's lamp color, `lampColor` unless a scene asks for another before
+    /// `build(pool:radius:)`, as the Tall Stack image's more neutral lamp does.
+    var lampTint = DeskStage.lampColor
     /// Where the lamp hangs from the pool's middle, in pool radii: toward the camera (+z), a
     /// little to its right (+x), and high above.
     nonisolated static let lampOffset = SIMD3<Float>(1.2, 4.6, 2.2)
@@ -126,7 +129,7 @@ final class DeskStage {
         pool = (center, radius)
         let placement = Self.lampPlacement(pool: center, radius: radius)
         lamp.light = SpotLightComponent(
-            color: Self.lampColor, intensity: 7e6 * pow(placement.distance / 19, 2),
+            color: lampTint, intensity: 7e6 * pow(placement.distance / 19, 2),
             innerAngleInDegrees: placement.innerAngle, outerAngleInDegrees: placement.outerAngle,
             attenuationRadius: placement.distance * 3)
         // The shadow map's depths end just past the pool's far side, where the dark table no

@@ -72,6 +72,11 @@ final class TowerStage {
     let target: FrameTarget
     let loupeTarget: FrameTarget?
 
+    /// The lamp's color: about 3,600 K, more neutral than the Desk's 2,700 K bulb
+    /// (`DeskStage.lampColor`), on purpose, so the spines' colors read truer down the tall
+    /// tower.
+    static let lampColor = UIColor(red: 1, green: 0.88, blue: 0.76, alpha: 1)
+
     init(books: [CloudBook], aspect: ShareAspect, seed: UInt64, model: AppModel) async throws {
         let shown = BookTower(books: books, seed: seed).slots.map(\.book)
         let scene = BookPileScene(textureScale: shown.count <= 60 ? 2 : 1)
@@ -84,7 +89,8 @@ final class TowerStage {
         self.scene = scene
         theme = ShareTheme(looks: shown.map(model.look(for:)))
         let height = tower.stackHeight
-        await scene.light(pool: [0, height / 2, 0], radius: max(height * 0.6, 3))
+        await scene.light(
+            pool: [0, height / 2, 0], radius: max(height * 0.6, 3), color: TowerStage.lampColor)
         try Task.checkCancellation()
         self.books = scene.place(
             tower.slots.map { PileSlot(book: $0.book, transform: $0.transform) }, mode: .static)
