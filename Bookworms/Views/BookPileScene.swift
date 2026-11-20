@@ -1646,8 +1646,8 @@ final class BookPileScene {
             cameraMove = (view, PileCamera.intersect(ray, height: 0) ?? view.target)
         }
         guard let move = cameraMove else { return }
-        let zooms =
-            min(home.zoom, PileCamera.zoomRange.lowerBound)...PileCamera.zoomRange.upperBound
+        let farthest = min(home.zoom, move.start.zoom, PileCamera.zoomRange.lowerBound)
+        let zooms = farthest...PileCamera.zoomRange.upperBound
         view.zoom = zooms.clamp(move.start.zoom * Float(magnification))
         if tilt != .box { view.yaw = move.start.yaw - Float(rotation.radians) }
         // Keeps the focus point in place while zooming. Zoomed out to the home view, the
@@ -1971,6 +1971,22 @@ final class BookPileScene {
         goal.pitch = PileShape.viewPitch
         goal.target =
             places.map(\.pose.translation).reduce(.zero, +) / Float(places.count) * [1, 0, 1]
+        // It zooms out, past the pile's farthest view if it must, until the whole shape shows
+        // between the bars, as a tall shape on a narrow view needs.
+        let bounds = places.map { DominoSetup.Box($0.pose, size: sizes[$0.book]).bounds }
+        let low = bounds.map(\.low).reduce(SIMD3(repeating: .infinity)) { simd_min($0, $1) }
+        let high = bounds.map(\.high).reduce(SIMD3(repeating: -.infinity)) { simd_max($0, $1) }
+        let corners = (0..<8)
+            .map {
+                SIMD3(
+                    $0 & 1 == 0 ? low.x : high.x, $0 & 2 == 0 ? low.y : high.y,
+                    $0 & 4 == 0 ? low.z : high.z)
+            }
+        while goal.zoom > PileShape.farthest,
+            !corners.allSatisfy({ PileShape.shows(goal.project($0, aspect: aspect)) })
+        {
+            goal.zoom -= 0.05
+        }
         for book in ordered {
             book.components[PhysicsBodyComponent.self]?.mode = .kinematic
             book.components.set(PhysicsMotionComponent())

@@ -52,6 +52,16 @@ enum PileShape: String, CaseIterable, Identifiable {
     /// How steeply the camera looks down at a shape, so its height shows: less steeply than
     /// the pile's `PileCamera.pitch`.
     static let viewPitch: Float = 40 * .pi / 180
+    /// The farthest the camera zooms out to show a whole shape, as `PileCamera.zoom`.
+    static let farthest: Float = 0.4
+
+    /// Whether a point at `ndc`, in normalized device coordinates, shows clear of the bars and
+    /// the view's sides: the navigation bar covers about the top eighth of an iPhone's view and
+    /// the tab bar about the bottom tenth.
+    static func shows(_ ndc: SIMD2<Float>) -> Bool {
+        abs(ndc.x) < 0.9 && ndc.y < 0.7 && ndc.y > -0.75
+    }
+
     /// How fast a book must strike a standing shape to knock it down, in units a second: well
     /// under a throw's 30, and over a book sliding off a carried book onto the shape.
     static let strike: Float = 15
