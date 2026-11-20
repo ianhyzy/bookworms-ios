@@ -313,8 +313,6 @@ struct TowerProps {
     private static let yellow = UIColor(red: 0.95, green: 0.74, blue: 0.16, alpha: 1)
     /// The hook's riveted brass.
     private static let brass = UIColor(red: 0.78, green: 0.62, blue: 0.32, alpha: 1)
-    /// The worm's skin.
-    private static let pink = UIColor(red: 0.87, green: 0.56, blue: 0.55, alpha: 1)
 
     init(tower: BookTower) {
         let height = tower.stackHeight
@@ -361,9 +359,10 @@ struct TowerProps {
         band.position = [0, -caseSize.y * 0.12, 0]
         tapeCase.addChild(band)
 
-        let worm = Self.makeWorm(scale: scale)
-        let wormX = right + 0.55 * scale
-        worm.position = [wormX, 0, 0.4 * scale]
+        let wormHeight = 1.8 * scale
+        let worm = TowerWorm.make(height: wormHeight)
+        let wormX = right + (TowerWorm.reach.left * wormHeight + 0.05 * scale)
+        worm.position = [wormX, 0, 0]
         for entity in [blade, hook, tapeCase, worm] {
             entity.components.set(GroundingShadowComponent(castsShadow: true))
             root.addChild(entity)
@@ -375,7 +374,11 @@ struct TowerProps {
         let caseLeft = tapeCase.position.x - caseSize.x / 2
         extent = [
             [caseLeft, 0, caseSize.z / 2], [caseLeft, caseSize.y, -caseSize.z / 2],
-            [wormX + 0.7 * scale, 0, 0.4 * scale], [wormX + 0.7 * scale, 1.6 * scale, 0.4 * scale],
+            [
+                wormX + TowerWorm.reach.right * wormHeight, 0,
+                worm.position.z + TowerWorm.reach.front * wormHeight,
+            ],
+            [wormX + TowerWorm.reach.right * wormHeight, wormHeight, worm.position.z],
         ]
     }
 
@@ -423,50 +426,6 @@ struct TowerProps {
         material.textureCoordinateTransform = .init(scale: [1, max(length, 0.01)])
         model.materials = [material]
         blade.model = model
-    }
-
-    /// A worm sitting on the desk, as a chain of overlapping spheres, so it is round at both
-    /// ends: its back lies flat and coils once and a half around its base, and its front rises
-    /// upright from the middle of the coil, its head facing the camera (+z), with two dark eyes.
-    private static func makeWorm(scale: Float) -> Entity {
-        let worm = Entity()
-        let skin = BookFactory.surface(nil, tint: pink, roughness: 0.55, specular: 0.25)
-        let radius: Float = 0.15 * scale
-        var points: [(SIMD3<Float>, Float)] = []
-        // The coil, from the tail inward to the base of the upright front, flat on the desk.
-        let turns: Float = 1.5
-        let steps = 70
-        for step in 0...steps {
-            let fraction = Float(step) / Float(steps)
-            let angle = fraction * turns * 2 * .pi
-            let reach = (0.62 - 0.4 * fraction) * scale
-            let girth = radius * (0.7 + 0.3 * fraction)
-            points.append(([cos(angle) * reach, girth, sin(angle) * reach], girth))
-        }
-        // The front: bends up from the coil's end and rises to the head over the coil's middle.
-        let base = points.last!.0
-        let rise = 1.25 * scale
-        for step in 1...40 {
-            let fraction = Float(step) / 40
-            let bend = min(fraction * 3, 1)
-            let x = base.x * (1 - bend)
-            let z = base.z * (1 - bend) + 0.08 * scale * fraction * fraction
-            points.append(([x, radius + rise * fraction, z], radius))
-        }
-        for (center, size) in points {
-            let sphere = ModelEntity(mesh: .generateSphere(radius: size), materials: [skin])
-            sphere.position = center
-            worm.addChild(sphere)
-        }
-        let head = points.last!.0
-        let eye = BookFactory.surface(
-            nil, tint: UIColor(white: 0.08, alpha: 1), roughness: 0.2, specular: 0.8)
-        for side: Float in [-1, 1] {
-            let dot = ModelEntity(mesh: .generateSphere(radius: radius * 0.22), materials: [eye])
-            dot.position = head + SIMD3(side * radius * 0.42, radius * 0.25, radius * 0.86)
-            worm.addChild(dot)
-        }
-        return worm
     }
 }
 

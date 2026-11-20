@@ -395,7 +395,7 @@ struct ShareStudioView: View {
         .onChange(of: bookSelection, initial: true) { _, selection in chooseBooks(selection) }
         .onChange(of: template == .dropped) { updatePeriods() }
         .onChange(of: template) { _, template in
-            guard template != .pile, !model.isExample else { return }
+            guard template != .pile, template != .tower, !model.isExample else { return }
             UserDefaults.standard.set(template.rawValue, forKey: Self.templateKey)
         }
         // The example's choices stay out of the saved settings, and leaving it restores them.

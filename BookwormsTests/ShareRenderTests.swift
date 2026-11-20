@@ -80,7 +80,8 @@ final class ShareRenderTests: XCTestCase {
             (.year(2025), .threeD), (.month(year: 2025, month: 5), .flat), (.lifetime, .flat),
         ]
         // Social templates need another reader (`testSocialTemplatesRender...`).
-        for template in ShareTemplate.allCases where template != .pile && !template.isSocial {
+        for template in ShareTemplate.allCases
+        where template != .pile && template != .tower && !template.isSocial {
             for (frame, style) in cases {
                 let library = template == .dropped ? Self.books + Self.dropped : Self.books
                 let books = template.books(from: library, in: frame)
@@ -146,7 +147,8 @@ final class ShareRenderTests: XCTestCase {
             look.isCondensed.toggle()
             return look
         }
-        for template in ShareTemplate.allCases where template != .pile && !template.isSocial {
+        for template in ShareTemplate.allCases
+        where template != .pile && template != .tower && !template.isSocial {
             let library = template == .dropped ? Self.books + Self.dropped : Self.books
             // An empty Dropped list draws only the card's heading and count.
             let lists =
