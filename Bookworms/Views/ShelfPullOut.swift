@@ -285,6 +285,17 @@ struct PullOutPath {
     static let nudge = 0.06
     /// How the pointer eases a book to `nudge` and back.
     static let nudgeSpring = Spring.smooth(duration: 0.2)
+    /// The most, in degrees, that the pointer resting on a book turns it to face the pointer,
+    /// about the screen's vertical axis, as Delicious Library's shelf items face the cursor.
+    static let pointerTurn = 2.0
+
+    /// How far a book `width` points wide faces a pointer `x` points across it: from -1, facing
+    /// its leading edge, to 1, facing its trailing edge, in tenths, so that small moves don't
+    /// redraw the book.
+    static func lean(atX x: CGFloat, width: CGFloat) -> Double {
+        guard width > 0 else { return 0 }
+        return (min(max(Double(x / width) * 2 - 1, -1), 1) * 10).rounded() / 10
+    }
 
     /// How far the pointer's ease has brought a book `elapsed` seconds after it began, so a pull
     /// that starts during the ease starts where the book is.
