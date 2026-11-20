@@ -12,32 +12,15 @@ import SwiftUI
 ///
 /// Scene units are decimeters, as in `BookPileScene`. The plank runs along x, with the reader's
 /// books on the left (-x) and the friend's on the right, each book lying front cover up with
-/// its spine toward the camera (`PileLayout.lyingFlat`). Books stand still: `SeesawBalance`
-/// decides the plank's turn, and every book rests on the plank or on the book below it.
+/// its spine toward the camera (`PileLayout.lyingFlat`). The plank rests on a walnut fulcrum
+/// and, like a playground seesaw, tips all the way to the heavier side (`SeesawBalance.lean`)
+/// until its end rests on the desk. Books stand still, each on the plank or on the book below.
 @MainActor
 final class SeesawScene {
-    /// How the plank meets the desk. The sample sheet compares both; the reader sees one.
-    enum Base: String {
-        /// A plank on a triangular block, which tips all the way to the heavier side.
-        case fulcrum
-        /// A plank on a curved rocker, which tips further the more one side outweighs the other.
-        case rocker
-    }
-
-    /// The base the Share tab draws. Debug builds take `-BookwormsSeesawBase fulcrum|rocker`,
-    /// for the sample sheet that compares them.
-    static var sampleBase: Base {
-        UserDefaults.standard.string(forKey: "BookwormsSeesawBase").flatMap(Base.init) ?? .rocker
-    }
-
     /// The plank's length, thickness, and depth.
     nonisolated static let plank = SIMD3<Float>(13, 0.35, 2.6)
-    /// The fulcrum's height, and the rocker's: the plank's underside sits this high when level.
+    /// The fulcrum's height: the plank's underside sits this high when level.
     nonisolated static let baseHeight: Float = 1.5
-    /// The rocker's radius. A smaller radius tips the plank further for the same difference.
-    nonisolated static let rockerRadius: Float = 4.5
-    /// The plank's weight, in pages, which steadies a rocker against small differences.
-    nonisolated static let plankPages = 2_000
     /// Stacks on each end, and the most books in one stack.
     nonisolated static let stacks = 2
     nonisolated static let stackLimit = 14
@@ -59,18 +42,18 @@ final class SeesawScene {
     }
 
     /// Builds the books both readers' ends show, waiting for their fonts and up to 10 seconds
-    /// for covers, then places the plank, its base, and the books, and frames them in `rect` of
-    /// an image of `size`. Returns the books whose covers came too late.
+    /// for covers, then places the plank, the fulcrum, and the books, and frames them in `rect`
+    /// of an image of `size`. Returns the books whose covers came too late.
     func prepare(
-        _ balance: SeesawBalance, base: Base, in rect: CGRect, of size: CGSize, model: AppModel
+        _ balance: SeesawBalance, in rect: CGRect, of size: CGSize, model: AppModel
     ) async -> [CloudBook] {
         let mine = balance.mine.shown(limit: Self.stacks * Self.stackLimit)
         let theirs = balance.theirs.shown(limit: Self.stacks * Self.stackLimit)
         let books = mine + theirs
         let late = await factory.prepare(
             books, prefetching: [], loadWait: .seconds(10), waitsForFonts: true, model: model)
-        let pose = Self.plankPose(balance, base: base)
-        root.addChild(makeBase(base, pose: pose))
+        let pose = Self.plankPose(balance)
+        root.addChild(makeFulcrum())
         root.addChild(makePlank(pose: pose))
         var points = Self.plankCorners(pose)
         for (books, side) in [(mine, Float(-1)), (theirs, 1)] {
@@ -94,13 +77,11 @@ final class SeesawScene {
 
     // MARK: Layout
 
-    /// The plank's pose: its middle and its turn about the z axis, negative to tip the right end
-    /// down.
+    /// The plank's pose: its middle and its turn about the z axis, positive to tip the left
+    /// end down.
     struct PlankPose {
         var center: SIMD3<Float>
         var angle: Float
-        /// Where a rocker's circle has its middle, which rolls along the desk as it tips.
-        var rockerCenter: SIMD3<Float>
 
         var rotation: simd_quatf { simd_quatf(angle: angle, axis: [0, 0, 1]) }
 
@@ -110,50 +91,21 @@ final class SeesawScene {
         }
     }
 
-    /// The turn at which the plank's lower end touches the desk, for `base`.
-    static func maximumTilt(base: Base) -> Float {
-        var angle: Float = 0
-        while angle < 0.6 {
-            let next = angle + 0.002
-            let low = plankCorners(pose(angle: -next, base: base)).map(\.y).min() ?? 0
-            if low < 0.01 { break }
-            angle = next
-        }
-        return angle
-    }
+    /// The turn at which the plank's lower end touches the desk: its underside pivots on the
+    /// fulcrum's ridge, so its end drops half its length times the turn's sine.
+    nonisolated static let maximumTilt = asin(2 * baseHeight / plank.x)
 
-    static func plankPose(_ balance: SeesawBalance, base: Base) -> PlankPose {
-        let maximum = maximumTilt(base: base)
-        let tilt =
-            switch base {
-            case .fulcrum: balance.lean == .level ? 0 : maximum
-            case .rocker:
-                balance.tilt(
-                    arm: arm, radius: rockerRadius, plankPages: plankPages, maximum: maximum)
+    /// The plank turned about the fulcrum's ridge toward the heavier side, or level.
+    static func plankPose(_ balance: SeesawBalance) -> PlankPose {
+        let angle: Float =
+            switch balance.lean {
+            case .mine: maximumTilt
+            case .theirs: -maximumTilt
+            case .level: 0
             }
-        return pose(angle: balance.lean == .mine ? tilt : -tilt, base: base)
-    }
-
-    /// The plank turned by `angle`: about the fulcrum's ridge, or rolled along the desk on the
-    /// rocker, whose arc touches the desk under the ridge's place when level.
-    static func pose(angle: Float, base: Base) -> PlankPose {
-        let half = plank.y / 2
-        switch base {
-        case .fulcrum:
-            let ridge = SIMD3<Float>(0, baseHeight, 0)
-            let rotation = simd_quatf(angle: angle, axis: [0, 0, 1])
-            return PlankPose(
-                center: ridge + rotation.act([0, half, 0]), angle: angle, rockerCenter: ridge)
-        case .rocker:
-            // Rolling without slipping moves the circle's middle along the desk by its radius
-            // times the turn; a turn toward -x (positive angle) rolls it toward -x.
-            let middle = SIMD3<Float>(-rockerRadius * angle, rockerRadius, 0)
-            let rotation = simd_quatf(angle: angle, axis: [0, 0, 1])
-            // The plank's middle, in the rocker's axes, when level.
-            let offset = SIMD3<Float>(0, baseHeight + half - rockerRadius, 0)
-            return PlankPose(
-                center: middle + rotation.act(offset), angle: angle, rockerCenter: middle)
-        }
+        let rotation = simd_quatf(angle: angle, axis: [0, 0, 1])
+        return PlankPose(
+            center: [0, baseHeight, 0] + rotation.act([0, plank.y / 2, 0]), angle: angle)
     }
 
     /// The plank's eight corners in the scene.
@@ -233,31 +185,15 @@ final class SeesawScene {
         return entity
     }
 
-    private func makeBase(_ base: Base, pose: PlankPose) -> Entity {
-        let depth = Self.plank.z * 0.8
-        let profile: [SIMD2<Float>]
-        let transform: Transform
-        switch base {
-        case .fulcrum:
-            // A ridge block, wider at the desk than at the plank.
-            let width = Self.baseHeight * 1.3
-            profile = [[-width / 2, 0], [width / 2, 0], [0.08, Self.baseHeight], [-0.08, Self.baseHeight]]
-            transform = .identity
-        case .rocker:
-            // The circle's lower segment, from the desk up to the plank's underside, in the
-            // rocker's axes, whose origin is the circle's middle.
-            let reach = Self.baseHeight - Self.rockerRadius
-            let span = acos(min(1, max(-1, -reach / Self.rockerRadius)))
-            profile = (0...32).map { step in
-                let angle = -Float.pi / 2 - span + 2 * span * Float(step) / 32
-                return [Self.rockerRadius * cos(angle), Self.rockerRadius * sin(angle)]
-            }
-            transform = Transform(rotation: pose.rotation, translation: pose.rockerCenter)
-        }
+    /// A walnut ridge block under the plank's middle, wider at the desk than at the plank.
+    private func makeFulcrum() -> Entity {
+        let width = Self.baseHeight * 1.3
+        let profile: [SIMD2<Float>] = [
+            [-width / 2, 0], [width / 2, 0], [0.08, Self.baseHeight], [-0.08, Self.baseHeight],
+        ]
         let entity = ModelEntity(
-            mesh: Self.extruded(profile, depth: depth) ?? .generateBox(size: 0.1),
+            mesh: Self.extruded(profile, depth: Self.plank.z * 0.8) ?? .generateBox(size: 0.1),
             materials: [wood(tint: Self.walnut)])
-        entity.transform = transform
         stage.light(entity)
         return entity
     }
@@ -291,7 +227,7 @@ final class SeesawScene {
                 [[point.x, point.y, -half], [next.x, next.y, -half], [next.x, next.y, half], [point.x, point.y, half]],
                 normal: normal)
         }
-        var descriptor = MeshDescriptor(name: "seesaw base")
+        var descriptor = MeshDescriptor(name: "seesaw fulcrum")
         descriptor.positions = MeshBuffers.Positions(positions)
         descriptor.normals = MeshBuffers.Normals(normals)
         descriptor.textureCoordinates = MeshBuffers.TextureCoordinates(coordinates)

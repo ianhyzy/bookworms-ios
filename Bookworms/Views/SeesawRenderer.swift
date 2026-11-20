@@ -20,16 +20,20 @@ enum SeesawRenderer {
     ///
     /// - Throws: `CancellationError` when the task is cancelled, and `PileSnapshotError` when
     ///   Metal fails or the rendered frame is one flat color.
+    /// The scale of the books' textures (see `BookFactory`): the stacks fill most of the image's
+    /// width, so their covers and spines need about twice the Desk's largest piles' pixels.
+    static let textureScale: CGFloat = 2
+
     static func render(
         _ balance: SeesawBalance, social: ShareSocial, period: String, aspect: ShareAspect,
-        theme: ShareTheme, base: SeesawScene.Base, model: AppModel
+        theme: ShareTheme, model: AppModel
     ) async throws -> (image: UIImage, late: [CloudBook]) {
         try await PileSnapshotRenderer.claim()
         defer { PileSnapshotRenderer.release() }
         let layout = SeesawLayout(aspect: aspect)
         let size = aspect.size
         let target = try FrameTarget(width: Int(size.width), height: Int(size.height))
-        let scene = SeesawScene(textureScale: 2)
+        let scene = SeesawScene(textureScale: Self.textureScale)
         let renderer = try RealityRenderer()
         renderer.entities.append(scene.root)
         defer { renderer.entities.removeAll() }
@@ -38,7 +42,7 @@ enum SeesawRenderer {
         renderer.cameraSettings.isToneMappingEnabled = true
         renderer.cameraSettings.colorBackground = .color(theme.backdropDark.uiColor.cgColor)
         let late = await scene.prepare(
-            balance, base: base, in: layout.sceneRect, of: size, model: model)
+            balance, in: layout.sceneRect, of: size, model: model)
         try Task.checkCancellation()
         try renderer.updateAndRender(
             deltaTime: 1.0 / 60, cameraOutput: target.output,

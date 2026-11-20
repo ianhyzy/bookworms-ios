@@ -25,9 +25,9 @@ import os
 /// the shown reader's.
 ///
 /// The app saves the mode, template, size, time frame, and **Show profile link**, so the tab
-/// opens as it was left, except that it never opens on Desk: a Desk image takes seconds of
-/// RealityKit work, which a launch should not start before the reader asks for it. Choosing
-/// Desk leaves the template chosen before it saved.
+/// opens as it was left, except that it never opens on Desk or Seesaw: their images take
+/// seconds of RealityKit work, which a launch should not start before the reader asks for it.
+/// Choosing either leaves the template chosen before it saved.
 ///
 /// Without a library, the tab shows `NoLibraryView` instead, which can open the Hardcover sheet.
 struct ShareStudioView: View {
@@ -76,7 +76,7 @@ struct ShareStudioView: View {
     /// The request that drew `image`. While it differs from the current request, a newer image
     /// is on its way, so the preview shows progress and sharing waits.
     @State private var renderedRequest: RenderRequest?
-    /// The Pile redraw waiting for covers that missed the image's wait; `nil` once it drew. A new
+    /// The Desk or Seesaw redraw waiting for covers that missed the image's wait; `nil` once it drew. A new
     /// render or leaving the tab cancels it, so it never claims the render slot for an image
     /// nobody sees. Leaving the tab before it draws clears `renderedRequest`, so the image draws
     /// again when the reader comes back.
@@ -145,7 +145,7 @@ struct ShareStudioView: View {
     nonisolated private static let log = Logger(
         subsystem: "gay.ian.Bookworms.iOS", category: "share")
 
-    /// The template last chosen other than Desk, which a launch opens on.
+    /// The template last chosen other than Desk or Seesaw, which a launch opens on.
     private static var savedTemplate: ShareTemplate {
         UserDefaults.standard.string(forKey: templateKey).flatMap(ShareTemplate.init(rawValue:))
             ?? .topFive
@@ -240,9 +240,9 @@ struct ShareStudioView: View {
     /// Seesaw's weighing of the books the owner and `reader` finished in `frame`, or `nil`
     /// before the reader's library downloads.
     private func seesawBalance(frame: TimeFrame, reader: SocialModel.Reader?) -> SeesawBalance? {
-        guard let reader, let theirs = model.social.snapshot?.libraries[reader.id]?.books else {
-            return nil
-        }
+        guard model.social.owner != nil, let reader,
+            let theirs = model.social.snapshot?.libraries[reader.id]?.books
+        else { return nil }
         return SeesawBalance(frame: frame, mine: library, theirs: theirs)
     }
 
@@ -289,11 +289,11 @@ struct ShareStudioView: View {
         if template == .dropped { books = Array(books.prefix(DroppedCard.maximumBooks)) }
         // Only the drawn books' designs, so a design saved for another book changes nothing.
         let designs = books.map { model.design(for: $0) }
-        // The pile renderer waits for its own fonts, so a newly loaded face changes nothing;
-        // restarting a pile would only delay it. Other templates re-render only when a face for
+        // The scene renderers wait for their own fonts, so a newly loaded face changes nothing;
+        // restarting one would only delay it. Other templates re-render only when a face for
         // one of their own books arrives.
         let loadedFaces =
-            template == .pile ? 0 : designs.count { model.fonts.face(for: $0) != nil }
+            template.rendersScene ? 0 : designs.count { model.fonts.face(for: $0) != nil }
         var request = RenderRequest(
             template: template, aspect: aspect, frame: frame, bookID: bookID,
             coverStyle: coverStyle, direction: direction,
@@ -407,7 +407,7 @@ struct ShareStudioView: View {
         .onChange(of: bookSelection, initial: true) { _, selection in chooseBooks(selection) }
         .onChange(of: template == .dropped) { updatePeriods() }
         .onChange(of: template) { _, template in
-            guard template != .pile, !model.isExample else { return }
+            guard !template.rendersScene, !model.isExample else { return }
             UserDefaults.standard.set(template.rawValue, forKey: Self.templateKey)
         }
         // The example's choices stay out of the saved settings, and leaving it restores them.
@@ -915,9 +915,9 @@ struct ShareStudioView: View {
                         #endif
                     }
             }
-            if template == .pile && isPending {
-                // A pile takes seconds to load its covers and lay its books out.
-                ProgressView("Dropping books")
+            if template.rendersScene && isPending {
+                // A scene takes seconds to load its covers and lay its books out.
+                ProgressView(template == .pile ? "Dropping books" : "Weighing books")
                     .padding()
                     .background(.regularMaterial, in: .rect(cornerRadius: 12))
             } else if image == nil {
@@ -1070,7 +1070,8 @@ struct ShareStudioView: View {
             )
         case .seesaw:
             return (
-                "Nothing to weigh in \(shownFrame.title)",
+                shownFrame == .lifetime
+                    ? "Nothing to weigh yet" : "Nothing to weigh in \(shownFrame.title)",
                 "Neither of you finished a book then. Choose another time frame."
             )
         default:
@@ -1397,37 +1398,22 @@ struct ShareStudioView: View {
         guard !Task.isCancelled else { return }
         // `nil` when there are no books or the image could not be drawn.
         var rendered: UIImage?
-        // A pile's books whose covers missed its wait.
+        // A 3D image's books whose covers missed its wait.
         var late: [CloudBook] = []
+        let scene = sceneDrawing(request, books: books, input: input, reader: reader)
         if request.isEmpty {
             // Nothing to draw; the preview says why.
-        } else if template == .pile {
+        } else if let scene {
             do {
-                let pile = try await PileSnapshotRenderer.render(
-                    books: books, title: input.period, aspect: request.aspect,
-                    seed: request.seed, username: request.username, model: model)
+                let drawn = try await scene.draw()
                 // A render cancelled after its last check still returns; a newer one is coming.
                 try Task.checkCancellation()
-                rendered = pile.image
-                late = pile.late
+                rendered = drawn.image
+                late = drawn.late
             } catch is CancellationError {
                 return
             } catch {
-                Self.log.error("The desk image failed: \(error)")
-            }
-        } else if template == .seesaw, let social = input.social,
-            let balance = seesawBalance(frame: request.frame, reader: reader)
-        {
-            do {
-                rendered = try await SeesawRenderer.render(
-                    balance, social: social, period: input.period, aspect: request.aspect,
-                    theme: input.theme, base: SeesawScene.sampleBase, model: model
-                ).image
-                try Task.checkCancellation()
-            } catch is CancellationError {
-                return
-            } catch {
-                Self.log.error("The seesaw image failed: \(error)")
+                Self.log.error("The \(template.rawValue) image failed: \(error)")
             }
         } else if template == .checkoutCard {
             // A Checkout Card draws no covers or spines, only its handwriting.
@@ -1482,21 +1468,62 @@ struct ShareStudioView: View {
                 fullSizeImage.wrappedValue = image.image
             }
         #endif
-        // Covers that missed the pile's wait draw it once more when they arrive, unless a newer
-        // image replaces it first. A failed redraw keeps the image.
-        guard !late.isEmpty else { return }
-        let (title, drawnBooks, lateBooks, shareName) = (input.period, books, late, name)
+        // Covers that missed a 3D image's wait draw it once more when they arrive, unless a
+        // newer image replaces it first. A failed redraw keeps the image.
+        guard let scene, !late.isEmpty else { return }
+        let (drawnBooks, lateBooks, shareName) = (books, late, name)
         lateRedraw = Task {
-            await PileSnapshotRenderer.waitForCovers(
-                of: lateBooks, among: drawnBooks.count, aspect: request.aspect, model: model)
+            await scene.waitForCovers(lateBooks)
             guard !Task.isCancelled, renderedRequest == request,
-                let pile = try? await PileSnapshotRenderer.render(
-                    books: drawnBooks, title: title, aspect: request.aspect, seed: request.seed,
-                    username: request.username, model: model),
+                let drawn = try? await scene.draw(),
                 !Task.isCancelled, renderedRequest == request
             else { return }
-            image = ShareImage(image: pile.image, name: shareName, books: drawnBooks)
+            image = ShareImage(image: drawn.image, name: shareName, books: drawnBooks)
             lateRedraw = nil
+        }
+    }
+
+    /// How a template drawn from a RealityKit scene draws `request`'s image of `books`, and
+    /// waits for covers that missed the image's wait, or `nil` for the other templates and for
+    /// a Seesaw without the reader's library.
+    private struct SceneDrawing {
+        let draw: @MainActor () async throws -> (image: UIImage, late: [CloudBook])
+        let waitForCovers: @MainActor ([CloudBook]) async -> Void
+    }
+
+    private func sceneDrawing(
+        _ request: RenderRequest, books: [CloudBook], input: ShareInput,
+        reader: SocialModel.Reader?
+    ) -> SceneDrawing? {
+        let model = model
+        switch request.template {
+        case .pile:
+            return SceneDrawing(
+                draw: {
+                    try await PileSnapshotRenderer.render(
+                        books: books, title: input.period, aspect: request.aspect,
+                        seed: request.seed, username: request.username, model: model)
+                },
+                waitForCovers: { late in
+                    await PileSnapshotRenderer.waitForCovers(
+                        of: late, among: books.count, aspect: request.aspect, model: model)
+                })
+        case .seesaw:
+            guard let social = input.social,
+                let balance = seesawBalance(frame: request.frame, reader: reader)
+            else { return nil }
+            return SceneDrawing(
+                draw: {
+                    try await SeesawRenderer.render(
+                        balance, social: social, period: input.period, aspect: request.aspect,
+                        theme: input.theme, model: model)
+                },
+                waitForCovers: { late in
+                    await BookFactory.waitForCovers(
+                        of: late, textureScale: SeesawRenderer.textureScale, model: model)
+                })
+        default:
+            return nil
         }
     }
 

@@ -3,9 +3,7 @@ import Foundation
 /// How Seesaw weighs two readers' books for a time frame, and which way the plank tips.
 ///
 /// Each side weighs its books' pages, as the 3D books' masses do (`BookShape`): a book without a
-/// page count counts as `unknownPages`. The plank rocks on a curved base, so it settles where its
-/// contact with the desk lies under the books' combined weight: the more one side outweighs the
-/// other, the further it tips, until its end rests on the desk (`maximumTilt`).
+/// page count counts as `unknownPages`. The plank tips toward the side with more pages.
 struct SeesawBalance: Equatable {
     /// One reader's end of the plank.
     struct Side: Equatable {
@@ -55,18 +53,5 @@ struct SeesawBalance: Equatable {
 
     var lean: Lean {
         mine.pages == theirs.pages ? .level : mine.pages > theirs.pages ? .mine : .theirs
-    }
-
-    /// The plank's turn, in radians, from level toward the heavier side, at most `maximum`.
-    ///
-    /// The plank's own weight, `plankPages`, steadies it, so a few pages' difference tips it a
-    /// little. The base's curve turns a side's share of the weight into a turn: the contact
-    /// moves `radius × angle` along the desk, under the books' center of weight, which lies
-    /// `arm × difference / total` from the middle.
-    func tilt(arm: Float, radius: Float, plankPages: Int, maximum: Float) -> Float {
-        let difference = Float(abs(mine.pages - theirs.pages))
-        let total = Float(mine.pages + theirs.pages + plankPages)
-        guard difference > 0, total > 0 else { return 0 }
-        return min(maximum, arm * difference / total / radius)
     }
 }

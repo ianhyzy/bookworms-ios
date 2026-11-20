@@ -84,15 +84,11 @@ enum PileSnapshotRenderer {
     static func waitForCovers(
         of books: [CloudBook], among count: Int, aspect: ShareAspect, model: AppModel
     ) async {
-        let scale = PileSnapshotLayout(aspect: aspect, count: min(count, maximumBooks))
-            .textureScale
-        let covers = model.covers
-        await withTaskGroup(of: Void.self) { group in
-            for book in books {
-                let pixels = BookFactory.coverPixels(for: book, textureScale: scale)
-                group.addTask { _ = await covers.image(for: book, maximumPixelSize: pixels) }
-            }
-        }
+        await BookFactory.waitForCovers(
+            of: books,
+            textureScale: PileSnapshotLayout(aspect: aspect, count: min(count, maximumBooks))
+                .textureScale,
+            model: model)
     }
 
     /// Waits for the render in progress and the renders that asked earlier, if any, then sets

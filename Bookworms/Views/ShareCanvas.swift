@@ -53,6 +53,10 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
     /// friends.
     var isSocial: Bool { self == .tasteMatch || self == .bookSwap || self == .seesaw }
 
+    /// Whether a RealityKit scene draws the image (`PileSnapshotRenderer`, `SeesawRenderer`),
+    /// which takes seconds and waits for its own fonts and covers.
+    var rendersScene: Bool { self == .pile || self == .seesaw }
+
     /// Whether the card features one book, which the reader can choose.
     var isSingleBook: Bool { self == .justFinished || self == .review || self == .currentlyReading }
 

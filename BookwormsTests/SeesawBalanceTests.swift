@@ -31,19 +31,6 @@ final class SeesawBalanceTests: XCTestCase {
         XCTAssertEqual(SeesawBalance(mine: [], theirs: []).lean, .level)
     }
 
-    func testTiltGrowsWithTheDifferenceUpToTheMaximum() {
-        func tilt(_ mine: Int, _ theirs: Int) -> Float {
-            SeesawBalance(mine: [book(1, pages: mine)], theirs: [book(2, pages: theirs)])
-                .tilt(arm: 4, radius: 4.5, plankPages: 2_000, maximum: 0.2)
-        }
-        XCTAssertEqual(tilt(500, 500), 0)
-        XCTAssertGreaterThan(tilt(600, 500), 0)
-        XCTAssertGreaterThan(tilt(900, 500), tilt(600, 500))
-        // The tilt depends on the difference, not on which side is heavier.
-        XCTAssertEqual(tilt(900, 500), tilt(500, 900))
-        XCTAssertEqual(tilt(20_000, 100), 0.2)
-    }
-
     func testFrameKeepsEachLibrarysBooksFinishedInItNewestFirst() {
         let balance = SeesawBalance(
             frame: .year(2025),
@@ -68,30 +55,23 @@ final class SeesawBalanceTests: XCTestCase {
 
     @MainActor
     func testTheHeavierEndRestsOnTheDeskAndNeverSinksIntoIt() {
-        for base in [SeesawScene.Base.fulcrum, .rocker] {
-            let heavy = SeesawBalance(mine: [book(1, pages: 50_000)], theirs: [])
-            let pose = SeesawScene.plankPose(heavy, base: base)
-            let corners = SeesawScene.plankCorners(pose)
+        for (mine, theirs) in [(5_000, 100), (100, 5_000), (101, 100)] {
+            let balance = SeesawBalance(
+                mine: [book(1, pages: mine)], theirs: [book(2, pages: theirs)])
+            let corners = SeesawScene.plankCorners(SeesawScene.plankPose(balance))
             let lowest = corners.min { $0.y < $1.y }!
-            XCTAssertEqual(lowest.y, 0, accuracy: 0.05, "\(base)")
-            // The reader's end, on the left, is the one that dips.
-            XCTAssertLessThan(lowest.x, 0, "\(base)")
-            let level = SeesawScene.plankPose(SeesawBalance(mine: [], theirs: []), base: base)
-            XCTAssertEqual(level.angle, 0)
-            XCTAssertEqual(
-                SeesawScene.plankCorners(level).map(\.y).min()!,
-                SeesawScene.baseHeight, accuracy: 1e-4, "\(base)")
+            // Like a playground seesaw, a single page tips it all the way.
+            XCTAssertEqual(lowest.y, 0, accuracy: 1e-3)
+            XCTAssertEqual(lowest.x < 0, mine > theirs)
         }
     }
 
     @MainActor
-    func testAFulcrumTipsAllTheWayAndARockerByTheDifference() {
-        let close = SeesawBalance(mine: [book(1, pages: 1_050)], theirs: [book(2, pages: 1_000)])
+    func testAnEvenBalanceStaysLevelOnTheFulcrum() {
+        let pose = SeesawScene.plankPose(SeesawBalance(mine: [], theirs: []))
+        XCTAssertEqual(pose.angle, 0)
         XCTAssertEqual(
-            abs(SeesawScene.plankPose(close, base: .fulcrum).angle),
-            SeesawScene.maximumTilt(base: .fulcrum))
-        let rocking = abs(SeesawScene.plankPose(close, base: .rocker).angle)
-        XCTAssertGreaterThan(rocking, 0)
-        XCTAssertLessThan(rocking, SeesawScene.maximumTilt(base: .rocker) / 4)
+            SeesawScene.plankCorners(pose).map(\.y).min()!, SeesawScene.baseHeight,
+            accuracy: 1e-4)
     }
 }
