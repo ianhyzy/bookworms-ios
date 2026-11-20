@@ -63,6 +63,9 @@ targets:
         BGTaskSchedulerPermittedIdentifiers:
           - gay.ian.Bookworms.iOS.spines
           - gay.ian.Bookworms.iOS.generate.*
+        # View in my room (`RoomPhotoView`, iPhone only) places books in the camera's view; frames
+        # stay in ARKit's memory and are never stored or uploaded.
+        NSCameraUsageDescription: Bookworms uses the camera to show your books in your room. The camera image stays on this iPhone.
         NSPhotoLibraryAddUsageDescription: Bookworms saves the share images and videos you create to your photo library.
         # The system asks when a request goes to another device on the local network. Only the
         # reader's OpenAI-compatible endpoint can name one (`SpineDesigner`), because
