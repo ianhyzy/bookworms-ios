@@ -12,7 +12,7 @@ enum RoomPlacement {
     /// Meters per scene unit: a decimeter.
     static let metersPerUnit: Float = 0.1
 
-    /// The most books the room shows, its most popular (`DroppedCard.popular(_:limit:)`).
+    /// The most books the room shows, its most popular (`[CloudBook].popular(_:)`).
     /// Forty typical books stack about 1.2 meters tall, about as high as a reader can frame
     /// on a table, and their textures leave the camera and tracking room on older iPhones.
     static let maximumBooks = 40
@@ -98,7 +98,7 @@ enum ShelfProbe {
 /// upright from the left end, spines out, fore edges near the back, with the last three lying
 /// flat as a bookend, as a reader shelves books by hand.
 ///
-/// The shelf shows the most popular books that fit (`DroppedCard.popular(_:limit:)`), in
+/// The shelf shows the most popular books that fit (`[CloudBook].popular(_:)`), in
 /// finishing order from the left. Books taller than the
 /// shelf's clearance can't stand in it and are left out. Three or fewer books lie flat as one
 /// small stack. A shelf longer than the books leaves its right end empty.
@@ -127,7 +127,7 @@ struct ShelfFill {
         let standing = books.filter { shape($0).size.y <= space.clearance }
         var count = standing.count
         while count > 0 {
-            let shown = DroppedCard.popular(standing, limit: count)
+            let shown = standing.popular(count)
             if let fill = ShelfFill(layout: shown, in: space, seed: seed, shape: shape) {
                 self = fill
                 return
