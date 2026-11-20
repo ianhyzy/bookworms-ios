@@ -271,7 +271,7 @@
         /// Builds the books: the most popular `RoomPlacement.maximumBooks` of `books`, given
         /// oldest first, waiting for their fonts and up to 10 seconds for their covers.
         func load(_ books: [CloudBook], model: AppModel) async {
-            let shown = DroppedCard.popular(books, limit: RoomPlacement.maximumBooks)
+            let shown = books.popular(RoomPlacement.maximumBooks)
             factory.setGroundingShadows(true, under: [])
             await factory.prepare(
                 shown, prefetching: [], loadWait: .seconds(10), waitsForFonts: true, width: 4,
