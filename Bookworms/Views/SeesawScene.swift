@@ -50,8 +50,12 @@ final class SeesawScene {
         let mine = balance.mine.shown(limit: Self.stacks * Self.stackLimit)
         let theirs = balance.theirs.shown(limit: Self.stacks * Self.stackLimit)
         let books = mine + theirs
+        // A book both readers finished builds once, as the reader's copy: the factory keys its
+        // parts by book ID, and the friend's rating and finish date would change its wear.
+        var seen = Set<Int>()
         let late = await factory.prepare(
-            books, prefetching: [], loadWait: .seconds(10), waitsForFonts: true, model: model)
+            books.filter { seen.insert($0.id).inserted }, prefetching: [],
+            loadWait: .seconds(10), waitsForFonts: true, model: model)
         let pose = Self.plankPose(balance)
         root.addChild(makeFulcrum())
         root.addChild(makePlank(pose: pose))
@@ -127,10 +131,11 @@ final class SeesawScene {
     /// The biggest books lie lowest, and each book goes on the lowest stack, so the stacks rise
     /// evenly. Each book shifts a little along the plank and turns a few degrees about the
     /// plank's normal, as stacks placed by hand do, and lies flat on the book below it.
-    func stackSlots(_ books: [CloudBook], side: Float, pose: PlankPose) -> [(
+    private func stackSlots(_ books: [CloudBook], side: Float, pose: PlankPose) -> [(
         CloudBook, Transform
     )] {
-        let shaped = books.compactMap { book in factory.parts[book.id].map { (book, $0.shape.size) } }
+        let shaped =
+            books.compactMap { book in factory.parts[book.id].map { (book, $0.shape.size) } }
             .sorted { $0.1.x * $0.1.y > $1.1.x * $1.1.y }
         let count = min(Self.stacks, shaped.count)
         guard count > 0 else { return [] }
@@ -224,7 +229,10 @@ final class SeesawScene {
             let along = next - point
             let normal = simd_normalize(SIMD3(along.y, -along.x, 0))
             face(
-                [[point.x, point.y, -half], [next.x, next.y, -half], [next.x, next.y, half], [point.x, point.y, half]],
+                [
+                    [point.x, point.y, -half], [next.x, next.y, -half], [next.x, next.y, half],
+                    [point.x, point.y, half],
+                ],
                 normal: normal)
         }
         var descriptor = MeshDescriptor(name: "seesaw fulcrum")

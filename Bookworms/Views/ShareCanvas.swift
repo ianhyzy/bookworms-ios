@@ -72,7 +72,9 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
 
     /// Whether the time frame selects the card's books. Currently Reading shows what is being
     /// read now, and Taste Match and Book Swap compare whole libraries, so they have none.
-    var usesTimeFrame: Bool { self != .currentlyReading && self != .tasteMatch && self != .bookSwap }
+    var usesTimeFrame: Bool {
+        self != .currentlyReading && self != .tasteMatch && self != .bookSwap
+    }
 
     /// The books a single-book card can feature, newest first: the books finished in `frame`,
     /// only reviewed ones for Review, and for Currently Reading every current read, latest start

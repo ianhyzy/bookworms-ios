@@ -14,16 +14,16 @@ import SwiftUI
 /// view shows, in a `RealityRenderer`, taking its turn with the other renders (`claim()`).
 @MainActor
 enum SeesawRenderer {
+    /// The scale of the books' textures (see `BookFactory`): the stacks fill most of the image's
+    /// width, so their covers and spines need about twice the Desk's largest piles' pixels.
+    static let textureScale: CGFloat = 2
+
     /// Renders the seesaw for `social`'s two readers, weighing `balance`, under the heading
     /// `period`, at the pixel size of `aspect`. The room behind the desk takes `theme`'s dark
     /// backdrop. Returns the image and the books whose covers missed the wait.
     ///
     /// - Throws: `CancellationError` when the task is cancelled, and `PileSnapshotError` when
     ///   Metal fails or the rendered frame is one flat color.
-    /// The scale of the books' textures (see `BookFactory`): the stacks fill most of the image's
-    /// width, so their covers and spines need about twice the Desk's largest piles' pixels.
-    static let textureScale: CGFloat = 2
-
     static func render(
         _ balance: SeesawBalance, social: ShareSocial, period: String, aspect: ShareAspect,
         theme: ShareTheme, model: AppModel
@@ -73,7 +73,8 @@ struct SeesawLayout: Equatable {
         let insets = aspect.insets
         let top = insets.top + titleSize * 1.25 + 90
         let bottom = size.height - insets.bottom - avatarSize - 150
-        return CGRect(x: insets.leading / 2, y: top, width: size.width - insets.leading, height: bottom - top)
+        return CGRect(
+            x: insets.leading / 2, y: top, width: size.width - insets.leading, height: bottom - top)
     }
 }
 
@@ -120,6 +121,7 @@ struct SeesawCard: View {
                 }
                 .padding(.top, insets.top)
                 .padding(.horizontal, insets.leading)
+                .shadow(color: .black.opacity(0.4), radius: 6, y: 2)
             }
             .overlay(alignment: .bottom) {
                 VStack(spacing: 36) {
@@ -132,9 +134,9 @@ struct SeesawCard: View {
                 }
                 .padding(.horizontal, insets.leading)
                 .padding(.bottom, insets.bottom)
+                .shadow(color: .black.opacity(0.4), radius: 6, y: 2)
             }
             .foregroundStyle(ShareStyle.cream.color)
-            .shadow(color: .black.opacity(0.4), radius: 6, y: 2)
             .environment(\.colorScheme, .dark)
     }
 

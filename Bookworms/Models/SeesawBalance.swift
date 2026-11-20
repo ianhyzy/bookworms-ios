@@ -22,7 +22,11 @@ struct SeesawBalance: Equatable {
         func shown(limit: Int) -> [CloudBook] {
             Array(
                 books.enumerated()
-                    .sorted { ($0.element.ratingsCount ?? 0, -$0.offset) > ($1.element.ratingsCount ?? 0, -$1.offset) }
+                    .sorted {
+                        ($0.element.ratingsCount ?? 0, -$0.offset) > (
+                            $1.element.ratingsCount ?? 0, -$1.offset
+                        )
+                    }
                     .prefix(limit)
                     .map(\.element))
         }

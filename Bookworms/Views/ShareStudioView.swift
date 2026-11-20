@@ -76,9 +76,9 @@ struct ShareStudioView: View {
     /// The request that drew `image`. While it differs from the current request, a newer image
     /// is on its way, so the preview shows progress and sharing waits.
     @State private var renderedRequest: RenderRequest?
-    /// The Desk or Seesaw redraw waiting for covers that missed the image's wait; `nil` once it drew. A new
-    /// render or leaving the tab cancels it, so it never claims the render slot for an image
-    /// nobody sees. Leaving the tab before it draws clears `renderedRequest`, so the image draws
+    /// The Desk or Seesaw redraw waiting for covers that missed the image's wait; `nil` once it
+    /// drew. A new render or leaving the tab cancels it, so it never claims the render slot for
+    /// an image nobody sees. Leaving the tab before it draws clears `renderedRequest`, so the image draws
     /// again when the reader comes back.
     @State private var lateRedraw: Task<Void, Never>?
     /// Whether the last render failed, so no image is shown or shared.

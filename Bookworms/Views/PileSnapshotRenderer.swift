@@ -137,7 +137,8 @@ enum PileSnapshotRenderer {
     /// Lays the books out, then renders one frame and copies it into a `CGImage`.
     ///
     /// RealityKit renders into a private texture, which a blit copies into memory once the
-    /// render signals its event (`FrameTarget`). The books are static bodies, so the few steps before the frame move nothing.
+    /// render signals its event (`FrameTarget`). The books are static bodies, so the few steps
+    /// before the frame move nothing.
     private static func renderPile(
         _ books: [CloudBook], layout: PileSnapshotLayout, seed: UInt64, model: AppModel
     ) async throws -> (image: CGImage, late: [CloudBook]) {
