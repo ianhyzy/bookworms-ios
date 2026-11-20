@@ -318,7 +318,8 @@ final class DeskScenes {
             }
             return wake()
         }
-        guard let view, let viewport else { return }
+        guard let view, var viewport else { return }
+        viewport.videoFrame = DominoVideoFrame.chosen
         let handover = pile.handOff()
         pile.detach()
         dominoes.attach(to: view)
@@ -346,11 +347,11 @@ final class DeskScenes {
     }
 
     /// **Set up again**: wakes a paused desk and sets the dominoes' books up again from where
-    /// they lie.
+    /// they lie, in the video frame the reader chose.
     func setUpDominoesAgain() {
         wake()
         dominoGeneration += 1
-        dominoes.setUpAgain(generation: dominoGeneration)
+        dominoes.setUpAgain(generation: dominoGeneration, frame: DominoVideoFrame.chosen)
     }
 
     /// **Back to desk**: hands the dominoes' books back to the Desk scene wherever they lie, as

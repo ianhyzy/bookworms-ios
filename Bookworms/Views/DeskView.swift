@@ -348,6 +348,8 @@ private struct DeskBar: ViewModifier {
     @AppStorage(ImpactSound.storageKey) private var sounds = true
     /// How the camera films the dominoes, which `DominoesView` reads.
     @AppStorage(DominoCameraMode.storageKey) private var dominoCamera = DominoCameraMode.overview
+    /// The shape of the dominoes' video, which `DominoesView` reads.
+    @AppStorage(DominoVideoFrame.storageKey) private var dominoVideo = DominoVideoFrame.portrait
 
     func body(content: Content) -> some View {
         content
@@ -438,6 +440,16 @@ private struct DeskBar: ViewModifier {
                     }
                     .pickerStyle(.menu)
                 }
+                // An iPhone's view already has the story's shape, so only the Mac offers its
+                // window's.
+                #if os(macOS)
+                    if isDominoes {
+                        Picker("Video", systemImage: "film", selection: $dominoVideo) {
+                            ForEach(DominoVideoFrame.allCases) { Text($0.title).tag($0) }
+                        }
+                        .pickerStyle(.menu)
+                    }
+                #endif
                 Toggle("Sounds", systemImage: "speaker.wave.2", isOn: $sounds)
                 if !isDominoes && !reduceMotion {
                     Toggle(byPeriodTitle, systemImage: "calendar", isOn: $dropsByPeriod)

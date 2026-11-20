@@ -1350,6 +1350,33 @@ final class DominoTests: XCTestCase {
         XCTAssertEqual(DominoFinale.spreadRect(in: narrow).minX, 316, accuracy: 1e-9)
     }
 
+    func testAWindowFrameRecordsTheWholeView() {
+        // The Mac's default window with the sidebar, recording its own shape.
+        let mac = PileViewport(
+            size: CGSize(width: 1_180, height: 820),
+            insets: EdgeInsets(top: 52, leading: 144, bottom: 0, trailing: 0),
+            videoFrame: .window)
+        // The longer side is 1,920 pixels, and 820 × 1,920 / 1,180 rounds to 1,334, even.
+        XCTAssertEqual(DominoRecorder.frameSize(for: mac), CGSize(width: 1_920, height: 1_334))
+        XCTAssertEqual(DominoRecorder.crop(in: mac), CGRect(x: 0, y: 0, width: 1_180, height: 820))
+        // The run plays in the whole view, so no side darkens.
+        XCTAssertEqual(DominoFinale.area(in: mac), CGRect(x: 0, y: 0, width: 1_180, height: 820))
+        // The heading keeps the size a story of the window's height gives it.
+        XCTAssertEqual(
+            DominoFinale.spreadRect(in: mac).minY, 52 + 820 * 9 / 16 * 0.28, accuracy: 1e-9)
+        // A window resized while recording keeps the frame's shape, at the new view's height.
+        var taller = mac
+        taller.size = CGSize(width: 1_000, height: 820)
+        let crop = DominoRecorder.crop(in: taller, size: CGSize(width: 1_920, height: 1_334))
+        XCTAssertEqual(crop.width / crop.height, 1_920 / 1_334, accuracy: 1e-9)
+        XCTAssertEqual(crop.width, 1_000)
+        // Portrait still records a story.
+        var portrait = mac
+        portrait.videoFrame = .portrait
+        XCTAssertEqual(DominoRecorder.frameSize(for: portrait), ShareAspect.story.size)
+        XCTAssertEqual(DominoRecorder.crop(in: portrait).width, 461.25, accuracy: 1e-9)
+    }
+
     func testTheOverviewShowsTheWholeChainInTheRecordingsFrameInAWideView() throws {
         // The Mac's default window with the sidebar, whose frame spans x 431 to 893.
         let mac = PileViewport(
