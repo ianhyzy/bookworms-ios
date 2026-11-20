@@ -1499,16 +1499,7 @@ final class BookPileScene {
             let grabbed = PileCamera.intersect(ray, height: position.y)
         else { return false }
         land(book)
-        let bounds = book.visualBounds(relativeTo: root)
-        var riders = Set<Entity.ID>()
-        for case let other as ModelEntity in shelf.children where other !== book {
-            let over = other.visualBounds(relativeTo: root)
-            guard over.min.y > bounds.center.y, over.max.x > bounds.min.x,
-                over.min.x < bounds.max.x, over.max.z > bounds.min.z, over.min.z < bounds.max.z
-            else { continue }
-            riders.insert(other.id)
-            if holdsStill || standing { setMode(.dynamic, of: other) }
-        }
+        let riders = freeRiders(of: book)
         setMode(.dynamic, of: book)
         book.components[CollisionComponent.self]?.filter = CollisionFilter(
             group: Self.heldGroup, mask: .all)
@@ -1621,6 +1612,22 @@ final class BookPileScene {
         return hits.filter { !carry.riders.contains($0.entity.id) }.map(\.position.y).max()
     }
 
+    /// The books lying over `book`. Among Reduce Motion's still stacks or in a standing shape,
+    /// they start moving, so they settle into its place as it leaves.
+    private func freeRiders(of book: ModelEntity) -> Set<Entity.ID> {
+        let bounds = book.visualBounds(relativeTo: root)
+        var riders = Set<Entity.ID>()
+        for case let other as ModelEntity in shelf.children where other !== book {
+            let over = other.visualBounds(relativeTo: root)
+            guard over.min.y > bounds.center.y, over.max.x > bounds.min.x,
+                over.min.x < bounds.max.x, over.max.z > bounds.min.z, over.min.z < bounds.max.z
+            else { continue }
+            riders.insert(other.id)
+            if holdsStill || standing { setMode(.dynamic, of: other) }
+        }
+        return riders
+    }
+
     private func setMode(_ mode: PhysicsBodyMode, of book: ModelEntity) {
         book.components[PhysicsBodyComponent.self]?.mode = mode
     }
@@ -1707,6 +1714,9 @@ final class BookPileScene {
         endDrag()
         cameraMove = nil
         calendar.endGlow()
+        // Books on a standing shape's book fall into its place as it leaves, as they would
+        // if it were picked up.
+        if standing { _ = freeRiders(of: book) }
         readerCamera = view
         return lifter.lift(
             book, id: id, among: shelf.children.compactMap { $0 as? ModelEntity },

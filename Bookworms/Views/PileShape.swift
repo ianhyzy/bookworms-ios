@@ -51,8 +51,9 @@ enum PileShape: String, CaseIterable, Identifiable {
     /// How steeply the camera looks down at a shape, so its height shows: less steeply than
     /// the pile's `PileCamera.pitch`.
     static let viewPitch: Float = 40 * .pi / 180
-    /// How fast a book must strike a standing shape to knock it down, in units a second.
-    static let strike: Float = 1
+    /// How fast a book must strike a standing shape to knock it down, in units a second: well
+    /// under a throw's 30, and over a book sliding off a carried book onto the shape.
+    static let strike: Float = 15
     /// How much higher than other shapes a wall may rise.
     static let wallRise: Float = 1.5
 
