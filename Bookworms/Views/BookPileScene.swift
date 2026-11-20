@@ -370,8 +370,8 @@ enum PileLayout {
     /// book clear of the walls.
     static let reach: Float = 1.5
     /// The most book volume a live drop takes, in liters, which an iPhone's tray holds between
-    /// the bars. A typical library's 300 books take about 200 liters.
-    static let maximumVolume: Float = 250
+    /// the bars. A typical library's 300 books take about 300 liters.
+    static let maximumVolume: Float = 375
     /// The largest sideways gravity tilt allows, as a fraction of `gravity` (about 27 degrees).
     static let maximumTilt: Float = 0.5
 

@@ -53,9 +53,9 @@ struct SpineView: View {
     }
 
     /// The thinnest book, as `BookShape` measures it (decimeters, back to front), whose spine
-    /// has blind-stamped bands: 3.2 cm, about 700 pages. A thinner spine draws them too small
+    /// has blind-stamped bands: 4.8 cm, about 700 pages. A thinner spine draws them too small
     /// to read.
-    nonisolated static let stampedThickness: Float = 0.32
+    nonisolated static let stampedThickness: Float = 0.48
 
     /// Whether `book`'s spine has blind-stamped bands. It depends on the book alone, so a
     /// spine and the 3D book pulled from it agree whatever size each is drawn at.

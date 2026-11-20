@@ -31,16 +31,14 @@ final class DominoTests: XCTestCase {
         // Every size `BookShape` makes for a 2:3 cover, from every page count and variety.
         var sizes = Set<SIMD3<Float>>()
         for pages in 100...1_400 {
-            for x: Float in [0, 0.5, 1] {
-                for y: Float in [0, 0.5, 1] {
-                    let size = BookShape.size(pages: pages, coverAspect: 2 / 3, variety: [x, y])
-                    sizes.insert(BookShape(size: size, binding: .paperback).size)
-                }
+            for variety: Float in [0, 0.5, 1] {
+                let size = BookShape.size(pages: pages, coverAspect: 2 / 3, variety: variety)
+                sizes.insert(BookShape(size: size, binding: .paperback).size)
             }
         }
-        // From 1.7 tall to doorstoppers 2.8 tall and 0.52 thick.
+        // From 1.7 tall to doorstoppers 2.8 tall and 0.88 thick.
         XCTAssertGreaterThan(sizes.count, 60)
-        XCTAssertTrue(sizes.contains { $0.y > 2.79 && $0.z > 0.51 })
+        XCTAssertTrue(sizes.contains { $0.y > 2.79 && $0.z > 0.87 })
         for a in sizes {
             // Wider than the 15 percent that the closest books once stood apart.
             XCTAssertEqual(DominoLayout.gap(height: a.y), a.y * 0.3, accuracy: 1e-5)

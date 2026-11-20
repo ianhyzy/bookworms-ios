@@ -78,10 +78,10 @@ struct BookShape: Hashable, Sendable {
     /// A book's shape: its size for its page count (`size(pages:coverAspect:variety:)`), with
     /// the variety that the book's ID decides, so a book keeps its size everywhere.
     init(of book: CloudBook, coverAspect: CGFloat) {
-        let variety = SIMD2(
-            Float(ShareStyle.unit(0, book.id, 40)), Float(ShareStyle.unit(0, book.id, 41)))
         self.init(
-            size: Self.size(pages: book.pages, coverAspect: Float(coverAspect), variety: variety),
+            size: Self.size(
+                pages: book.pages, coverAspect: Float(coverAspect),
+                variety: Float(ShareStyle.unit(0, book.id, 40))),
             binding: book.binding)
     }
 
@@ -90,27 +90,26 @@ struct BookShape: Hashable, Sendable {
     ///
     /// Page count grows both length and thickness. Length grows with the square root of the
     /// page count from a floor of 17 cm up to 200 pages, which keeps short books close to long
-    /// ones, to 23 cm at 800 pages. Thickness grows by 0.035 mm a page from 7 mm at 100 pages,
-    /// up to 4 cm at about 1,040 pages, so long books look substantially thicker. `variety`, two
-    /// numbers from 0 to 1, then lengthens the book by up to 22 percent and thickens it by up to
-    /// 25 percent, so books of similar length still differ. A book is at least 6 times as long
-    /// as it is thick, up to `longest`, which also caps length, so a very thick book reads as
-    /// chunky. The width is the length times `coverAspect`, the front board's width-to-height
-    /// ratio. Page counts count from 100 to 1,400, and a book without one counts as 320 pages.
+    /// ones, to 23 cm at 800 pages. Thickness is a real hardcover's: 0.0575 mm a page, the paper
+    /// printers' spine formulas give for book stock, plus 6.5 mm for the boards, the case, and
+    /// the spine's round, so a stack is as tall as the real books would stand. `variety`, from 0 to 1, then
+    /// lengthens the book by up to 22 percent, so books of similar length still differ. A book
+    /// is at least 3 times as long as it is thick, as the thickest real hardcovers are, up to
+    /// `longest`, which also caps length. The width is the length times `coverAspect`, the
+    /// front board's width-to-height ratio. Page counts count from 100 to 1,400, and a book
+    /// without one counts as 320 pages.
     ///
-    /// Sizes are rounded coarsely, so books share meshes: each variety to none, half, or all of
-    /// its range, the aspect to 0.05, the length to 1 cm, and the thickness to 4 mm. Each page
-    /// adds less than real paper does, so a typical library's books average about 0.7 liters.
-    static func size(pages: Int?, coverAspect: Float, variety: SIMD2<Float>) -> SIMD3<Float> {
+    /// Sizes are rounded coarsely, so books share meshes: the variety to none, half, or all of
+    /// its range, the aspect to 0.05, the length to 1 cm, and the thickness to 4 mm.
+    static func size(pages: Int?, coverAspect: Float, variety: Float) -> SIMD3<Float> {
         func round(_ value: Float, to step: Float) -> Float { (value / step).rounded() * step }
         let pages = Float(min(1_400, max(100, pages ?? 320)))
         let variety = (variety * 2).rounded(.toNearestOrAwayFromZero) / 2
         let natural = 1.7 + 0.6 * min(1, max(0, (pages / 200).squareRoot() - 1))
-        let thickness = round(
-            min(0.4, 0.07 + (pages - 100) * 0.00035) * (1 + variety.y * 0.25), to: 0.04)
-        // The 6-to-1 minimum, rounded up, so rounding never makes a book too squat.
-        let shortest = (thickness * 60).rounded(.up) / 10
-        let length = min(longest, max(round(natural * (1 + variety.x * 0.22), to: 0.1), shortest))
+        let thickness = round(0.065 + pages * 0.000_575, to: 0.04)
+        // The 3-to-1 minimum, rounded up, so rounding never makes a book too squat.
+        let shortest = (thickness * 30).rounded(.up) / 10
+        let length = min(longest, max(round(natural * (1 + variety * 0.22), to: 0.1), shortest))
         return [length * round(coverAspect, to: 0.05), length, thickness]
     }
 
