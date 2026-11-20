@@ -97,10 +97,11 @@ enum PileShape: String, CaseIterable, Identifiable {
                 let r = min(rows, max(1, Int((Float(c) * along / across).rounded())))
                 return (0..<min(c, r)).map { Course(columns: c - $0, rows: r - $0) }
             }
-            let plans = (1...columns).map { c -> (tiers: [Course], high: Int) in
-                let tiers = tiers(c)
-                return (tiers, layers(tiers.map(\.count).reduce(0, +)))
-            }
+            let plans = (1...columns)
+                .map { c -> (tiers: [Course], high: Int) in
+                    let tiers = tiers(c)
+                    return (tiers, layers(tiers.map(\.count).reduce(0, +)))
+                }
             let best =
                 plans.min { first, second in
                     func score(_ plan: (tiers: [Course], high: Int)) -> Float {
@@ -122,9 +123,10 @@ enum PileShape: String, CaseIterable, Identifiable {
             // The thinnest wall, one row deep if it can be, no higher than `height`, about
             // `wallLength` times as long as it is high.
             for r in 1...rows {
-                let fits = (1...columns).filter {
-                    Float(layers($0 * r)) * thickness <= height
-                }
+                let fits = (1...columns)
+                    .filter {
+                        Float(layers($0 * r)) * thickness <= height
+                    }
                 guard
                     let c = fits.min(by: { first, second in
                         func miss(_ c: Int) -> Float {
@@ -192,8 +194,9 @@ enum PileShape: String, CaseIterable, Identifiable {
                     // The turned footprint's half extents.
                     let cosine: Float = abs(cos(yaw))
                     let sine: Float = abs(sin(yaw))
-                    let half = SIMD2<Float>(
-                        cosine * size.y + sine * size.x, sine * size.y + cosine * size.x) / 2
+                    let half =
+                        SIMD2<Float>(
+                            cosine * size.y + sine * size.x, sine * size.y + cosine * size.x) / 2
                     let low = middle - half
                     let high = middle + half
                     // Footprints that only graze, as turned neighbors' corners may, carry

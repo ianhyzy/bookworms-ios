@@ -263,7 +263,8 @@ extension DominoFinale {
                     }
                     .max() ?? 0
             }
-            let reaches = landing
+            let reaches =
+                landing
                 .map { book in
                     ([books[book].from.rotation]
                         + Self.hoverTurns(book, from: books[book].from.rotation))
@@ -474,7 +475,8 @@ extension DominoFinale {
             var tracks = books.indices.map(track)
             // No book hovers over or under the last book, which rises beside the cloud, when
             // there is one (`sliding` is -1 when every book lands).
-            let beside = books.indices.contains(last)
+            let beside =
+                books.indices.contains(last)
                 ? DominoSetup.Footprint(
                     DominoSetup.Box(hovers[last], size: books[last].size)
                 )
@@ -542,9 +544,10 @@ extension DominoFinale {
                     .first { hover in
                         hovers[book] = hover
                         guard
-                            beside?.overlaps(
-                                DominoSetup.Footprint(
-                                    DominoSetup.Box(hover, size: books[book].size))) != true
+                            beside?
+                                .overlaps(
+                                    DominoSetup.Footprint(
+                                        DominoSetup.Box(hover, size: books[book].size))) != true
                         else { return false }
                         return shares.indices.allSatisfy { step in
                             let mine = box(book, shares[step])

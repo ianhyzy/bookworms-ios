@@ -30,7 +30,8 @@ final class PileShapeTests: XCTestCase {
             for count in [1, 7, 40, 300] {
                 let sizes = sizes(count)
                 let places = shape.places(for: sizes, in: Self.tray)
-                XCTAssertEqual(places.map(\.book).sorted(), Array(sizes.indices), "\(shape) \(count)")
+                XCTAssertEqual(
+                    places.map(\.book).sorted(), Array(sizes.indices), "\(shape) \(count)")
                 let boxes = places.map { DominoSetup.Box($0.pose, size: sizes[$0.book]) }
                 for (index, box) in boxes.enumerated() {
                     // Lying flat: front cover up.
@@ -41,7 +42,8 @@ final class PileShapeTests: XCTestCase {
                             "\(shape) \(count): \(index) overlaps")
                     }
                     let onTable = box.bounds.low.y < 0.01
-                    let onBook = boxes[..<index].contains { box.moved(by: [0, -0.01, 0]).overlaps($0) }
+                    let onBook = boxes[..<index]
+                        .contains { box.moved(by: [0, -0.01, 0]).overlaps($0) }
                     XCTAssertTrue(onTable || onBook, "\(shape) \(count): \(index) floats")
                 }
             }
@@ -81,7 +83,10 @@ final class PileShapeTests: XCTestCase {
                 (
                     from: Transform(
                         rotation: PileLayout.lyingFlat,
-                        translation: [Float(order % 4) * 3 - 4.5, sizes[place.book].z / 2, Float(order / 4) * 2.4 - 2]),
+                        translation: [
+                            Float(order % 4) * 3 - 4.5, sizes[place.book].z / 2,
+                            Float(order / 4) * 2.4 - 2,
+                        ]),
                     to: place.pose, size: sizes[place.book]
                 )
             }
