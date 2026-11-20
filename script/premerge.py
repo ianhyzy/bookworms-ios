@@ -33,7 +33,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = Path(__file__).resolve().parent.relative_to(ROOT)
-DOCUMENTATION = re.compile(r"(^|/)[^/]+\.md$|^docs/|^LICENSE")
+DOCUMENTATION = re.compile(r"(^|/)[^/]+\.md$|^docs/|^screenshots/|^LICENSE")
 LINK = re.compile(r"\]\(([^)#\s]+)(?:#[^)\s]*)?\)")
 # Attributes and modifiers before a Swift declaration, which may be indented, such as in `#if`.
 PREFIX = (r"^[ \t]*(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:public|package|open|private|fileprivate|internal|final"
