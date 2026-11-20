@@ -93,6 +93,10 @@ struct ShareStudioView: View {
     /// Whether **Share** is adding the credit and writing the files.
     @State private var isPreparing = false
     #if os(iOS)
+        /// What **View in my room** places if the reader chooses it in the open share sheet.
+        @State private var roomOffer: RoomPhotoRequest?
+        /// What the open **View in my room** places.
+        @State private var room: RoomPhotoRequest?
         /// Whether a finger holds the preview, which then shows full size (`RootView`).
         @GestureState private var holdsPreview = false
         private let holdTip = HoldPreviewTip()
@@ -338,7 +342,10 @@ struct ShareStudioView: View {
             }
         }
         #if os(iOS)
-            .shareSheet($files)
+            .shareSheet($files) { outcome in
+                if outcome == .action(RoomCamera.action.id) { room = roomOffer }
+            }
+            .fullScreenCover(item: $room) { RoomPhotoView(request: $0) }
         #endif
         #if os(macOS)
             .focusedSceneValue(\.copyShareImage, shownCommands?.copy, in: .share)
@@ -765,11 +772,33 @@ struct ShareStudioView: View {
                 request.readerID != nil
                 ? inviter.map(HardcoverInvite.shareText)
                 : HardcoverInvite.readingText(books: image.books, username: request.username)
+            #if os(iOS)
+                roomOffer = roomRequest(for: request)
+                if roomOffer != nil { shared.actions = [RoomCamera.action] }
+            #endif
             files = shared
         } catch {
             model.toasts.show(.failure("Couldn't prepare the image"))
         }
     }
+
+    #if os(iOS)
+        /// What **View in my room** places for the image `request` drew: every book of its time
+        /// frame, oldest first. Only templates of the reader's own books that a time frame
+        /// chooses offer it, apart from **Dropped**, whose books weren't read, and only on an
+        /// iPhone with an AR camera (`RoomCamera`). `nil` when none applies or the frame has no
+        /// books.
+        private func roomRequest(for request: RenderRequest) -> RoomPhotoRequest? {
+            guard RoomCamera.isSupported, request.readerID == nil, request.template.usesTimeFrame,
+                request.template != .dropped
+            else { return nil }
+            let books = Array(request.frame.books(in: library).reversed())
+            guard !books.isEmpty else { return nil }
+            return RoomPhotoRequest(
+                books: books, period: request.frame.period(of: books), aspect: request.aspect,
+                username: request.username)
+        }
+    #endif
 
     #if DEBUG
         /// Renders each entry of `-BookwormsShareBatch`, such as

@@ -340,12 +340,15 @@ final class BookFactory {
     }
 
     /// A rigid body for the book with `id`, from its parts: a box as large as the book, `mass`
-    /// kilograms or, by default, about as heavy as one of paper, holding the book's model, lit
-    /// by `lighting`'s image-based light. Returns `nil` for a book without parts.
+    /// kilograms or, by default, about as heavy as one of paper, holding the book's model
+    /// (`makeModel`) lit by `lighting`'s image-based light. Returns `nil` for a book without
+    /// parts.
     func makeBook(
         _ id: Int, mode: PhysicsBodyMode, lighting: Entity, mass: Float? = nil
     ) -> ModelEntity? {
-        guard let parts = parts[id] else { return nil }
+        guard let parts = parts[id], let model = makeModel(id, lighting: lighting) else {
+            return nil
+        }
         let size = parts.shape.size
         let box = parts.box
         let book = ModelEntity()
@@ -359,22 +362,34 @@ final class BookFactory {
         body.linearDamping = 0.05
         body.angularDamping = 0.3
         book.components.set(body)
+        book.addChild(model)
+        return book
+    }
+
+    /// The model of the book with `id`, from its parts, with its ribbon, and with no collision
+    /// or physics: lit by `lighting`'s image-based light, or by the scene's own light when it is
+    /// `nil`, as in a camera view lit by the room. Returns `nil` for a book without parts.
+    func makeModel(_ id: Int, lighting: Entity?) -> Entity? {
+        guard let parts = parts[id] else { return nil }
         let model = Entity()
         model.name = Self.modelName
         model.components.set(ModelComponent(mesh: parts.mesh, materials: parts.materials))
-        model.components.set(ImageBasedLightReceiverComponent(imageBasedLight: lighting))
+        if let lighting {
+            model.components.set(ImageBasedLightReceiverComponent(imageBasedLight: lighting))
+        }
         Self.setGroundingShadow(groundsBooks, on: model)
-        book.addChild(model)
         if let ribbon = parts.ribbon {
             _ = BookRibbon.registered
             let entity = Entity()
             entity.name = Self.ribbonName
             entity.components.set(ribbon)
-            entity.components.set(ImageBasedLightReceiverComponent(imageBasedLight: lighting))
+            if let lighting {
+                entity.components.set(ImageBasedLightReceiverComponent(imageBasedLight: lighting))
+            }
             model.addChild(entity)
             model.components.set(BookRibbon())
         }
-        return book
+        return model
     }
 
     /// Lets the ribbon of `book`, a rigid body from `makeBook`, show while the book lies front

@@ -29,6 +29,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>Bookworms uses the camera to show your books in your room. The camera image stays on this iPhone.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Bookworms connects to the model endpoint you set up on your network to design spines.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
