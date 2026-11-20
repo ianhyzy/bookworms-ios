@@ -772,6 +772,9 @@ final class BookPileScene {
     /// Reduce Motion's still stacks. Tall shapes of uneven books would otherwise slip and fall
     /// as the simulation settles them, which real books stacked as carefully don't.
     private var standing = false
+    /// The view the camera eases to so a shape's height shows (see `arrange(_:)`), until it
+    /// gets there or the reader moves the camera.
+    private var cameraGoal: PileCamera?
     private var tiltReference: SIMD3<Double>?
     private var tilt = PileTilt.off
     /// Whether motion is sampled, for tilt and shakes.
@@ -1303,6 +1306,7 @@ final class BookPileScene {
         gather = nil
         endArrangement()
         standing = false
+        cameraGoal = nil
         lifter.reset()
         spawned = 0
         periods = nil
@@ -1440,6 +1444,7 @@ final class BookPileScene {
         calendar.advance(by: Float(deltaTime))
         pullTogether(by: Float(deltaTime))
         moveArrangement(by: Float(deltaTime))
+        easeCamera(by: Float(deltaTime))
         // A resting pile waits for its still, so a book that starts moving then stirs it at
         // once, before the still can replace the view.
         if stage.rest.isResting, shelf.children.contains(where: Self.moves) { stage.rest.stir() }
@@ -1457,6 +1462,7 @@ final class BookPileScene {
         return carry == nil && cameraMove == nil && !isFlying && !tracksMotion
             && !loading.isLoading && spawned == plan.count && falling.isEmpty
             && camera == checkedCamera && !calendar.isGlowing && gather == nil && arrangement == nil
+            && cameraGoal == nil
             && !shelf.children.contains(where: Self.moves)
     }
 
@@ -1624,6 +1630,7 @@ final class BookPileScene {
     /// Does nothing while a finger holds a book, which keeps the view it was picked up in.
     func moveCamera(magnification: CGFloat, rotation: Angle, focus: CGPoint?, in size: CGSize) {
         guard carry == nil, let tray, size.width > 0, size.height > 0 else { return }
+        cameraGoal = nil
         if cameraMove == nil {
             let point = focus ?? CGPoint(x: size.width / 2, y: size.height / 2)
             let ndc = SIMD2(
@@ -1949,6 +1956,11 @@ final class BookPileScene {
         }
         let places = shape.places(for: sizes, in: tray)
         let ordered = places.map { books[$0.book] }
+        // The camera looks across the shape, keeping the reader's zoom and turn.
+        var goal = view
+        goal.pitch = PileShape.viewPitch
+        goal.target =
+            places.map(\.pose.translation).reduce(.zero, +) / Float(places.count) * [1, 0, 1]
         for book in ordered {
             book.components[PhysicsBodyComponent.self]?.mode = .kinematic
             book.components.set(PhysicsMotionComponent())
@@ -1956,8 +1968,10 @@ final class BookPileScene {
         stage.rest.stir()
         guard !holdsStill else {
             for (book, place) in zip(ordered, places) { book.transform = place.pose }
+            look(through: goal)
             return
         }
+        cameraGoal = goal
         let hops = zip(ordered, places)
             .map { book, place in
                 (from: book.transform, to: place.pose, size: sizes[place.book])
@@ -2020,6 +2034,18 @@ final class BookPileScene {
         {
             setMode(.dynamic, of: book)
         }
+    }
+
+    /// Eases the camera toward `cameraGoal`, as the dominoes' camera eases between views, unless
+    /// a book is held, the reader moves the camera, or a book flies to or from its details.
+    private func easeCamera(by deltaTime: Float) {
+        guard let goal = cameraGoal, carry == nil, cameraMove == nil, !isFlying else { return }
+        view = view.mixed(with: goal, min(1, deltaTime * 3))
+        if abs(view.pitch - goal.pitch) < 0.002, simd_distance(view.target, goal.target) < 0.01 {
+            view = goal
+            cameraGoal = nil
+        }
+        camera.transform = view.transform
     }
 
     /// Stops the books' flight into a shape, where they are.
