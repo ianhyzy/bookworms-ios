@@ -135,6 +135,13 @@ DESK = [
 ]
 DOMINOES = [Shot("run", ["-BookwormsTab", "desk", "-BookwormsSetUpDominoes", "YES", "-BookwormsDominoPush", "3",
                          "-BookwormsPileFrame", "month:2025-8"], 60, motion=True)]
+# The Mac also plays the run in the window's shape (**Video**, `DominoVideoFrame`), and saves
+# the recorded video's last frame.
+MAC_DOMINOES = DOMINOES + [
+    Shot("window", [*DOMINOES[0].arguments, "-BookwormsDominoVideoFrame", "window"], 60, motion=True),
+    Shot("window-video", [*DOMINOES[0].arguments, "-BookwormsDominoVideoFrame", "window",
+                          "-BookwormsDominoVideo", "YES"], 75, file="domino-video-debug.png"),
+]
 # The Spines tab with a working sign-in, then, for the iPhone, with its toolbar's account
 # control as it shows no sign-in, a rejected one, and a library that failed to download.
 SPINES = [Shot("tab", ["-BookwormsTab", "spines"], 20)] + [
@@ -169,7 +176,7 @@ SHOTS = {
         "library": LIBRARY,
         "details": DETAILS,
         "desk": DESK,
-        "dominoes": DOMINOES,
+        "dominoes": MAC_DOMINOES,
         "share": [Shot("studio", ["-BookwormsShareTemplate", "yearInBooks"], 40)],
         "spines": SPINES[:1],
         "account": SIDEBAR,
