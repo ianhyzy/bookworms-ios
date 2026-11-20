@@ -60,8 +60,8 @@ extension TowerSnapshotRenderer {
     /// takes its turn with images and other videos, as `PileSnapshotRenderer.renderMovie`
     /// does, and writes the same files, an MP4 with a Live Photo still.
     ///
-    /// The books turn dynamic at the push, which tips the whole tower about its base, away
-    /// from the tape and the camera, by an amount `seed` varies a little. The physics engine
+    /// The books turn dynamic at the push, which tips the whole tower about its base, back and
+    /// toward the tape, by an amount `seed` varies a little. The physics engine
     /// then steps at a fixed rate from the same poses, so the same books and seed make the
     /// same clip. Each frame frames the books where they lie (`TowerCamera.framing`), easing
     /// the camera back as they spread so the falling books stay in view. The knocks of the
@@ -74,38 +74,13 @@ extension TowerSnapshotRenderer {
         books: [CloudBook], title: String, aspect: ShareAspect, seed: UInt64, model: AppModel,
         progress: (Double?) -> Void, preview: (CGImage) -> Void
     ) async throws -> PileMovie {
-        progress(nil)
-        PileSnapshotRenderer.removeStaleClips()
-        let folder = PileSnapshotRenderer.newClipFolder()
-        let name = "\(ShareTemplate.tower.title) \(title)"
-        let file = name.replacing("/", with: "-").replacing(":", with: "-")
-        let identifier = UUID().uuidString
-        do {
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let movie = folder.appending(path: "\(file).mp4")
-            let still = folder.appending(path: "\(file).jpg")
-            try await PileSnapshotRenderer.claim()
-            let filmed: (writer: PileMovieWriter, poster: CGImage, hits: [ImpactRecord])
-            do {
-                defer { PileSnapshotRenderer.release() }
-                let stage = try await TowerStage(
-                    books: books, aspect: aspect, seed: seed, model: model)
-                defer { stage.renderer.entities.removeAll() }
-                filmed = try await film(
-                    stage, title: title, seed: seed, to: movie, progress: progress,
-                    preview: preview)
-            }
-            try await filmed.writer.finish(
-                hits: filmed.hits, livePhoto: identifier,
-                before: .now + PileMovieWriter.finishTimeout)
-            try await PileSnapshotRenderer.writeStill(
-                filmed.poster, identifier: identifier, to: still)
-            return PileMovie(
-                movie: movie, still: still, livePhoto: PileMovieWriter.livePhotoURL(for: movie),
-                name: name)
-        } catch {
-            try? FileManager.default.removeItem(at: folder)
-            throw error
+        try await PileSnapshotRenderer.makeClip(
+            named: "\(ShareTemplate.tower.title) \(title)", progress: progress
+        ) { movie in
+            let stage = try await TowerStage(books: books, aspect: aspect, seed: seed, model: model)
+            defer { stage.renderer.entities.removeAll() }
+            return try await film(
+                stage, title: title, seed: seed, to: movie, progress: progress, preview: preview)
         }
     }
 
@@ -114,7 +89,7 @@ extension TowerSnapshotRenderer {
     private static func film(
         _ stage: TowerStage, title: String, seed: UInt64, to url: URL,
         progress: (Double?) -> Void, preview: (CGImage) -> Void
-    ) async throws -> (writer: PileMovieWriter, poster: CGImage, hits: [ImpactRecord]) {
+    ) async throws -> PileSnapshotRenderer.Filmed {
         let layout = stage.layout
         let size = layout.aspect.size
         let aspect = Float(size.width / size.height)
@@ -210,16 +185,7 @@ extension TowerSnapshotRenderer {
         var cameras = [TowerCamera](repeating: stage.camera, count: TowerMovieTiming.hold + 1)
         for frame in (TowerMovieTiming.hold + 1)..<recorded {
             let ahead = poses[min(frame + 6, recorded - 1)]
-            let corners = zip(ahead, shapes)
-                .flatMap { pose, size in
-                    (0..<8)
-                        .map { corner -> SIMD3<Float> in
-                            let sign = SIMD3<Float>(
-                                corner & 1 == 0 ? -1 : 1, corner & 2 == 0 ? -1 : 1,
-                                corner & 4 == 0 ? -1 : 1)
-                            return pose.translation + pose.rotation.act(sign * size / 2)
-                        }
-                }
+            let corners = zip(ahead, shapes).flatMap { BookTower.corners(of: $1, at: $0) }
             let fraction = min(Float(frame - TowerMovieTiming.hold) / 40, 1)
             let rise = fraction * fraction * (3 - 2 * fraction)
             let low = stage.camera.eye.y
@@ -250,49 +216,22 @@ extension TowerSnapshotRenderer {
 
         let writer = try PileMovieWriter(
             url: url, width: Int(size.width), height: Int(size.height))
-        let last = TowerMovieTiming.frameCount - 1
-        do {
-            try writer.start()
-            let pool = try writer.framePool()
-            var poster: CGImage?
-            for frame in 0...last {
-                try Task.checkCancellation()
-                let deadline = ContinuousClock.now + PileSnapshotRenderer.frameTimeout
+        let poster = try await PileSnapshotRenderer.writeFrames(
+            TowerMovieTiming.frameCount, to: writer, renderer: stage.renderer,
+            target: stage.target, composer: composer,
+            pose: { frame in
                 let source = TowerMovieTiming.source(of: frame)
                 for (book, pose) in zip(books, poses[source]) { book.transform = pose }
                 setTape(TowerMovieTiming.tapeOut(at: source))
                 scene.look(from: cameras[source].transform, aspect: aspect)
-                let signal = UInt64(frame + 10)
-                try stage.renderer.updateAndRender(
-                    deltaTime: PileMovieTiming.stepDuration, cameraOutput: stage.target.output,
-                    actionsAfterRender: [.signal(stage.target.event, value: signal)])
-                let picture = CVReadOnlyPixelBuffer(try pool.makeMutablePixelBuffer())
-                let opacity = TowerMovieTiming.loupeOpacity(at: frame)
-                try await stage.target.run(after: signal, before: deadline) { commands in
-                    guard let render = composer.image(of: stage.target.texture) else {
-                        throw PileSnapshotError.drawingFailed
-                    }
-                    try composer.render(
-                        composer.frame(
-                            of: render, crop: CGRect(origin: .zero, size: size), size: size,
-                            background: backdrop, overlays: [(loupe, opacity), (headline, 1)]),
-                        into: picture, on: commands)
-                }
-                let snapshot =
-                    frame == last
-                    ? composer.cgImage(of: picture)
-                    : frame % 6 == 0 ? composer.cgImage(of: picture, scale: 0.5) : nil
-                try await writer.append(picture, at: frame, before: deadline)
-                if let snapshot { preview(snapshot) }
-                if frame == last { poster = snapshot }
-                progress(Double(frame + 1) / Double(TowerMovieTiming.frameCount))
-            }
-            guard let poster else { throw PileSnapshotError.drawingFailed }
-            return (writer, poster, hits)
-        } catch {
-            writer.cancel()
-            throw error
-        }
+            },
+            compose: { render, frame in
+                composer.frame(
+                    of: render, crop: CGRect(origin: .zero, size: size), size: size,
+                    background: backdrop,
+                    overlays: [(loupe, TowerMovieTiming.loupeOpacity(at: frame)), (headline, 1)])
+            }, progress: progress, preview: preview)
+        return (writer, poster, hits)
     }
 }
 

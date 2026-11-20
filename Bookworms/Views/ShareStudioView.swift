@@ -92,8 +92,9 @@ struct ShareStudioView: View {
     /// the new pile's.
     @State private var rearranging = false
     @State private var showsAccount = false
-    @State private var filmsPile = false
-    /// The Pile template's books and heading when **Video** was tapped, which the video films.
+    @State private var filmsVideo = false
+    /// The Desk or Tall Stack template's books and heading when **Video** was tapped, which the
+    /// video films.
     @State private var film: (books: [CloudBook], title: String) = ([], "")
     /// The files the share sheet offers while it is open.
     @State private var files: SharedFiles?
@@ -301,6 +302,7 @@ struct ShareStudioView: View {
         let reader = shownReader
         var books = drawn.books
         if template == .pile { books = Array(books.prefix(PileSnapshotRenderer.maximumBooks)) }
+        if template == .tower { books = BookTower.shown(books) }
         if template == .dropped { books = Array(books.prefix(DroppedCard.maximumBooks)) }
         // Only the drawn books' designs, so a design saved for another book changes nothing.
         let designs = books.map { model.design(for: $0) }
@@ -350,10 +352,10 @@ struct ShareStudioView: View {
             // The commands dim without an image, while a newer one is on its way, and while one
             // of the tab's sheets, a window of its own, covers the image.
             let shownCommands =
-                image == nil || isPending || filmsPile || showsAccount || !exports ? nil : commands
+                image == nil || isPending || filmsVideo || showsAccount || !exports ? nil : commands
             // **Show Inspector** needs only the studio, image or not.
             let inspectorCommand =
-                model.library == nil || filmsPile || showsAccount ? nil : commands?.inspector
+                model.library == nil || filmsVideo || showsAccount ? nil : commands?.inspector
         #endif
         NavigationStack {
             if model.library == nil {
@@ -401,7 +403,7 @@ struct ShareStudioView: View {
             .quickLookPreview($quickLookURL)
         #endif
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
-        .sheet(isPresented: $filmsPile) {
+        .sheet(isPresented: $filmsVideo) {
             NavigationStack {
                 PileVideoSheet(
                     books: film.books, title: film.title, aspect: aspect, seed: seed,
@@ -1379,7 +1381,7 @@ struct ShareStudioView: View {
         if showsShuffle {
             Button("Shuffle", systemImage: "shuffle") { seed = .random(in: 1 ... .max) }
         }
-        if (template == .pile || template == .tower) && exports {
+        if template.hasVideo && exports {
             Button("Video", systemImage: "video", action: startFilm)
                 .disabled(hasNoBooks)
         }
@@ -1393,7 +1395,7 @@ struct ShareStudioView: View {
             template: template, aspect: aspect, books: books, frame: frame,
             coverStyle: coverStyle, direction: direction, showsRatings: showsRatings, seed: seed)
         film = (books, input.period)
-        filmsPile = true
+        filmsVideo = true
     }
 
     /// Whether **My reading** images can letter the sharer's profile link, which needs the
@@ -1490,7 +1492,7 @@ struct ShareStudioView: View {
                     books: books, title: input.period, aspect: request.aspect,
                     seed: request.seed, username: request.username, model: model)
                 try Task.checkCancellation()
-                rendered = tower.image
+                rendered = tower
             } catch is CancellationError {
                 return
             } catch {
@@ -1548,7 +1550,7 @@ struct ShareStudioView: View {
             ShareDebug.write(image)
             // `-BookwormsPileVideo YES` films the first Desk or Tall Stack image.
             if PileVideoDebug.opensSheet, film.books.isEmpty, image != nil,
-                template == .pile || template == .tower
+                template.hasVideo
             {
                 startFilm()
             }

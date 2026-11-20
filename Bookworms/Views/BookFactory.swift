@@ -510,13 +510,7 @@ final class BookFactory {
             nil, tint: key.color.uiColor, roughness: key.sprayed ? 0.5 : 0.88,
             specular: key.sprayed ? 0.25 : 0.05)
         if let pageLines {
-            let sampler = MTLSamplerDescriptor()
-            sampler.sAddressMode = .repeat
-            sampler.tAddressMode = .repeat
-            sampler.minFilter = .linear
-            sampler.magFilter = .linear
-            sampler.mipFilter = .linear
-            pages.baseColor.texture = .init(pageLines, sampler: .init(sampler))
+            pages.baseColor.texture = .init(pageLines, sampler: Self.repeatingSampler())
         }
         pageMaterials[key] = pages
         return pages
@@ -552,6 +546,19 @@ final class BookFactory {
 
     /// A nonmetallic surface with low reflectance, so the environment lays no gray haze over
     /// dark covers.
+    /// A sampler that repeats its texture across a surface, filtering linearly between texels
+    /// and mipmaps, with `anisotropy` samples for a surface seen at a slant.
+    static func repeatingSampler(anisotropy: Int = 1) -> MaterialParameters.Texture.Sampler {
+        let sampler = MTLSamplerDescriptor()
+        sampler.sAddressMode = .repeat
+        sampler.tAddressMode = .repeat
+        sampler.minFilter = .linear
+        sampler.magFilter = .linear
+        sampler.mipFilter = .linear
+        sampler.maxAnisotropy = anisotropy
+        return .init(sampler)
+    }
+
     static func surface(
         _ texture: TextureResource?, tint: UIColor = .white, roughness: Float,
         specular: Float = 0.1

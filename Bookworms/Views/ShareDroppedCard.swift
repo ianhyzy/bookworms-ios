@@ -18,8 +18,8 @@ struct DroppedCard: View {
     /// The most books that show their covers. More show their spines.
     static let coverLimit = 6
     /// The most covers the wastebasket stands, so each stays large: of more books, up to
-    /// `coverLimit`, the most popular (`popular(_:)`).
-    nonisolated static let basketCoverLimit = 4
+    /// `coverLimit`, the most popular (`[CloudBook].popular(_:)`).
+    static let basketCoverLimit = 4
 
     /// The most books the card draws. Up to about this many books of typical thickness, two
     /// flat stacks fill the card's width before its height in every aspect, so spines keep the
@@ -28,21 +28,6 @@ struct DroppedCard: View {
 
     /// The newest `maximumBooks` of the dropped books, which the card draws.
     var shown: [CloudBook] { Array(input.books.prefix(Self.maximumBooks)) }
-
-    /// The `limit` books of `books` that the most Hardcover readers rated, newest first on a
-    /// tie, in `books`' order.
-    nonisolated static func popular(_ books: [CloudBook], limit: Int = basketCoverLimit)
-        -> [CloudBook]
-    {
-        let kept = Set(
-            books.enumerated()
-                .sorted {
-                    ($0.element.ratingsCount ?? 0, -$0.offset)
-                        > ($1.element.ratingsCount ?? 0, -$1.offset)
-                }
-                .prefix(limit).map(\.element.id))
-        return books.filter { kept.contains($0.id) }
-    }
 
     var body: some View {
         let theme = ShareTheme.neutral
@@ -180,7 +165,7 @@ struct DroppedCard: View {
     /// rim, like flowers in a vase. A few face the viewer with their covers, and more with
     /// their spines.
     private func basket(in size: CGSize) -> some View {
-        let books = showsCovers ? Self.popular(shown) : shown
+        let books = showsCovers ? shown.popular(Self.basketCoverLimit) : shown
         let shapes = books.map(shape)
         let longest = CGFloat(shapes.map(\.y).max() ?? 1)
         // How far each book's middle stands out from the fan's middle, in book heights.

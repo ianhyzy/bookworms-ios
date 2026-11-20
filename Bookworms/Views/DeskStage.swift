@@ -379,14 +379,8 @@ final class DeskStage {
         if let image = UIImage(named: "TableWood")?.cgImage,
             let texture = try? TextureResource(image: image, options: .init(semantic: .color))
         {
-            let sampler = MTLSamplerDescriptor()
-            sampler.sAddressMode = .repeat
-            sampler.tAddressMode = .repeat
-            sampler.minFilter = .linear
-            sampler.magFilter = .linear
-            sampler.mipFilter = .linear
-            sampler.maxAnisotropy = 8
-            material.baseColor.texture = .init(texture, sampler: .init(sampler))
+            material.baseColor.texture = .init(
+                texture, sampler: BookFactory.repeatingSampler(anisotropy: 8))
             // One 1024-pixel tile spans `tile` units (1.5 meters) of the table.
             let tiles = Self.tableSize / Self.tile
             material.textureCoordinateTransform = .init(scale: [tiles, tiles])

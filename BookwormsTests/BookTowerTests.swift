@@ -42,6 +42,15 @@ final class BookTowerTests: XCTestCase {
         }
     }
 
+    func testTheTowerMeasuresAndStacksTheShapesItIsGiven() {
+        let books = books(5)
+        let shape = BookShape(size: [1.6, 2.4, 0.3], binding: .hardcover)
+        let tower = BookTower(books: books, seed: 2) { _ in shape }
+        XCTAssertEqual(tower.height, 1.5, accuracy: 1e-4)
+        XCTAssertEqual(tower.stackHeight, 1.5, accuracy: 1e-4)
+        XCTAssertEqual(tower.slots.map(\.shape), Array(repeating: shape, count: 5))
+    }
+
     func testTheSameBooksAndSeedStackTheSameTower() {
         let books = books(12)
         let poses = { (seed: UInt64) in

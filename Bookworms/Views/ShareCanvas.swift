@@ -76,6 +76,9 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
     /// always 3D, and Checkout Card draws no covers.
     var hasCoverStyle: Bool { !rendersScene && self != .checkoutCard }
 
+    /// Whether **Video** films the card's books: the Desk's drop, or the Tall Stack's topple.
+    var hasVideo: Bool { self == .pile || self == .tower }
+
     /// Whether the card shows the reader's ratings, which the studio can hide. Hot Takes is
     /// about ratings, so it always shows them.
     var hasRatingOption: Bool {

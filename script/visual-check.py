@@ -80,8 +80,8 @@ RULES = [
      r"|SeriesSheet|Stationery|Restamp)", ["details"]),
     (r"Views/(BookPile|Desk|PilePlay|Cobweb|SceneLoading|ImpactFeedback)", ["desk"]),
     (r"Domino", ["dominoes"]),
-    (r"Views/(Share|YearInBooksCard|Toast|PileMovie|PileSnapshot|PileSpread|PileVideoSheet)"
-     r"|Models/(TopFivePins|YearInBooks)", ["share"]),
+    (r"Views/(Share|YearInBooksCard|Toast|PileMovie|PileSnapshot|PileSpread|PileVideoSheet|Tower)"
+     r"|Models/(TopFivePins|YearInBooks|BookTower)", ["share"]),
     (r"Views/(GenerationView|SpineDesignerSettings)", ["spines"]),
     (r"Views/AccountControl", ["spines", "account"]),
     (r"Views/(HardcoverAccountView|SettingsPanes|Credits)|Credits\.rtf", ["settings"]),
@@ -160,7 +160,7 @@ SHOTS = {
         "desk": DESK,
         "dominoes": DOMINOES,
         "share": [Shot(template, ["-BookwormsShareTemplate", template], 40, file="share-debug.png")
-                  for template in ("yearInBooks", "topFive", "pile")],
+                  for template in ("yearInBooks", "topFive", "pile", "tower")],
         "spines": SPINES,
         "account": BANNER,
         "settings": [Shot("settings", ["-BookwormsShowSpines", "YES", "-BookwormsShowAccount", "YES"], 20)],
