@@ -443,7 +443,15 @@ final class SocialModel {
             avatarURL: UserDefaults.standard.string(forKey: "BookwormsShareAvatar")
                 .flatMap(URL.init(string:)))
 
+        /// The fictional readers, or the saved snapshot at `-BookwormsShareFriendsFile <path>`,
+        /// for previews with real friends.
         static func snapshot(mine: [CloudBook]) -> SocialSnapshot {
+            if let path = UserDefaults.standard.string(forKey: "BookwormsShareFriendsFile"),
+                let data = try? Data(contentsOf: URL(filePath: path)),
+                let saved = try? JSONDecoder().decode(SocialSnapshot.self, from: data)
+            {
+                return saved
+            }
             let rated = mine.filter { ($0.rating ?? 0) >= 0.5 }
             // Unrated, so it isn't among the shared books too.
             let listed =

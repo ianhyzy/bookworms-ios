@@ -147,6 +147,18 @@ final class BookFactory {
         Self.coverPixels(for: book, textureScale: textureScale)
     }
 
+    /// Waits until the covers of `books` arrive or fail, at the size a factory of `textureScale`
+    /// builds them, so that a still image drawn again finds them in the cover store.
+    static func waitForCovers(of books: [CloudBook], textureScale: CGFloat, model: AppModel) async {
+        let covers = model.covers
+        await withTaskGroup(of: Void.self) { group in
+            for book in books {
+                let pixels = coverPixels(for: book, textureScale: textureScale)
+                group.addTask { _ = await covers.image(for: book, maximumPixelSize: pixels) }
+            }
+        }
+    }
+
     /// `coverPixels(for:)` for a factory of `textureScale`.
     nonisolated static func coverPixels(for book: CloudBook, textureScale: CGFloat) -> Int {
         let length = BookShape(of: book, coverAspect: 2 / 3).size.y
