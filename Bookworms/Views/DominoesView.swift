@@ -274,18 +274,16 @@ struct DominoesView: View {
     /// The heading over the gathered books, in the share images' style, once every book lies
     /// in the spread; it fades in, and stays until **Set up again**. It spans the spread's area
     /// (`DominoFinale.area(in:)`), the whole view on an iPhone and the recording's 9:16 frame in
-    /// a wider view, so it shows where and as large as the video shows it. The area is that of
-    /// the view the recording frames (`framedViewport`), so the heading stays with the darkened
-    /// sides and the spread after the window is resized.
+    /// a wider view, centered over the books, so it shows where and as large as the video shows
+    /// it. The area is that of the view the recording frames (`framedViewport`), so the heading
+    /// stays with the darkened sides and the spread after the window is resized.
     @ViewBuilder private var heading: some View {
         if scene.status.phase == .finished, details.lift == nil, let viewport = framedViewport {
             let area = DominoFinale.area(in: viewport)
             DominoFinaleCard(
                 title: title, count: books.count, pages: DominoFinaleCard.pages(of: books),
                 scale: DominoFinale.headingScale(in: area.size),
-                insets: EdgeInsets(
-                    top: viewport.insets.top + DominoFinaleCard.liveTop - area.minY, leading: 0,
-                    bottom: 0, trailing: 0)
+                insets: DominoFinaleCard.insets(in: viewport, frame: area)
             )
             .frame(width: area.width, height: area.height)
             .offset(x: area.minX, y: area.minY)

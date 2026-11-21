@@ -13,9 +13,10 @@ import os
 
 /// The heading over a dominoes finale, in the share images' style: the time frame, and the
 /// books and their pages, such as "39 books · 18,683 pages". `scale` sizes it from the
-/// 1080-pixel-wide share image, at 1, down to the live view, and `insets.top` places it below
-/// the bars. A recording of the run draws the same heading where the live view shows it
-/// (`DominoRecorder`), and adds the credit.
+/// 1080-pixel-wide share image, at 1, down to the live view, and `insets` place it below the
+/// bars and across the part of its frame that they leave clear (`insets(in:frame:)`). A
+/// recording of the run draws the same heading where the live view shows it (`DominoRecorder`),
+/// and adds the credit.
 struct DominoFinaleCard: View {
     /// How far below the time frame button the live view shows the heading, in points.
     nonisolated static let liveTop: CGFloat = 8
@@ -39,9 +40,21 @@ struct DominoFinaleCard: View {
         .foregroundStyle(ShareStyle.cream.color)
         .shadow(color: .black.opacity(0.5), radius: 8 * scale, y: 2 * scale)
         .padding(.horizontal, 64 * scale)
-        .padding(.top, insets.top)
+        .padding(insets)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .environment(\.colorScheme, .dark)
+    }
+
+    /// Where the heading sits in `frame`, a part of a view of `viewport`, in points from the
+    /// frame's edges: below the bars, and across the part of the frame that they leave clear,
+    /// so it centers over the spread's books (`DominoFinale.spreadRect(in:)`) also where the
+    /// frame runs behind a Mac's sidebar, as a **Window** video's does.
+    nonisolated static func insets(in viewport: PileViewport, frame: CGRect) -> EdgeInsets {
+        let clear = viewport.clear
+        return EdgeInsets(
+            top: viewport.insets.top + liveTop - frame.minY,
+            leading: max(0, clear.minX - frame.minX), bottom: 0,
+            trailing: max(0, frame.maxX - clear.maxX))
     }
 
     /// The books and their pages, which count every book in the frame.
@@ -582,12 +595,13 @@ final class DominoRecorder {
     private static func overlays(for layout: Layout, crop: CGRect) throws -> (CIImage, CIImage) {
         let size = frameSize(for: layout.viewport)
         let scale = size.width / crop.width
+        let insets = DominoFinaleCard.insets(in: layout.viewport, frame: crop)
         let card = DominoFinaleCard(
             title: layout.title, count: layout.count, pages: layout.pages,
             scale: DominoFinale.headingScale(in: size),
             insets: EdgeInsets(
-                top: (layout.viewport.insets.top + DominoFinaleCard.liveTop - crop.minY) * scale,
-                leading: 0, bottom: 0, trailing: 0))
+                top: insets.top * scale, leading: insets.leading * scale, bottom: 0,
+                trailing: insets.trailing * scale))
         func image(_ content: some View) -> CIImage? {
             let renderer = ImageRenderer(
                 content: content.frame(width: size.width, height: size.height))
