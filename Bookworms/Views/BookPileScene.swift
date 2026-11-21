@@ -346,16 +346,16 @@ enum PileLayout {
     /// second.
     static let airDrag: Float = 1
     /// The height of the ceiling over `tray` for a drop of `waves` waves, which the walls
-    /// reach: 20 units over the drop height, above the highest start a drop plan's first wave
+    /// reach: 24 units over the drop height, above the highest start a drop plan's first wave
     /// gives there, with room for a book lifted over others (see `dropPlan`), and `waveRise`
     /// higher for each later wave. A wider tray, such as a wide Mac window's, drops from higher
     /// (`spawnHeight(over:)`), so its ceiling rises with it.
     static func ceiling(over tray: PileTray, waves: Int = 1) -> Float {
-        spawnHeight(over: tray) + 20 + Float(max(0, waves - 1)) * waveRise
+        spawnHeight(over: tray) + 24 + Float(max(0, waves - 1)) * waveRise
     }
-    /// Half the largest book's diagonal, 3.72 units, and a little more: a book whose middle lies
+    /// Half the largest book's diagonal, 3.79 units, and a little more: a book whose middle lies
     /// this far outside the view is wholly out of it.
-    static let entryClearance: Float = 1.9
+    static let entryClearance: Float = 1.95
     /// How long after the last wave the box of **Phone is the box** closes, at soonest: longer
     /// than a book takes to fall from an iPhone's one-wave ceiling (`ceiling(over:waves:)`)
     /// under `airDrag`.
@@ -370,7 +370,7 @@ enum PileLayout {
     /// book clear of the walls.
     static let reach: Float = 1.5
     /// The most book volume a live drop takes, in liters, which an iPhone's tray holds between
-    /// the bars. A typical library's 300 books take about 200 liters.
+    /// the bars. A typical library's 300 books take about 240 liters.
     static let maximumVolume: Float = 250
     /// The largest sideways gravity tilt allows, as a fraction of `gravity` (about 27 degrees).
     static let maximumTilt: Float = 0.5

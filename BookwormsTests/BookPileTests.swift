@@ -64,8 +64,7 @@ final class BookPileTests: XCTestCase {
         let size = BookShape(of: book, coverAspect: 0.7).size
         XCTAssertEqual(size, BookShape(of: book, coverAspect: 0.7).size)
         // Sizes snap to `BookShape.step`, so they follow the rules to within a step.
-        let variety = SIMD2(
-            Float(ShareStyle.unit(0, book.id, 40)), Float(ShareStyle.unit(0, book.id, 41)))
+        let variety = Float(ShareStyle.unit(0, book.id, 40))
         let exact = BookShape.size(pages: book.pages, coverAspect: 0.7, variety: variety)
         XCTAssertTrue(all(abs(size - exact) .<= BookShape.step / 2 + 0.0001), "\(size) \(exact)")
         // The cover changes only the width.
@@ -75,17 +74,17 @@ final class BookPileTests: XCTestCase {
     }
 
     func testPageCountMakesClearlyDifferentBooks() {
-        func size(_ pages: Int?, _ variety: SIMD2<Float> = .zero) -> SIMD3<Float> {
+        func size(_ pages: Int?, _ variety: Float = 0) -> SIMD3<Float> {
             BookShape.size(pages: pages, coverAspect: 2 / 3, variety: variety)
         }
         let (novella, novel, brick) = (size(120), size(350), size(900))
-        // 17, 19, and 23 cm long, and 8 mm, 16 mm, and 3.6 cm thick.
+        // 17, 19, and 23 cm long, and 1.2, 2.8, and 6 cm thick, as real hardcovers are.
         XCTAssertEqual(novella.y, 1.7, accuracy: 0.001)
         XCTAssertEqual(novel.y, 1.9, accuracy: 0.001)
         XCTAssertEqual(brick.y, 2.3, accuracy: 0.001)
-        XCTAssertEqual(novella.z, 0.08, accuracy: 0.001)
-        XCTAssertEqual(novel.z, 0.16, accuracy: 0.001)
-        XCTAssertEqual(brick.z, 0.36, accuracy: 0.001)
+        XCTAssertEqual(novella.z, 0.12, accuracy: 0.001)
+        XCTAssertEqual(novel.z, 0.28, accuracy: 0.001)
+        XCTAssertEqual(brick.z, 0.6, accuracy: 0.001)
         // The 2:3 aspect rounds to 0.65.
         XCTAssertEqual(brick.x, brick.y * 0.65, accuracy: 0.001)
         // The floor keeps short books the same length; only their thickness differs. Length
@@ -97,35 +96,34 @@ final class BookPileTests: XCTestCase {
         // A book without a page count is as large as a 320-page book.
         XCTAssertEqual(size(nil), size(320))
 
-        // Variety lengthens a book by up to 22 percent and thickens it by up to 25 percent, in
-        // three levels.
-        let varied = size(350, [1, 1])
+        // Variety lengthens a book by up to 22 percent, in three levels, and never thickens it.
+        let varied = size(350, 1)
         XCTAssertEqual(varied.y, 2.3, accuracy: 0.001)
-        XCTAssertEqual(varied.z, 0.2, accuracy: 0.001)
-        XCTAssertEqual(size(350, [0.2, 0.2]), novel)
-        XCTAssertEqual(size(350, [0.4, 0.6]), size(350, [0.5, 0.5]))
-        XCTAssertEqual(size(350, [0.8, 0.9]), varied)
+        XCTAssertEqual(varied.z, novel.z)
+        XCTAssertEqual(size(350, 0.2), novel)
+        XCTAssertEqual(size(350, 0.4), size(350, 0.5))
+        XCTAssertEqual(size(350, 0.9), varied)
 
-        // Thickness stops at 4 cm before variety. A book at least 6 times as long as it is
-        // thick would be 31 cm, so the length cap makes it chunky instead.
-        XCTAssertEqual(size(1_400).z, 0.4, accuracy: 0.001)
-        let chunky = size(1_400, [0, 1])
-        XCTAssertEqual(chunky.z, 0.52, accuracy: 0.001)
-        XCTAssertEqual(chunky.y, BookShape.longest, accuracy: 0.001)
+        // The thickest book, 8.8 cm, is at least 3 times as long as it is thick: 27 cm, longer
+        // than its 23 cm page-count length.
+        let chunky = size(1_400)
+        XCTAssertEqual(chunky.z, 0.88, accuracy: 0.001)
+        XCTAssertEqual(chunky.y, 2.7, accuracy: 0.001)
+        XCTAssertEqual(size(1_400, 1).y, BookShape.longest, accuracy: 0.001)
         var sizes = Set<SIMD3<Float>>()
         for pages in stride(from: 100, through: 1_400, by: 10) {
-            for variety in [SIMD2<Float>(0, 0), [0.5, 0.5], [1, 0], [0, 1], [1, 1]] {
+            for variety: Float in [0, 0.5, 1] {
                 let book = size(pages, variety)
                 XCTAssertLessThanOrEqual(book.y, BookShape.longest + 0.0001)
-                XCTAssertGreaterThanOrEqual(book.y, min(6 * book.z, BookShape.longest) - 0.0001)
+                XCTAssertGreaterThanOrEqual(book.y, min(3 * book.z, BookShape.longest) - 0.0001)
                 // Length rounds to 1 cm and thickness to 4 mm.
                 XCTAssertEqual(book.y * 10, (book.y * 10).rounded(), accuracy: 0.001)
                 XCTAssertEqual(book.z * 25, (book.z * 25).rounded(), accuracy: 0.001)
                 sizes.insert(book)
             }
         }
-        // About 60 sizes for each cover aspect, so many books share a mesh.
-        XCTAssertLessThan(sizes.count, 75)
+        // About 70 sizes for each cover aspect, so many books share a mesh.
+        XCTAssertLessThan(sizes.count, 80)
     }
 
     func testCameraLooksAtItsTarget() {
@@ -338,12 +336,12 @@ final class BookPileTests: XCTestCase {
         // book is as large as a book gets. Each starts clear of the walls by half a book, and
         // between the drop height and the ceiling.
         let largest = BookShape(
-            size: BookShape.size(pages: 1_400, coverAspect: 0.85, variety: [1, 1]),
+            size: BookShape.size(pages: 1_400, coverAspect: 0.85, variety: 1),
             binding: .hardcover
         )
         .size
-        XCTAssertTrue(all(abs(largest - [2.4, 2.8, 0.52]) .< 0.001), "\(largest)")
-        XCTAssertEqual(simd_length(largest), 3.72, accuracy: 0.01)
+        XCTAssertTrue(all(abs(largest - [2.4, 2.8, 0.88]) .< 0.001), "\(largest)")
+        XCTAssertEqual(simd_length(largest), 3.79, accuracy: 0.01)
         let bricks = (2_000...).lazy
             .map { id in
                 CloudBook(
