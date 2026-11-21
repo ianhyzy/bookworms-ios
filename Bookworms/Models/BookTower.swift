@@ -35,6 +35,8 @@ struct BookTower {
     /// The height of every book of the time frame, stacked, in units, including books past
     /// `maximumBooks` that the tower leaves out.
     let height: Float
+    /// `height` in meters, as the headline and the figure beside the tower measure it.
+    var meters: Float { height / 10 }
     /// How many books the time frame has.
     let count: Int
     /// The pages of the books that record a page count.

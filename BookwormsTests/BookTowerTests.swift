@@ -109,4 +109,42 @@ final class BookTowerTests: XCTestCase {
         XCTAssertEqual(
             TowerMovieTiming.tapeOut(at: TowerMovieTiming.hold + TowerMovieTiming.retract), 0)
     }
+
+    func testATowerStandsBesideTheClosestFigurePreferringATallerOne() {
+        XCTAssertNil(TowerFigure.closest(to: 0.1))
+        XCTAssertEqual(TowerFigure.closest(to: 0.2)?.name, "cat")
+        XCTAssertEqual(TowerFigure.closest(to: 0.8), TowerFigure.person)
+        XCTAssertEqual(TowerFigure.closest(to: 1.9), TowerFigure.person)
+        XCTAssertEqual(TowerFigure.closest(to: 8.1)?.name, "house")
+        // Between the windmill and the castle tower, the taller one wins at the middle.
+        XCTAssertEqual(TowerFigure.closest(to: 15.5)?.name, "castletower")
+        XCTAssertEqual(TowerFigure.closest(to: 200)?.name, "lighthouse")
+        // The ladder runs shortest first, so the pick never skips a figure.
+        let heights = TowerFigure.ladder.map(\.meters)
+        XCTAssertEqual(heights, heights.sorted())
+    }
+
+    func testTheLineComparesTheTowerWithItsFigure() {
+        let windmill = TowerFigure.ladder.first { $0.name == "windmill" }!
+        XCTAssertEqual(windmill.comparison(to: 13), "Taller than a windmill")
+        XCTAssertEqual(windmill.comparison(to: 12.2), "As tall as a windmill")
+        XCTAssertEqual(windmill.comparison(to: 9), "Almost as tall as a windmill")
+        let ian = TowerFigure.person
+        XCTAssertEqual(ian.comparison(to: 0.6), "Up to Ian's knees")
+        XCTAssertEqual(ian.comparison(to: 0.79), "Up to Ian's thighs")
+        XCTAssertEqual(ian.comparison(to: 1.37), "Up to Ian's chest")
+        XCTAssertEqual(ian.comparison(to: 1.8), "As tall as Ian")
+        // The shortest tower that stands beside Ian rather than the cat still names a landmark.
+        XCTAssertEqual(TowerFigure.closest(to: 0.49), ian)
+        XCTAssertEqual(ian.comparison(to: 0.49), "Up to Ian's shins")
+    }
+
+    func testEveryFigureButThePersonShipsAModel() {
+        for figure in TowerFigure.ladder where figure != TowerFigure.person {
+            XCTAssertNotNil(
+                Bundle(for: AppModel.self)
+                    .url(
+                        forResource: "figure-\(figure.name)", withExtension: "usdz"), figure.name)
+        }
+    }
 }

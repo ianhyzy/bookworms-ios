@@ -51,6 +51,9 @@ struct TowerFacts {
     let height: String
     let count: Int
     let pages: Int
+    /// How the tower compares with the figure beside it, such as "Taller than a windmill", or
+    /// nothing without a figure.
+    let comparison: String?
 }
 
 /// The tower's scene, cameras, and frames, for a still image or a clip.
@@ -62,6 +65,11 @@ final class TowerStage {
     let renderer: RealityRenderer
     let theme: ShareTheme
     let props: TowerProps
+    /// What stands beside the tower at true scale, if the tower is tall enough for one.
+    let figure: TowerFigure?
+    /// Points that bound the props and the figure, which the still's camera frames with the
+    /// books.
+    let extent: [SIMD3<Float>]
     /// The books' bodies, bottom up.
     let books: [ModelEntity]
     /// The camera that frames the tower in `layout.towerRect`.
@@ -89,21 +97,61 @@ final class TowerStage {
         self.scene = scene
         theme = ShareTheme(looks: shown.map(model.look(for:)))
         let height = tower.stackHeight
+        props = TowerProps(tower: tower)
+        var figure = TowerFigure.closest(to: tower.meters)
+        #if DEBUG
+            // `-BookwormsTowerFigure <name>` stands that figure beside any tower, for checking
+            // every model with one library.
+            if let name = UserDefaults.standard.string(forKey: "BookwormsTowerFigure") {
+                figure = TowerFigure.ladder.first { $0.name == name }
+            }
+        #endif
+        var extent = props.extent
+        var figureEntity: Entity?
+        if let figure {
+            // The drawn tower can leave books out (`BookTower.shown`), so the figure shrinks
+            // with it and keeps the proportion between their real heights.
+            figureEntity = await figure.entity(
+                height: height * figure.meters / max(tower.meters, 0.001),
+                left: (props.extent.map(\.x).max() ?? 0) + 0.3)
+        }
+        // A figure whose model can't load goes unnamed, so the line keeps the counts.
+        self.figure = figureEntity == nil ? nil : figure
+        if let figureEntity {
+            let bounds = figureEntity.visualBounds(relativeTo: nil)
+            extent += [
+                bounds.min, bounds.max, [bounds.min.x, 0, bounds.max.z],
+                [bounds.max.x, bounds.max.y, bounds.min.z],
+            ]
+        }
+        self.extent = extent
+        // The lamp's pool covers the tower and the figure beside it.
+        let left = extent.map(\.x).min() ?? 0
+        let right = extent.map(\.x).max() ?? 0
+        let top = max(height, extent.map(\.y).max() ?? 0)
+        let span = max(right - left, top)
         await scene.light(
-            pool: [0, height / 2, 0], radius: max(height * 0.6, 3), color: TowerStage.lampColor)
+            pool: [(left + right) / 2, top / 2, 0], radius: max(span * 0.6, 3),
+            color: TowerStage.lampColor)
         try Task.checkCancellation()
         self.books = scene.place(
             tower.slots.map { PileSlot(book: $0.book, transform: $0.transform) }, mode: .static)
-        props = TowerProps(tower: tower)
         scene.addLit(props.root)
+        if let figureEntity { scene.addLit(figureEntity) }
 
         layout = TowerLayout(
             aspect: aspect, hasLoupe: tower.slots.count > TowerLayout.loupeThreshold)
         let size = aspect.size
+        let framed = tower.corners + extent
         camera = TowerCamera.framing(
-            tower.corners + props.extent, eyeHeight: max(0.8, height * 0.12),
-            in: layout.towerRect, of: size)
+            framed, eyeHeight: max(0.8, height * 0.12), in: layout.towerRect, of: size)
         scene.look(from: camera.transform, aspect: Float(size.width / size.height))
+        // The clip's camera backs away and rises to look down on the fallen books, which spread
+        // about as far as the tower stood tall; four times the still's farthest point leaves
+        // room for that.
+        let eye = camera.eye
+        let farthest = framed.map { simd_distance($0, eye) }.max() ?? 0
+        scene.see(upTo: farthest * 4)
         target = try FrameTarget(width: Int(size.width), height: Int(size.height))
         if let loupe = layout.loupeRect {
             let top = tower.slots.suffix(TowerLayout.loupeBooks)
@@ -135,7 +183,7 @@ final class TowerStage {
     func facts(title: String) -> TowerFacts {
         TowerFacts(
             title: title, height: BookTower.heightText(tower.height), count: tower.count,
-            pages: tower.pages)
+            pages: tower.pages, comparison: figure?.comparison(to: tower.meters))
     }
 
     /// Renders the tower and the loupe once.
@@ -480,7 +528,9 @@ struct TowerSnapshotCard: View {
         .shadow(color: .black.opacity(0.4), radius: 8, y: 2)
     }
 
+    /// The comparison with the figure, or without one, the books and pages.
     private var countLine: String {
+        if let comparison = facts.comparison { return comparison }
         let books = facts.count == 1 ? "1 book" : "\(facts.count.formatted()) books"
         return facts.pages > 0 ? "\(books) · \(facts.pages.formatted()) pages" : books
     }
