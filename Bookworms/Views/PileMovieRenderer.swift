@@ -58,12 +58,29 @@ extension PileSnapshotRenderer {
         books: [CloudBook], title: String, aspect: ShareAspect, seed: UInt64, model: AppModel,
         progress: (Double?) -> Void, preview: (CGImage) -> Void
     ) async throws -> PileMovie {
-        progress(nil)
         let shown = Array(books.prefix(maximumBooks))
         let layout = PileSnapshotLayout(aspect: aspect, count: shown.count)
+        return try await makeClip(named: "Desk \(title)", progress: progress) { movie in
+            try await film(
+                shown, title: title, count: books.count, layout: layout, seed: seed,
+                model: model, to: movie, progress: progress, preview: preview)
+        }
+    }
+
+    /// The frames, knocks, and last frame that filming a clip returns.
+    typealias Filmed = (writer: PileMovieWriter, poster: CGImage, hits: [ImpactRecord])
+
+    /// Makes a clip named `name` in a new temporary folder: takes the render's turn
+    /// (`claim()`), lets `film` write the frames to the MP4's location it is given, and once the
+    /// turn is released, finishes the movie and writes the still and the Live Photo's copy.
+    /// A failed or cancelled clip deletes its files. Reports `nil` progress first, while fonts
+    /// and covers load.
+    static func makeClip(
+        named name: String, progress: (Double?) -> Void, film: (URL) async throws -> Filmed
+    ) async throws -> PileMovie {
+        progress(nil)
         removeStaleClips()
         let folder = newClipFolder()
-        let name = "Desk \(title)"
         let file = name.replacing("/", with: "-").replacing(":", with: "-")
         let identifier = UUID().uuidString
         do {
@@ -71,12 +88,10 @@ extension PileSnapshotRenderer {
             let movie = folder.appending(path: "\(file).mp4")
             let still = folder.appending(path: "\(file).jpg")
             try await claim()
-            let filmed: (writer: PileMovieWriter, poster: CGImage, hits: [ImpactRecord])
+            let filmed: Filmed
             do {
                 defer { release() }
-                filmed = try await film(
-                    shown, title: title, count: books.count, layout: layout, seed: seed,
-                    model: model, to: movie, progress: progress, preview: preview)
+                filmed = try await film(movie)
             }
             try await filmed.writer.finish(
                 hits: filmed.hits, livePhoto: identifier,
@@ -87,6 +102,67 @@ extension PileSnapshotRenderer {
                 name: name)
         } catch {
             try? FileManager.default.removeItem(at: folder)
+            throw error
+        }
+    }
+
+    /// Renders and writes a clip's `count` frames at the pixel size of `target`, and returns
+    /// the last.
+    ///
+    /// For each frame, `pose` moves the scene to where it is in that frame, stepping the
+    /// renderer as it needs, and the renderer then steps once more and renders. The first
+    /// frame must not be one flat color. `compose` draws the render, in the frame's pixels,
+    /// into the finished frame, such as under a heading. Each frame must render and reach the
+    /// encoder within `frameTimeout`. `preview` gets every sixth frame at half size and the
+    /// last at full size, and `progress` the fraction of frames done. A failure cancels the
+    /// writer.
+    static func writeFrames(
+        _ count: Int, to writer: PileMovieWriter, renderer: RealityRenderer,
+        target: FrameTarget, composer: FrameComposer, pose: (Int) throws -> Void,
+        compose: (CIImage, Int) -> CIImage, progress: (Double?) -> Void,
+        preview: (CGImage) -> Void
+    ) async throws -> CGImage {
+        let last = count - 1
+        // The target may have signaled for earlier renders, such as a still's.
+        let start = target.event.signaledValue
+        do {
+            try writer.start()
+            let pool = try writer.framePool()
+            var poster: CGImage?
+            for frame in 0...last {
+                try Task.checkCancellation()
+                // Every wait of the frame ends by this deadline, so a frame that never renders
+                // or an encoder that stops taking frames cannot hold the render's turn.
+                let deadline = ContinuousClock.now + frameTimeout
+                try pose(frame)
+                let signal = start + UInt64(frame + 1)
+                try renderer.updateAndRender(
+                    deltaTime: PileMovieTiming.stepDuration, cameraOutput: target.output,
+                    actionsAfterRender: [.signal(target.event, value: signal)])
+                if frame == 0 {
+                    try await target.read(after: signal, before: deadline)
+                    if target.isBlank { throw PileSnapshotError.drawingFailed }
+                }
+                let picture = CVReadOnlyPixelBuffer(try pool.makeMutablePixelBuffer())
+                try await target.run(after: signal, before: deadline) { commands in
+                    guard let render = composer.image(of: target.texture) else {
+                        throw PileSnapshotError.drawingFailed
+                    }
+                    try composer.render(compose(render, frame), into: picture, on: commands)
+                }
+                let snapshot =
+                    frame == last
+                    ? composer.cgImage(of: picture)
+                    : frame % 6 == 0 ? composer.cgImage(of: picture, scale: 0.5) : nil
+                try await writer.append(picture, at: frame, before: deadline)
+                if let snapshot { preview(snapshot) }
+                if frame == last { poster = snapshot }
+                progress(Double(frame + 1) / Double(count))
+            }
+            guard let poster else { throw PileSnapshotError.drawingFailed }
+            return poster
+        } catch {
+            writer.cancel()
             throw error
         }
     }
@@ -138,7 +214,7 @@ extension PileSnapshotRenderer {
         _ books: [CloudBook], title: String, count: Int, layout: PileSnapshotLayout,
         seed: UInt64, model: AppModel, to url: URL, progress: (Double?) -> Void,
         preview: (CGImage) -> Void
-    ) async throws -> (writer: PileMovieWriter, poster: CGImage, hits: [ImpactRecord]) {
+    ) async throws -> Filmed {
         let size = layout.aspect.size
         let width = Int(size.width)
         let height = Int(size.height)
@@ -225,61 +301,28 @@ extension PileSnapshotRenderer {
         }
 
         let writer = try PileMovieWriter(url: url, width: width, height: height)
-        let last = PileMovieTiming.frameCount - 1
-        do {
-            try writer.start()
-            let pool = try writer.framePool()
-            var poster: CGImage?
-            scene.feedback.startRecording()
-            for frame in 0...last {
-                try Task.checkCancellation()
-                // Every wait of the frame ends by this deadline, so a frame that never renders
-                // or an encoder that stops taking frames cannot hold the render's turn.
-                let deadline = ContinuousClock.now + frameTimeout
+        scene.feedback.startRecording()
+        let poster = try await writeFrames(
+            PileMovieTiming.frameCount, to: writer, renderer: renderer, target: target,
+            composer: composer,
+            pose: { _ in
                 for _ in 1..<PileMovieTiming.stepsPerFrame {
                     step()
                     try renderer.update(PileMovieTiming.stepDuration)
                 }
                 step()
-                let signal = UInt64(frame + 1)
-                try renderer.updateAndRender(
-                    deltaTime: PileMovieTiming.stepDuration, cameraOutput: target.output,
-                    actionsAfterRender: [.signal(target.event, value: signal)])
-                if frame == 0 {
-                    try await target.read(after: signal, before: deadline)
-                    if target.isBlank { throw PileSnapshotError.drawingFailed }
-                }
-                let picture = CVReadOnlyPixelBuffer(try pool.makeMutablePixelBuffer())
-                try await target.run(after: signal, before: deadline) { commands in
-                    guard let render = composer.image(of: target.texture) else {
-                        throw PileSnapshotError.drawingFailed
-                    }
-                    try composer.render(
-                        composer.frame(
-                            of: render, crop: CGRect(origin: .zero, size: size), size: size,
-                            overlays: [(overlay, 1)]),
-                        into: picture, on: commands)
-                }
-                let snapshot =
-                    frame == last
-                    ? composer.cgImage(of: picture)
-                    : frame % 6 == 0 ? composer.cgImage(of: picture, scale: 0.5) : nil
-                try await writer.append(picture, at: frame, before: deadline)
-                if let snapshot { preview(snapshot) }
-                if frame == last { poster = snapshot }
-                progress(Double(frame + 1) / Double(PileMovieTiming.frameCount))
-            }
-            let hits = scene.feedback.finishRecording()
-            #if DEBUG
-                scene.logCovers("video seed \(seed), \(books.count) books")
-                scene.logSpread("video seed \(seed)", in: layout.pileRect, of: layout.aspect.size)
-            #endif
-            guard let poster else { throw PileSnapshotError.drawingFailed }
-            return (writer, poster, hits)
-        } catch {
-            writer.cancel()
-            throw error
-        }
+            },
+            compose: { render, _ in
+                composer.frame(
+                    of: render, crop: CGRect(origin: .zero, size: size), size: size,
+                    overlays: [(overlay, 1)])
+            }, progress: progress, preview: preview)
+        let hits = scene.feedback.finishRecording()
+        #if DEBUG
+            scene.logCovers("video seed \(seed), \(books.count) books")
+            scene.logSpread("video seed \(seed)", in: layout.pileRect, of: layout.aspect.size)
+        #endif
+        return (writer, poster, hits)
     }
 
     /// The heading and the credit of a pile image, without the pile, to draw over each frame.
@@ -384,22 +427,25 @@ struct FrameTarget {
         }
     }
 
-    /// The frame in `buffer` as an image. The texture is `bgra8Unorm_srgb`, and
-    /// `RealityRenderer` writes Display P3 primaries with the sRGB transfer curve, so the image
-    /// is tagged P3.
+    /// The frame in `buffer`, which `read(after:before:)` copied, as an image: opaque, or with
+    /// `alpha` premultiplied, for a render over a clear background. The texture is
+    /// `bgra8Unorm_srgb`, and `RealityRenderer` writes Display P3 primaries with the sRGB
+    /// transfer curve, so the image is tagged P3.
     ///
-    /// - Throws: `PileSnapshotError` when the frame is one flat color (`isBlank`).
-    func image() throws -> CGImage {
-        let pixels = Data(bytes: buffer.contents(), count: bytesPerRow * texture.height)
+    /// - Throws: `PileSnapshotError` when the frame is one flat color (`isBlank`), as a
+    ///   renderer that drew nothing leaves it, or the image cannot be made.
+    func image(alpha: Bool = false) throws -> CGImage {
+        let height = texture.height
+        let pixels = Data(bytes: buffer.contents(), count: bytesPerRow * height)
+        let alphaInfo: CGImageAlphaInfo = alpha ? .premultipliedFirst : .noneSkipFirst
         guard !isBlank,
             let space = CGColorSpace(name: CGColorSpace.displayP3),
             let provider = CGDataProvider(data: pixels as CFData),
             let image = CGImage(
-                width: texture.width, height: texture.height, bitsPerComponent: 8,
-                bitsPerPixel: 32, bytesPerRow: bytesPerRow, space: space,
+                width: texture.width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                bytesPerRow: bytesPerRow, space: space,
                 bitmapInfo: CGBitmapInfo(
-                    rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue
-                        | CGBitmapInfo.byteOrder32Little.rawValue),
+                    rawValue: alphaInfo.rawValue | CGBitmapInfo.byteOrder32Little.rawValue),
                 provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
         else { throw PileSnapshotError.drawingFailed }
         return image
