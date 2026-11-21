@@ -1,3 +1,4 @@
+import RealityKit
 import SwiftUI
 import TipKit
 import UniformTypeIdentifiers
@@ -83,6 +84,10 @@ struct ShareStudioView: View {
     @State private var lateRedraw: Task<Void, Never>?
     /// Whether the last render failed, so no image is shown or shared.
     @State private var failed = false
+    /// The Desk image's pile, which the preview lets the reader rearrange (`PileArranging`).
+    @State private var pile: ArrangeablePile?
+    /// Where the reader moved the Desk image's books, which its next render keeps.
+    @State private var arrangement: PileArrangement?
     @State private var showsAccount = false
     @State private var filmsPile = false
     /// The Pile template's books and heading when **Video** was tapped, which the video films.
@@ -98,6 +103,9 @@ struct ShareStudioView: View {
     #else
         /// Whether **Save Image…** shows the save panel.
         @State private var savesImage = false
+        /// Whether the pointer rests on one of the Desk preview's books, which a drag moves
+        /// instead of dragging out the image.
+        @State private var hoversBook = false
         /// The credited copy of the image that Quick Look shows, or `nil` while it is closed.
         @State private var quickLookURL: URL?
         /// The menu commands' actions, made once so that publishing them never rebuilds the
@@ -304,6 +312,10 @@ struct ShareStudioView: View {
             socialRevision: mode == .friends ? model.social.revision : 0,
             hasScore: template == .tasteMatch && reader?.match?.score != nil,
             covers: books.map(\.coverCandidates.first), designs: designs, loadedFaces: loadedFaces)
+        if template == .pile {
+            request.arrangement = arrangement?
+                .poses(aspect: aspect, seed: seed, ids: books.map(\.id))
+        }
         // Checkout Card writes the owner's name in its heading, and Review and Currently Reading
         // sign with it in place of the profile link they would letter. Checkout Card shows the
         // name even with **Show profile link** off, on purpose: a checkout card names its
@@ -902,8 +914,10 @@ struct ShareStudioView: View {
                         // The representation adds the credit only once the image is dropped. A
                         // shown image older than the settings, such as one with the profile link
                         // just turned off, doesn't drag out.
-                        .modifier(PreviewDrag(image: isPending || !exports ? nil : image))
+                        .modifier(
+                            PreviewDrag(image: isPending || !exports || hoversBook ? nil : image))
                     #endif
+                    .modifier(arranging(image, isPending: isPending))
                     .accessibilityLabel("\(image.name) preview")
                     .accessibilityFocused($focusesPreview)
                     .accessibilityAction(named: "Show full size") {
@@ -915,7 +929,7 @@ struct ShareStudioView: View {
                         #endif
                     }
             }
-            if template.rendersScene && isPending {
+            if template.rendersScene && isPending && !rearranging {
                 // A scene takes seconds to load its covers and lay its books out.
                 ProgressView(template == .pile ? "Dropping books" : "Weighing books")
                     .padding()
@@ -1359,6 +1373,35 @@ struct ShareStudioView: View {
     /// seed only to turn a 3D book slightly, too little to offer as a choice.
     private var showsShuffle: Bool { [.yearInBooks, .topFive, .pile].contains(template) }
 
+    /// Lets the reader move the Desk image's books in the preview (`PileArranging`); the next
+    /// image keeps their arrangement until the size, shuffle, or books change.
+    private func arranging(_ image: ShareImage, isPending: Bool) -> PileArranging {
+        #if os(iOS)
+            let (holds, hovers) = (holdsPreview, Binding.constant(false))
+        #else
+            let (holds, hovers) = (false, $hoversBook)
+        #endif
+        return PileArranging(
+            pile: template == .pile ? pile : nil, isEnabled: !isPending, holdsPreview: holds,
+            hoversBook: hovers
+        ) { poses in
+            // The pile belongs to the image that last drew, whatever the options say now.
+            guard let drawn = renderedRequest, let image = self.image else { return false }
+            let ids = image.books.prefix(PileSnapshotRenderer.maximumBooks).map(\.id)
+            arrangement = PileArrangement(
+                aspect: drawn.aspect, seed: drawn.seed, ids: ids, poses: poses)
+            return poses != drawn.arrangement
+        }
+    }
+
+    /// Whether the only change the pending image makes is the reader's arrangement, which the
+    /// live view or its still already shows in place of the progress indicator.
+    private var rearranging: Bool {
+        guard var drawn = renderedRequest else { return false }
+        drawn.arrangement = request.arrangement
+        return drawn == request
+    }
+
     // MARK: - Rendering
 
     /// Renders until the image matches the latest request.
@@ -1410,6 +1453,7 @@ struct ShareStudioView: View {
                 try Task.checkCancellation()
                 rendered = drawn.image
                 late = drawn.late
+                pile = drawn.pile
             } catch is CancellationError {
                 return
             } catch {
@@ -1457,6 +1501,8 @@ struct ShareStudioView: View {
         image = rendered.map { ShareImage(image: $0, name: name, books: books) }
         failed = !request.isEmpty && rendered == nil
         renderedRequest = request
+        // Only the Desk image's own pile is kept, and its textures go with any other image.
+        if template != .pile || rendered == nil { pile = nil }
         #if os(iOS)
             if rendered != nil { HoldPreviewTip.imageShown(for: choices) }
         #endif
@@ -1479,6 +1525,7 @@ struct ShareStudioView: View {
                 !Task.isCancelled, renderedRequest == request
             else { return }
             image = ShareImage(image: drawn.image, name: shareName, books: drawnBooks)
+            pile = drawn.pile
             lateRedraw = nil
         }
     }
@@ -1487,7 +1534,12 @@ struct ShareStudioView: View {
     /// waits for covers that missed the image's wait, or `nil` for the other templates and for
     /// a Seesaw without the reader's library.
     private struct SceneDrawing {
-        let draw: @MainActor () async throws -> (image: UIImage, late: [CloudBook])
+        /// Returns the image, the books whose covers missed its wait, and, for Desk, the pile
+        /// the preview lets the reader rearrange (`PileArranging`).
+        let draw:
+            @MainActor () async throws -> (
+                image: UIImage, late: [CloudBook], pile: ArrangeablePile?
+            )
         let waitForCovers: @MainActor ([CloudBook]) async -> Void
     }
 
@@ -1500,9 +1552,11 @@ struct ShareStudioView: View {
         case .pile:
             return SceneDrawing(
                 draw: {
-                    try await PileSnapshotRenderer.render(
+                    let drawn = try await PileSnapshotRenderer.render(
                         books: books, title: input.period, aspect: request.aspect,
-                        seed: request.seed, username: request.username, model: model)
+                        seed: request.seed, arrangement: request.arrangement,
+                        username: request.username, model: model)
+                    return (drawn.image, drawn.late, drawn.pile)
                 },
                 waitForCovers: { late in
                     await PileSnapshotRenderer.waitForCovers(
@@ -1514,9 +1568,10 @@ struct ShareStudioView: View {
             else { return nil }
             return SceneDrawing(
                 draw: {
-                    try await SeesawRenderer.render(
+                    let drawn = try await SeesawRenderer.render(
                         balance, social: social, period: input.period, aspect: request.aspect,
                         theme: input.theme, model: model)
+                    return (drawn.image, drawn.late, nil)
                 },
                 waitForCovers: { late in
                     await BookFactory.waitForCovers(
@@ -1649,6 +1704,9 @@ private struct RenderRequest: Equatable {
     /// takes (`CheckoutCardLayout`); 0 for other templates.
     var card = 0
     var cards = 0
+    /// Where the reader moved a Desk image's books (`PileArrangement`), or `nil` for the
+    /// spread as the seed lays it out and for other templates.
+    var arrangement: [Int: Transform]?
 
     /// Whether the image has nothing to draw.
     var isEmpty: Bool { covers.isEmpty && !hasScore }
