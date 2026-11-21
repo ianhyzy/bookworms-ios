@@ -5,6 +5,8 @@ import SwiftUI
 struct PileViewport: Equatable {
     var size: CGSize
     var insets: EdgeInsets
+    /// The frame a dominoes run plays and records in (`DominoRecorder.crop(in:)`).
+    var videoFrame = DominoVideoFrame.portrait
 
     /// The part of the view that the bars leave clear, in the view's points.
     var clear: CGRect {

@@ -384,6 +384,27 @@ struct FrameTarget {
         }
     }
 
+    /// The frame in `buffer` as an image. The texture is `bgra8Unorm_srgb`, and
+    /// `RealityRenderer` writes Display P3 primaries with the sRGB transfer curve, so the image
+    /// is tagged P3.
+    ///
+    /// - Throws: `PileSnapshotError` when the frame is one flat color (`isBlank`).
+    func image() throws -> CGImage {
+        let pixels = Data(bytes: buffer.contents(), count: bytesPerRow * texture.height)
+        guard !isBlank,
+            let space = CGColorSpace(name: CGColorSpace.displayP3),
+            let provider = CGDataProvider(data: pixels as CFData),
+            let image = CGImage(
+                width: texture.width, height: texture.height, bitsPerComponent: 8,
+                bitsPerPixel: 32, bytesPerRow: bytesPerRow, space: space,
+                bitmapInfo: CGBitmapInfo(
+                    rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue
+                        | CGBitmapInfo.byteOrder32Little.rawValue),
+                provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+        else { throw PileSnapshotError.drawingFailed }
+        return image
+    }
+
     /// Whether the frame in `buffer` is one flat color, as a renderer that drew nothing leaves
     /// it.
     var isBlank: Bool {

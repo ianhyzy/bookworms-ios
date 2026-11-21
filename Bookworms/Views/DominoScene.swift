@@ -529,7 +529,7 @@ final class DominoStatus {
 /// themselves up from where they lie, one after another in finish order (`DominoSetup`): each
 /// turns up onto its tail and hops to its place, and each cobweb fades in once the book behind
 /// it lands. With Reduce Motion on, they appear standing. **Set up again** sets the books up
-/// from where they lie the same way (`setUpAgain(generation:)`). A chain of books that were not
+/// from where they lie the same way (`setUpAgain(generation:frame:)`). A chain of books that were not
 /// on the desk, such as another time frame's, stands up as its books drop one after another
 /// down the path from above the top of the view onto their places. Until its last book is
 /// built, it has no books to hand over (`handOff()`): **Set up again** starts it over from
@@ -1503,11 +1503,13 @@ final class DominoScene {
     }
 
     /// **Set up again**: sets the books up from where they lie, fallen or gathered, as
-    /// `receive` does, as the chain of the same books for `generation`. Does nothing while the
-    /// chain has no books to hand over (see `handOff()`); the view's next set-up request then
-    /// stands the whole chain from above.
-    func setUpAgain(generation: Int) {
-        guard let viewport = plannedViewport, let handover = handOff() else { return }
+    /// `receive` does, as the chain of the same books for `generation`, in the view it was
+    /// planned in with the video's `frame`. Does nothing while the chain has no books to hand
+    /// over (see `handOff()`); the view's next set-up request then stands the whole chain from
+    /// above.
+    func setUpAgain(generation: Int, frame: DominoVideoFrame) {
+        guard var viewport = plannedViewport, let handover = handOff() else { return }
+        viewport.videoFrame = frame
         receive(handover, books: plan.map(\.book), generation: generation, viewport: viewport)
     }
 
