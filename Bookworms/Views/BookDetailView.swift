@@ -31,7 +31,7 @@ struct BookDetailView: View {
     let opened: CloudBook
     /// The book's thickness as a share of its height, or `nil` for its own proportion
     /// (`BookShape`). Details opened from Library pass the proportion of the spine the reader
-    /// chose (`CloudBook.librarySpineRatio(upright:)`), which is thicker than the book, so the
+    /// chose (`CloudBook.librarySpineRatio(upright:)`), which is at least as thick as the book, so the
     /// book keeps the shape it had on the shelf or in the stack.
     let thicknessRatio: CGFloat?
     let hostedBook: HostedBook?

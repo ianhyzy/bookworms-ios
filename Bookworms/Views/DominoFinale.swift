@@ -88,18 +88,32 @@ enum DominoFinale {
     /// With Reduce Motion on, how long after the last book falls the camera cuts to the
     /// spread's view and the books appear in their places, in seconds.
     static let stillWait: Float = 1
-    /// The room the heading takes at the top of the spread's area (`area(in:)`), `width` wide,
-    /// which the spread leaves: 28 percent of the width, about 112 points on an iPhone, 129 in
-    /// a Mac's default window, and 300 pixels on a story clip, since `DominoFinaleCard` scales
-    /// with the width.
-    static func headingRoom(width: CGFloat) -> CGFloat { width * 0.28 }
+    /// The room the heading takes at the top of the spread's area (`area(in:)`), of `size`,
+    /// which the spread leaves: 28 percent of the width of the 9:16 frame that the area holds
+    /// (`headingWidth(in:)`), about 112 points on an iPhone, 129 in a Mac's default window,
+    /// and 300 pixels on a story clip, since `DominoFinaleCard` scales with that width.
+    static func headingRoom(in size: CGSize) -> CGFloat { headingWidth(in: size) * 0.28 }
+
+    /// The width of the widest 9:16 frame that an area of `size` holds, which sizes the
+    /// heading, so a **Window** video's wider frame shows it as large as a story of the same
+    /// height does.
+    static func headingWidth(in size: CGSize) -> CGFloat {
+        let story = ShareAspect.story.size
+        return min(size.width, size.height * story.width / story.height)
+    }
+
+    /// The scale of `DominoFinaleCard` in an area of `size`, 1 on a story clip.
+    static func headingScale(in size: CGSize) -> CGFloat {
+        headingWidth(in: size) / ShareAspect.story.size.width
+    }
 
     /// The part of a view of `viewport` that the whole run plays in, in points: the chain
     /// stands, falls, and gathers there, the spread fills it, and the last book passes in it.
-    /// In a view wider than 9:16, such as a Mac's window, it is the 9:16 frame that a recording
-    /// of the run shows (`DominoRecorder.crop(in:)`), so the video and its image show every
-    /// book fall and gather, and the live view frames them the same way, with the table on
-    /// either side. Otherwise, as on an iPhone, it is the whole view.
+    /// In a view wider than 9:16, such as a Mac's window, recording a 9:16 story, it is the
+    /// frame that a recording of the run shows (`DominoRecorder.crop(in:)`), so the video and
+    /// its image show every book fall and gather, and the live view frames them the same way,
+    /// with the table on either side. Otherwise, as on an iPhone or a Mac recording its
+    /// window's shape, it is the whole view.
     static func area(in viewport: PileViewport) -> CGRect {
         let frame = DominoRecorder.crop(in: viewport)
         return frame.width < viewport.size.width
@@ -115,11 +129,11 @@ enum DominoFinale {
 
     /// Where the spread lays out its books in a view of `viewport`, in points: across
     /// `clearArea(in:)`, 16 points in from its sides, below the heading's room
-    /// (`headingRoom(width:)`), and 24 points above the bottom bar.
+    /// (`headingRoom(in:)`), and 24 points above the bottom bar.
     static func spreadRect(in viewport: PileViewport) -> CGRect {
         let area = area(in: viewport)
         let clear = clearArea(in: viewport)
-        let top = viewport.insets.top + headingRoom(width: area.width)
+        let top = viewport.insets.top + headingRoom(in: area.size)
         return CGRect(
             x: clear.minX + 16, y: top, width: clear.width - 32, height: clear.maxY - 24 - top)
     }

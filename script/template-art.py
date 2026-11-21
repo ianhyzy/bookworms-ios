@@ -6,7 +6,8 @@ Each tile is a small dark card, as every share image is dark, in the shape of a 
 Checkout Card's tile keeps the card stock and inks of its image (`Stationery`) instead, and
 Dropped's books are gray, as its image letters them. The books keep book proportions and stand
 upright or lie flat. They tilt in the card's plane only where the card tilts them: fanned like a
-hand of cards in Top Five, or lying turned on the Desk's table.
+hand of cards in Top Five, lying turned on the Desk's table, or resting on Seesaw's tipped
+plank.
 
 Each tile is drawn on a 120-by-150 grid and sized to the 56 by 70 points that `ShareStudioView`
 shows it at, without its vector data. The asset catalog then draws its bitmaps at build time,
@@ -274,6 +275,38 @@ def book_swap():
     return parts
 
 
+def seesaw():
+    # The table from the plank's height down, the walnut fulcrum, and the oak plank tipped down
+    # on the left, the reader's side, with a stack of books lying flat on each end.
+    table = (
+        f'<path d="M0 62 H{W} V{H - 10} Q{W} {H} {W - 10} {H} H10 Q0 {H} 0 {H - 10} Z"'
+        ' fill="url(#lamp)"/>'
+    )
+    parts = [heading(36, 11), bar(38, 20, 44, 2.5, CREAM, 0.55), table]
+    # The plank's lower end rests on the table at the fulcrum's foot: asin(10 / 52) is 11 degrees.
+    parts.append('<polygon points="53,98 67,98 61,88 59,88" fill="#5A3A26"/>')
+    stacks = []
+    for x, colors in [(8, [0, 3, 1, 5, 2]), (82, [6, 4, 1])]:
+        y = 0
+        for color in colors:
+            stacks.append(
+                rect(x, -7.7 - y, 28, 4.2, BOOKS[color], 0.8)
+                + bar(x + 4, -6.6 - y, 14, 1.6, CREAM, 0.7)
+            )
+            y += 4.6
+    parts.append(
+        '<g transform="translate(60 88) rotate(-11)">'
+        + rect(-52, -3.5, 104, 3.5, "#E8C49A", 1)
+        + "".join(f'<g transform="translate(-60 0)">{book}</g>' for book in stacks)
+        + "</g>"
+    )
+    parts += [
+        avatar(22, 124, 9, BOOKS[5]), bar(36, 120, 22, 3), bar(36, 127, 16, 2.5, CREAM, 0.6),
+        avatar(98, 124, 9, BOOKS[6]), bar(62, 120, 22, 3), bar(68, 127, 16, 2.5, CREAM, 0.6),
+    ]
+    return parts
+
+
 def checkout_card():
     # A checkout card lying on the desk: a heading filled in as a form is, the handwritten name,
     # the printed words, and the handwritten year, over a red rule, then ruled lines, each with a
@@ -377,6 +410,7 @@ TEMPLATES = {
     "currentlyReading": currently_reading,
     "tasteMatch": taste_match,
     "bookSwap": book_swap,
+    "seesaw": seesaw,
     "checkoutCard": checkout_card,
     "dropped": dropped,
     "tower": tower,

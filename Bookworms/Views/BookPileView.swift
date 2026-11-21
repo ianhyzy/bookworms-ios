@@ -5,6 +5,8 @@ import SwiftUI
 struct PileViewport: Equatable {
     var size: CGSize
     var insets: EdgeInsets
+    /// The frame a dominoes run plays and records in (`DominoRecorder.crop(in:)`).
+    var videoFrame = DominoVideoFrame.portrait
 
     /// The part of the view that the bars leave clear, in the view's points.
     var clear: CGRect {
@@ -241,6 +243,18 @@ struct BookPileView: View {
                         await desk.awake()
                         if !Task.isCancelled { scene.gatherBooks() }
                     }
+                    // `-BookwormsPileArrange <cube|pyramid|wall>` arranges the books into that
+                    // shape a second after the drop lands, as **Arrange** does.
+                    if let shape = UserDefaults.standard.string(forKey: "BookwormsPileArrange")
+                        .flatMap(PileShape.init(rawValue:))
+                    {
+                        while scene.status.isDropping, !Task.isCancelled {
+                            try? await Task.sleep(for: .seconds(0.1))
+                        }
+                        try? await Task.sleep(for: .seconds(1))
+                        await desk.awake()
+                        if !Task.isCancelled { scene.arrange(shape) }
+                    }
                     // `-BookwormsPileRedrops <n>` drops again, as **Drop again** does, until the
                     // drop with generation n.
                     if !Task.isCancelled,
@@ -313,12 +327,7 @@ struct BookPileView: View {
             }
             .toolbar {
                 if details.lift == nil {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button(dropTitle, systemImage: "arrow.counterclockwise") {
-                            desk.pileGeneration += 1
-                        }
-                        .help(reduceMotion ? "Stack the books again" : "Drop the books again")
-                    }
+                    ToolbarItem(placement: .topBarLeading) { arrangeMenu }
                     // The example profile's books are not the viewer's to share.
                     if !model.isExample {
                         ToolbarItem(placement: .topBarTrailing) {
@@ -391,6 +400,27 @@ struct BookPileView: View {
     }
 
     private var dropTitle: String { reduceMotion ? "Stack again" : "Drop again" }
+
+    /// **Arrange**, every way to lay the books out: **Drop again**, and the shapes the books on
+    /// the desk fly into (`BookPileScene.arrange(_:)`), which are unavailable while books drop or
+    /// already fly into one. One menu keeps the iPhone's bar room for the time frame button.
+    private var arrangeMenu: some View {
+        Menu("Arrange", systemImage: "square.stack.3d.up") {
+            Button(dropTitle, systemImage: "arrow.counterclockwise") { desk.pileGeneration += 1 }
+            Section {
+                ForEach(PileShape.allCases) { shape in
+                    Button(shape.title, systemImage: shape.systemImage) {
+                        Task {
+                            await desk.awake()
+                            scene.arrange(shape)
+                        }
+                    }
+                }
+            }
+            .disabled(scene.status.isDropping || scene.status.isArranging)
+        }
+        .help("Drop the books again, or arrange them into a shape")
+    }
 
     /// The scene's gestures as VoiceOver hints them, in the words of the Mac's pointer or the
     /// iPhone's touch.
@@ -543,6 +573,8 @@ struct BookPileView: View {
     /// (`BookPileScene.gatherBooks()`). A tap on a paused desk wakes it, if the touch did not
     /// already, and the returning view takes a few frames before the scene's rays find books.
     private func tap(at point: CGPoint, in size: CGSize) {
+        // Books flying into a shape open nothing, as the dominoes' gathering books don't.
+        guard !scene.status.isArranging else { return }
         Task {
             await desk.awake()
             if let entity = scene.book(at: point, in: size) {

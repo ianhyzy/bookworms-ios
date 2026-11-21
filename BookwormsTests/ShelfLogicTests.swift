@@ -331,15 +331,14 @@ final class ShelfLogicTests: XCTestCase {
     }
 
     /// The Apple TV's band table (`BookWallLocalSpineTests`), so both apps stamp the same books:
-    /// the thicknesses `BookShape` gives these books near the band threshold. Book 2 has no
-    /// variety, book 1 half of it, and book 9 all of it.
-    func testOnlyBooksAtLeast32MillimetersThickHaveStampedBands() {
-        let expected: [(id: Int, pages: Int?, millimeters: Int, stamps: Bool)] = [
-            (2, nil, 16, false), (2, 721, 28, false), (2, 760, 32, true), (1, 640, 28, false),
-            (1, 700, 32, true), (9, 500, 28, false), (9, 600, 32, true), (9, 1_400, 52, true),
+    /// the thicknesses `BookShape` gives these books near the band threshold.
+    func testOnlyBooksAtLeast48MillimetersThickHaveStampedBands() {
+        let expected: [(pages: Int?, millimeters: Int, stamps: Bool)] = [
+            (nil, 24, false), (500, 36, false), (686, 44, false), (687, 48, true),
+            (700, 48, true), (1_400, 88, true),
         ]
         for row in expected {
-            let shelved = book(row.id, "Book", pages: row.pages)
+            let shelved = book(1, "Book", pages: row.pages)
             let thickness = BookShape(of: shelved, coverAspect: 2 / 3).size.z
             XCTAssertEqual(Int((thickness * 100).rounded()), row.millimeters, "\(row)")
             XCTAssertEqual(SpineView.stamps(shelved), row.stamps, "\(row)")
@@ -1086,7 +1085,7 @@ final class ShelfLogicTests: XCTestCase {
             XCTAssertGreaterThan(
                 shelved.librarySpineRatio(upright: false),
                 shelved.librarySpineRatio(upright: true))
-            XCTAssertGreaterThan(
+            XCTAssertGreaterThanOrEqual(
                 shelved.librarySpineRatio(upright: true),
                 Book3DView.thicknessRatio(of: shelved, cover: nil))
         }
@@ -1836,6 +1835,18 @@ final class ShelfLogicTests: XCTestCase {
         XCTAssertEqual(end.lighting, 1, accuracy: 0.0001)
         XCTAssertEqual(end.distance, BookProjection.standardDistance * 380, accuracy: 0.001)
         XCTAssertEqual(end.eye, .zero)
+    }
+
+    /// A book faces the pointer from its leading edge to its trailing edge, level at its middle,
+    /// in tenths, and never past either edge.
+    func testBookLeansTowardThePointerInTenths() {
+        XCTAssertEqual(PullOutPath.lean(atX: 0, width: 200), -1)
+        XCTAssertEqual(PullOutPath.lean(atX: 100, width: 200), 0)
+        XCTAssertEqual(PullOutPath.lean(atX: 200, width: 200), 1)
+        XCTAssertEqual(PullOutPath.lean(atX: 130, width: 200), 0.3)
+        XCTAssertEqual(PullOutPath.lean(atX: -40, width: 200), -1)
+        XCTAssertEqual(PullOutPath.lean(atX: 260, width: 200), 1)
+        XCTAssertEqual(PullOutPath.lean(atX: 50, width: 0), 0)
     }
 }
 

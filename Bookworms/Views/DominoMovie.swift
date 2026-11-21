@@ -13,9 +13,10 @@ import os
 
 /// The heading over a dominoes finale, in the share images' style: the time frame, and the
 /// books and their pages, such as "39 books · 18,683 pages". `scale` sizes it from the
-/// 1080-pixel-wide share image, at 1, down to the live view, and `insets.top` places it below
-/// the bars. A recording of the run draws the same heading where the live view shows it
-/// (`DominoRecorder`), and adds the credit.
+/// 1080-pixel-wide share image, at 1, down to the live view, and `insets` place it below the
+/// bars and across the part of its frame that they leave clear (`insets(in:frame:)`). A
+/// recording of the run draws the same heading where the live view shows it (`DominoRecorder`),
+/// and adds the credit.
 struct DominoFinaleCard: View {
     /// How far below the time frame button the live view shows the heading, in points.
     nonisolated static let liveTop: CGFloat = 8
@@ -39,9 +40,21 @@ struct DominoFinaleCard: View {
         .foregroundStyle(ShareStyle.cream.color)
         .shadow(color: .black.opacity(0.5), radius: 8 * scale, y: 2 * scale)
         .padding(.horizontal, 64 * scale)
-        .padding(.top, insets.top)
+        .padding(insets)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .environment(\.colorScheme, .dark)
+    }
+
+    /// Where the heading sits in `frame`, a part of a view of `viewport`, in points from the
+    /// frame's edges: below the bars, and across the part of the frame that they leave clear,
+    /// so it centers over the spread's books (`DominoFinale.spreadRect(in:)`) also where the
+    /// frame runs behind a Mac's sidebar, as a **Window** video's does.
+    nonisolated static func insets(in viewport: PileViewport, frame: CGRect) -> EdgeInsets {
+        let clear = viewport.clear
+        return EdgeInsets(
+            top: viewport.insets.top + liveTop - frame.minY,
+            leading: max(0, clear.minX - frame.minX), bottom: 0,
+            trailing: max(0, frame.maxX - clear.maxX))
     }
 
     /// The books and their pages, which count every book in the frame.
@@ -57,8 +70,32 @@ struct DominoFinaleCard: View {
     }
 }
 
+/// The shape of the dominoes' video and its image, which **Video** in the desk's options menu
+/// chooses on the Mac: a 9:16 story, or the window's own shape. The iPhone always records a
+/// story, whose shape its view already has.
+enum DominoVideoFrame: String, CaseIterable, Identifiable {
+    /// The user defaults key of the choice.
+    static let storageKey = "BookwormsDominoVideoFrame"
+
+    case portrait
+    case window
+
+    var id: Self { self }
+    var title: String { rawValue.capitalized }
+
+    /// The frame that the next chain plans and records in.
+    static var chosen: Self {
+        #if os(macOS)
+            UserDefaults.standard.string(forKey: storageKey).flatMap(Self.init(rawValue:))
+                ?? .portrait
+        #else
+            .portrait
+        #endif
+    }
+}
+
 /// Records a dominoes run as the reader watches it, for **Share**: from the push through the
-/// finale until the heading has shown, as a story-size MP4 with the hits' knocks
+/// finale until the heading has shown, as an MP4 with the hits' knocks
 /// (`PileMovieWriter`), and a PNG of its last frame, both with the credit at the bottom edge.
 /// Once the books have gathered, the movie then holds its last frame still for
 /// `DominoMovieTiming.lastFrameHold` seconds, so viewers see the gathered books under the
@@ -71,10 +108,12 @@ struct DominoFinaleCard: View {
 /// The recorder takes the frames that the Desk scene's `ARView` draws. RealityKit calls its
 /// `postProcess` render callback on its render thread as it encodes each frame (`Tap`). The
 /// callback passes the frame on to the screen with a blit, and, for each frame the recording
-/// keeps, `FrameComposer` draws on the GPU the part of the view that a 9:16 frame shows
+/// keeps, `FrameComposer` draws on the GPU the part of the view that the frame shows
 /// (`crop(in:)`) over the wall's gradient, which shows around the scene, with the heading and
-/// the credit, into a pixel buffer from the encoder's pool. In a view wider than 9:16, such as
-/// a Mac's window, the frame shows the view's full height, where the scene plans and films the
+/// the credit, into a pixel buffer from the encoder's pool. The frame is a 9:16 story, or on
+/// the Mac, the window's shape when **Video** in the desk's options menu is **Window**
+/// (`DominoVideoFrame`, `frameSize(for:)`). In a view wider than 9:16, such as a Mac's window,
+/// a story frame shows the view's full height, where the scene plans and films the
 /// whole run (`DominoFinale.area(in:)`), so it holds still while the view keeps its size; a
 /// resized view's frame moves with the darkened sides (`Tap.reframe(_:)`). Once the GPU is
 /// done, the frame goes to the hardware encoder on the main actor, which expects frames in
@@ -304,7 +343,7 @@ final class DominoRecorder {
         /// Frames `viewport`'s view from the next frame on, where a resized view shows the
         /// scene. The heading keeps the place it had as the recording armed.
         func reframe(_ viewport: PileViewport) {
-            let crop = DominoRecorder.crop(in: viewport)
+            let crop = DominoRecorder.crop(in: viewport, size: size)
             framing.withLock { $0 = (crop, viewport.size.width) }
         }
     }
@@ -402,24 +441,45 @@ final class DominoRecorder {
         isRecording = false
     }
 
-    /// The part of a view of `viewport` that a 9:16 recording shows, in points. It spans the
-    /// view's width and puts the heading at a story's top margin, where the share images put
-    /// theirs, unless that would leave out the bottom of the scene above the tab bar. A view
-    /// wider than 9:16 shows its full height, centered on the part of the view that the bars
-    /// leave clear as far as the view allows. That is where the chain stands, falls, and
-    /// gathers (`DominoFinale.area(in:)`), so the frame holds still while the view keeps its
-    /// size.
-    nonisolated static func crop(in viewport: PileViewport) -> CGRect {
-        let size = viewport.size
+    /// The size in pixels of a recording's frames and its image for a view of `viewport`: a
+    /// story's 1080 × 1920 for **Portrait**, or for **Window**, the view's shape with its longer
+    /// side 1920 pixels, rounded to even numbers of pixels, as the encoder needs.
+    nonisolated static func frameSize(for viewport: PileViewport) -> CGSize {
         let story = ShareAspect.story.size
-        let height = size.width * story.height / story.width
-        guard height <= size.height else {
-            let width = size.height * story.width / story.height
+        let size = viewport.size
+        guard viewport.videoFrame == .window, size.width > 0, size.height > 0 else { return story }
+        let scale = story.height / max(size.width, size.height)
+        return CGSize(
+            width: 2 * (size.width * scale / 2).rounded(),
+            height: 2 * (size.height * scale / 2).rounded())
+    }
+
+    /// The part of a view of `viewport` that its recording shows, in points
+    /// (`crop(in:size:)` for frames of `frameSize(for:)`).
+    nonisolated static func crop(in viewport: PileViewport) -> CGRect {
+        crop(in: viewport, size: frameSize(for: viewport))
+    }
+
+    /// The part of a view of `viewport` that a recording of `frame` pixels shows, in points. A
+    /// frame of the view's shape, within a point, shows the whole view, so the rounding of a
+    /// **Window** frame's pixels leaves no sliver outside it. A taller frame spans the view's
+    /// width and puts the heading at a story's top margin, where the share images put theirs,
+    /// unless that would leave out the bottom of the scene above the tab bar. A wider frame,
+    /// such as **Portrait** in a Mac's window, shows the view's full height, centered on the
+    /// part of the view that the bars leave clear as far as the view allows. That is where the
+    /// chain stands, falls, and gathers (`DominoFinale.area(in:)`), so the frame holds still
+    /// while the view keeps its size.
+    nonisolated static func crop(in viewport: PileViewport, size frame: CGSize) -> CGRect {
+        let size = viewport.size
+        let height = size.width * frame.height / frame.width
+        guard abs(height - size.height) >= 1 else { return CGRect(origin: .zero, size: size) }
+        guard height < size.height else {
+            let width = size.height * frame.width / frame.height
             let left = min(max(viewport.clear.midX - width / 2, 0), size.width - width)
             return CGRect(x: left, y: 0, width: width, height: size.height)
         }
         let heading = viewport.insets.top + DominoFinaleCard.liveTop
-        let preferred = heading - ShareAspect.story.insets.top * size.width / story.width
+        let preferred = heading - ShareAspect.story.insets.top * size.width / frame.width
         let lowest = size.height - viewport.insets.bottom - height
         let top = min(max(preferred, lowest, 0), size.height - height)
         return CGRect(x: 0, y: top, width: size.width, height: height)
@@ -453,7 +513,7 @@ final class DominoRecorder {
     private func arm(view: ARView, layout: Layout) async {
         var made: (writer: PileMovieWriter, folder: URL)?
         do {
-            let size = ShareAspect.story.size
+            let size = Self.frameSize(for: layout.viewport)
             PileSnapshotRenderer.removeStaleClips()
             let name = "Dominoes \(layout.title)"
             let prepared = try await Self.prepare(composer: composer, name: name, size: size)
@@ -533,13 +593,15 @@ final class DominoRecorder {
 
     /// The heading, where the live view shows it, and the credit, each a frame's size.
     private static func overlays(for layout: Layout, crop: CGRect) throws -> (CIImage, CIImage) {
-        let size = ShareAspect.story.size
+        let size = frameSize(for: layout.viewport)
         let scale = size.width / crop.width
+        let insets = DominoFinaleCard.insets(in: layout.viewport, frame: crop)
         let card = DominoFinaleCard(
-            title: layout.title, count: layout.count, pages: layout.pages, scale: 1,
+            title: layout.title, count: layout.count, pages: layout.pages,
+            scale: DominoFinale.headingScale(in: size),
             insets: EdgeInsets(
-                top: (layout.viewport.insets.top + DominoFinaleCard.liveTop - crop.minY) * scale,
-                leading: 0, bottom: 0, trailing: 0))
+                top: insets.top * scale, leading: insets.leading * scale, bottom: 0,
+                trailing: insets.trailing * scale))
         func image(_ content: some View) -> CIImage? {
             let renderer = ImageRenderer(
                 content: content.frame(width: size.width, height: size.height))
@@ -688,12 +750,12 @@ final class DominoRecorder {
 
     // MARK: Image
 
-    /// An image of the view as it shows now, in a 9:16 PNG with the heading and the credit,
-    /// for **Share** when no recording of the run was kept. It frames `viewport`, the view the
-    /// chain was planned in, while the view keeps that size, so a wider view's image shows the
-    /// spread's area (`DominoFinale.area(in:)`) also after the sidebar shows or hides. A view
-    /// resized since, or one without a plan, frames its current layout, which matches the
-    /// snapshot it takes. Replaces the previous one.
+    /// An image of the view as it shows now, in a PNG of the video's frame with the heading and
+    /// the credit, for **Share** when no recording of the run was kept. It frames `viewport`,
+    /// the view the chain was planned in, while the view keeps that size, so a wider view's
+    /// image shows the spread's area (`DominoFinale.area(in:)`) also after the sidebar shows or
+    /// hides. A view resized since, or one without a plan, frames its current layout, which
+    /// matches the snapshot it takes. Replaces the previous one.
     ///
     /// - Throws: `PileSnapshotError` when the view or its snapshot is missing or cannot be
     ///   drawn.
@@ -713,7 +775,7 @@ final class DominoRecorder {
             let picture = composer.cgImage(
                 composer.frame(
                     of: CIImage(cgImage: shot), crop: crop.applying(.init(scaleX: scale, y: scale)),
-                    size: ShareAspect.story.size, background: try Self.wall(),
+                    size: Self.frameSize(for: layout.viewport), background: try Self.wall(),
                     overlays: [(heading, 1), (credit, 1)]))
         else { throw PileSnapshotError.drawingFailed }
         if let snapshotFolder { try? FileManager.default.removeItem(at: snapshotFolder) }

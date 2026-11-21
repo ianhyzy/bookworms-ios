@@ -10,7 +10,7 @@ import SwiftUI
 /// A share image layout.
 enum ShareTemplate: String, CaseIterable, Identifiable {
     case yearInBooks, topFive, hotTakes, pile, justFinished, review
-    case currentlyReading, tasteMatch, bookSwap
+    case currentlyReading, tasteMatch, bookSwap, seesaw
     case checkoutCard, dropped
     case tower
 
@@ -27,6 +27,7 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         case .currentlyReading: "Currently Reading"
         case .tasteMatch: "Taste Match"
         case .bookSwap: "Book Swap"
+        case .seesaw: "Seesaw"
         case .checkoutCard: "Checkout Card"
         case .dropped: "Dropped"
         case .tower: "Tall Stack"
@@ -44,6 +45,7 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         case .currentlyReading: "bookmark"
         case .tasteMatch: "person.2"
         case .bookSwap: "arrow.left.arrow.right"
+        case .seesaw: "scalemass"
         case .checkoutCard: "list.bullet.rectangle.portrait"
         case .dropped: "trash"
         case .tower: "ruler"
@@ -52,7 +54,23 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
 
     /// Whether the card compares the reader with someone else, and so exists only with
     /// friends.
-    var isSocial: Bool { self == .tasteMatch || self == .bookSwap }
+    var isSocial: Bool { self == .tasteMatch || self == .bookSwap || self == .seesaw }
+
+    /// Whether a RealityKit scene draws the image (`PileSnapshotRenderer`, `SeesawRenderer`,
+    /// `TowerSnapshotRenderer`), which takes seconds and waits for its own fonts and covers.
+    var rendersScene: Bool { self == .pile || self == .seesaw || self == .tower }
+
+    /// What the preview says while a rendered scene's books load and settle.
+    var sceneProgressTitle: String {
+        switch self {
+        case .tower: "Stacking books"
+        case .seesaw: "Weighing books"
+        default: "Dropping books"
+        }
+    }
+
+    /// Whether **Video** films the card's books: the Desk's drop, or the Tall Stack's topple.
+    var hasVideo: Bool { self == .pile || self == .tower }
 
     /// Whether the card features one book, which the reader can choose.
     var isSingleBook: Bool { self == .justFinished || self == .review || self == .currentlyReading }
@@ -60,17 +78,6 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
     /// Whether the card draws covers that can be 3D books or flat. A rendered scene's books are
     /// always 3D, and Checkout Card draws no covers.
     var hasCoverStyle: Bool { !rendersScene && self != .checkoutCard }
-
-    /// Whether a RealityKit scene renders the card (`PileSnapshotRenderer`,
-    /// `TowerSnapshotRenderer`), which loads its own covers and fonts and takes seconds, rather
-    /// than `ShareCanvas`.
-    var rendersScene: Bool { self == .pile || self == .tower }
-
-    /// What the preview says while a rendered scene's books load and settle.
-    var sceneProgressTitle: String { self == .tower ? "Stacking books" : "Dropping books" }
-
-    /// Whether **Video** films the card's books: the Desk's drop, or the Tall Stack's topple.
-    var hasVideo: Bool { self == .pile || self == .tower }
 
     /// Whether the card shows the reader's ratings, which the studio can hide. Hot Takes is
     /// about ratings, so it always shows them.
@@ -80,7 +87,9 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
 
     /// Whether the time frame selects the card's books. Currently Reading shows what is being
     /// read now, and Taste Match and Book Swap compare whole libraries, so they have none.
-    var usesTimeFrame: Bool { self != .currentlyReading && !isSocial }
+    var usesTimeFrame: Bool {
+        self != .currentlyReading && self != .tasteMatch && self != .bookSwap
+    }
 
     /// The books a single-book card can feature, newest first: the books finished in `frame`,
     /// only reviewed ones for Review, and for Currently Reading every current read, latest start
@@ -183,7 +192,7 @@ enum ShareMode: String, CaseIterable, Identifiable {
     var templates: [ShareTemplate] {
         switch self {
         case .mine: ShareTemplate.allCases.filter { !$0.isSocial }
-        case .friends: [.tasteMatch, .hotTakes, .bookSwap]
+        case .friends: [.tasteMatch, .hotTakes, .bookSwap, .seesaw]
         }
     }
 }
@@ -398,9 +407,9 @@ struct ShareCanvas: View {
             case .yearInBooks: YearInBooksCard(input: input)
             case .topFive: TopFiveCard(input: input)
             case .hotTakes: HotTakesCard(input: input)
-            // `PileSnapshotRenderer` draws piles, and `TowerSnapshotRenderer` towers:
-            // `ImageRenderer` cannot capture RealityKit.
-            case .pile, .tower: EmptyView()
+            // `PileSnapshotRenderer` draws piles, `SeesawRenderer` seesaws, and
+            // `TowerSnapshotRenderer` towers: `ImageRenderer` cannot capture RealityKit.
+            case .pile, .seesaw, .tower: EmptyView()
             case .justFinished, .currentlyReading: FeaturedBookCard(input: input)
             case .review: ReviewCard(input: input)
             case .tasteMatch: TasteMatchCard(input: input)

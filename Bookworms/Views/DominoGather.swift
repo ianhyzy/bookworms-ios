@@ -230,17 +230,20 @@ extension DominoFinale {
 
         /// The ways of `books`, in the spread's order, each from where it lies to its place, with
         /// its size (see `BookShape.size`), every book landing by `budget`, in seconds after
-        /// the books start to rise, if speeding up allows. The last book stays in the air.
+        /// the books start to rise, if speeding up allows. When `holdsLast`, as the dominoes'
+        /// flourish needs, the last book stays in the air; otherwise every book lands.
         init(
             _ books: [(from: Transform, to: Transform, size: SIMD3<Float>)],
-            budget: Float = .infinity
+            budget: Float = .infinity, holdsLast: Bool = true
         ) {
             let count = books.count
             guard count > 0 else {
                 self.flights = []
                 return
             }
-            let last = count - 1
+            // The book that stays in the air, if any; -1 matches no book.
+            let last = holdsLast ? count - 1 : -1
+            let landing = books.indices.filter { $0 != last }
             let lying = books.map { DominoSetup.Box($0.from, size: $0.size, grow: -0.01) }
             let places = books.map { DominoSetup.Box($0.to, size: $0.size, grow: -0.01) }
             // Each book glides with its lowest corner clear above the spread's places, as high
@@ -260,7 +263,8 @@ extension DominoFinale {
                     }
                     .max() ?? 0
             }
-            let reaches = books.indices.dropLast()
+            let reaches =
+                landing
                 .map { book in
                     ([books[book].from.rotation]
                         + Self.hoverTurns(book, from: books[book].from.rotation))
@@ -274,8 +278,10 @@ extension DominoFinale {
                 hover.translation.y += floor - lowest
                 return hover
             }
-            hovers[last].translation +=
-                Self.slide(lying[last], clearOf: lying.dropLast())
+            if holdsLast {
+                hovers[last].translation +=
+                    Self.slide(lying[last], clearOf: lying.dropLast())
+            }
             let float = DominoFinale.floatHeight
             let ramp = Self.ramp(under: Self.under(lying), skipping: last)
             for book in books.indices { hovers[book].translation.y += ramp[book] }
@@ -302,15 +308,17 @@ extension DominoFinale {
             var field = Field(count: count)
             for book in books.indices { field.set(Track(still: hovering[book]), for: book) }
             var planned = [Flight?](repeating: nil, count: count)
-            planned[last] = Flight(
-                from: books[last].from, hover: hovers[last], to: books[last].to,
-                drift: .infinity, hop: .infinity, lands: .infinity, escape: .zero, glide: 0,
-                bow: 0, pace: 1, slides: true, float: float)
+            if holdsLast {
+                planned[last] = Flight(
+                    from: books[last].from, hover: hovers[last], to: books[last].to,
+                    drift: .infinity, hop: .infinity, lands: .infinity, escape: .zero, glide: 0,
+                    bow: 0, pace: 1, slides: true, float: float)
+            }
             // The books fly one at a time into the plan, each as soon as its way meets none of
             // the books planned before it: the first book ready whose place's books have been
             // planned goes next. Each slides out from over the books still hovering, toward its
             // place.
-            var left = Set(books.indices.dropLast())
+            var left = Set(landing)
             var deferred = Set<Int>()
             while !left.isEmpty {
                 let free = left.filter { book in rests[book].allSatisfy { planned[$0] != nil } }
@@ -322,7 +330,7 @@ extension DominoFinale {
                 else { break }
                 let staying =
                     books.indices.filter { $0 != book && planned[$0] == nil }
-                    .map { hovering[$0] } + [hovering[last]]
+                    .map { hovering[$0] } + (holdsLast ? [hovering[last]] : [])
                 let toward =
                     SIMD2(books[book].to.translation.x, books[book].to.translation.z)
                     - SIMD2(hovers[book].translation.x, hovers[book].translation.z)
@@ -465,12 +473,14 @@ extension DominoFinale {
                 }
             }
             var tracks = books.indices.map(track)
-            // No book hovers over or under the last book, which rises beside the cloud.
+            // No book hovers over or under the last book, which rises beside the cloud, when
+            // there is one (`sliding` is -1 when every book lands).
             let beside =
-                DominoSetup.Footprint(
+                books.indices.contains(last)
+                ? DominoSetup.Footprint(
                     DominoSetup.Box(hovers[last], size: books[last].size)
                 )
-                .grown(by: 0.02)
+                .grown(by: 0.02) : nil
             for book in books.indices.sorted(by: { unit($0, 18) < unit($1, 18) }) where book != last
             {
                 let from = books[book].from
@@ -534,9 +544,10 @@ extension DominoFinale {
                     .first { hover in
                         hovers[book] = hover
                         guard
-                            !beside.overlaps(
-                                DominoSetup.Footprint(
-                                    DominoSetup.Box(hover, size: books[book].size)))
+                            beside?
+                                .overlaps(
+                                    DominoSetup.Footprint(
+                                        DominoSetup.Box(hover, size: books[book].size))) != true
                         else { return false }
                         return shares.indices.allSatisfy { step in
                             let mine = box(book, shares[step])

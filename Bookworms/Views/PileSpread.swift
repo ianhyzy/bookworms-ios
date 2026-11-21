@@ -33,9 +33,10 @@ struct PileSpread: Sendable {
     /// books' ends, where a book that rests on another tilts least. Rows a frame has more room
     /// for stand at most the upper bound apart and leave margins.
     static let rowPitch: ClosedRange<Float> = 0.9...1.08
-    /// The rows that go down first take books thicker than this, 2.5 cm, only once thinner books
-    /// run out, since a book that rests along one side of a thicker one tilts steeply.
-    static let thickBook: Float = 0.25
+    /// The rows that go down first take books thicker than this, 4 cm, about 600 pages, only
+    /// once thinner books run out, since a book that rests along one side of a thicker one
+    /// tilts steeply.
+    static let thickBook: Float = 0.4
     /// The most a book turns about the vertical, in radians: about 10 degrees.
     static let maximumTurn: Float = 0.17
     /// A book lying front cover up with its head away from the camera (-z) and its spine on the

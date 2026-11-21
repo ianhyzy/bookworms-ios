@@ -469,7 +469,10 @@ enum DominoSetup {
                 from: righted.upright, to: to, size: size, over: standing + lying)
             var wait: Float = 0
             // The turn up onto the tail is the same whatever the lift and the wait, so once it
-            // has been checked clear, later checks start after it.
+            // has been checked clear, later checks start at its last sample, which keeps every
+            // check on the `checkStep` grid from `time`. A check off that grid could fall either
+            // side of a brief overlap between two books landing side by side.
+            let resumed = time + (righted.rightingTime / checkStep).rounded(.down) * checkStep
             var checked = time
             while true {
                 let move = Move(start: time, from: from, size: size, to: to, lift: lift, wait: wait)
@@ -479,14 +482,14 @@ enum DominoSetup {
                     // A book that meets a moving book while it turns up, or while it stands,
                     // cannot wait it out where it stands.
                     guard when >= move.leaves, wait < longestWait else { return nil }
-                    checked = move.start + move.rightingTime
+                    checked = resumed
                     wait = min(wait + waitStep, longestWait)
                 case .standing(let when):
                     // Nor can a higher arc clear a book its turn meets.
                     guard when >= move.start + move.rightingTime, lift < lifts.upperBound else {
                         return nil
                     }
-                    checked = move.start + move.rightingTime
+                    checked = resumed
                     // Half again as high, at least 0.75 higher, so few checks reach the top.
                     lift = min(lift + max(0.75, lift / 2), lifts.upperBound)
                 }

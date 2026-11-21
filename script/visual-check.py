@@ -122,7 +122,7 @@ DETAILS = [Shot("flight", ["-BookwormsShelfMode", "stack", "-BookwormsStackStyle
 # A fixed time frame shows the same books before and after a change to the default one.
 # The other launches cover what the first can't show: a period's name as its books fall, the
 # gather that a double tap on the bare desk starts, the time frame Desk opens on by default, and
-# a lifted book's details with the Back that fades them and returns the book.
+# a lifted book's details with the Back that fades them and returns the book, and **Arrange**.
 DESK = [
     Shot("drop", ["-BookwormsShelfMode", "pile", "-BookwormsPileFrame", "year:2025"], 35, motion=True),
     Shot("months", ["-BookwormsShelfMode", "pile", "-BookwormsPileFrame", "year:2025",
@@ -132,9 +132,22 @@ DESK = [
     Shot("default", ["-BookwormsShelfMode", "pile"], 30),
     Shot("back", ["-BookwormsShelfMode", "pile", "-BookwormsPileFrame", "year:2025", "-BookwormsOpenBook", "buried",
                   "-BookwormsPileBack", "2"], 25, motion=True),
+] + [
+    # **Arrange**'s shapes, from a year's pile. Every book's shape plans too slowly in a Debug
+    # build to land within a shot.
+    Shot(shape, ["-BookwormsShelfMode", "pile", "-BookwormsPileFrame", "year:2025",
+                 "-BookwormsPileArrange", shape], 35, motion=True)
+    for shape in ("cube", "pyramid", "wall")
 ]
 DOMINOES = [Shot("run", ["-BookwormsTab", "desk", "-BookwormsSetUpDominoes", "YES", "-BookwormsDominoPush", "3",
                          "-BookwormsPileFrame", "month:2025-8"], 60, motion=True)]
+# The Mac also plays the run in the window's shape (**Video**, `DominoVideoFrame`), and saves
+# the recorded video's last frame.
+MAC_DOMINOES = DOMINOES + [
+    Shot("window", [*DOMINOES[0].arguments, "-BookwormsDominoVideoFrame", "window"], 60, motion=True),
+    Shot("window-video", [*DOMINOES[0].arguments, "-BookwormsDominoVideoFrame", "window",
+                          "-BookwormsDominoVideo", "YES"], 75, file="domino-video-debug.png"),
+]
 # The Spines tab with a working sign-in, then, for the iPhone, with its toolbar's account
 # control as it shows no sign-in, a rejected one, and a library that failed to download.
 SPINES = [Shot("tab", ["-BookwormsTab", "spines"], 20)] + [
@@ -169,7 +182,7 @@ SHOTS = {
         "library": LIBRARY,
         "details": DETAILS,
         "desk": DESK,
-        "dominoes": DOMINOES,
+        "dominoes": MAC_DOMINOES,
         "share": [Shot("studio", ["-BookwormsShareTemplate", "yearInBooks"], 40)],
         "spines": SPINES[:1],
         "account": SIDEBAR,
@@ -401,9 +414,13 @@ def forget_mac_copy():
 
 
 def capture_mac(app, home, helper, shot, book, prefix):
-    """Launches the Mac copy for one shot and photographs its window: `<prefix>.png` and, for
-    motion, `<prefix>-motion.png`, eight pictures taken at even intervals."""
+    """Launches the Mac copy for one shot and photographs its window: `<prefix>.png`, or the
+    shot's `file` in place of it, and, for motion, `<prefix>-motion.png`, eight pictures taken at
+    even intervals."""
     forget_mac_copy()
+    written = home / "Library/Caches/Bookworms" / shot.file if shot.file else None
+    if written:
+        written.unlink(missing_ok=True)
     arguments = ["-BookwormsPreviewFolder", "preview", "-ApplePersistenceIgnoreState", "YES",
                  "-BookwormsTips", "hide", *[argument.format(book=book) for argument in shot.arguments]]
     process = subprocess.Popen([app / "Contents/MacOS/Bookworms", *arguments],
@@ -417,7 +434,15 @@ def capture_mac(app, home, helper, shot, book, prefix):
             time.sleep(shot.wait / 8)
             if shot.motion:
                 photograph(process.pid, shot.window, helper, still)
-        photograph(process.pid, shot.window, helper, prefix.with_name(prefix.name + ".png"))
+        picture = prefix.with_name(prefix.name + ".png")
+        if written:
+            if written.exists():
+                shutil.copy(written, picture)
+            # A video's still keeps its movie beside it.
+            if (movie := written.with_suffix(".mp4")).exists():
+                shutil.copy(movie, picture.with_suffix(".mp4"))
+        else:
+            photograph(process.pid, shot.window, helper, picture)
         tile([still for still in stills if still.exists()], prefix.with_name(prefix.name + "-motion.png"),
              scratch, "4x2")
     finally:

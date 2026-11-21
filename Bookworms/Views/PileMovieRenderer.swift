@@ -27,7 +27,7 @@ extension PileSnapshotRenderer {
     /// pixel size of `aspect`, with the knocks of their landings.
     ///
     /// The books, the 150-book limit, the heading, the credit, the lamp-lit table, and the
-    /// camera are those of `render(books:title:aspect:seed:username:model:)`, and the render
+    /// camera are those of `render(books:title:aspect:seed:arrangement:username:model:)`, and the render
     /// takes its turn with images: one pile renders at a time, and the live pile steps out
     /// meanwhile. Each book falls from behind the heading straight onto its place in the image's
     /// spread, in the order the books go down, so the last frame is the image (see
@@ -427,8 +427,10 @@ struct FrameTarget {
         }
     }
 
-    /// The frame in `buffer`, which `read(after:before:)` copied, as an image tagged Display
-    /// P3: opaque, or with `alpha` premultiplied, for a render over a clear background.
+    /// The frame in `buffer`, which `read(after:before:)` copied, as an image: opaque, or with
+    /// `alpha` premultiplied, for a render over a clear background. The texture is
+    /// `bgra8Unorm_srgb`, and `RealityRenderer` writes Display P3 primaries with the sRGB
+    /// transfer curve, so the image is tagged P3.
     ///
     /// - Throws: `PileSnapshotError` when the frame is one flat color (`isBlank`), as a
     ///   renderer that drew nothing leaves it, or the image cannot be made.

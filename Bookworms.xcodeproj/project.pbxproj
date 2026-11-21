@@ -30,6 +30,8 @@
 		A85F3FA6B9D0483278C2805A /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				"Bookworms-macOS.entitlements",
+				Bookworms.entitlements,
 				Info.plist,
 			);
 			target = 1899B9D397A348F940FF9909 /* Bookworms */;
@@ -134,7 +136,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 1430;
+				LastUpgradeCheck = 1600;
 				TargetAttributes = {
 					1899B9D397A348F940FF9909 = {
 						DevelopmentTeam = KSZ7QR8Y88;

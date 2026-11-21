@@ -31,16 +31,14 @@ final class DominoTests: XCTestCase {
         // Every size `BookShape` makes for a 2:3 cover, from every page count and variety.
         var sizes = Set<SIMD3<Float>>()
         for pages in 100...1_400 {
-            for x: Float in [0, 0.5, 1] {
-                for y: Float in [0, 0.5, 1] {
-                    let size = BookShape.size(pages: pages, coverAspect: 2 / 3, variety: [x, y])
-                    sizes.insert(BookShape(size: size, binding: .paperback).size)
-                }
+            for variety: Float in [0, 0.5, 1] {
+                let size = BookShape.size(pages: pages, coverAspect: 2 / 3, variety: variety)
+                sizes.insert(BookShape(size: size, binding: .paperback).size)
             }
         }
-        // From 1.7 tall to doorstoppers 2.8 tall and 0.52 thick.
+        // From 1.7 tall to doorstoppers 2.8 tall and 0.88 thick.
         XCTAssertGreaterThan(sizes.count, 60)
-        XCTAssertTrue(sizes.contains { $0.y > 2.79 && $0.z > 0.51 })
+        XCTAssertTrue(sizes.contains { $0.y > 2.79 && $0.z > 0.87 })
         for a in sizes {
             // Wider than the 15 percent that the closest books once stood apart.
             XCTAssertEqual(DominoLayout.gap(height: a.y), a.y * 0.3, accuracy: 1e-5)
@@ -539,7 +537,9 @@ final class DominoTests: XCTestCase {
         XCTAssertEqual(
             path.point(at: path.start(ofRow: 1) + 10).position.x, -8, accuracy: 1e-4)
         XCTAssertEqual(path.point(at: path.start(ofRow: 2)).position.x, -8, accuracy: 1e-4)
-        XCTAssertEqual(path.point(at: path.start(ofRow: 2)).position.y, 8, accuracy: 1e-4)
+        XCTAssertEqual(
+            path.point(at: path.start(ofRow: 2)).position.y, 4 * DominoLayout.turnRadius,
+            accuracy: 1e-4)
         // Past the given rows, each is as long as the last and alternates between its ends.
         XCTAssertEqual(path.rowLength(5), 6)
         XCTAssertEqual(path.point(at: path.start(ofRow: 3)).position.x, -2, accuracy: 1e-4)
@@ -1348,6 +1348,33 @@ final class DominoTests: XCTestCase {
         let squeezed = DominoFinale.area(in: narrow)
         XCTAssertEqual(squeezed.maxX, 700, accuracy: 1e-9)
         XCTAssertEqual(DominoFinale.spreadRect(in: narrow).minX, 316, accuracy: 1e-9)
+    }
+
+    func testAWindowFrameRecordsTheWholeView() {
+        // The Mac's default window with the sidebar, recording its own shape.
+        let mac = PileViewport(
+            size: CGSize(width: 1_180, height: 820),
+            insets: EdgeInsets(top: 52, leading: 144, bottom: 0, trailing: 0),
+            videoFrame: .window)
+        // The longer side is 1,920 pixels, and 820 × 1,920 / 1,180 rounds to 1,334, even.
+        XCTAssertEqual(DominoRecorder.frameSize(for: mac), CGSize(width: 1_920, height: 1_334))
+        XCTAssertEqual(DominoRecorder.crop(in: mac), CGRect(x: 0, y: 0, width: 1_180, height: 820))
+        // The run plays in the whole view, so no side darkens.
+        XCTAssertEqual(DominoFinale.area(in: mac), CGRect(x: 0, y: 0, width: 1_180, height: 820))
+        // The heading keeps the size a story of the window's height gives it.
+        XCTAssertEqual(
+            DominoFinale.spreadRect(in: mac).minY, 52 + 820 * 9 / 16 * 0.28, accuracy: 1e-9)
+        // A window resized while recording keeps the frame's shape, at the new view's height.
+        var taller = mac
+        taller.size = CGSize(width: 1_000, height: 820)
+        let crop = DominoRecorder.crop(in: taller, size: CGSize(width: 1_920, height: 1_334))
+        XCTAssertEqual(crop.width / crop.height, 1_920 / 1_334, accuracy: 1e-9)
+        XCTAssertEqual(crop.width, 1_000)
+        // Portrait still records a story.
+        var portrait = mac
+        portrait.videoFrame = .portrait
+        XCTAssertEqual(DominoRecorder.frameSize(for: portrait), ShareAspect.story.size)
+        XCTAssertEqual(DominoRecorder.crop(in: portrait).width, 461.25, accuracy: 1e-9)
     }
 
     func testTheOverviewShowsTheWholeChainInTheRecordingsFrameInAWideView() throws {

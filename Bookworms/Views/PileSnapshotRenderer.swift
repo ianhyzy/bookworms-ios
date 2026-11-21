@@ -45,8 +45,10 @@ enum PileSnapshotRenderer {
     /// cover shows, and the camera fits them between the heading and the bottom margin, closer
     /// for fewer books, with sharper textures. `seed` picks the arrangement. Spine fonts load
     /// first, for as long as their downloads take (see `SpineFonts.load(_:)`), then covers, for
-    /// up to 10 seconds. A cancelled render stops waiting for fonts and covers at once. The
-    /// renderer, the scene, and their textures are released when this returns.
+    /// up to 10 seconds. A cancelled render stops waiting for fonts and covers at once.
+    /// `arrangement` puts the books it holds at the poses the reader left them in
+    /// (`ArrangeablePile`), and the camera still frames the spread. The renderer is released
+    /// when this returns; the scene and its textures live as long as the returned pile.
     ///
     /// One image renders at a time: a call waits for the renders that asked first, including
     /// one that is still finishing its frame after its task was cancelled. `isRendering` stays
@@ -56,26 +58,42 @@ enum PileSnapshotRenderer {
     /// - Throws: `CancellationError` when the task is cancelled, and `PileSnapshotError` when
     ///   Metal fails or the rendered frame is one flat color.
     ///
-    /// Returns the image and the books whose covers missed the wait, which show their titles on
-    /// the cloth. Once `waitForCovers(of:among:aspect:model:)` has their covers, drawing the
+    /// Returns the image, the books whose covers missed the wait, which show their titles on
+    /// the cloth, and the pile the image shows, which a preview can let the reader rearrange.
+    /// Once `waitForCovers(of:among:aspect:model:)` has the late books' covers, drawing the
     /// image again shows them.
     static func render(
         books: [CloudBook], title: String, aspect: ShareAspect, seed: UInt64,
-        username: String? = nil, model: AppModel
-    ) async throws -> (image: UIImage, late: [CloudBook]) {
+        arrangement: [Int: Transform]? = nil, username: String? = nil, model: AppModel
+    ) async throws -> (image: UIImage, late: [CloudBook], pile: ArrangeablePile) {
         try await claim()
         defer { release() }
         let shown = Array(books.prefix(maximumBooks))
         let layout = PileSnapshotLayout(aspect: aspect, count: shown.count)
-        let (pile, late) = try await renderPile(shown, layout: layout, seed: seed, model: model)
-        let renderer = ImageRenderer(
-            content: PileSnapshotCard(
+        let (pile, late, scene) = try await renderPile(
+            shown, layout: layout, seed: seed, arrangement: arrangement, model: model)
+        let card = { (pile: CGImage?) in
+            PileSnapshotCard(
                 pile: pile, title: title, count: books.count, layout: layout, showsCredit: false,
-                username: username))
+                username: username)
+        }
+        let renderer = ImageRenderer(content: card(pile))
         renderer.scale = 1
         renderer.isOpaque = true
         guard let image = renderer.uiImage else { throw PileSnapshotError.drawingFailed }
-        return (image, late)
+        return (image, late, ArrangeablePile(scene: scene, heading: card(nil)))
+    }
+
+    /// `slots`, with each book that `arrangement` holds at its pose there.
+    nonisolated static func arranged(_ slots: [PileSlot], by arrangement: [Int: Transform]?)
+        -> [PileSlot]
+    {
+        guard let arrangement else { return slots }
+        return slots.map { slot in
+            var slot = slot
+            if let pose = arrangement[slot.book.id] { slot.transform = pose }
+            return slot
+        }
     }
 
     /// Waits until the covers of `books`, which an image of `count` books at `aspect` drew
@@ -84,15 +102,11 @@ enum PileSnapshotRenderer {
     static func waitForCovers(
         of books: [CloudBook], among count: Int, aspect: ShareAspect, model: AppModel
     ) async {
-        let scale = PileSnapshotLayout(aspect: aspect, count: min(count, maximumBooks))
-            .textureScale
-        let covers = model.covers
-        await withTaskGroup(of: Void.self) { group in
-            for book in books {
-                let pixels = BookFactory.coverPixels(for: book, textureScale: scale)
-                group.addTask { _ = await covers.image(for: book, maximumPixelSize: pixels) }
-            }
-        }
+        await BookFactory.waitForCovers(
+            of: books,
+            textureScale: PileSnapshotLayout(aspect: aspect, count: min(count, maximumBooks))
+                .textureScale,
+            model: model)
     }
 
     /// Waits for the render in progress and the renders that asked earlier, if any, then sets
@@ -141,12 +155,12 @@ enum PileSnapshotRenderer {
     /// Lays the books out, then renders one frame and copies it into a `CGImage`.
     ///
     /// RealityKit renders into a private texture, which a blit copies into memory once the
-    /// render signals its event (`FrameTarget`). The texture is `bgra8Unorm_srgb`, and
-    /// `RealityRenderer` writes Display P3 primaries with the sRGB transfer curve, so the image is
-    /// tagged P3. The books are static bodies, so the few steps before the frame move nothing.
+    /// render signals its event (`FrameTarget`). The books are static bodies, so the few steps
+    /// before the frame move nothing.
     private static func renderPile(
-        _ books: [CloudBook], layout: PileSnapshotLayout, seed: UInt64, model: AppModel
-    ) async throws -> (image: CGImage, late: [CloudBook]) {
+        _ books: [CloudBook], layout: PileSnapshotLayout, seed: UInt64,
+        arrangement: [Int: Transform]?, model: AppModel
+    ) async throws -> (image: CGImage, late: [CloudBook], scene: BookPileScene) {
         let width = Int(layout.aspect.size.width)
         let height = Int(layout.aspect.size.height)
         let target = try FrameTarget(width: width, height: height)
@@ -160,7 +174,7 @@ enum PileSnapshotRenderer {
         let (spread, late) = await scene.prepareSpread(
             books, in: layout.pileRect, of: layout.aspect.size, seed: seed, model: model)
         try Task.checkCancellation()
-        scene.place(spread.slots, mode: .static)
+        scene.place(arranged(spread.slots, by: arrangement), mode: .static)
         for _ in 0..<3 { try renderer.update(1.0 / 60) }
         #if DEBUG
             scene.logCovers("image seed \(seed), \(books.count) books")
@@ -178,7 +192,7 @@ enum PileSnapshotRenderer {
                     layout: layout, label: "pixels seed \(seed), \(books.count) books")
             }
         #endif
-        return (image, late)
+        return (image, late, scene)
     }
 
     #if DEBUG
@@ -389,7 +403,7 @@ extension PileCamera {
 /// The share image: the rendered pile under its heading, with the credit in the bottom margin.
 struct PileSnapshotCard: View {
     /// The rendered pile, or `nil` for the heading and credit alone, over a clear background,
-    /// which a pile video draws over each frame.
+    /// which a pile video draws over each frame and a preview over the pile the reader moves.
     let pile: CGImage?
     let title: String
     let count: Int

@@ -56,6 +56,8 @@ struct DominoesView: View {
     @AppStorage(ImpactSound.storageKey) private var sounds = true
     /// Set by **Camera** in the desk's options menu.
     @AppStorage(DominoCameraMode.storageKey) private var cameraMode = DominoCameraMode.overview
+    /// Set by **Video** in the desk's options menu, on the Mac only.
+    @AppStorage(DominoVideoFrame.storageKey) private var videoFrame = DominoVideoFrame.portrait
     @State private var viewport: PileViewport?
     /// The scene's frame in global coordinates, which the details' book frame converts from.
     @State private var canvas = CGRect.zero
@@ -142,8 +144,15 @@ struct DominoesView: View {
                         height: proxy.size.height + insets.top + insets.bottom),
                     insets: insets)
             } action: {
-                viewport = $0
+                var framed = $0
+                framed.videoFrame = DominoVideoFrame.chosen
+                viewport = framed
                 desk.viewport = $0
+            }
+            // The chain stands where the frame shows it, so a new frame sets it up again.
+            .onChange(of: videoFrame) {
+                viewport?.videoFrame = DominoVideoFrame.chosen
+                desk.setUpDominoesAgain()
             }
             .task(
                 id: SetUpRequest(
@@ -265,18 +274,16 @@ struct DominoesView: View {
     /// The heading over the gathered books, in the share images' style, once every book lies
     /// in the spread; it fades in, and stays until **Set up again**. It spans the spread's area
     /// (`DominoFinale.area(in:)`), the whole view on an iPhone and the recording's 9:16 frame in
-    /// a wider view, so it shows where and as large as the video shows it. The area is that of
-    /// the view the recording frames (`framedViewport`), so the heading stays with the darkened
-    /// sides and the spread after the window is resized.
+    /// a wider view, centered over the books, so it shows where and as large as the video shows
+    /// it. The area is that of the view the recording frames (`framedViewport`), so the heading
+    /// stays with the darkened sides and the spread after the window is resized.
     @ViewBuilder private var heading: some View {
         if scene.status.phase == .finished, details.lift == nil, let viewport = framedViewport {
             let area = DominoFinale.area(in: viewport)
             DominoFinaleCard(
                 title: title, count: books.count, pages: DominoFinaleCard.pages(of: books),
-                scale: area.width / ShareAspect.story.size.width,
-                insets: EdgeInsets(
-                    top: viewport.insets.top + DominoFinaleCard.liveTop - area.minY, leading: 0,
-                    bottom: 0, trailing: 0)
+                scale: DominoFinale.headingScale(in: area.size),
+                insets: DominoFinaleCard.insets(in: viewport, frame: area)
             )
             .frame(width: area.width, height: area.height)
             .offset(x: area.minX, y: area.minY)
@@ -289,8 +296,9 @@ struct DominoesView: View {
         }
     }
 
-    /// In a view wider than 9:16, such as a Mac's window, darkens the view on either side of the
-    /// 9:16 frame that the video and **Image** show (`DominoRecorder.crop(in:)`), in which the
+    /// In a view wider than 9:16 that records a story, such as a Mac's window with **Video** on
+    /// **Portrait**, darkens the view on either side of the 9:16 frame that the video and
+    /// **Image** show (`DominoRecorder.crop(in:)`), in which the
     /// chain sets up, falls, and gathers (`DominoFinale.area(in:)`), from the setup on. It
     /// frames the view the recording frames (`framedViewport`), so its edges are the video's,
     /// also after the window is resized (`DominoRecorder.layout`).
