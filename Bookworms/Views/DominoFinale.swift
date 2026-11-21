@@ -129,7 +129,7 @@ enum DominoFinale {
 
     /// Where the spread lays out its books in a view of `viewport`, in points: across
     /// `clearArea(in:)`, 16 points in from its sides, below the heading's room
-    /// (`headingRoom(width:)`), and 24 points above the bottom bar.
+    /// (`headingRoom(in:)`), and 24 points above the bottom bar.
     static func spreadRect(in viewport: PileViewport) -> CGRect {
         let area = area(in: viewport)
         let clear = clearArea(in: viewport)
