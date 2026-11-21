@@ -18,6 +18,9 @@ struct SharedFiles: Identifiable {
     /// Text to send with the files, such as a comparison's invitation or an image's Hardcover
     /// links, which apps that take text, such as Messages, include.
     var text: String?
+    /// The app's own actions that the iPhone's share sheet lists below the system's, such as
+    /// **View in my room**. The Mac's picker lists none.
+    var actions: [ShareAction] = []
     /// The files followed by `text`, as the iPhone's share sheet takes them.
     var items: [Any] { urls + (text.map { [$0] } ?? []) }
 
@@ -57,6 +60,15 @@ struct SharedFiles: Identifiable {
     }
 }
 
+/// One of the app's own actions in the iPhone's share sheet. Choosing it closes the sheet and
+/// ends it with `ShareOutcome.action(id)`, so the view that opened the sheet acts once it has
+/// closed.
+struct ShareAction: Equatable {
+    let id: String
+    let title: String
+    let systemImage: String
+}
+
 /// How a share sheet ended.
 enum ShareOutcome: Equatable {
     /// **Save Image** or **Save Video** finished.
@@ -69,12 +81,20 @@ enum ShareOutcome: Equatable {
     case cancelled
     /// The activity failed; the message says so in a few words.
     case failed(String)
+    /// The reader chose the app's own action with this ID (`ShareAction`).
+    case action(String)
 
     #if os(iOS)
-        /// The outcome of `UIActivityViewController`'s completion handler. An error that reports a
-        /// cancel counts as a cancel.
-        init(activity: UIActivity.ActivityType?, completed: Bool, error: (any Error)?) {
-            if let error, (error as? CocoaError)?.code != .userCancelled {
+        /// The outcome of `UIActivityViewController`'s completion handler. A finished activity
+        /// whose type is one of `actions`' IDs is that action, and an error that reports a cancel
+        /// counts as a cancel.
+        init(
+            activity: UIActivity.ActivityType?, completed: Bool, error: (any Error)?,
+            actions: [ShareAction] = []
+        ) {
+            if completed, let activity, actions.contains(where: { $0.id == activity.rawValue }) {
+                self = .action(activity.rawValue)
+            } else if let error, (error as? CocoaError)?.code != .userCancelled {
                 self = .failed(
                     activity == .saveToCameraRoll ? "Couldn't save to Photos" : "Couldn't share")
             } else if !completed {
@@ -100,7 +120,7 @@ enum ShareOutcome: Equatable {
         #else
             case .shared: Toast(message: "Shared", systemImage: "checkmark.circle.fill")
         #endif
-        case .cancelled: nil
+        case .cancelled, .action: nil
         case .failed(let message): .failure(message)
         }
     }
@@ -262,14 +282,17 @@ extension View {
             guard let files, context.coordinator.presented != files.id else { return }
             context.coordinator.presented = files.id
             let sheet = UIActivityViewController(
-                activityItems: files.items, applicationActivities: nil)
+                activityItems: files.items,
+                applicationActivities: files.actions.map(ActionActivity.init))
             sheet.popoverPresentationController?.sourceView = host.view
             let binding = $files
             let toasts = showsToast ? model.toasts : nil
             let onComplete = onComplete
             sheet.completionWithItemsHandler = { activity, completed, _, error in
                 if let error { Self.log.error("Sharing failed: \(error)") }
-                let outcome = ShareOutcome(activity: activity, completed: completed, error: error)
+                let outcome = ShareOutcome(
+                    activity: activity, completed: completed, error: error,
+                    actions: files.actions)
                 MainActor.assumeIsolated {
                     if let toast = outcome.toast { toasts?.show(toast) }
                     binding.wrappedValue = nil
@@ -278,5 +301,23 @@ extension View {
             }
             host.present(sheet, animated: true)
         }
+    }
+
+    /// A `ShareAction` in the share sheet. It does nothing itself: the sheet closes and its
+    /// completion reports the action (`ShareOutcome.action`).
+    private final class ActionActivity: UIActivity {
+        private let action: ShareAction
+
+        init(_ action: ShareAction) {
+            self.action = action
+            super.init()
+        }
+
+        override class var activityCategory: UIActivity.Category { .action }
+        override var activityType: UIActivity.ActivityType? { .init(action.id) }
+        override var activityTitle: String? { action.title }
+        override var activityImage: UIImage? { UIImage(systemName: action.systemImage) }
+        override func canPerform(withActivityItems activityItems: [Any]) -> Bool { true }
+        override func perform() { activityDidFinish(true) }
     }
 #endif

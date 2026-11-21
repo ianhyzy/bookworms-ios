@@ -378,12 +378,8 @@ struct ShareInput {
     /// The card's color family, from the drawn books' spine colors.
     var theme: ShareTheme { ShareTheme(looks: books.map(look(for:))) }
 
-    /// The frame's name, such as "2025" or "August 2025", or for a lifetime the years the books
-    /// span, such as "2019–2026": the years they were finished in, or for Dropped, dropped in.
-    var period: String {
-        guard frame == .lifetime else { return frame.title }
-        return TimeFrame.yearSpan(of: books, dropped: template == .dropped) ?? ""
-    }
+    /// The frame's name for the card's books (`TimeFrame.period(of:dropped:)`).
+    var period: String { frame.period(of: books, dropped: template == .dropped) }
 
     /// Draws the card at exactly `aspect.size` pixels, without the credit, which sharing adds
     /// (`UIImage.withShareCredit()`). Piles need `PileSnapshotRenderer` instead; here they draw
