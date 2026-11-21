@@ -24,7 +24,7 @@ struct DroppedCard: View {
     /// The most books the card draws. Up to about this many books of typical thickness, two
     /// flat stacks fill the card's width before its height in every aspect, so spines keep the
     /// largest lettering their length allows; each book past it would thin every spine.
-    static let maximumBooks = 40
+    static let maximumBooks = 26
 
     /// The newest `maximumBooks` of the dropped books, which the card draws.
     var shown: [CloudBook] { Array(input.books.prefix(Self.maximumBooks)) }

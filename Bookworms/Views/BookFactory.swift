@@ -21,9 +21,9 @@ import SwiftUI
 /// At a `textureScale` of 1, a book at least 24 cm long has a cover of at most 224 pixels on
 /// its long side, cropped to its front board's 0.5 to 0.85 aspect: 149 × 224 × 4 bytes
 /// (178 KB with mipmaps) for a 2:3 cover, and at most 192 × 224 (229 KB). Its spine is 384
-/// pixels long and as thick as the book is in proportion, at most a sixth of its length
-/// (131 KB). Three hundred books of a typical library's sizes therefore need about 60 MB, and
-/// at most 108 MB. Each texture has one material. Books share the page-edge texture, page and
+/// pixels long and as thick as the book is in proportion, at most a third of its length
+/// (262 KB). Three hundred books of a typical library's sizes therefore need about 70 MB, and
+/// at most 147 MB. Each texture has one material. Books share the page-edge texture, page and
 /// cloth materials by color, and meshes and collision boxes by shape, which adds about 25 KB
 /// per distinct shape.
 @MainActor

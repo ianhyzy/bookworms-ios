@@ -382,7 +382,10 @@ private struct DeskBar: ViewModifier {
 
     /// Whether **Dominoes** can set up the desk's books, which finish dropping first, since
     /// the books on the desk set up the chain.
-    private var canSwitch: Bool { isDominoes || (canSetUp && !desk.pile.status.isDropping) }
+    private var canSwitch: Bool {
+        isDominoes
+            || (canSetUp && !desk.pile.status.isDropping && !desk.pile.status.isArranging)
+    }
 
     /// **Dominoes** in the Desk scene, and **Back to desk** in its place once the dominoes
     /// stand. The Mac's roomier toolbar shows their names beside their symbols.

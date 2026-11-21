@@ -147,11 +147,12 @@ enum DominoLayout {
     /// The days at and past which a cobweb is as dense as it gets (see `cobweb(days:)`).
     static let densestCobwebDays = 240
     /// The turns' radius, half the distance between rows. It exceeds half the widest book, so
-    /// books on a turn keep their inner corners apart (see `turnSpacing`).
-    static let turnRadius: Float = 2
+    /// books on a turn keep their inner corners apart (see `turnSpacing`), by enough that the
+    /// shortest book still reaches the thickest one after it across the wider gap a turn gives.
+    static let turnRadius: Float = 2.5
     static let shortestRow: Float = 6
     /// How deep the rows may reach, and the longest a row may be. The longest chain, 300 of the
-    /// thickest and longest books, runs about 410 units, which fits in rows well short of this,
+    /// thickest and longest books, runs about 520 units, which fits in rows well short of this,
     /// so the path and the books that fall past its ends stay on the 90-unit table.
     static let deepest: Float = 72
     /// The space a turn keeps between the inner corners of neighboring books.
