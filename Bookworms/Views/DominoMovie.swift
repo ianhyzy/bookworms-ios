@@ -14,9 +14,9 @@ import os
 /// The heading over a dominoes finale, in the share images' style: the time frame, and the
 /// books and their pages, such as "39 books · 18,683 pages". `scale` sizes it from the
 /// 1080-pixel-wide share image, at 1, down to the live view, and `insets` place it below the
-/// bars and across the part of its frame that they leave clear
-/// (`insets(in:frame:)`). A recording of the run draws the same heading where the live view shows it
-/// (`DominoRecorder`), and adds the credit.
+/// bars and across the part of its frame that they leave clear (`insets(in:frame:)`). A
+/// recording of the run draws the same heading where the live view shows it (`DominoRecorder`),
+/// and adds the credit.
 struct DominoFinaleCard: View {
     /// How far below the time frame button the live view shows the heading, in points.
     nonisolated static let liveTop: CGFloat = 8
