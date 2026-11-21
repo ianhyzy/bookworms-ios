@@ -84,8 +84,9 @@ struct ShareStudioView: View {
     /// Whether the last render failed, so no image is shown or shared.
     @State private var failed = false
     @State private var showsAccount = false
-    @State private var filmsPile = false
-    /// The Pile template's books and heading when **Video** was tapped, which the video films.
+    @State private var filmsVideo = false
+    /// The Desk or Tall Stack template's books and heading when **Video** was tapped, which the
+    /// video films.
     @State private var film: (books: [CloudBook], title: String) = ([], "")
     /// The files the share sheet offers while it is open.
     @State private var files: SharedFiles?
@@ -286,6 +287,7 @@ struct ShareStudioView: View {
         let reader = shownReader
         var books = drawn.books
         if template == .pile { books = Array(books.prefix(PileSnapshotRenderer.maximumBooks)) }
+        if template == .tower { books = BookTower.shown(books) }
         if template == .dropped { books = Array(books.prefix(DroppedCard.maximumBooks)) }
         // Only the drawn books' designs, so a design saved for another book changes nothing.
         let designs = books.map { model.design(for: $0) }
@@ -331,10 +333,10 @@ struct ShareStudioView: View {
             // The commands dim without an image, while a newer one is on its way, and while one
             // of the tab's sheets, a window of its own, covers the image.
             let shownCommands =
-                image == nil || isPending || filmsPile || showsAccount || !exports ? nil : commands
+                image == nil || isPending || filmsVideo || showsAccount || !exports ? nil : commands
             // **Show Inspector** needs only the studio, image or not.
             let inspectorCommand =
-                model.library == nil || filmsPile || showsAccount ? nil : commands?.inspector
+                model.library == nil || filmsVideo || showsAccount ? nil : commands?.inspector
         #endif
         NavigationStack {
             if model.library == nil {
@@ -379,11 +381,11 @@ struct ShareStudioView: View {
             .quickLookPreview($quickLookURL)
         #endif
         .sheet(isPresented: $showsAccount) { HardcoverAccountView() }
-        .sheet(isPresented: $filmsPile) {
+        .sheet(isPresented: $filmsVideo) {
             NavigationStack {
                 PileVideoSheet(
                     books: film.books, title: film.title, aspect: aspect, seed: seed,
-                    showsClose: true)
+                    template: template, showsClose: true)
             }
             .presentationSizing(.page)
         }
@@ -916,8 +918,8 @@ struct ShareStudioView: View {
                     }
             }
             if template.rendersScene && isPending {
-                // A scene takes seconds to load its covers and lay its books out.
-                ProgressView(template == .pile ? "Dropping books" : "Weighing books")
+                // A rendered scene takes seconds to load its covers and lay its books out.
+                ProgressView(template.sceneProgressTitle)
                     .padding()
                     .background(.regularMaterial, in: .rect(cornerRadius: 12))
             } else if image == nil {
@@ -1333,19 +1335,21 @@ struct ShareStudioView: View {
         if showsShuffle {
             Button("Shuffle", systemImage: "shuffle") { seed = .random(in: 1 ... .max) }
         }
-        if template == .pile && exports {
-            Button("Video", systemImage: "video") {
-                let frame = shownFrame
-                let books = ShareTemplate.pile.books(from: library, in: frame, direction: direction)
-                let input = ShareInput(
-                    template: .pile, aspect: aspect, books: books, frame: frame,
-                    coverStyle: coverStyle, direction: direction, showsRatings: showsRatings,
-                    seed: seed)
-                film = (books, input.period)
-                filmsPile = true
-            }
-            .disabled(hasNoBooks)
+        if template.hasVideo && exports {
+            Button("Video", systemImage: "video", action: startFilm)
+                .disabled(hasNoBooks)
         }
+    }
+
+    /// Opens the video of the Desk or Tall Stack template's books.
+    private func startFilm() {
+        let frame = shownFrame
+        let books = template.books(from: library, in: frame, direction: direction)
+        let input = ShareInput(
+            template: template, aspect: aspect, books: books, frame: frame,
+            coverStyle: coverStyle, direction: direction, showsRatings: showsRatings, seed: seed)
+        film = (books, input.period)
+        filmsVideo = true
     }
 
     /// Whether **My reading** images can letter the sharer's profile link, which needs the
@@ -1415,6 +1419,20 @@ struct ShareStudioView: View {
             } catch {
                 Self.log.error("The \(template.rawValue) image failed: \(error)")
             }
+        } else if template == .tower {
+            // A tower's covers face up, out of the low camera's view, so a late cover draws
+            // no redraw.
+            do {
+                let tower = try await TowerSnapshotRenderer.render(
+                    books: books, title: input.period, aspect: request.aspect,
+                    seed: request.seed, username: request.username, model: model)
+                try Task.checkCancellation()
+                rendered = tower
+            } catch is CancellationError {
+                return
+            } catch {
+                Self.log.error("The tower image failed: \(error)")
+            }
         } else if template == .checkoutCard {
             // A Checkout Card draws no covers or spines, only its handwriting.
             input.card = request.card
@@ -1462,6 +1480,12 @@ struct ShareStudioView: View {
         #endif
         #if DEBUG
             ShareDebug.write(image)
+            // `-BookwormsPileVideo YES` films the first Desk or Tall Stack image.
+            if PileVideoDebug.opensSheet, film.books.isEmpty, image != nil,
+                template.hasVideo
+            {
+                startFilm()
+            }
             // `-BookwormsShareFullSize YES` shows each image full size, as holding the preview
             // does.
             if UserDefaults.standard.bool(forKey: "BookwormsShareFullSize"), let image {

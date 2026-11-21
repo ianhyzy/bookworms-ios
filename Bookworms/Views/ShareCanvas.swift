@@ -12,6 +12,7 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
     case yearInBooks, topFive, hotTakes, pile, justFinished, review
     case currentlyReading, tasteMatch, bookSwap, seesaw
     case checkoutCard, dropped
+    case tower
 
     var id: Self { self }
 
@@ -29,6 +30,7 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         case .seesaw: "Seesaw"
         case .checkoutCard: "Checkout Card"
         case .dropped: "Dropped"
+        case .tower: "Tall Stack"
         }
     }
 
@@ -46,6 +48,7 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
         case .seesaw: "scalemass"
         case .checkoutCard: "list.bullet.rectangle.portrait"
         case .dropped: "trash"
+        case .tower: "ruler"
         }
     }
 
@@ -53,16 +56,28 @@ enum ShareTemplate: String, CaseIterable, Identifiable {
     /// friends.
     var isSocial: Bool { self == .tasteMatch || self == .bookSwap || self == .seesaw }
 
-    /// Whether a RealityKit scene draws the image (`PileSnapshotRenderer`, `SeesawRenderer`),
-    /// which takes seconds and waits for its own fonts and covers.
-    var rendersScene: Bool { self == .pile || self == .seesaw }
+    /// Whether a RealityKit scene draws the image (`PileSnapshotRenderer`, `SeesawRenderer`,
+    /// `TowerSnapshotRenderer`), which takes seconds and waits for its own fonts and covers.
+    var rendersScene: Bool { self == .pile || self == .seesaw || self == .tower }
+
+    /// What the preview says while a rendered scene's books load and settle.
+    var sceneProgressTitle: String {
+        switch self {
+        case .tower: "Stacking books"
+        case .seesaw: "Weighing books"
+        default: "Dropping books"
+        }
+    }
+
+    /// Whether **Video** films the card's books: the Desk's drop, or the Tall Stack's topple.
+    var hasVideo: Bool { self == .pile || self == .tower }
 
     /// Whether the card features one book, which the reader can choose.
     var isSingleBook: Bool { self == .justFinished || self == .review || self == .currentlyReading }
 
-    /// Whether the card draws covers that can be 3D books or flat. A pile's and a seesaw's books
-    /// are always 3D, and Checkout Card draws no covers.
-    var hasCoverStyle: Bool { self != .pile && self != .seesaw && self != .checkoutCard }
+    /// Whether the card draws covers that can be 3D books or flat. A rendered scene's books are
+    /// always 3D, and Checkout Card draws no covers.
+    var hasCoverStyle: Bool { !rendersScene && self != .checkoutCard }
 
     /// Whether the card shows the reader's ratings, which the studio can hide. Hot Takes is
     /// about ratings, so it always shows them.
@@ -396,9 +411,9 @@ struct ShareCanvas: View {
             case .yearInBooks: YearInBooksCard(input: input)
             case .topFive: TopFiveCard(input: input)
             case .hotTakes: HotTakesCard(input: input)
-            // `PileSnapshotRenderer` draws piles and `SeesawRenderer` seesaws: `ImageRenderer`
-            // cannot capture RealityKit.
-            case .pile, .seesaw: EmptyView()
+            // `PileSnapshotRenderer` draws piles, `SeesawRenderer` seesaws, and
+            // `TowerSnapshotRenderer` towers: `ImageRenderer` cannot capture RealityKit.
+            case .pile, .seesaw, .tower: EmptyView()
             case .justFinished, .currentlyReading: FeaturedBookCard(input: input)
             case .review: ReviewCard(input: input)
             case .tasteMatch: TasteMatchCard(input: input)

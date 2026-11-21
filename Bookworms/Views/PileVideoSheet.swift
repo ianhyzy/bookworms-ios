@@ -10,14 +10,14 @@ import os
     import AppKit
 #endif
 
-/// Films the pile as a six-second video, then shares the MP4, saves it to a file on a Mac, or
-/// saves the clip as a Live Photo.
+/// Films the pile as a six-second video, or a Tall Stack's topple, then shares the MP4, saves it
+/// to a file on a Mac, or saves the clip as a Live Photo.
 ///
 /// **Share desk** pushes it in its own navigation stack, so only one sheet ever shows; the Share
-/// tab's Desk template presents it in a sheet of its own, with `showsClose` on.
+/// tab's Desk and Tall Stack templates present it in a sheet of its own, with `showsClose` on.
 ///
 /// The video renders as soon as the sheet opens, with its progress and its latest frame in the
-/// preview (see `PileSnapshotRenderer.renderMovie`). Pile images and videos take turns in the
+/// preview (see `PileSnapshotRenderer.renderMovie`, `TowerSnapshotRenderer.renderMovie`). Pile images and videos take turns in the
 /// order they start. The screen stays awake while the video renders. When the app stops being
 /// active, the render stops, since iOS suspends the GPU and the encoder in the background; it
 /// starts again when the app is active again, and the seed makes the same clip. Closing the
@@ -37,6 +37,9 @@ struct PileVideoSheet: View {
     let title: String
     let aspect: ShareAspect
     let seed: UInt64
+    /// What the video films: the Desk's pile dropping, or a Tall Stack toppling
+    /// (`TowerSnapshotRenderer.renderMovie`).
+    var template = ShareTemplate.pile
     /// Whether the view is a sheet's root, which closes with **Cancel** or the close button,
     /// rather than pushed, which goes back with the back button, or on a Mac, whose sheets draw
     /// none, with **Back** in the row under the clip.
@@ -83,7 +86,7 @@ struct PileVideoSheet: View {
             actions
         }
         .padding()
-        .navigationTitle("Desk video")
+        .navigationTitle("\(template.title) video")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if showsClose {
@@ -174,11 +177,12 @@ struct PileVideoSheet: View {
             #endif
             if failed {
                 ContentUnavailableView(
-                    "Couldn't film the desk", systemImage: "exclamationmark.triangle",
+                    template == .tower ? "Couldn't film the stack" : "Couldn't film the desk",
+                    systemImage: "exclamationmark.triangle",
                     description: Text(
-                        showsClose
-                            ? "Close this, then try Shuffle or another size."
-                            : "Go back, then try Shuffle or another size."))
+                        "\(showsClose ? "Close this" : "Go back"), then try "
+                            // A tower's arrangement offers no Shuffle.
+                            + (template == .tower ? "another size." : "Shuffle or another size.")))
             } else if player == nil {
                 Group {
                     if let progress {
@@ -188,7 +192,7 @@ struct PileVideoSheet: View {
                             Text(progress.formatted(.percent.precision(.fractionLength(0))))
                         }
                     } else {
-                        ProgressView("Dropping books")
+                        ProgressView(template.sceneProgressTitle)
                     }
                 }
                 .padding()
@@ -219,9 +223,11 @@ struct PileVideoSheet: View {
             defer { application.isIdleTimerDisabled = wasIdleTimerDisabled }
         #endif
         do {
-            let made = try await PileSnapshotRenderer.renderMovie(
-                books: books, title: title, aspect: aspect, seed: seed, model: model,
-                progress: { progress = $0 }, preview: { frame = $0 })
+            let renderMovie =
+                template == .tower
+                ? TowerSnapshotRenderer.renderMovie : PileSnapshotRenderer.renderMovie
+            let made = try await renderMovie(
+                books, title, aspect, seed, model, { progress = $0 }, { frame = $0 })
             frame = nil
             // A render cancelled after its last check still returns.
             guard !Task.isCancelled else { return made.remove() }
@@ -403,9 +409,9 @@ struct PileVideoSheet: View {
     /// Simulator hooks, since a script cannot tap **Video**.
     ///
     /// With `-BookwormsPileShare YES`, `-BookwormsPileVideo YES` also opens the pile's video
-    /// sheet, and each finished video is copied to `Library/Caches/Bookworms/pile-video-debug.mp4`,
-    /// with its Live Photo copy at `pile-video-debug.mov` and its still at
-    /// `pile-video-debug.jpg`.
+    /// sheet, or in the Share tab, the Desk or Tall Stack template's. Each finished video is
+    /// copied to `Library/Caches/Bookworms/pile-video-debug.mp4`, with its Live Photo copy at
+    /// `pile-video-debug.mov` and its still at `pile-video-debug.jpg`.
     enum PileVideoDebug {
         static var opensSheet: Bool { UserDefaults.standard.bool(forKey: "BookwormsPileVideo") }
 

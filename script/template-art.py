@@ -363,6 +363,43 @@ def dropped():
     return parts
 
 
+def tower():
+    # The headline, left-aligned on two lines, the height in gold, and the count under it.
+    parts = [bar(10, 12, 50, 5.5), bar(10, 21, 22, 5.5, GOLD), bar(35, 21, 18, 5.5), bar(10, 31, 30, 2.5, CREAM, 0.55)]
+    parts.append(f'<ellipse cx="45" cy="{H - 14}" rx="44" ry="7" fill="url(#lamp)"/>')
+    # Spines lying flat on one another, each a little off true, as a real stack is.
+    top = H - 14
+    for level in range(22):
+        nudge = [0, 1.2, -0.9, 0.6, -1.3, 0.4, 1.0, -0.5][level % 8]
+        width = 30 + [0, 4, -3, 2, 5, -2, 1][level % 7]
+        thickness = 3.2 + [0, 1.2, 0.4, 1.8, 0.6][level % 5]
+        top -= thickness
+        if top < 44:
+            break
+        color = BOOKS[(level * 3) % len(BOOKS)]
+        parts.append(rect(30 + nudge, top, width, thickness, color, 0.5))
+        parts.append(bar(30 + nudge + 4, top + thickness / 2 - 0.6, width * 0.5, 1.2, CREAM, 0.6))
+    # The tape hangs plumb beside the tower from its hook to its case on the desk.
+    parts += [rect(22, top, 3.5, H - 14 - top - 7, GOLD), rect(22, top - 1, 12, 1.8, "#C79E52"),
+              rect(16, H - 22, 11, 9, GOLD, 2), rect(16, H - 18, 11, 2, INK, 0, 0.6)]
+    # The worm sits at the base: its coil lies flat, and its front rises to the head.
+    pink = "#F08FA6"
+    parts += [f'<ellipse cx="80" cy="{H - 15}" rx="11" ry="4" fill="{shade(pink, 0.8)}"/>',
+              rect(74, H - 40, 11, 26, pink, 5.5),
+              f'<circle cx="77.5" cy="{H - 34}" r="2.4" fill="{CREAM}"/>',
+              f'<circle cx="81.5" cy="{H - 34}" r="2.4" fill="{CREAM}"/>',
+              f'<circle cx="77.5" cy="{H - 33.4}" r="1" fill="{INK}"/>',
+              f'<circle cx="81.5" cy="{H - 33.4}" r="1" fill="{INK}"/>']
+    # The loupe magnifies the newest books, with a line to the top of the tower.
+    parts += [f'<line x1="62" y1="{top + 1}" x2="82" y2="62" stroke="{CREAM}" stroke-opacity="0.6" stroke-width="1"/>',
+              '<circle cx="96" cy="62" r="17" fill="#4A3020"/>']
+    for row in range(4):
+        parts.append(rect(84 + row % 2, 51 + row * 6, 26, 5, BOOKS[(row * 2 + 1) % len(BOOKS)], 0.6))
+        parts.append(bar(87 + row % 2, 52.8 + row * 6, 14, 1.4, CREAM, 0.75))
+    parts.append(f'<circle cx="96" cy="62" r="17" fill="none" stroke="{CREAM}" stroke-width="2.2"/>')
+    return parts
+
+
 TEMPLATES = {
     "yearInBooks": year_in_books,
     "topFive": top_five,
@@ -376,6 +413,7 @@ TEMPLATES = {
     "seesaw": seesaw,
     "checkoutCard": checkout_card,
     "dropped": dropped,
+    "tower": tower,
 }
 # Tiles that draw without the light gradients.
 DEFS = {"dropped": CLIP}

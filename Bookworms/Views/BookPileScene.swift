@@ -2234,3 +2234,45 @@ extension ClosedRange where Bound == Float {
         Swift.min(Swift.max(value, lowerBound), upperBound)
     }
 }
+
+extension BookPileScene {
+    /// Builds `books` for a still scene that nothing draws again, as `prepareSpread` does:
+    /// waiting for every spine font, and giving covers up to 10 seconds. A book whose cover came
+    /// too late shows its title on the cloth.
+    func prepareStill(_ books: [CloudBook], model: AppModel) async {
+        await factory.prepare(
+            books, prefetching: [], loadWait: .seconds(10), waitsForFonts: true, model: model)
+    }
+
+    /// The shape the scene builds the book with `id` in, once `prepareStill` built it.
+    func shape(of id: Int) -> BookShape? { factory.parts[id]?.shape }
+
+    /// Adds the table and the lamp, shining `color`, whose pool of light covers a circle of
+    /// `radius` around `center`, and waits until the room's light reaches the scene.
+    func light(pool center: SIMD3<Float>, radius: Float, color: UIColor) async {
+        stage.lampTint = color
+        stage.build(pool: center, radius: radius)
+        await stage.lit()
+    }
+
+    /// Adds `entity` to the scene, lit by the room's light like the books.
+    func addLit(_ entity: Entity) {
+        func light(_ entity: Entity) {
+            if entity.components.has(ModelComponent.self) { stage.light(entity) }
+            entity.children.forEach(light)
+        }
+        light(entity)
+        root.addChild(entity)
+    }
+
+    /// Looks through `transform`, a camera's pose, at `aspect`, the view's width over its
+    /// height, which pans the knocks that `land(_:speed:)` plays.
+    func look(from transform: Transform, aspect: Float) {
+        camera.transform = transform
+        // A camera that looks up meets no table; pans only need its eye and turn.
+        view = PileCamera(
+            matching: transform,
+            fallback: transform.translation + transform.rotation.act([0, 0, -10]))
+        self.aspect = aspect
+    }
+}
