@@ -190,6 +190,8 @@ extension TowerSnapshotRenderer {
             let rise = fraction * fraction * (3 - 2 * fraction)
             let low = stage.camera.eye.y
             let eye = low + (stage.tower.stackHeight * 1.6 - low) * rise
+            // The fall frames the books, the tape, and the worm, not the figure, so the falling
+            // books stay large; the still and the rewind's end frame the figure too.
             let fit = TowerCamera.framing(
                 corners + stage.props.extent, eyeHeight: max(eye, stage.camera.eye.y), in: wide,
                 of: size)

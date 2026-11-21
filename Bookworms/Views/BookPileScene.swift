@@ -884,7 +884,7 @@ final class BookPileScene {
         simulation.solverIterations = .init(positionIterations: 12, velocityIterations: 2)
         root.components.set(simulation)
         camera.camera = PerspectiveCameraComponent(
-            near: 0.5, far: 150, fieldOfViewInDegrees: PileCamera.fieldOfView * 180 / .pi,
+            near: 0.5, far: Self.deskFar, fieldOfViewInDegrees: PileCamera.fieldOfView * 180 / .pi,
             fieldOfViewOrientation: .vertical)
         camera.transform = view.transform
         root.addChild(camera)
@@ -2481,5 +2481,14 @@ extension BookPileScene {
             matching: transform,
             fallback: transform.translation + transform.rotation.act([0, 0, -10]))
         self.aspect = aspect
+    }
+
+    /// How far the camera sees, in units, which a desk-sized scene needs.
+    static let deskFar: Float = 150
+
+    /// Lets the camera see `distance` from its eye, beyond `deskFar`, as a tall scene's
+    /// framing can stand the camera farther back.
+    func see(upTo distance: Float) {
+        camera.camera.far = max(Self.deskFar, distance)
     }
 }
