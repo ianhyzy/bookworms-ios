@@ -21,7 +21,7 @@ enum BookFlight {
     /// rest drops it in.
     static let crossing: Float = 0.6
     /// How far the veil stays behind the book's middle: more than half the largest book's
-    /// diagonal, 3.72 units, so the book never passes through it.
+    /// diagonal, 3.79 units, so the book never passes through it.
     static let veilGap: Float = 2
     /// The highest a scene's books reach: a pile against the walls (see `PileTray`). The
     /// dominoes stand lower, at most `BookShape.longest`.

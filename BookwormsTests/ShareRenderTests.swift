@@ -287,12 +287,12 @@ final class ShareRenderTests: XCTestCase {
         let books = ShareTemplate.dropped.books(from: library, in: .year(2025))
         XCTAssertEqual(books.count, 45)
         let card = DroppedCard(input: ShareInput(template: .dropped, aspect: .square, books: books))
-        XCTAssertEqual(DroppedCard.maximumBooks, 40)
-        XCTAssertEqual(card.shown.map(\.id), books.prefix(40).map(\.id))
+        XCTAssertEqual(DroppedCard.maximumBooks, 26)
+        XCTAssertEqual(card.shown.map(\.id), books.prefix(26).map(\.id))
         // The card keeps the newest drops, newest first.
         let shown = card.shown.compactMap(\.dropped)
         XCTAssertEqual(shown, shown.sorted(by: >))
-        XCTAssertTrue(books.dropFirst(40).allSatisfy { ($0.dropped ?? "") <= (shown.last ?? "") })
+        XCTAssertTrue(books.dropFirst(26).allSatisfy { ($0.dropped ?? "") <= (shown.last ?? "") })
         XCTAssertEqual(card.count, "45 books I didn't finish")
     }
 

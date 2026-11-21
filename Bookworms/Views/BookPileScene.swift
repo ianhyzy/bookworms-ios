@@ -346,16 +346,16 @@ enum PileLayout {
     /// second.
     static let airDrag: Float = 1
     /// The height of the ceiling over `tray` for a drop of `waves` waves, which the walls
-    /// reach: 20 units over the drop height, above the highest start a drop plan's first wave
+    /// reach: 24 units over the drop height, above the highest start a drop plan's first wave
     /// gives there, with room for a book lifted over others (see `dropPlan`), and `waveRise`
     /// higher for each later wave. A wider tray, such as a wide Mac window's, drops from higher
     /// (`spawnHeight(over:)`), so its ceiling rises with it.
     static func ceiling(over tray: PileTray, waves: Int = 1) -> Float {
-        spawnHeight(over: tray) + 20 + Float(max(0, waves - 1)) * waveRise
+        spawnHeight(over: tray) + 24 + Float(max(0, waves - 1)) * waveRise
     }
-    /// Half the largest book's diagonal, 3.72 units, and a little more: a book whose middle lies
+    /// Half the largest book's diagonal, 3.79 units, and a little more: a book whose middle lies
     /// this far outside the view is wholly out of it.
-    static let entryClearance: Float = 1.9
+    static let entryClearance: Float = 1.95
     /// How long after the last wave the box of **Phone is the box** closes, at soonest: longer
     /// than a book takes to fall from an iPhone's one-wave ceiling (`ceiling(over:waves:)`)
     /// under `airDrag`.
@@ -370,7 +370,7 @@ enum PileLayout {
     /// book clear of the walls.
     static let reach: Float = 1.5
     /// The most book volume a live drop takes, in liters, which an iPhone's tray holds between
-    /// the bars. A typical library's 300 books take about 200 liters.
+    /// the bars. A typical library's 300 books take about 240 liters.
     static let maximumVolume: Float = 250
     /// The largest sideways gravity tilt allows, as a fraction of `gravity` (about 27 degrees).
     static let maximumTilt: Float = 0.5
@@ -659,6 +659,8 @@ enum PileLayout {
 @MainActor @Observable
 final class PileStatus {
     fileprivate(set) var isDropping = false
+    /// Whether the books fly into a shape (`BookPileScene.arrange(_:)`).
+    fileprivate(set) var isArranging = false
 }
 
 /// The pile's RealityKit content: the desk and its lamp (`DeskStage`), invisible walls and
@@ -740,6 +742,9 @@ final class BookPileScene {
     /// Whether the books are the dominoes' handed back (`adopt`), rather than a drop's.
     private var isAdopted = false
     private var aspect: Float = 0.5
+    /// The part of the view that the bars and the Mac's sidebar leave clear, in normalized
+    /// device coordinates, which an arranged shape fills (see `arrange(_:)`).
+    private var clearView = (low: SIMD2<Float>(-1, -1), high: SIMD2<Float>(1, 1))
     private var tray: PileTray?
     private var cameraMove: (start: PileCamera, focus: SIMD3<Float>)?
     private var plan: [PileSlot] = []
@@ -763,6 +768,16 @@ final class BookPileScene {
     /// The pull of `gatherBooks()` while it lasts: the point on the table the books slide
     /// toward, and the seconds it has pulled.
     private var gather: (center: SIMD3<Float>, elapsed: Float)?
+    /// The books' flight into a shape while it lasts (see `arrange(_:)`).
+    private var arrangement: Arrangement?
+    /// Whether a landed shape's books stand still as kinematic bodies until a book strikes
+    /// them (`releaseIfStruck`). Picking up one frees it and the books resting on it, as among
+    /// Reduce Motion's still stacks. Tall shapes of uneven books would otherwise slip and fall
+    /// as the simulation settles them, which real books stacked as carefully don't.
+    private var standing = false
+    /// The view the camera eases to so a shape's height shows (see `arrange(_:)`), until it
+    /// gets there or the reader moves the camera.
+    private var cameraGoal: PileCamera?
     private var tiltReference: SIMD3<Double>?
     private var tilt = PileTilt.off
     /// Whether motion is sampled, for tilt and shakes.
@@ -840,6 +855,17 @@ final class BookPileScene {
         var swing = PileSwing()
     }
 
+    /// The books flying into a shape: in the shape's order, with their places, their ways
+    /// there once planned, the seconds since those ways started, and the books that have
+    /// landed.
+    private struct Arrangement {
+        let books: [ModelEntity]
+        var gather: DominoFinale.Gather?
+        var clock: Float = 0
+        var landed: [Bool]
+        let planning: Task<Void, Never>?
+    }
+
     /// The collision group of a held book, which the sweep under it leaves out.
     private static let heldGroup = CollisionGroup(rawValue: 1 << 2)
 
@@ -895,6 +921,7 @@ final class BookPileScene {
             guard let self else { return }
             land(event.entityA)
             land(event.entityB)
+            releaseIfStruck(event)
             guard !lifter.handle(event) else { return }
             feedback.collide(event, pan: pan)
         }
@@ -1004,6 +1031,12 @@ final class BookPileScene {
             tray != self.tray
         else { return false }
         aspect = Float(viewport.size.width / viewport.size.height)
+        let size = SIMD2(Float(viewport.size.width), Float(viewport.size.height))
+        let insets = viewport.insets
+        clearView = (
+            low: SIMD2(Float(insets.leading), Float(insets.bottom)) / size * 2 - 1,
+            high: 1 - SIMD2(Float(insets.trailing), Float(insets.top)) / size * 2
+        )
         box = PileBox(viewport: viewport)
         build(tray)
         return true
@@ -1280,6 +1313,9 @@ final class BookPileScene {
         carry = nil
         cameraMove = nil
         gather = nil
+        endArrangement()
+        standing = false
+        cameraGoal = nil
         lifter.reset()
         spawned = 0
         periods = nil
@@ -1314,6 +1350,8 @@ final class BookPileScene {
     /// takes them back first.
     func removeBooks() {
         endDrag()
+        endArrangement()
+        standing = false
         lifter.reset()
         shelf.children.removeAll()
         bookIDs = [:]
@@ -1424,6 +1462,8 @@ final class BookPileScene {
         }
         calendar.advance(by: Float(deltaTime))
         pullTogether(by: Float(deltaTime))
+        moveArrangement(by: Float(deltaTime))
+        easeCamera(by: Float(deltaTime))
         // A resting pile waits for its still, so a book that starts moving then stirs it at
         // once, before the still can replace the view.
         if stage.rest.isResting, shelf.children.contains(where: Self.moves) { stage.rest.stir() }
@@ -1440,7 +1480,8 @@ final class BookPileScene {
         defer { checkedCamera = camera }
         return carry == nil && cameraMove == nil && !isFlying && !tracksMotion
             && !loading.isLoading && spawned == plan.count && falling.isEmpty
-            && camera == checkedCamera && !calendar.isGlowing && gather == nil
+            && camera == checkedCamera && !calendar.isGlowing && gather == nil && arrangement == nil
+            && cameraGoal == nil
             && !shelf.children.contains(where: Self.moves)
     }
 
@@ -1460,7 +1501,8 @@ final class BookPileScene {
     /// it from swinging and makes a throw a drop. Among Reduce Motion's still stacks, the books
     /// that lay over it start moving too, so they settle into its place.
     func pickUp(at point: CGPoint, in size: CGSize, gentle: Bool) -> Bool {
-        guard carry == nil, cameraMove == nil, let ray = ray(through: point, in: size),
+        guard carry == nil, cameraMove == nil, arrangement == nil,
+            let ray = ray(through: point, in: size),
             let book = book(at: point, in: size), book !== lifter.book
         else { return false }
         return pickUp(book, along: ray, gentle: gentle)
@@ -1476,16 +1518,7 @@ final class BookPileScene {
             let grabbed = PileCamera.intersect(ray, height: position.y)
         else { return false }
         land(book)
-        let bounds = book.visualBounds(relativeTo: root)
-        var riders = Set<Entity.ID>()
-        for case let other as ModelEntity in shelf.children where other !== book {
-            let over = other.visualBounds(relativeTo: root)
-            guard over.min.y > bounds.center.y, over.max.x > bounds.min.x,
-                over.min.x < bounds.max.x, over.max.z > bounds.min.z, over.min.z < bounds.max.z
-            else { continue }
-            riders.insert(other.id)
-            if holdsStill { setMode(.dynamic, of: other) }
-        }
+        let riders = freeRiders(of: book)
         setMode(.dynamic, of: book)
         book.components[CollisionComponent.self]?.filter = CollisionFilter(
             group: Self.heldGroup, mask: .all)
@@ -1598,6 +1631,22 @@ final class BookPileScene {
         return hits.filter { !carry.riders.contains($0.entity.id) }.map(\.position.y).max()
     }
 
+    /// The books lying over `book`. Among Reduce Motion's still stacks or in a standing shape,
+    /// they start moving, so they settle into its place as it leaves.
+    private func freeRiders(of book: ModelEntity) -> Set<Entity.ID> {
+        let bounds = book.visualBounds(relativeTo: root)
+        var riders = Set<Entity.ID>()
+        for case let other as ModelEntity in shelf.children where other !== book {
+            let over = other.visualBounds(relativeTo: root)
+            guard over.min.y > bounds.center.y, over.max.x > bounds.min.x,
+                over.min.x < bounds.max.x, over.max.z > bounds.min.z, over.min.z < bounds.max.z
+            else { continue }
+            riders.insert(other.id)
+            if holdsStill || standing { setMode(.dynamic, of: other) }
+        }
+        return riders
+    }
+
     private func setMode(_ mode: PhysicsBodyMode, of book: ModelEntity) {
         book.components[PhysicsBodyComponent.self]?.mode = mode
     }
@@ -1607,6 +1656,7 @@ final class BookPileScene {
     /// Does nothing while a finger holds a book, which keeps the view it was picked up in.
     func moveCamera(magnification: CGFloat, rotation: Angle, focus: CGPoint?, in size: CGSize) {
         guard carry == nil, let tray, size.width > 0, size.height > 0 else { return }
+        cameraGoal = nil
         if cameraMove == nil {
             let point = focus ?? CGPoint(x: size.width / 2, y: size.height / 2)
             let ndc = SIMD2(
@@ -1615,8 +1665,8 @@ final class BookPileScene {
             cameraMove = (view, PileCamera.intersect(ray, height: 0) ?? view.target)
         }
         guard let move = cameraMove else { return }
-        let zooms =
-            min(home.zoom, PileCamera.zoomRange.lowerBound)...PileCamera.zoomRange.upperBound
+        let farthest = min(home.zoom, move.start.zoom, PileCamera.zoomRange.lowerBound)
+        let zooms = farthest...PileCamera.zoomRange.upperBound
         view.zoom = zooms.clamp(move.start.zoom * Float(magnification))
         if tilt != .box { view.yaw = move.start.yaw - Float(rotation.radians) }
         // Keeps the focus point in place while zooming. Zoomed out to the home view, the
@@ -1677,12 +1727,15 @@ final class BookPileScene {
     /// The camera eases to its default framing, keeping its turn, so the book in front of it
     /// clears the pile at any zoom (see `aim`). The pile keeps simulating behind the veil.
     func lift(_ id: Int, aspect: Float) -> Double? {
-        guard !isFlying, root.scene != nil, factory.parts[id] != nil,
+        guard !isFlying, arrangement == nil, root.scene != nil, factory.parts[id] != nil,
             let book = shelf.children.first(where: { bookIDs[$0.id] == id }) as? ModelEntity
         else { return nil }
         endDrag()
         cameraMove = nil
         calendar.endGlow()
+        // Books on a standing shape's book fall into its place as it leaves, as they would
+        // if it were picked up.
+        if standing { _ = freeRiders(of: book) }
         readerCamera = view
         return lifter.lift(
             book, id: id, among: shelf.children.compactMap { $0 as? ModelEntity },
@@ -1881,7 +1934,9 @@ final class BookPileScene {
     /// at its details.
     func gatherBooks() {
         let books = freeBooks
-        guard !holdsStill, !isFlying, gather == nil, books.count > 1 else { return }
+        guard !holdsStill, !isFlying, gather == nil, arrangement == nil, books.count > 1 else {
+            return
+        }
         var center =
             books.map { $0.position(relativeTo: root) }.reduce(.zero, +) / Float(books.count)
         center.y = 0
@@ -1907,6 +1962,145 @@ final class BookPileScene {
                 PileLayout.gatherPull(toward: offset, after: gather.elapsed) * mass * deltaTime,
                 relativeTo: nil)
         }
+    }
+
+    /// Flies every book on the desk into `shape` (`PileShape.places(for:in:)`), centered
+    /// between the walls, along the ways the dominoes' books take into their spread
+    /// (`DominoFinale.Gather`): the books rise at once into a messy cloud, then land one by one,
+    /// bottom course first, along ways planned so that no book passes through another. Each
+    /// lands with a soft knock. Once the last has landed, the shape stands still until a thrown
+    /// book knocks it down (see `standing`). Reduce Motion's still stacks move straight to their
+    /// places and stay still.
+    ///
+    /// Does nothing while books drop, a book is held or flies to or from its details, or the
+    /// books already fly into a shape.
+    func arrange(_ shape: PileShape) {
+        let books = shelf.children.compactMap { $0 as? ModelEntity }
+        guard let tray, !status.isDropping, !isFlying, carry == nil, arrangement == nil,
+            !books.isEmpty
+        else { return }
+        gather = nil
+        let sizes = books.map { book in
+            bookIDs[book.id].flatMap { factory.parts[$0]?.shape.size } ?? [1.4, 2.1, 0.25]
+        }
+        let places = shape.places(for: sizes, in: tray)
+        let ordered = places.map { books[$0.book] }
+        // The camera looks across the shape, keeping the reader's turn.
+        var goal = view
+        goal.pitch = PileShape.viewPitch
+        goal.target =
+            places.map(\.pose.translation).reduce(.zero, +) / Float(places.count) * [1, 0, 1]
+        // It zooms as close as it can while the whole shape shows clear of the bars, and out
+        // past the pile's farthest view if a tall shape on a narrow view needs it.
+        let bounds = places.map { DominoSetup.Box($0.pose, size: sizes[$0.book]).bounds }
+        let low = bounds.map(\.low).reduce(SIMD3(repeating: .infinity)) { simd_min($0, $1) }
+        let high = bounds.map(\.high).reduce(SIMD3(repeating: -.infinity)) { simd_max($0, $1) }
+        let corners = (0..<8)
+            .map {
+                SIMD3(
+                    $0 & 1 == 0 ? low.x : high.x, $0 & 2 == 0 ? low.y : high.y,
+                    $0 & 4 == 0 ? low.z : high.z)
+            }
+        goal.zoom = PileCamera.zoomRange.upperBound
+        while goal.zoom > PileShape.farthest,
+            !corners.allSatisfy({
+                PileShape.shows(goal.project($0, aspect: aspect), within: clearView)
+            })
+        {
+            goal.zoom -= 0.05
+        }
+        for book in ordered {
+            book.components[PhysicsBodyComponent.self]?.mode = .kinematic
+            book.components.set(PhysicsMotionComponent())
+        }
+        stage.rest.stir()
+        guard !holdsStill else {
+            for (book, place) in zip(ordered, places) { book.transform = place.pose }
+            look(through: goal)
+            return
+        }
+        cameraGoal = goal
+        let hops = zip(ordered, places)
+            .map { book, place in
+                (from: book.transform, to: place.pose, size: sizes[place.book])
+            }
+        let planning = Task { [weak self] in
+            let gather = await Self.planArrangement(hops)
+            guard !Task.isCancelled, let self, self.arrangement != nil else { return }
+            self.arrangement?.gather = gather
+        }
+        arrangement = Arrangement(
+            books: ordered, landed: Array(repeating: false, count: ordered.count),
+            planning: planning)
+        status.isArranging = true
+    }
+
+    /// The books' ways into a shape, away from the main actor, every book landing within
+    /// `DominoFinale.gatherBudget` if speeding up allows.
+    @concurrent
+    nonisolated private static func planArrangement(
+        _ books: [(from: Transform, to: Transform, size: SIMD3<Float>)]
+    ) async -> DominoFinale.Gather {
+        DominoFinale.Gather(books, budget: DominoFinale.gatherBudget, holdsLast: false)
+    }
+
+    /// Moves the books on their ways into the shape by `deltaTime`, at most a twentieth of a
+    /// second, so a stalled frame slows them rather than skipping their moves, and lands each
+    /// with a soft knock. Once every book has landed, the shape stands (see `standing`).
+    private func moveArrangement(by deltaTime: Float) {
+        guard var arrangement, let gather = arrangement.gather else { return }
+        arrangement.clock += min(deltaTime, 1.0 / 20)
+        for (order, flight) in gather.flights.enumerated() where !arrangement.landed[order] {
+            let book = arrangement.books[order]
+            guard arrangement.clock < flight.landing else {
+                book.transform = flight.to
+                arrangement.landed[order] = true
+                land(book, speed: 0.9)
+                continue
+            }
+            book.transform = flight.pose(at: arrangement.clock)
+        }
+        self.arrangement = arrangement
+        guard !arrangement.landed.contains(false) else { return }
+        endArrangement()
+        standing = true
+    }
+
+    /// Turns a standing shape's books back into rigid bodies once a book strikes one of them
+    /// faster than `PileShape.strike`, so the hit knocks the shape down. A book that settles
+    /// onto one, such as a book resting on a book picked up, strikes too softly.
+    private func releaseIfStruck(_ event: CollisionEvents.Began) {
+        let bodies = [event.entityA, event.entityB]
+            .compactMap { $0.components[PhysicsBodyComponent.self] }
+        guard standing, event.impulse.isFinite, bodies.contains(where: { $0.mode == .kinematic }),
+            let mass = bodies.filter({ $0.mode == .dynamic }).map(\.massProperties.mass).max(),
+            event.impulse > PileShape.strike * mass
+        else { return }
+        standing = false
+        for case let book as ModelEntity in shelf.children
+        where book !== lifter.book && book.components[PhysicsBodyComponent.self]?.mode == .kinematic
+        {
+            setMode(.dynamic, of: book)
+        }
+    }
+
+    /// Eases the camera toward `cameraGoal`, as the dominoes' camera eases between views, unless
+    /// a book is held, the reader moves the camera, or a book flies to or from its details.
+    private func easeCamera(by deltaTime: Float) {
+        guard let goal = cameraGoal, carry == nil, cameraMove == nil, !isFlying else { return }
+        view = view.mixed(with: goal, min(1, deltaTime * 3))
+        if abs(view.pitch - goal.pitch) < 0.002, simd_distance(view.target, goal.target) < 0.01 {
+            view = goal
+            cameraGoal = nil
+        }
+        camera.transform = view.transform
+    }
+
+    /// Stops the books' flight into a shape, where they are.
+    private func endArrangement() {
+        arrangement?.planning?.cancel()
+        arrangement = nil
+        if status.isArranging { status.isArranging = false }
     }
 
     /// Throws every free book against a hard shake's jolt (see `PileLayout.shakeKick`), each a
