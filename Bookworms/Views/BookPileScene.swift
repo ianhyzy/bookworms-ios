@@ -763,7 +763,7 @@ final class BookPileScene {
     /// Whether the books stand still in tidy stacks, as kinematic bodies. Picking up a book
     /// frees only that book and the books resting on it. Tall stacks of uneven books can slip
     /// as the simulation settles them, and Reduce Motion asks for no motion the reader did not
-    /// start.
+    /// start. `place(_:mode:)` sets it for a share image's static books.
     private var holdsStill = false
     /// The pull of `gatherBooks()` while it lasts: the point on the table the books slide
     /// toward, and the seconds it has pulled.

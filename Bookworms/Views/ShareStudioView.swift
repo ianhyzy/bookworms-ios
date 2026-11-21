@@ -88,9 +88,6 @@ struct ShareStudioView: View {
     @State private var pile: ArrangeablePile?
     /// Where the reader moved the Desk image's books, which its next render keeps.
     @State private var arrangement: PileArrangement?
-    /// Set from a rearrangement until its image draws, which a small indicator marks instead of
-    /// the new pile's.
-    @State private var rearranging = false
     @State private var showsAccount = false
     @State private var filmsPile = false
     /// The Pile template's books and heading when **Video** was tapped, which the video films.
@@ -315,14 +312,14 @@ struct ShareStudioView: View {
             socialRevision: mode == .friends ? model.social.revision : 0,
             hasScore: template == .tasteMatch && reader?.match?.score != nil,
             covers: books.map(\.coverCandidates.first), designs: designs, loadedFaces: loadedFaces)
-        // Checkout Card writes the owner's name in its heading, and Review and Currently Reading
-        // sign with it in place of the profile link they would letter. Checkout Card shows the
-        // name even with **Show profile link** off, on purpose: a checkout card names its
-        // borrower, and the name links to nothing.
         if template == .pile {
             request.arrangement = arrangement?
                 .poses(aspect: aspect, seed: seed, ids: books.map(\.id))
         }
+        // Checkout Card writes the owner's name in its heading, and Review and Currently Reading
+        // sign with it in place of the profile link they would letter. Checkout Card shows the
+        // name even with **Show profile link** off, on purpose: a checkout card names its
+        // borrower, and the name links to nothing.
         if template == .checkoutCard || (request.username != nil && ShareInput.signs(template)) {
             request.owner = model.social.owner
         }
@@ -1379,7 +1376,6 @@ struct ShareStudioView: View {
     /// Lets the reader move the Desk image's books in the preview (`PileArranging`); the next
     /// image keeps their arrangement until the size, shuffle, or books change.
     private func arranging(_ image: ShareImage, isPending: Bool) -> PileArranging {
-        let (aspect, seed, ids) = (aspect, seed, image.books.map(\.id))
         #if os(iOS)
             let (holds, hovers) = (holdsPreview, Binding.constant(false))
         #else
@@ -1389,9 +1385,21 @@ struct ShareStudioView: View {
             pile: template == .pile ? pile : nil, isEnabled: !isPending, holdsPreview: holds,
             hoversBook: hovers
         ) { poses in
-            rearranging = true
-            arrangement = PileArrangement(aspect: aspect, seed: seed, ids: ids, poses: poses)
+            // The pile belongs to the image that last drew, whatever the options say now.
+            guard let drawn = renderedRequest, let image = self.image else { return false }
+            let ids = image.books.prefix(PileSnapshotRenderer.maximumBooks).map(\.id)
+            arrangement = PileArrangement(
+                aspect: drawn.aspect, seed: drawn.seed, ids: ids, poses: poses)
+            return poses != drawn.arrangement
         }
+    }
+
+    /// Whether the only change the pending image makes is the reader's arrangement, which the
+    /// live view or its still already shows in place of the progress indicator.
+    private var rearranging: Bool {
+        guard var drawn = renderedRequest else { return false }
+        drawn.arrangement = request.arrangement
+        return drawn == request
     }
 
     // MARK: - Rendering
@@ -1493,7 +1501,6 @@ struct ShareStudioView: View {
         image = rendered.map { ShareImage(image: $0, name: name, books: books) }
         failed = !request.isEmpty && rendered == nil
         renderedRequest = request
-        rearranging = false
         // Only the Desk image's own pile is kept, and its textures go with any other image.
         if template != .pile || rendered == nil { pile = nil }
         #if os(iOS)

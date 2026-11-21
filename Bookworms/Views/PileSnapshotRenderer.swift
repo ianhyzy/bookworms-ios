@@ -72,16 +72,16 @@ enum PileSnapshotRenderer {
         let layout = PileSnapshotLayout(aspect: aspect, count: shown.count)
         let (pile, late, scene) = try await renderPile(
             shown, layout: layout, seed: seed, arrangement: arrangement, model: model)
-        let card = PileSnapshotCard(
-            pile: nil, title: title, count: books.count, layout: layout, showsCredit: false,
-            username: username)
-        var drawn = card
-        drawn.pile = pile
-        let renderer = ImageRenderer(content: drawn)
+        let card = { (pile: CGImage?) in
+            PileSnapshotCard(
+                pile: pile, title: title, count: books.count, layout: layout, showsCredit: false,
+                username: username)
+        }
+        let renderer = ImageRenderer(content: card(pile))
         renderer.scale = 1
         renderer.isOpaque = true
         guard let image = renderer.uiImage else { throw PileSnapshotError.drawingFailed }
-        return (image, late, ArrangeablePile(scene: scene, heading: card))
+        return (image, late, ArrangeablePile(scene: scene, heading: card(nil)))
     }
 
     /// `slots`, with each book that `arrangement` holds at its pose there.
@@ -404,7 +404,7 @@ extension PileCamera {
 struct PileSnapshotCard: View {
     /// The rendered pile, or `nil` for the heading and credit alone, over a clear background,
     /// which a pile video draws over each frame and a preview over the pile the reader moves.
-    var pile: CGImage?
+    let pile: CGImage?
     let title: String
     let count: Int
     let layout: PileSnapshotLayout

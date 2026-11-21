@@ -43,8 +43,9 @@ struct PileArrangement: Equatable {
 /// and drops it rather than throwing it, as on the Desk.
 ///
 /// RealityKit's render thread can crash drawing the live view while an offscreen renderer steps
-/// the same engine, so the live view gives way whenever a pile image renders, and the books stay
-/// where they are.
+/// the same engine, so no book moves while a pile image renders, and a render that starts while
+/// books move takes the live view away. Moves that hadn't settled then draw only if a later drag
+/// settles, because a book caught in the air would draw floating.
 struct PileArranging: ViewModifier {
     let pile: ArrangeablePile?
     /// Whether the preview shows the image `pile` drew, so its books can move.
@@ -54,7 +55,9 @@ struct PileArranging: ViewModifier {
     /// Set while the Mac's pointer rests on a book, where a drag moves the book instead of
     /// dragging the image out.
     @Binding var hoversBook: Bool
-    let arranged: ([Int: Transform]) -> Void
+    /// Takes the books' poses once they settle, and returns whether an image will draw from
+    /// them; without one, the still gives way to the image it matches.
+    let arranged: ([Int: Transform]) -> Bool
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Set by **Sounds** in the Desk's options menu.
@@ -108,9 +111,8 @@ struct PileArranging: ViewModifier {
                 if case .lifting(let lift) = touch { lift.cancel() }
                 touch = nil
                 pile.scene.endDrag()
-                finish(pile)
+                endLive(pile)
             }
-            .onChange(of: isEnabled) { if isEnabled { still = nil } }
             .onChange(of: pile.map { ObjectIdentifier($0.scene) }) { still = nil }
             #if os(macOS)
                 .onContinuousHover { phase in
@@ -127,7 +129,9 @@ struct PileArranging: ViewModifier {
     /// Whether a drag can move books: on the Mac, only one that starts on a book, so a drag from
     /// elsewhere drags the image out.
     private var canCarry: Bool {
-        guard pile != nil, isEnabled, !holdsPreview else { return false }
+        guard pile != nil, isEnabled, !holdsPreview, !PileSnapshotRenderer.isRendering else {
+            return false
+        }
         #if os(macOS)
             return hoversBook || touch != nil
         #else
@@ -229,7 +233,8 @@ struct PileArranging: ViewModifier {
             let image = await snapshot()
             guard !Task.isCancelled else { return }
             still = image
-            finish(pile)
+            endLive(pile)
+            if !arranged(pile.scene.poses) { still = nil }
         }
     }
 
@@ -241,10 +246,9 @@ struct PileArranging: ViewModifier {
         }
     }
 
-    /// Takes the scene out of the live view and reports where its books lie.
-    private func finish(_ pile: ArrangeablePile) {
+    /// Takes the scene out of the live view.
+    private func endLive(_ pile: ArrangeablePile) {
         pile.scene.feedback.stop()
         isLive = false
-        arranged(pile.scene.poses)
     }
 }
