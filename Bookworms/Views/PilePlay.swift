@@ -105,8 +105,9 @@ enum PilePointer {
     /// The camera move for a scroll of `deltaX` and `deltaY`, in lines for a wheel or in points
     /// for a `precise` trackpad, given as the device moved, with positive y away from the
     /// reader. Scrolling away zooms in, toward the pointer. Scrolling sideways turns the view
-    /// about the pile, and so does a wheel with Shift held, which macOS reports as sideways
-    /// scrolling for most mice and as up and down for some.
+    /// there, the near side of the table going the way the device moved, and so does a wheel
+    /// with Shift held, which macOS reports as sideways scrolling for most mice and as up and
+    /// down for some.
     static func move(deltaX: CGFloat, deltaY: CGFloat, precise: Bool, shift: Bool) -> (
         magnification: CGFloat, rotation: Angle
     ) {
@@ -114,7 +115,7 @@ enum PilePointer {
         let turn = precise ? turnPerPoint : turnPerLine
         let sideways = shift && deltaX == 0 ? deltaY : deltaX
         return (
-            shift ? 1 : exp(deltaY * zoom), .radians(Double(sideways * turn))
+            shift ? 1 : exp(deltaY * zoom), .radians(Double(-sideways * turn))
         )
     }
 
@@ -154,6 +155,44 @@ enum PilePointer {
         }
         guard near <= far, far >= 0 else { return nil }
         return max(near, 0)
+    }
+}
+
+/// Two fingers on the desk, which move the camera as they would move a map: the table under
+/// them follows their midpoint, spreading them zooms, and turning them turns the view
+/// (`BookPileScene.moveCamera`).
+struct PilePinch {
+    /// The fingers' midpoint as they landed.
+    let focus: CGPoint
+    private let spread: CGFloat
+    private var angle: CGFloat
+    /// The turn since the fingers landed, in radians, which keeps counting past half a turn.
+    private var turn: CGFloat = 0
+
+    init(_ first: CGPoint, _ second: CGPoint) {
+        focus = Self.middle(first, second)
+        // Fingers that land on one point still zoom, from a point apart.
+        spread = max(1, hypot(second.x - first.x, second.y - first.y))
+        angle = atan2(second.y - first.y, second.x - first.x)
+    }
+
+    /// The camera move for the fingers now at `first` and `second`, in the order they were
+    /// given in: how far they spread, how far they turned, clockwise on screen, and their
+    /// midpoint.
+    mutating func move(to first: CGPoint, _ second: CGPoint) -> (
+        magnification: CGFloat, rotation: Angle, location: CGPoint
+    ) {
+        let now = atan2(second.y - first.y, second.x - first.x)
+        turn += (now - angle).remainder(dividingBy: 2 * .pi)
+        angle = now
+        return (
+            hypot(second.x - first.x, second.y - first.y) / spread, .radians(Double(turn)),
+            Self.middle(first, second)
+        )
+    }
+
+    private static func middle(_ first: CGPoint, _ second: CGPoint) -> CGPoint {
+        CGPoint(x: (first.x + second.x) / 2, y: (first.y + second.y) / 2)
     }
 }
 

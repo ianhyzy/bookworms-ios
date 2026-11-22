@@ -122,9 +122,16 @@ struct BookPileView: View {
     /// Set while a finger touches the desk. SwiftUI resets it when the touch ends or is
     /// cancelled, so a held book is let go either way.
     @GestureState private var touches = false
-    /// Set while fingers zoom or turn the camera, and reset like `touches`, so the next
-    /// gesture starts from the camera as it is.
-    @GestureState private var movesCamera = false
+    /// Set while the camera's gesture runs: a trackpad's pinch or turn on the Mac, and any
+    /// finger on the desk on the iPhone, where two of them move the camera. Reset like
+    /// `touches`, so the next gesture starts from the camera as it is.
+    @GestureState private var cameraGestureRuns = false
+    #if os(iOS)
+        /// Where each finger on the desk is.
+        @State private var fingers: [SpatialEventCollection.Event.ID: CGPoint] = [:]
+        /// The two fingers that move the camera, in the order `move` takes them.
+        @State private var pinch: (ids: [SpatialEventCollection.Event.ID], move: PilePinch)?
+    #endif
 
     /// What a finger, or the Mac's pointer with its button down, on the desk is doing.
     private enum Touch {
@@ -317,13 +324,15 @@ struct BookPileView: View {
             // book (`PileCarry.holdDelay`) or a tap lifts one.
             .onChange(of: touches) { if touches { desk.wake() } else { endTouch() } }
             .sensoryFeedback(.impact(weight: .light), trigger: pickups)
-            .onChange(of: movesCamera) {
-                if movesCamera {
-                    desk.wake()
-                    DeskTips.cameraMoved()
-                } else {
-                    scene.endCameraMove()
-                }
+            .onChange(of: cameraGestureRuns) {
+                #if os(macOS)
+                    if cameraGestureRuns { startCameraMove() } else { scene.endCameraMove() }
+                #else
+                    if !cameraGestureRuns {
+                        fingers = [:]
+                        movePinch()
+                    }
+                #endif
             }
             .toolbar {
                 if details.lift == nil {
@@ -446,6 +455,16 @@ struct BookPileView: View {
         #endif
     }
 
+    /// Whether two fingers move the camera, so a touch that starts now, when both land at
+    /// once and the camera's gesture reports first, neither taps nor picks up a book.
+    private var pinches: Bool {
+        #if os(iOS)
+            pinch != nil
+        #else
+            false
+        #endif
+    }
+
     /// One finger on the desk, which taps, or holds a book to pick it up, carry it, and throw
     /// it; on the Mac, the pointer, which clicks, or drags a book at once. The scene's own ray
     /// finds the book, since the view takes no entity-targeted gestures. A zero-distance drag
@@ -459,6 +478,8 @@ struct BookPileView: View {
                 switch touch {
                 case nil where Self.turnsView:
                     touch = .turning
+                case nil where pinches:
+                    touch = .idle
                 case nil:
                     touch = .pressing(
                         hold: PileCarry.picksUpOnDrag
@@ -473,8 +494,9 @@ struct BookPileView: View {
                 case .turning:
                     scene.moveCamera(
                         magnification: 1,
+                        // The near side of the table follows the pointer.
                         rotation: .radians(
-                            Double(value.translation.width * PilePointer.turnPerPoint)),
+                            Double(-value.translation.width * PilePointer.turnPerPoint)),
                         focus: nil, in: size)
                 default: break
                 }
@@ -603,17 +625,70 @@ struct BookPileView: View {
         }
     }
 
-    private var moveCamera: some Gesture {
-        MagnifyGesture()
-            .simultaneously(with: RotateGesture())
-            .updating($movesCamera) { _, moves, _ in moves = true }
-            .onChanged { value in
-                scene.moveCamera(
-                    magnification: value.first?.magnification ?? 1,
-                    rotation: value.second?.rotation ?? .zero, focus: value.first?.startLocation,
-                    in: viewport?.size ?? .zero)
-            }
+    /// Wakes the desk for a camera move, which the tips count as looking around.
+    private func startCameraMove() {
+        desk.wake()
+        DeskTips.cameraMoved()
     }
+
+    #if os(macOS)
+        /// A trackpad's pinch zooms toward the pointer, and its turn turns the view there.
+        private var moveCamera: some Gesture {
+            MagnifyGesture()
+                .simultaneously(with: RotateGesture())
+                .updating($cameraGestureRuns) { _, moves, _ in moves = true }
+                .onChanged { value in
+                    scene.moveCamera(
+                        magnification: value.first?.magnification ?? 1,
+                        rotation: value.second?.rotation ?? .zero,
+                        focus: value.first?.startLocation ?? value.second?.startLocation,
+                        in: viewport?.size ?? .zero)
+                }
+        }
+    #else
+        /// Two fingers move the camera (`PilePinch`). The gesture reports every finger by
+        /// itself, which a pinch and a turn recognized apart do not: those wait for their own
+        /// kind of movement, and neither says where the fingers have dragged to.
+        private var moveCamera: some Gesture {
+            SpatialEventGesture()
+                .updating($cameraGestureRuns) { _, moves, _ in moves = true }
+                .onChanged { events in
+                    for event in events {
+                        fingers[event.id] = event.phase == .active ? event.location : nil
+                    }
+                    movePinch()
+                }
+        }
+
+        /// Moves the camera with the two fingers on the desk, starting a new move when they
+        /// land or change, and ends the move at any other count. A second finger means the
+        /// first is not tapping or picking up a book; a finger that already carries one keeps
+        /// it, and the camera waits.
+        private func movePinch() {
+            let points = pinch?.ids.compactMap { fingers[$0] } ?? []
+            guard fingers.count == 2, !isCarrying else {
+                pinch = nil
+                scene.endCameraMove()
+                return
+            }
+            guard points.count == 2, var move = pinch?.move else {
+                let landed = Array(fingers)
+                scene.endCameraMove()
+                pinch = (landed.map(\.key), PilePinch(landed[0].value, landed[1].value))
+                if case .pressing(let hold) = touch {
+                    hold?.cancel()
+                    touch = .idle
+                }
+                startCameraMove()
+                return
+            }
+            let step = move.move(to: points[0], points[1])
+            pinch?.move = move
+            scene.moveCamera(
+                magnification: step.magnification, rotation: step.rotation, focus: move.focus,
+                to: step.location, in: viewport?.size ?? .zero)
+        }
+    #endif
 }
 
 extension TimeFrame {
