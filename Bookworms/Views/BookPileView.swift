@@ -122,10 +122,10 @@ struct BookPileView: View {
     /// Set while a finger touches the desk. SwiftUI resets it when the touch ends or is
     /// cancelled, so a held book is let go either way.
     @GestureState private var touches = false
-    /// Set while a trackpad's pinch or turn moves the camera on the Mac, or while any finger
-    /// touches the desk on the iPhone, and reset like `touches`, so the next gesture starts
-    /// from the camera as it is.
-    @GestureState private var movesCamera = false
+    /// Set while the camera's gesture runs: a trackpad's pinch or turn on the Mac, and any
+    /// finger on the desk on the iPhone, where two of them move the camera. Reset like
+    /// `touches`, so the next gesture starts from the camera as it is.
+    @GestureState private var cameraGestureRuns = false
     #if os(iOS)
         /// Where each finger on the desk is.
         @State private var fingers: [SpatialEventCollection.Event.ID: CGPoint] = [:]
@@ -324,11 +324,11 @@ struct BookPileView: View {
             // book (`PileCarry.holdDelay`) or a tap lifts one.
             .onChange(of: touches) { if touches { desk.wake() } else { endTouch() } }
             .sensoryFeedback(.impact(weight: .light), trigger: pickups)
-            .onChange(of: movesCamera) {
+            .onChange(of: cameraGestureRuns) {
                 #if os(macOS)
-                    if movesCamera { startCameraMove() } else { scene.endCameraMove() }
+                    if cameraGestureRuns { startCameraMove() } else { scene.endCameraMove() }
                 #else
-                    if !movesCamera {
+                    if !cameraGestureRuns {
                         fingers = [:]
                         movePinch()
                     }
@@ -455,6 +455,16 @@ struct BookPileView: View {
         #endif
     }
 
+    /// Whether two fingers move the camera, so a touch that starts now, when both land at
+    /// once and the camera's gesture reports first, neither taps nor picks up a book.
+    private var pinches: Bool {
+        #if os(iOS)
+            pinch != nil
+        #else
+            false
+        #endif
+    }
+
     /// One finger on the desk, which taps, or holds a book to pick it up, carry it, and throw
     /// it; on the Mac, the pointer, which clicks, or drags a book at once. The scene's own ray
     /// finds the book, since the view takes no entity-targeted gestures. A zero-distance drag
@@ -468,6 +478,8 @@ struct BookPileView: View {
                 switch touch {
                 case nil where Self.turnsView:
                     touch = .turning
+                case nil where pinches:
+                    touch = .idle
                 case nil:
                     touch = .pressing(
                         hold: PileCarry.picksUpOnDrag
@@ -624,7 +636,7 @@ struct BookPileView: View {
         private var moveCamera: some Gesture {
             MagnifyGesture()
                 .simultaneously(with: RotateGesture())
-                .updating($movesCamera) { _, moves, _ in moves = true }
+                .updating($cameraGestureRuns) { _, moves, _ in moves = true }
                 .onChanged { value in
                     scene.moveCamera(
                         magnification: value.first?.magnification ?? 1,
@@ -639,7 +651,7 @@ struct BookPileView: View {
         /// kind of movement, and neither says where the fingers have dragged to.
         private var moveCamera: some Gesture {
             SpatialEventGesture()
-                .updating($movesCamera) { _, moves, _ in moves = true }
+                .updating($cameraGestureRuns) { _, moves, _ in moves = true }
                 .onChanged { events in
                     for event in events {
                         fingers[event.id] = event.phase == .active ? event.location : nil
@@ -660,9 +672,9 @@ struct BookPileView: View {
                 return
             }
             guard points.count == 2, var move = pinch?.move else {
-                let ids = Array(fingers.keys)
+                let landed = Array(fingers)
                 scene.endCameraMove()
-                pinch = (ids, PilePinch(fingers[ids[0]] ?? .zero, fingers[ids[1]] ?? .zero))
+                pinch = (landed.map(\.key), PilePinch(landed[0].value, landed[1].value))
                 if case .pressing(let hold) = touch {
                     hold?.cancel()
                     touch = .idle
