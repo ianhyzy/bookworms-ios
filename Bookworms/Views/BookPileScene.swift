@@ -54,6 +54,14 @@ struct PileCamera: Equatable {
         return SIMD2(local.x / aspect, local.y) / (-local.z * tan(Self.fieldOfView / 2))
     }
 
+    /// Moves the target across the table so that `point` shows at `ndc`. The camera follows its
+    /// target, so the view slides without turning or zooming.
+    mutating func show(_ point: SIMD3<Float>, at ndc: SIMD2<Float>, aspect: Float) {
+        guard let shown = Self.intersect(ray(ndc: ndc, aspect: aspect), height: point.y)
+        else { return }
+        target += point - shown
+    }
+
     /// Where `ray` meets the horizontal plane at `height`, or `nil` if it never does.
     static func intersect(
         _ ray: (origin: SIMD3<Float>, direction: SIMD3<Float>), height: Float
@@ -746,7 +754,9 @@ final class BookPileScene {
     /// device coordinates, which an arranged shape fills (see `arrange(_:)`).
     private var clearView = (low: SIMD2<Float>(-1, -1), high: SIMD2<Float>(1, 1))
     private var tray: PileTray?
-    private var cameraMove: (start: PileCamera, focus: SIMD3<Float>)?
+    /// A camera move under way: the view it started from, the point of the table it holds, and
+    /// where in the view that point showed.
+    private var cameraMove: (start: PileCamera, focus: SIMD3<Float>, point: CGPoint)?
     private var plan: [PileSlot] = []
     private var planKey: PlanKey?
     private var spawned = 0
@@ -948,9 +958,12 @@ final class BookPileScene {
         guard size.width > 0, size.height > 0 else { return nil }
         // The view's own shape, not the stored `aspect`, which keeps the shape the pile was
         // built for and goes stale when a Mac window resizes.
-        return view.ray(
-            ndc: [Float(point.x / size.width) * 2 - 1, 1 - Float(point.y / size.height) * 2],
-            aspect: Float(size.width / size.height))
+        return view.ray(ndc: Self.ndc(point, in: size), aspect: Float(size.width / size.height))
+    }
+
+    /// `point` in a view of `size`, in normalized device coordinates (see `PileCamera.ray`).
+    private static func ndc(_ point: CGPoint, in size: CGSize) -> SIMD2<Float> {
+        [Float(point.x / size.width) * 2 - 1, 1 - Float(point.y / size.height) * 2]
     }
 
     /// The book under `point`, in a view of `size`, or `nil` for the table or an empty view.
@@ -1651,29 +1664,35 @@ final class BookPileScene {
         book.components[PhysicsBodyComponent.self]?.mode = mode
     }
 
-    /// Zooms toward the point under `focus` and turns the camera about the pile. In **Phone is
-    /// the box**, the camera only zooms, since the box fits the unturned view.
+    /// Zooms toward the point of the table under `focus`, or under the middle of the view,
+    /// turns the table about it by `rotation`, clockwise on screen, as turning fingers would,
+    /// and slides the camera so that point shows under `location`, where two fingers have
+    /// dragged it, or stays where it showed. In **Phone is the box**, the camera does not
+    /// turn, since the box fits the unturned view.
     /// Does nothing while a finger holds a book, which keeps the view it was picked up in.
-    func moveCamera(magnification: CGFloat, rotation: Angle, focus: CGPoint?, in size: CGSize) {
+    func moveCamera(
+        magnification: CGFloat, rotation: Angle, focus: CGPoint?, to location: CGPoint? = nil,
+        in size: CGSize
+    ) {
         guard carry == nil, let tray, size.width > 0, size.height > 0 else { return }
         cameraGoal = nil
         if cameraMove == nil {
             let point = focus ?? CGPoint(x: size.width / 2, y: size.height / 2)
-            let ndc = SIMD2(
-                Float(point.x / size.width) * 2 - 1, 1 - Float(point.y / size.height) * 2)
-            let ray = view.ray(ndc: ndc, aspect: Float(size.width / size.height))
-            cameraMove = (view, PileCamera.intersect(ray, height: 0) ?? view.target)
+            let held = ray(through: point, in: size).flatMap { PileCamera.intersect($0, height: 0) }
+            cameraMove = (view, held ?? view.target, point)
         }
         guard let move = cameraMove else { return }
         let farthest = min(home.zoom, move.start.zoom, PileCamera.zoomRange.lowerBound)
         let zooms = farthest...PileCamera.zoomRange.upperBound
         view.zoom = zooms.clamp(move.start.zoom * Float(magnification))
-        if tilt != .box { view.yaw = move.start.yaw - Float(rotation.radians) }
-        // Keeps the focus point in place while zooming. Zoomed out to the home view, the
-        // camera returns to its target, and zoomed in it may move only as far as the tray
-        // reaches, measured along the tray before it turns.
-        let target = tray.unturned(
-            move.focus + (move.start.target - move.focus) * move.start.zoom / view.zoom)
+        if tilt != .box { view.yaw = move.start.yaw + Float(rotation.radians) }
+        view.target = move.start.target
+        view.show(
+            move.focus, at: Self.ndc(location ?? move.point, in: size),
+            aspect: Float(size.width / size.height))
+        // Zoomed out to the home view, the camera returns to its target, and zoomed in it may
+        // move only as far as the tray reaches, measured along the tray before it turns.
+        let target = tray.unturned(view.target)
         let reach = max(0, 1 - home.zoom / view.zoom)
         let middle = tray.unturned(home.target)
         let left = tray.centerX - tray.farHalfWidth

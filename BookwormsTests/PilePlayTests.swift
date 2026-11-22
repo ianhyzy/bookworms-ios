@@ -185,6 +185,55 @@ final class PilePlayTests: XCTestCase {
         XCTAssertGreaterThan(hard.tilt.act([0, 1, 0]).z, 0)
     }
 
+    func testTheTableFollowsTwoFingers() throws {
+        let size = CGSize(width: 400, height: 800)
+        let aspect = Float(size.width / size.height)
+        func ndc(_ point: CGPoint) -> SIMD2<Float> {
+            [Float(point.x / size.width) * 2 - 1, 1 - Float(point.y / size.height) * 2]
+        }
+        func table(_ point: CGPoint, _ camera: PileCamera) throws -> SIMD3<Float> {
+            try XCTUnwrap(
+                PileCamera.intersect(camera.ray(ndc: ndc(point), aspect: aspect), height: 0))
+        }
+        let start = PileCamera(target: [1, 0, -2], yaw: 0.3, zoom: 1.5)
+        let landed = [CGPoint(x: 150, y: 380), CGPoint(x: 250, y: 420)]
+        // The fingers slide, spread by a fifth, and turn a quarter of a radian clockwise.
+        let (cosine, sine) = (1.2 * cos(0.25), 1.2 * sin(0.25))
+        let moved = landed.map { point in
+            let (x, y) = (point.x - 200, point.y - 400)
+            return CGPoint(x: 230 + x * cosine - y * sine, y: 350 + x * sine + y * cosine)
+        }
+        var pinch = PilePinch(landed[0], landed[1])
+        let move = pinch.move(to: moved[0], moved[1])
+        XCTAssertEqual(move.magnification, 1.2, accuracy: 1e-6)
+        XCTAssertEqual(move.rotation.radians, 0.25, accuracy: 1e-6)
+        var camera = start
+        camera.zoom *= Float(move.magnification)
+        camera.yaw += Float(move.rotation.radians)
+        camera.show(try table(pinch.focus, start), at: ndc(move.location), aspect: aspect)
+        // The point between the fingers stays there, and the points under each finger stay
+        // within a few points of it, as near as a camera that looks down at a slant allows.
+        let held = camera.project(try table(pinch.focus, start), aspect: aspect)
+        XCTAssertLessThan(simd_distance(held, ndc(move.location)), 0.001)
+        for (from, to) in zip(landed, moved) {
+            let shown = camera.project(try table(from, start), aspect: aspect)
+            XCTAssertLessThan(simd_distance(shown, ndc(to)), 0.03)
+        }
+        // A turn past half a turn keeps counting instead of jumping back.
+        var turning = PilePinch(CGPoint(x: -1, y: 0), CGPoint(x: 1, y: 0))
+        var turned = 0.0
+        for step in 1...40 {
+            let angle = Double(step) * 0.1
+            turned =
+                turning.move(
+                    to: CGPoint(x: -cos(angle), y: -sin(angle)),
+                    CGPoint(x: cos(angle), y: sin(angle))
+                )
+                .rotation.radians
+        }
+        XCTAssertEqual(turned, 4, accuracy: 1e-6)
+    }
+
     func testScrollingZoomsAndShiftScrollingTurns() {
         // A wheel scrolled away zooms in, toward the reader zooms out, by the same factor.
         let away = PilePointer.move(deltaX: 0, deltaY: 1, precise: false, shift: false)
