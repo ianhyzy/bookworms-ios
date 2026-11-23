@@ -204,7 +204,6 @@ final class PileSnapshotTests: XCTestCase {
         return CGPoint(
             x: CGFloat(ndc.x + 1) / 2 * size.width, y: CGFloat(1 - ndc.y) / 2 * size.height)
     }
-
 }
 
 extension XCTestCase {
