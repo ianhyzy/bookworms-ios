@@ -27,7 +27,7 @@ extension PileSnapshotRenderer {
     /// pixel size of `aspect`, with the knocks of their landings.
     ///
     /// The books, the 150-book limit, the heading, the credit, the lamp-lit table, and the
-    /// camera are those of `render(books:title:aspect:seed:arrangement:username:model:)`, and the render
+    /// camera are those of `render(books:title:aspect:seed:username:model:)`, and the render
     /// takes its turn with images: one pile renders at a time, and the live pile steps out
     /// meanwhile. Each book falls from behind the heading straight onto its place in the image's
     /// spread, in the order the books go down, so the last frame is the image (see
