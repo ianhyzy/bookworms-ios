@@ -183,7 +183,7 @@ final class PileSnapshotTests: XCTestCase {
     @MainActor
     func testRendererDrawsANonBlankImageAtTheShareSize() async throws {
         let books = Array(Self.books.prefix(4))
-        let (image, late, _) = try await PileSnapshotRenderer.render(
+        let (image, late) = try await PileSnapshotRenderer.render(
             books: books, title: "2025", aspect: .square, seed: 1, model: modelWithoutLibrary())
         // Books without covers have none to wait for, so none is late.
         XCTAssertEqual(late, [])
@@ -203,43 +203,6 @@ final class PileSnapshotTests: XCTestCase {
         let ndc = camera.project(point, aspect: Float(size.width / size.height))
         return CGPoint(
             x: CGFloat(ndc.x + 1) / 2 * size.width, y: CGFloat(1 - ndc.y) / 2 * size.height)
-    }
-
-    /// The reader's poses replace the spread's for the books they moved, and only for the image
-    /// whose size, seed, and books they came from.
-    func testArrangementMovesOnlyTheBooksItHoldsForItsOwnImage() {
-        let slots = Self.books.prefix(3).map { PileSlot(book: $0, transform: .identity) }
-        let moved = Transform(translation: [1, 2, 3])
-        let arranged = PileSnapshotRenderer.arranged(slots, by: [2: moved])
-        XCTAssertEqual(arranged.map(\.transform), [.identity, moved, .identity])
-        XCTAssertEqual(
-            PileSnapshotRenderer.arranged(slots, by: nil).map(\.transform),
-            slots.map(\.transform))
-        let arrangement = PileArrangement(
-            aspect: .story, seed: 7, ids: [1, 2, 3], poses: [2: moved])
-        XCTAssertEqual(arrangement.poses(aspect: .story, seed: 7, ids: [1, 2, 3]), [2: moved])
-        XCTAssertNil(arrangement.poses(aspect: .square, seed: 7, ids: [1, 2, 3]))
-        XCTAssertNil(arrangement.poses(aspect: .story, seed: 8, ids: [1, 2, 3]))
-        XCTAssertNil(arrangement.poses(aspect: .story, seed: 7, ids: [1, 2]))
-    }
-
-    /// A rendered pile keeps its books where the image draws them, so the preview can move
-    /// them, and a render with the poses it reports draws them there again.
-    @MainActor
-    func testRenderedPileReportsThePosesAnArrangedRenderKeeps() async throws {
-        let books = Array(Self.books.prefix(3))
-        let model = modelWithoutLibrary()
-        let first = try await PileSnapshotRenderer.render(
-            books: books, title: "2025", aspect: .square, seed: 1, model: model)
-        let poses = first.pile.scene.poses
-        XCTAssertEqual(Set(poses.keys), Set(books.map(\.id)))
-        XCTAssertTrue(first.pile.scene.isSettled)
-        let moved = Transform(translation: poses[1]!.translation + [0.5, 0, 0])
-        let second = try await PileSnapshotRenderer.render(
-            books: books, title: "2025", aspect: .square, seed: 1, arrangement: [1: moved],
-            model: model)
-        XCTAssertEqual(second.pile.scene.poses[1], moved)
-        XCTAssertEqual(second.pile.scene.poses[2], poses[2])
     }
 }
 
