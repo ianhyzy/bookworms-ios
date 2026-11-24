@@ -70,7 +70,7 @@ struct SpineDesigner: Hashable, Sendable {
         }
 
         /// Whether the Keychain holds the provider's key and requests can carry it. It never
-        /// reads the key, so a Mac shows no prompt for it.
+        /// reads the key.
         func savedKey() -> SavedKey {
             guard key.exists() else { return .none }
             return SpineDesigner.hasConsent(of: self) ? .usable : .awaitsConsent
@@ -82,16 +82,14 @@ struct SpineDesigner: Hashable, Sendable {
         /// batches, so it never prompts for or overwrites the reader's key. Every iPhone build
         /// counts as a test copy, so every iPhone preview launch keeps scratch keys; only the
         /// installed Mac app's preview launches keep the reader's key, which its spine batches
-        /// use. Every other launch keeps this copy's keys
-        /// (`TestCopy.keychainService(_:bundleID:)`).
+        /// use. Every other launch keeps this copy's keys.
         private static let keyService =
             SpineDesigner.isUnitTest
             ? "gay.ian.Bookworms.ai-provider.tests"
             : UserDefaults.standard.string(forKey: "BookwormsPreviewFolder") != nil
                 && TestCopy.isTestCopy(bundleID: Bundle.main.bundleIdentifier)
                 ? "gay.ian.Bookworms.ai-provider.scratch"
-                : TestCopy.keychainService(
-                    "gay.ian.Bookworms.ai-provider", bundleID: Bundle.main.bundleIdentifier)
+                : "gay.ian.Bookworms.ai-provider"
     }
 
     /// No backup model.
@@ -208,10 +206,9 @@ struct SpineDesigner: Hashable, Sendable {
     var problem: String? { readiness().problem }
 
     /// `problem`, and whether it is a saved key that the Keychain refused to read for now
-    /// (`KeychainSecret.Unreadable.mayPass`), as before the first unlock after a restart or after
-    /// the reader declines a Mac's prompt. The key may still be saved, so a run waits for it
-    /// instead of designing with another model (`BookAnalyzer.bestStatus`). A read that fails
-    /// the same way every time counts as no key. `loadKey` reads the key; tests pass their own.
+    /// (`KeychainSecret.Unreadable.mayPass`), as before the first unlock after a restart. The key
+    /// may still be saved, so a run waits for it instead of designing with another model
+    /// (`BookAnalyzer.bestStatus`). A read that fails the same way every time counts as no key. `loadKey` reads the key; tests pass their own.
     func readiness(loadKey: (() throws -> String?)? = nil) -> (
         problem: String?, keyIsUnreadable: Bool
     ) {
@@ -278,15 +275,10 @@ struct SpineDesigner: Hashable, Sendable {
         "Enter your endpoint's base URL, starting with http:// or https://."
 
     /// The message for a saved key that the Keychain refused to read for now. It names what
-    /// lets the Keychain read the key again: on a Mac, allowing its prompt; elsewhere, the first
-    /// unlock after a restart.
+    /// lets the Keychain read the key again: the first unlock after a restart.
     var unreadableKeyMessage: String {
         let key = provider == .custom ? "your endpoint's" : "your \(provider.name)"
-        #if os(macOS)
-            return "Couldn't read \(key) API key. Allow access when the Mac asks, then try again."
-        #else
-            return "Couldn't read \(key) API key. Unlock this \(ThisDevice.name), then try again."
-        #endif
+        return "Couldn't read \(key) API key. Unlock this \(ThisDevice.name), then try again."
     }
 
     /// The provider's message when it last rejected these settings for every request, such as a

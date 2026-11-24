@@ -129,12 +129,10 @@ final class HardcoverAccount {
         defaults: .standard, environment: ProcessInfo.processInfo.environment)
 
     /// The Keychain item that holds this launch's Hardcover login: a scratch launch's own, else
-    /// this copy's (`TestCopy.keychainService(_:bundleID:)`).
+    /// this copy's.
     nonisolated static let loginStore = KeychainSecret(
         service: usesScratchLogin
-            ? "gay.ian.Bookworms.iOS.hardcover.scratch"
-            : TestCopy.keychainService(
-                "gay.ian.Bookworms.iOS.hardcover", bundleID: Bundle.main.bundleIdentifier))
+            ? "gay.ian.Bookworms.iOS.hardcover.scratch" : "gay.ian.Bookworms.iOS.hardcover")
 
     /// The user defaults that hold this launch's account summary.
     nonisolated static var summaryDefaults: UserDefaults {
@@ -233,10 +231,9 @@ final class HardcoverAccount {
     /// login again when the Keychain refused the last read, reporting a changed sign-in as a
     /// library change.
     ///
-    /// **Sync now** (`sync()`) calls this, and so does the iPhone app when it becomes active
+    /// **Sync now** (`sync()`) calls this, and so does the app when it becomes active
     /// (`AppModel.reloadIfStale()`). Requests in between neither read the Keychain
-    /// (`savedCredential()`) nor retry a refused save, so one refusal never turns into a series
-    /// of a Mac's prompts.
+    /// (`savedCredential()`) nor retry a refused save.
     func retryKeychain() {
         if loginIsUnsaved, let cachedCredential,
             (try? tokens.save(cachedCredential.stored())) != nil
@@ -765,22 +762,25 @@ protocol SecretStore {
 ///
 /// The item is readable after the first unlock, never synchronizable, and does not move to
 /// another device through a backup. Tests pass their own service name.
+///
+/// On the Mac the item lives in the data protection keychain, as on the iPhone, so the app's
+/// bundle ID and team, not its code signature, grant access: each copy with its own bundle ID,
+/// such as the installed development copy, keeps its own items, and copies with one bundle ID,
+/// such as TestFlight and Xcode builds, share them without a password prompt. The Mac's
+/// file-based login keychain would tie each item to the signature that last allowed it and ask
+/// again after each differently signed install, even after **Always Allow**.
 struct KeychainSecret: SecretStore, Sendable {
     /// The Keychain refused to save the secret.
     struct NotSaved: Error {}
     /// The Keychain refused to read the secret, as it does before the first unlock after a
-    /// restart (`errSecInteractionNotAllowed`) or after the reader declines a Mac's prompt. The
-    /// item may still exist.
+    /// restart (`errSecInteractionNotAllowed`). The item may still exist.
     struct Unreadable: Error {
         let status: OSStatus
 
         /// Whether a later read may pass: the device is locked, as before the first unlock after
-        /// a restart (`errSecInteractionNotAllowed`), or the reader declined a Mac's prompt
-        /// (`errSecUserCanceled`, `errSecAuthFailed`). Any other status, such as a missing
+        /// a restart (`errSecInteractionNotAllowed`). Any other status, such as a missing
         /// entitlement, repeats on every read.
-        var mayPass: Bool {
-            [errSecInteractionNotAllowed, errSecUserCanceled, errSecAuthFailed].contains(status)
-        }
+        var mayPass: Bool { status == errSecInteractionNotAllowed }
     }
 
     var service = "gay.ian.Bookworms.iOS.hardcover"
@@ -792,6 +792,7 @@ struct KeychainSecret: SecretStore, Sendable {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecAttrSynchronizable as String: false,
+            kSecUseDataProtectionKeychain as String: true,
         ]
     }
 
@@ -799,7 +800,7 @@ struct KeychainSecret: SecretStore, Sendable {
     func read() -> String? { try? load() }
 
     /// Whether a secret is saved; `false` when the Keychain refuses the lookup. It never reads
-    /// the secret, so a Mac shows no prompt for it.
+    /// the secret.
     func exists() -> Bool { SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess }
 
     func load() throws -> String? {

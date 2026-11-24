@@ -2159,17 +2159,9 @@ final class GenerationTests: XCTestCase {
         let locked = KeychainSecret.Unreadable(status: errSecInteractionNotAllowed)
         let anthropic = SpineDesigner(choosing: .anthropic)
         let refused = anthropic.readiness { throw locked }
-        #if os(macOS)
-            let advice = "Allow access when the Mac asks, then try again."
-        #else
-            let advice = "Unlock this \(ThisDevice.name), then try again."
-        #endif
+        let advice = "Unlock this \(ThisDevice.name), then try again."
         XCTAssertEqual(refused.problem, "Couldn't read your Anthropic API key. \(advice)")
         XCTAssertTrue(refused.keyIsUnreadable)
-        for status in [errSecUserCanceled, errSecAuthFailed] {
-            let declined = anthropic.readiness { throw KeychainSecret.Unreadable(status: status) }
-            XCTAssertTrue(declined.keyIsUnreadable, "A declined Mac prompt (\(status)) waits")
-        }
         let broken = anthropic.readiness {
             throw KeychainSecret.Unreadable(status: errSecMissingEntitlement)
         }
