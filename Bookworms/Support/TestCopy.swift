@@ -15,16 +15,6 @@ enum TestCopy {
     /// (`project.yml`).
     nonisolated static let storeBundleID = "gay.ian.Bookworms.iOS"
 
-    /// The Keychain service name that a copy with `bundleID` uses for `name`. The store copy
-    /// keeps `name`, as every iPhone build does. Any other copy appends its bundle ID, because
-    /// every copy on a Mac shares the login keychain: a copy that read another copy's Hardcover
-    /// login without a saved account of its own would delete it as left over from a deleted
-    /// install (`HardcoverAccount.restoreLogin(isRetry:)`).
-    nonisolated static func keychainService(_ name: String, bundleID: String?) -> String {
-        guard let bundleID, bundleID != storeBundleID else { return name }
-        return "\(name).\(bundleID)"
-    }
-
     /// Whether an app with `bundleID` is a test copy: every build but the installed Mac app's,
     /// such as an Xcode build (`gay.ian.Bookworms.iOS`) or a copy re-signed with a scratch ID.
     /// Every iPhone build counts, because the iPhone app never has the Mac's bundle ID; the

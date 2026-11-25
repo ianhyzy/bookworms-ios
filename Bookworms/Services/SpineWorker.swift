@@ -376,8 +376,7 @@ actor SpineWorker {
 
     static let busyRetryDelay: TimeInterval = 15 * 60
     /// How long a run that waits for a key the Keychain refused to read waits before the next
-    /// background run reads it again, so an idle Mac whose reader declined its keychain prompt
-    /// doesn't ask every `busyRetryDelay`. **Generate now** does not wait.
+    /// background run reads it again. **Generate now** does not wait.
     static let keyRetryDelay: TimeInterval = 3 * 60 * 60
     /// How long a stop waits when its cause needs the user, such as a full iCloud storage plan.
     /// **Generate now** does not wait.

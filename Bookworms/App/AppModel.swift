@@ -796,17 +796,12 @@ final class AppModel {
 
     /// Reloads when the last load that returned a result is more than five minutes old, a later
     /// load failed, or a saved design named a book the library lacks. Called when the app
-    /// becomes active and when a generation run ends. On an iPhone, first retries a read or save
-    /// of the Hardcover login that the Keychain refused (`HardcoverAccount.retryKeychain()`).
+    /// becomes active and when a generation run ends. First retries a read or save of the
+    /// Hardcover login that the Keychain refused (`HardcoverAccount.retryKeychain()`).
     /// Then writes any cache update that `apply(_:)` deferred, so a run's designs reach the cache
     /// when it ends.
     func reloadIfStale() async {
-        // On a Mac, a read can show a keychain prompt, which takes the app out of the
-        // foreground, so a read on each activation could ask again as soon as the reader
-        // declines. There, **Sync now** and the next launch read the login again.
-        #if !os(macOS)
-            account.retryKeychain()
-        #endif
+        account.retryKeychain()
         if persistTask != nil { persist() }
         guard needsReload || lastReload.map({ -$0.timeIntervalSinceNow > 300 }) ?? true else {
             return

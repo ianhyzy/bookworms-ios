@@ -433,8 +433,7 @@ final class GenerationController {
         savedKeys.changed(provider, hasKey: kept)
     }
 
-    /// Runs a Keychain call off the main actor, because the Keychain can block, such as while a
-    /// Mac asks the reader for access.
+    /// Runs a Keychain call off the main actor, because the Keychain can block.
     @concurrent nonisolated private static func keychain<T: Sendable>(
         _ call: @Sendable () throws -> T
     ) async rethrows -> T {

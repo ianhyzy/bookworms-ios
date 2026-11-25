@@ -43,15 +43,8 @@ enum HardcoverError: LocalizedError, Equatable {
         }
     }
 
-    /// What lets the Keychain read the login again: on a Mac, allowing its prompt; elsewhere,
-    /// the first unlock after a restart.
-    private static var keychainAdvice: String {
-        #if os(macOS)
-            "Allow access when the Mac asks, then try again."
-        #else
-            "Unlock this \(ThisDevice.name), then try again."
-        #endif
-    }
+    /// What lets the Keychain read the login again: the first unlock after a restart.
+    private static var keychainAdvice: String { "Unlock this \(ThisDevice.name), then try again." }
 }
 
 /// Hardcover's answer to a device-code request (RFC 8628).
