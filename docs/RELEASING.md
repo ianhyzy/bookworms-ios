@@ -107,6 +107,23 @@ Capture the **Share**, **Library**, **Desk**, and **Spines** tabs in the sizes t
 
 Apple's specifications don't allow an alpha channel, which simulator screenshots and window captures have. Remove it before you upload.
 
+## What's New
+
+Each version after 1.0.0 needs **What's New in This Version** on both platforms, at most 4,000 characters, and the owner approves it.
+
+### What's New for 1.1.0
+
+Draft for the owner's approval:
+
+```text
+- Tall Stack: a new share image that piles a month's, a year's, or all your books into one tower at their real height, measured with a tape and set beside something about as tall.
+- Seesaw: weigh your books against a friend's, page by page, in a new With friends image.
+- View in my room (iPhone): see your books at life size on a real table through the camera, and take a photo.
+- Desk: Arrange builds your books into a cube, a pyramid, or a wall. On iPhone, two fingers move, zoom, and turn the table like a map.
+- Every 3D book is now as thick as a real hardcover.
+- On Mac: books in Library turn a little toward the pointer, and the dominoes video can match the window's shape.
+```
+
 ## App Review
 
 Without a Hardcover sign-in, every tab depends on a library that the reviewer's Apple devices saved to their iCloud account: the Apple TV app's upload, or the copy a signed-in iPhone or Mac saves. **View example profile** shows a read-only example instead. Before submitting:
