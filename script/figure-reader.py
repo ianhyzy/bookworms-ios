@@ -2,7 +2,7 @@
 # its arms from the T-pose about the shoulders, colors it like a wooden artist's mannequin, splits
 # the head into its own `head` mesh, which the app finds to hold the reader's photo in front of,
 # and exports USDZ.
-# Usage: blender -b mannequin.blend --python script/figure-reader.py -- <arm angle> <output stem>
+# Usage: blender -b mannequin.blend --python script/figure-reader.py -- <arm angle> <output.usdz>
 import bpy, bmesh, math, sys
 from mathutils import Matrix, Vector
 
@@ -66,11 +66,8 @@ def keep(obj, want_head):
 
 keep(body, False)
 keep(head, True)
-for o in bpy.data.objects:
-    print("BB", o.name, [round(x, 3) for x in o.dimensions])
-bpy.ops.wm.save_as_mainfile(filepath=out + '.blend')
 bpy.data.objects.remove(bpy.data.objects['mannequin_center'])
 bpy.ops.wm.usd_export(
-    filepath=out + '.usdz', export_materials=True, selected_objects_only=False,
-    convert_orientation=True, export_global_up_selection='Y',
+    filepath=out, export_materials=True, selected_objects_only=False,
+    convert_world_material=False, export_lights=False, convert_orientation=True, export_global_up_selection='Y',
     export_global_forward_selection='NEGATIVE_Z')

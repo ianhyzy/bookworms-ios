@@ -49,8 +49,14 @@ extension TowerFigure {
         // The cylinder's axis turns from up to toward the camera, so its face is the card's.
         mask.orientation = simd_quatf(angle: .pi / 2, axis: [1, 0, 0])
         mask.position = [head.center.x, head.center.y, head.max.z + thickness / 2]
-        if let image = photo.cgImage,
-            let texture = try? TextureResource(image: image, options: .init(semantic: .color))
+        // The middle square of the photo, so a photo that isn't square fills the round print
+        // without stretching.
+        if let image = photo.cgImage, case let side = min(image.width, image.height),
+            let square = image.cropping(
+                to: CGRect(
+                    x: (image.width - side) / 2, y: (image.height - side) / 2, width: side,
+                    height: side)),
+            let texture = try? TextureResource(image: square, options: .init(semantic: .color))
         {
             var print = PhysicallyBasedMaterial()
             print.baseColor = .init(tint: .white, texture: .init(texture))

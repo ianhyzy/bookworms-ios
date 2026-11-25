@@ -317,7 +317,7 @@ struct ShareStudioView: View {
         // sign with it in place of the profile link they would letter. Checkout Card shows the
         // name even with **Show profile link** off, on purpose: a checkout card names its
         // borrower, and the name links to nothing.
-        // Tall Stack prints the owner's photo on their figure's face.
+        // Tall Stack holds the owner's photo in front of their figure's face.
         if template == .checkoutCard || template == .tower
             || (request.username != nil && ShareInput.signs(template))
         {
@@ -2171,7 +2171,10 @@ private struct ReaderHeightPicker: View {
         let unit = unit
         let step = Measurement(value: 1, unit: unit).converted(to: .meters).value
         let range = ReaderHeight.range
-        let choices = Array(Int((range.lowerBound / step).rounded())...Int((range.upperBound / step).rounded()))
+        let choices =
+            Int(
+                (range.lowerBound / step).rounded())...Int(
+                (range.upperBound / step).rounded())
         let shown = meters > 0 ? meters : Double(ReaderHeight.standIn)
         Picker(
             "Your height",
@@ -2179,7 +2182,7 @@ private struct ReaderHeightPicker: View {
                 get: { Int((shown / step).rounded()) },
                 set: { meters = Double($0) * step })
         ) {
-            ForEach(choices, id: \.self) { value in
+            ForEach(Array(choices), id: \.self) { value in
                 Text(
                     Measurement(value: Double(value), unit: unit)
                         .formatted(.measurement(width: .abbreviated, usage: .personHeight))

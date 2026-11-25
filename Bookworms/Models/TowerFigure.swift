@@ -24,9 +24,9 @@ struct TowerFigure: Equatable, Sendable {
         TowerFigure(name: "lighthouse", meters: 30, phrase: "a lighthouse"),
     ]
 
-    /// The reader, an artist's mannequin `meters` tall with their profile photo on its face. A
-    /// tower shorter than they are reaches one of their body's landmarks instead
-    /// (`comparison(to:)`).
+    /// The reader, an artist's mannequin `meters` tall that holds their profile photo over its
+    /// face (`entity(height:left:face:)`). A tower shorter than they are reaches one of their
+    /// body's landmarks instead (`comparison(to:)`).
     static func reader(meters: Float) -> TowerFigure {
         TowerFigure(name: "reader", meters: meters, phrase: "you")
     }
