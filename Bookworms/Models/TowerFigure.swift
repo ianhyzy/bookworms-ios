@@ -11,17 +11,10 @@ struct TowerFigure: Equatable, Sendable {
     /// How the comparison names it, such as "a windmill".
     let phrase: String
 
-    /// The person on the ladder. A tower shorter than they are reaches one of their body's
-    /// landmarks instead (`comparison(to:)`).
-    static let person = TowerFigure(name: "ian", meters: 1.83, phrase: "Ian")
-
-    /// The figures, shortest first, from a month's few books to a large library's All Time.
-    static let ladder = [
+    /// The figures other than the reader, shortest first, from a month's few books to a large
+    /// library's All Time.
+    private static let objects = [
         TowerFigure(name: "cat", meters: 0.25, phrase: "a cat"),
-        // Intentionally the app's author, for fun: the person on the ladder is Ian, and every
-        // reader's image compares their books with him. A 6-foot placeholder stands in for his
-        // photo until it arrives.
-        person,
         TowerFigure(name: "phonebooth", meters: 2.4, phrase: "a phone booth"),
         TowerFigure(name: "elephant", meters: 3.3, phrase: "an elephant"),
         TowerFigure(name: "giraffe", meters: 5.5, phrase: "a giraffe"),
@@ -31,18 +24,34 @@ struct TowerFigure: Equatable, Sendable {
         TowerFigure(name: "lighthouse", meters: 30, phrase: "a lighthouse"),
     ]
 
-    /// Landmarks on a standing person, as shares of their height, lowest first. The lowest sits
-    /// under the shortest tower that `closest(to:)` gives the person, about 26 percent of their
-    /// height, so every such tower names one.
+    /// The reader, an artist's mannequin `meters` tall with their profile photo on its face. A
+    /// tower shorter than they are reaches one of their body's landmarks instead
+    /// (`comparison(to:)`).
+    static func reader(meters: Float) -> TowerFigure {
+        TowerFigure(name: "reader", meters: meters, phrase: "you")
+    }
+
+    var isReader: Bool { name == "reader" }
+
+    /// The figures with the reader `readerMeters` tall, shortest first.
+    static func ladder(readerMeters: Float) -> [TowerFigure] {
+        (objects + [reader(meters: readerMeters)]).sorted { $0.meters < $1.meters }
+    }
+
+    /// Landmarks on a standing person, as shares of their height, lowest first. For a reader of
+    /// average height, the lowest sits under the shortest tower that `closest(to:readerMeters:)`
+    /// gives them, about a quarter of their height, so every such tower names one.
     private static let bodyParts: [(share: Float, name: String)] = [
         (0.15, "shins"), (0.28, "knees"), (0.4, "thighs"), (0.55, "waist"), (0.72, "chest"),
         (0.82, "shoulders"), (0.87, "chin"), (0.93, "eyes"),
     ]
 
-    /// The figure closest to a tower `meters` tall, preferring a taller one: a figure the tower
-    /// is growing into reads better than one it dwarfs. Nothing when the tower is under 60
-    /// percent of the shortest figure, where no comparison reads well.
-    static func closest(to meters: Float) -> TowerFigure? {
+    /// The figure closest to a tower `meters` tall, beside a reader `readerMeters` tall,
+    /// preferring a taller one: a figure the tower is growing into reads better than one it
+    /// dwarfs. Nothing when the tower is under 60 percent of the shortest figure, where no
+    /// comparison reads well.
+    static func closest(to meters: Float, readerMeters: Float) -> TowerFigure? {
+        let ladder = ladder(readerMeters: readerMeters)
         guard meters >= ladder[0].meters * 0.6 else { return nil }
         // Log distance, doubled for a figure shorter than the tower.
         func cost(_ figure: TowerFigure) -> Float {
@@ -53,14 +62,31 @@ struct TowerFigure: Equatable, Sendable {
     }
 
     /// How a tower `meters` tall compares with this figure, such as "Taller than a windmill",
-    /// or for the person, "Up to Ian's waist".
+    /// or for the reader, "Up to your waist".
     func comparison(to meters: Float) -> String {
         let ratio = meters / self.meters
         if ratio >= 1.05 { return "Taller than \(phrase)" }
         if ratio >= 0.95 { return "As tall as \(phrase)" }
-        if self == Self.person, let part = Self.bodyParts.last(where: { ratio >= $0.share }) {
-            return "Up to \(phrase)'s \(part.name)"
+        if isReader, let part = Self.bodyParts.last(where: { ratio >= $0.share }) {
+            return "Up to your \(part.name)"
         }
         return "Almost as tall as \(phrase)"
+    }
+}
+
+/// The reader's height, which Tall Stack's figure of them stands at. The Share tab sets it, and
+/// it stays on this device.
+enum ReaderHeight {
+    /// The `UserDefaults` key that holds the height in meters, absent until the reader sets one.
+    static let key = "BookwormsReaderHeight"
+    /// The height the figure stands at until the reader sets theirs: about an adult's average.
+    static let standIn: Float = 1.7
+    /// The heights the Share tab offers, in meters.
+    static let range: ClosedRange<Double> = 0.9...2.3
+
+    /// The reader's height in meters, or `standIn` when they haven't set one.
+    static var meters: Float {
+        let saved = UserDefaults.standard.double(forKey: key)
+        return saved > 0 ? Float(saved) : standIn
     }
 }

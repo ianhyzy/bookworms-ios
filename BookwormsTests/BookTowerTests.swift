@@ -111,36 +111,46 @@ final class BookTowerTests: XCTestCase {
     }
 
     func testATowerStandsBesideTheClosestFigurePreferringATallerOne() {
-        XCTAssertNil(TowerFigure.closest(to: 0.1))
-        XCTAssertEqual(TowerFigure.closest(to: 0.2)?.name, "cat")
-        XCTAssertEqual(TowerFigure.closest(to: 0.8), TowerFigure.person)
-        XCTAssertEqual(TowerFigure.closest(to: 1.9), TowerFigure.person)
-        XCTAssertEqual(TowerFigure.closest(to: 8.1)?.name, "house")
+        let reader = TowerFigure.reader(meters: 1.83)
+        func closest(_ meters: Float) -> TowerFigure? {
+            TowerFigure.closest(to: meters, readerMeters: 1.83)
+        }
+        XCTAssertNil(closest(0.1))
+        XCTAssertEqual(closest(0.2)?.name, "cat")
+        XCTAssertEqual(closest(0.8), reader)
+        XCTAssertEqual(closest(1.9), reader)
+        XCTAssertEqual(closest(8.1)?.name, "house")
         // Between the windmill and the castle tower, the taller one wins at the middle.
-        XCTAssertEqual(TowerFigure.closest(to: 15.5)?.name, "castletower")
-        XCTAssertEqual(TowerFigure.closest(to: 200)?.name, "lighthouse")
+        XCTAssertEqual(closest(15.5)?.name, "castletower")
+        XCTAssertEqual(closest(200)?.name, "lighthouse")
+        // A short reader takes the rung at their own height.
+        XCTAssertEqual(TowerFigure.closest(to: 1.1, readerMeters: 1.2), .reader(meters: 1.2))
         // The ladder runs shortest first, so the pick never skips a figure.
-        let heights = TowerFigure.ladder.map(\.meters)
-        XCTAssertEqual(heights, heights.sorted())
+        for readerMeters: Float in [0.9, 1.7, 2.3] {
+            let heights = TowerFigure.ladder(readerMeters: readerMeters).map(\.meters)
+            XCTAssertEqual(heights, heights.sorted())
+        }
     }
 
     func testTheLineComparesTheTowerWithItsFigure() {
-        let windmill = TowerFigure.ladder.first { $0.name == "windmill" }!
+        let windmill = TowerFigure.ladder(readerMeters: 1.7).first { $0.name == "windmill" }!
         XCTAssertEqual(windmill.comparison(to: 13), "Taller than a windmill")
         XCTAssertEqual(windmill.comparison(to: 12.2), "As tall as a windmill")
         XCTAssertEqual(windmill.comparison(to: 9), "Almost as tall as a windmill")
-        let ian = TowerFigure.person
-        XCTAssertEqual(ian.comparison(to: 0.6), "Up to Ian's knees")
-        XCTAssertEqual(ian.comparison(to: 0.79), "Up to Ian's thighs")
-        XCTAssertEqual(ian.comparison(to: 1.37), "Up to Ian's chest")
-        XCTAssertEqual(ian.comparison(to: 1.8), "As tall as Ian")
-        // The shortest tower that stands beside Ian rather than the cat still names a landmark.
-        XCTAssertEqual(TowerFigure.closest(to: 0.49), ian)
-        XCTAssertEqual(ian.comparison(to: 0.49), "Up to Ian's shins")
+        let reader = TowerFigure.reader(meters: 1.83)
+        XCTAssertEqual(reader.comparison(to: 0.6), "Up to your knees")
+        XCTAssertEqual(reader.comparison(to: 0.79), "Up to your thighs")
+        XCTAssertEqual(reader.comparison(to: 1.37), "Up to your chest")
+        XCTAssertEqual(reader.comparison(to: 1.8), "As tall as you")
+        XCTAssertEqual(reader.comparison(to: 2), "Taller than you")
+        // The shortest tower that stands beside the reader rather than the cat still names a
+        // landmark.
+        XCTAssertEqual(TowerFigure.closest(to: 0.49, readerMeters: 1.83), reader)
+        XCTAssertEqual(reader.comparison(to: 0.49), "Up to your shins")
     }
 
-    func testEveryFigureButThePersonShipsAModel() {
-        for figure in TowerFigure.ladder where figure != TowerFigure.person {
+    func testEveryFigureShipsAModel() {
+        for figure in TowerFigure.ladder(readerMeters: 1.7) {
             XCTAssertNotNil(
                 Bundle(for: AppModel.self)
                     .url(

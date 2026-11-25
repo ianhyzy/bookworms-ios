@@ -98,22 +98,27 @@ final class TowerStage {
         theme = ShareTheme(looks: shown.map(model.look(for:)))
         let height = tower.stackHeight
         props = TowerProps(tower: tower)
-        var figure = TowerFigure.closest(to: tower.meters)
+        let readerMeters = ReaderHeight.meters
+        var figure = TowerFigure.closest(to: tower.meters, readerMeters: readerMeters)
         #if DEBUG
             // `-BookwormsTowerFigure <name>` stands that figure beside any tower, for checking
             // every model with one library.
             if let name = UserDefaults.standard.string(forKey: "BookwormsTowerFigure") {
-                figure = TowerFigure.ladder.first { $0.name == name }
+                figure = TowerFigure.ladder(readerMeters: readerMeters).first { $0.name == name }
             }
         #endif
         var extent = props.extent
         var figureEntity: Entity?
         if let figure {
+            var face: UIImage?
+            if figure.isReader, let url = model.social.owner?.avatarURL {
+                face = await model.covers.image(at: [url], maximumPixelSize: 400)
+            }
             // The drawn tower can leave books out (`BookTower.shown`), so the figure shrinks
             // with it and keeps the proportion between their real heights.
             figureEntity = await figure.entity(
                 height: height * figure.meters / max(tower.meters, 0.001),
-                left: (props.extent.map(\.x).max() ?? 0) + 0.3)
+                left: (props.extent.map(\.x).max() ?? 0) + 0.3, face: face)
         }
         // A figure whose model can't load goes unnamed, so the line keeps the counts.
         self.figure = figureEntity == nil ? nil : figure

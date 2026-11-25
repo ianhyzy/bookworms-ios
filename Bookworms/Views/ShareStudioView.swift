@@ -64,6 +64,9 @@ struct ShareStudioView: View {
     /// The Checkout Card card to show, counting from 0 (`CheckoutCardLayout`).
     @State private var card = 0
     @AppStorage(TopFivePins.key) private var pins = TopFivePins()
+    /// The reader's height in meters, which Tall Stack's figure of them stands at; 0 until they
+    /// set it (`ReaderHeight`).
+    @AppStorage(ReaderHeight.key) private var readerHeight = 0.0
     /// The years and months with finished books, kept with the library so the body need not
     /// recompute them.
     @State private var periods: (years: [Int], months: [TimeFrame]) = ([], [])
@@ -314,9 +317,13 @@ struct ShareStudioView: View {
         // sign with it in place of the profile link they would letter. Checkout Card shows the
         // name even with **Show profile link** off, on purpose: a checkout card names its
         // borrower, and the name links to nothing.
-        if template == .checkoutCard || (request.username != nil && ShareInput.signs(template)) {
+        // Tall Stack prints the owner's photo on their figure's face.
+        if template == .checkoutCard || template == .tower
+            || (request.username != nil && ShareInput.signs(template))
+        {
             request.owner = model.social.owner
         }
+        if template == .tower { request.readerHeight = readerHeight }
         if template == .checkoutCard {
             // The image draws one card at a time; a card that a smaller frame no longer has
             // shows its last.
@@ -760,7 +767,7 @@ struct ShareStudioView: View {
             }
         #endif
         if template == .hotTakes || template.hasRatingOption || showsShuffle
-            || offersProfileLink
+            || offersProfileLink || template == .tower
         {
             Section("Options") { options(hasNoBooks: hasNoBooks) }
         }
@@ -1364,6 +1371,9 @@ struct ShareStudioView: View {
         if showsShuffle {
             Button("Shuffle", systemImage: "shuffle") { seed = .random(in: 1 ... .max) }
         }
+        if template == .tower {
+            ReaderHeightPicker(meters: $readerHeight)
+        }
         if template.hasVideo && exports {
             Button("Video", systemImage: "video", action: startFilm)
                 .disabled(hasNoBooks)
@@ -1702,6 +1712,8 @@ private struct RenderRequest: Equatable {
     /// takes (`CheckoutCardLayout`); 0 for other templates.
     var card = 0
     var cards = 0
+    /// The reader's saved height for Tall Stack's figure (`ReaderHeight`); 0 for other templates.
+    var readerHeight = 0.0
 
     /// Whether the image has nothing to draw.
     var isEmpty: Bool { covers.isEmpty && !hasScore }
@@ -2144,3 +2156,36 @@ private struct TopFivePinPicker: View {
         }
     }
 #endif
+
+/// **Your height**, which Tall Stack's figure of the reader stands at, in whole centimeters, or
+/// in inches where the region measures in feet and inches. It saves the height in meters.
+private struct ReaderHeightPicker: View {
+    /// The saved height in meters, or 0 until the reader picks one.
+    @Binding var meters: Double
+
+    private var unit: UnitLength {
+        Locale.current.measurementSystem == .metric ? .centimeters : .inches
+    }
+
+    var body: some View {
+        let unit = unit
+        let step = Measurement(value: 1, unit: unit).converted(to: .meters).value
+        let range = ReaderHeight.range
+        let choices = Array(Int((range.lowerBound / step).rounded())...Int((range.upperBound / step).rounded()))
+        let shown = meters > 0 ? meters : Double(ReaderHeight.standIn)
+        Picker(
+            "Your height",
+            selection: Binding(
+                get: { Int((shown / step).rounded()) },
+                set: { meters = Double($0) * step })
+        ) {
+            ForEach(choices, id: \.self) { value in
+                Text(
+                    Measurement(value: Double(value), unit: unit)
+                        .formatted(.measurement(width: .abbreviated, usage: .personHeight))
+                )
+                .tag(value)
+            }
+        }
+    }
+}
