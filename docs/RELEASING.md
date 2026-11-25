@@ -113,7 +113,7 @@ Each version after 1.0.0 needs **What's New in This Version** on both platforms,
 
 ### What's New for 1.1.0
 
-Draft for the owner's approval:
+The owner approved this text on 2026-11-25:
 
 ```text
 - Tall Stack: a new share image that piles a month's, a year's, or all your books into one tower at their real height, measured with a tape and set beside something about as tall.
