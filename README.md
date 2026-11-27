@@ -1,6 +1,6 @@
 # Bookworms for iOS and macOS
 
-[![Download on the App Store for iPhone and Mac](https://img.shields.io/badge/App_Store-iPhone_and_Mac-0D96F6?style=for-the-badge&logo=apple&logoColor=white)](https://apps.apple.com/app/id6832390609)
+<a href="https://apps.apple.com/us/app/bookworms-more-social-reading/id6832390609"><img src="badges/app-store.svg" alt="Download on the App Store" height="40"></a> <a href="https://apps.apple.com/us/app/bookworms-more-social-reading/id6832390609"><img src="badges/mac-app-store.svg" alt="Download on the Mac App Store" height="40"></a> <a href="https://apps.apple.com/us/app/bookworms-ebook-display/id6813137450"><img src="badges/apple-tv.svg" alt="Download on Apple TV" height="40"></a>
 
 Bookworms is delightful app for sharing your reading activity and making your ebook library feel _real_. 
 
